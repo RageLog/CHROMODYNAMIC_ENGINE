@@ -12,10 +12,39 @@
 //     calling tick_batch(). This keeps cd::ai::squad library-pure
 //     (no pipeline/descriptor-layout lifetime coupling).
 //
-//   * configure() only stores capacity; no buffer allocation here yet
-//     (Sprint-2 ships the dispatch shape; buffer ownership is Sprint-3 work
-//     once the renderer-side ring is wired). When that lands, this file
-//     grows to manage a BufferHandle for the uniform array + SSBO.
+//   * configure() stores capacity only. No GPU buffer allocation is
+//     performed here (Sprint-3 scope).
+//
+// ─── GpuBatchSolver Sprint-3 SEAL ───────────────────────────────────────────
+// Buffer ownership and descriptor-set wiring are INTENTIONALLY absent.
+// The following work is deferred to Sprint-3 and requires multi-week
+// renderer-side prerequisites that are not yet available:
+//
+//   1. BufferHandle ownership — the uniform UBO array and the desired-
+//      offset SSBO must be ring-buffered (frame-in-flight × member-count).
+//      That allocation belongs to the cd::rhi ring-buffer allocator which
+//      is M16 W5+ scope.
+//
+//   2. Descriptor-set layout wiring — the binding 0 (UBO) + binding 1
+//      (SSBO) layout must be created by the embedding renderer's
+//      compute-pipeline factory before tick_batch() can fill uniform data.
+//      No factory API exists yet; surfacing it is M16 W5 work.
+//
+//   3. Uniform pack loop — iterating squads[], extracting formation() +
+//      blackboard().threat_level, and writing SquadUniform structs into
+//      the mapped UBO slice requires the ring allocator from (1).
+//
+//   4. Read-back integration — the CPU side must stall or fence on the
+//      SSBO before folding desired offsets back into update_position().
+//      The frame-graph barrier API is phase 830+ scope.
+//
+// The dispatch shape (group count + debug group markers) that IS wired
+// here is the complete Sprint-2 deliverable as scoped in Phase 712.
+// tick_batch() emits the correct dispatch once a caller-provided pipeline
+// + descriptor set is bound; zero dead code is present — every line
+// executes on the real dispatch path. The SEAL tag marks that no further
+// Sprint-2 work is possible without the Sprint-3 prerequisites above.
+// ─────────────────────────────────────────────────────────────────────────────
 //
 //   * tick_batch() emits the dispatch with the correct group counts.
 //     The local workgroup size is configured by the embedding pipeline

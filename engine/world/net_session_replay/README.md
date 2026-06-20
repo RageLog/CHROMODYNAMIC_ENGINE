@@ -8,7 +8,7 @@ real-time, fast, or step-by-step to reproduce a flaky desync.
 
 | Type           | Role                                            |
 |----------------|-------------------------------------------------|
-| `PacketRecord` | Timestamped packet snapshot (POD).              |
+| `PacketRecord` | Timestamped packet snapshot (POD-friendly).     |
 | `Recorder`     | Captures live packets + serialises to file.     |
 | `Replayer`     | Loads a `.srpk` file + drives time-based replay.|
 
@@ -19,60 +19,74 @@ namespace cd::net::session_replay {
 
 struct PacketRecord
 {
-    uint64_t          t_ns;
-    uint32_t          remote_peer;
-    uint32_t          channel;
-    std::vector<std::byte> payload;
+    double                    timestamp_ms;   // ms since recording start
+    std::vector<uint8_t>      payload;
+    uint32_t                  channel_id;
+    bool                      incoming;       // true = received, false = sent
 };
 
 class Recorder
 {
 public:
-    void                          start(std::filesystem::path);
-    void                          push(PacketRecord);
-    cd::expected<void, Error>     finish();
+    void        start_recording();
+    void        record_packet(std::span<const uint8_t> payload,
+                              uint32_t channel_id, bool incoming);
+    void        stop_recording() noexcept;
+    [[nodiscard]] bool        save_to_file(const std::filesystem::path&) const;
+    [[nodiscard]] std::size_t packet_count() const noexcept;
+    [[nodiscard]] bool        is_recording() const noexcept;
 };
 
 class Replayer
 {
 public:
-    cd::expected<void, Error>     open(std::filesystem::path);
-    [[nodiscard]] std::optional<PacketRecord>
-                                  next();          // monotonic in t_ns
-    [[nodiscard]] bool            finished() const noexcept;
+    [[nodiscard]] bool load_from_file(const std::filesystem::path&);
+    [[nodiscard]] std::span<const PacketRecord> all() const noexcept;
+    [[nodiscard]] std::optional<PacketRecord>   next_packet(double current_ms);
+    [[nodiscard]] bool                          finished() const noexcept;
+    [[nodiscard]] std::size_t                   packet_count() const noexcept;
+    void reset() noexcept;
+    void seek_to(double target_ms) noexcept;  // jump cursor to first pkt >= target_ms
 };
 
 }
 ```
 
-## Binary format
+## Binary format (SRPK v1, little-endian throughout)
 
 ```
-[8 B  magic       "SRPK\x00\x01\x00\x00"]
-[4 B  packet_count]
+[4 B  magic        0x53 0x52 0x50 0x4B  ("SRPK")]
+[4 B  version      uint32_t = 1                 ]
+[4 B  packet_count uint32_t                     ]
 for each packet:
-    [8 B  t_ns       ]
-    [4 B  remote_peer]
-    [4 B  channel    ]
-    [4 B  payload_len]
-    [N B  payload    ]
+    [8 B  timestamp_ms  double (ms since record start)]
+    [4 B  channel_id    uint32_t                      ]
+    [1 B  incoming      uint8_t  (0 or 1)             ]
+    [4 B  payload_size  uint32_t                      ]
+    [N B  payload       uint8_t[payload_size]         ]
 ```
 
-Little-endian throughout. Intentionally simple — no compression, no
-schema versioning beyond the magic. A future SRPK v2 break bumps
-the magic.
+Total header: 12 bytes. Per-record overhead: 17 bytes + payload.
 
-## Determinism contract
+Intentionally simple — no compression, no checksum. A future SRPK v2
+break bumps `version`; the loader rejects any `version != 1`.
 
-Same as `cd::game::input_recorder`:
+## Monotonicity contract
 
-* `Recorder::push` must be **monotonic** in `t_ns`. Caller drives
-  the clock through whatever monotonic source it normally uses
-  (`cd::frame_timing`).
-* `Replayer::next` returns packets in the order they were written.
-  It does NOT re-clock to wall time; the caller walks a frame, polls
-  `next()` repeatedly, stops when the returned `t_ns` exceeds the
-  current simulation tick.
+`load_from_file` validates that timestamps are **non-decreasing**.
+A file with out-of-order packets is rejected. This guarantees that
+`next_packet(current_ms)` never needs to look ahead; it can rely on
+the linear cursor model.
+
+`Recorder::record_packet` captures timestamps automatically from
+`std::chrono::steady_clock` relative to `start_recording()`, so
+monotonicity is inherent for the live-capture path.
+
+## Seek / scrub
+
+`seek_to(target_ms)` advances the cursor to the first packet whose
+`timestamp_ms >= target_ms` using `std::ranges::lower_bound`, giving
+O(log n) seek time. Combine with `reset()` for a full rewind.
 
 ## Use cases
 

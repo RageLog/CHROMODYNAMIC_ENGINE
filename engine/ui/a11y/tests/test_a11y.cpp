@@ -399,3 +399,323 @@ TEST(A11y, TabOrderToleratesUnknownIds)
     EXPECT_EQ(*tree.focus(), 2U);
     EXPECT_TRUE(tree.meta(2U).focused);
 }
+
+// ---- Case 16: disabled widgets are skipped by tab navigation ---------------
+//
+// focus_next / focus_prev must skip entries whose A11yMeta::disabled == true.
+// This covers: forward skip, backward skip, wrap-over-disabled, and the
+// all-disabled guard (no crash, focus unchanged).
+
+TEST(A11y, DisabledWidgetsSkippedByTabNav)
+{
+    a11y::A11yTree tree;
+    // Layout: A(enabled) -> B(disabled) -> C(enabled) -> D(disabled)
+    tree.register_widget(10U, { a11y::Role::kButton, "A", "", false, false });
+    tree.register_widget(11U, { a11y::Role::kButton, "B", "", false, true  });
+    tree.register_widget(12U, { a11y::Role::kButton, "C", "", false, false });
+    tree.register_widget(13U, { a11y::Role::kButton, "D", "", false, true  });
+
+    const std::array<cd::ui::WidgetId, 4> order { 10U, 11U, 12U, 13U };
+    tree.set_tab_order(order);
+
+    // First Tab: no current focus -> first non-disabled = A (10).
+    tree.focus_next();
+    ASSERT_TRUE(tree.focus().has_value());
+    EXPECT_EQ(*tree.focus(), 10U);
+
+    // Second Tab: from A -> skip B (disabled) -> land on C (12).
+    tree.focus_next();
+    EXPECT_EQ(*tree.focus(), 12U);
+
+    // Third Tab: from C -> skip D -> wrap -> land on A (10).
+    tree.focus_next();
+    EXPECT_EQ(*tree.focus(), 10U);
+
+    // Shift+Tab from A: wrap backwards -> skip D -> land on C (12).
+    tree.focus_prev();
+    EXPECT_EQ(*tree.focus(), 12U);
+
+    // Shift+Tab from C: skip B -> land on A (10).
+    tree.focus_prev();
+    EXPECT_EQ(*tree.focus(), 10U);
+}
+
+// ---- Case 17: all-disabled tab order leaves focus unchanged ----------------
+//
+// If every entry in tab_order_ is disabled, focus_next / focus_prev must
+// leave focus in its current state and not crash.
+
+TEST(A11y, AllDisabledTabOrderLeaveFocusUnchanged)
+{
+    a11y::A11yTree tree;
+    tree.register_widget(20U, { a11y::Role::kButton, "X", "", false, true });
+    tree.register_widget(21U, { a11y::Role::kButton, "Y", "", false, true });
+    const std::array<cd::ui::WidgetId, 2> order { 20U, 21U };
+    tree.set_tab_order(order);
+
+    // No focus yet; focus_next with all-disabled must not crash and must not
+    // set any focus.
+    tree.focus_next();
+    EXPECT_FALSE(tree.focus().has_value());
+
+    // Even after direct set_focus to one entry, further nav leaves it
+    // unchanged because both neighbours are also disabled.
+    tree.set_focus(20U);
+    tree.focus_next();
+    EXPECT_EQ(*tree.focus(), 20U);  // unchanged
+    tree.focus_prev();
+    EXPECT_EQ(*tree.focus(), 20U);  // unchanged
+}
+
+// ---- Case 18: update_meta replaces fields, preserves focused bit -----------
+//
+// update_meta() must: (a) update label/role/hint/disabled; (b) preserve the
+// tree-managed `focused` bit (which the tree owns, not the caller);
+// (c) return true on a known id and false on an unknown id (no-op).
+
+TEST(A11y, UpdateMetaPreservesFocusedBit)
+{
+    a11y::A11yTree tree;
+    tree.register_widget(30U, { a11y::Role::kButton, "Old", "OldHint", false, false });
+    tree.set_focus(30U);
+    ASSERT_TRUE(tree.meta(30U).focused);
+
+    // Patch with focused=false in the supplied meta; tree must keep focused=true.
+    const bool updated = tree.update_meta(
+        30U, { a11y::Role::kTextInput, "New", "NewHint", false, true });
+    EXPECT_TRUE(updated);
+
+    const auto m = tree.meta(30U);
+    EXPECT_EQ(m.role,  a11y::Role::kTextInput);
+    EXPECT_EQ(m.label, "New");
+    EXPECT_EQ(m.hint,  "NewHint");
+    EXPECT_TRUE(m.disabled);
+    EXPECT_TRUE(m.focused);          // preserved by update_meta
+
+    // Unknown id must return false without inserting.
+    const bool not_found = tree.update_meta(999U, { a11y::Role::kButton, "X", "", false, false });
+    EXPECT_FALSE(not_found);
+    EXPECT_FALSE(tree.has(999U));
+    EXPECT_EQ(tree.size(), 1U);
+}
+
+// ---- Case 19: nested-node set_parent / children_of / parent_of -------------
+//
+// A11yTree must maintain a parent→children adjacency separate from tab order.
+// This covers: basic parent assignment, multi-child, querying children/parent,
+// re-parenting (change parent mid-frame), and self-loop guard.
+
+TEST(A11y, NestedNodeParentChildAdjacency)
+{
+    a11y::A11yTree tree;
+    // Register a small hierarchy: Panel (40) -> [Button A (41), Button B (42)]
+    tree.register_widget(40U, { a11y::Role::kPanel,  "Panel", "", false, false });
+    tree.register_widget(41U, { a11y::Role::kButton, "A",     "", false, false });
+    tree.register_widget(42U, { a11y::Role::kButton, "B",     "", false, false });
+
+    tree.set_parent(41U, 40U);
+    tree.set_parent(42U, 40U);
+
+    EXPECT_EQ(tree.parent_of(41U), std::optional<cd::ui::WidgetId>{ 40U });
+    EXPECT_EQ(tree.parent_of(42U), std::optional<cd::ui::WidgetId>{ 40U });
+    EXPECT_EQ(tree.parent_of(40U), std::nullopt);  // root has no parent
+
+    const auto children = tree.children_of(40U);
+    ASSERT_EQ(children.size(), 2U);
+    EXPECT_EQ(children[0], 41U);
+    EXPECT_EQ(children[1], 42U);
+
+    // Self-loop guard: set_parent(X, X) must be a no-op.
+    tree.set_parent(40U, 40U);
+    EXPECT_EQ(tree.parent_of(40U), std::nullopt);
+
+    // Re-parent 41 from Panel (40) to a new container (43).
+    tree.register_widget(43U, { a11y::Role::kDialog, "D", "", false, false });
+    tree.set_parent(41U, 43U);
+    EXPECT_EQ(tree.parent_of(41U), std::optional<cd::ui::WidgetId>{ 43U });
+    // Panel (40) should now only have B (42) as a child.
+    const auto panel_children = tree.children_of(40U);
+    ASSERT_EQ(panel_children.size(), 1U);
+    EXPECT_EQ(panel_children[0], 42U);
+}
+
+// ---- Case 20: clear_parent removes the adjacency link ----------------------
+
+TEST(A11y, ClearParentRemovesLink)
+{
+    a11y::A11yTree tree;
+    tree.register_widget(50U, { a11y::Role::kPanel,  "P", "", false, false });
+    tree.register_widget(51U, { a11y::Role::kButton, "B", "", false, false });
+
+    tree.set_parent(51U, 50U);
+    ASSERT_EQ(tree.parent_of(51U), std::optional<cd::ui::WidgetId>{ 50U });
+
+    tree.clear_parent(51U);
+    EXPECT_EQ(tree.parent_of(51U), std::nullopt);
+    EXPECT_TRUE(tree.children_of(50U).empty());
+
+    // clear_parent on a root widget (no parent) must be a no-op.
+    tree.clear_parent(50U);
+    EXPECT_EQ(tree.parent_of(50U), std::nullopt);
+}
+
+// ---- Case 21: unregister_widget cleans up parent/child adjacency -----------
+//
+// Removing a widget that is a child must remove it from the parent's list.
+// Removing a widget that is a parent must clear the parent pointer of all
+// its children (they become root-level; no dangling parent pointer).
+
+TEST(A11y, UnregisterCleansUpAdjacency)
+{
+    a11y::A11yTree tree;
+    tree.register_widget(60U, { a11y::Role::kPanel,  "P",  "", false, false });
+    tree.register_widget(61U, { a11y::Role::kButton, "B1", "", false, false });
+    tree.register_widget(62U, { a11y::Role::kButton, "B2", "", false, false });
+
+    tree.set_parent(61U, 60U);
+    tree.set_parent(62U, 60U);
+
+    // Remove a child: parent's child list shrinks.
+    tree.unregister_widget(61U);
+    EXPECT_FALSE(tree.has(61U));
+    const auto children_after = tree.children_of(60U);
+    ASSERT_EQ(children_after.size(), 1U);
+    EXPECT_EQ(children_after[0], 62U);
+
+    // Remove the parent: the remaining child's parent pointer is cleared.
+    tree.unregister_widget(60U);
+    EXPECT_FALSE(tree.has(60U));
+    EXPECT_EQ(tree.parent_of(62U), std::nullopt);
+}
+
+// ---- Case 22: WCAG large-text / non-text threshold (3:1) -------------------
+//
+// ContrastContext::kLargeText and kNonText lower the AA cut-off to 3:1.
+// Test boundary: just above (passes) and just below (fails) 3.0.
+// For large text on k_high_contrast_theme the cut-off rises to 4.5:1.
+
+TEST(A11y, LargeTextContrastThresholdIs3to1)
+{
+
+    // Threshold check: standard theme + large text context -> 3.0.
+    EXPECT_NEAR(
+        a11y::min_required_contrast(a11y::ThemeVariant::kStandardTheme,
+                                    a11y::ContrastContext::kLargeText),
+        3.0F, kEps);
+
+    // Non-text same as large-text for standard theme.
+    EXPECT_NEAR(
+        a11y::min_required_contrast(a11y::ThemeVariant::kStandardTheme,
+                                    a11y::ContrastContext::kNonText),
+        3.0F, kEps);
+
+    // High-contrast theme + large-text -> 4.5.
+    EXPECT_NEAR(
+        a11y::min_required_contrast(a11y::ThemeVariant::k_high_contrast_theme,
+                                    a11y::ContrastContext::kLargeText),
+        4.5F, kEps);
+
+    // Just ABOVE 3:1: grey L = 0.1 -> ratio (0.1 + 0.05)/0.05 = 3.0... use
+    // L = 0.11 -> ratio = (0.11 + 0.05)/0.05 = 3.2 > 3.0 -> PASS.
+    constexpr a11y::Rgba kJustAbove3 { 0.11F, 0.11F, 0.11F, 1.0F };
+    EXPECT_GE(a11y::compute_contrast_ratio(kJustAbove3, kBlack), 3.0F);
+    EXPECT_TRUE(a11y::passes_contrast(kJustAbove3, kBlack,
+                                      a11y::ThemeVariant::kStandardTheme,
+                                      a11y::ContrastContext::kLargeText));
+
+    // Just BELOW 3:1: L = 0.09 -> ratio = (0.09 + 0.05)/0.05 = 2.8 < 3.0 -> FAIL.
+    constexpr a11y::Rgba kJustBelow3 { 0.09F, 0.09F, 0.09F, 1.0F };
+    EXPECT_LT(a11y::compute_contrast_ratio(kJustBelow3, kBlack), 3.0F);
+    EXPECT_FALSE(a11y::passes_contrast(kJustBelow3, kBlack,
+                                       a11y::ThemeVariant::kStandardTheme,
+                                       a11y::ContrastContext::kLargeText));
+}
+
+// ---- Case 23: AAA body-text boundary at 7:1 --------------------------------
+//
+// Pins the inclusive >= boundary for the high-contrast (AAA) cut-off at 7:1.
+// Uses the same pure-grey technique as Case 14: L tunes ratio directly.
+// L = 0.30 -> (0.30+0.05)/0.05 = 7.0. Test L = 0.31 (PASS) and L = 0.29
+// (FAIL) with 0.01 margin on each side so no single-ULP ambiguity.
+
+TEST(A11y, AaaBodyTextBoundaryAt7to1)
+{
+
+    // L = 0.31 -> ratio = (0.31+0.05)/0.05 = 7.2 -> PASS AAA.
+    constexpr a11y::Rgba kJustOver7 { 0.31F, 0.31F, 0.31F, 1.0F };
+    EXPECT_GE(a11y::compute_contrast_ratio(kJustOver7, kBlack), 7.0F);
+    EXPECT_TRUE(a11y::passes_contrast(kJustOver7, kBlack,
+                                      a11y::ThemeVariant::k_high_contrast_theme));
+
+    // L = 0.29 -> ratio = (0.29+0.05)/0.05 = 6.8 -> FAIL AAA.
+    constexpr a11y::Rgba kJustUnder7 { 0.29F, 0.29F, 0.29F, 1.0F };
+    EXPECT_LT(a11y::compute_contrast_ratio(kJustUnder7, kBlack), 7.0F);
+    EXPECT_FALSE(a11y::passes_contrast(kJustUnder7, kBlack,
+                                       a11y::ThemeVariant::k_high_contrast_theme));
+
+    // Threshold constant is 7.
+    EXPECT_NEAR(a11y::min_required_contrast(a11y::ThemeVariant::k_high_contrast_theme),
+                7.0F, kEps);
+}
+
+// ---- Case 24: set_focus on unknown id is safe (pre-bake contract) ----------
+//
+// set_focus(id) where id is not in metas_ must set focused_ = id without
+// crashing and without inserting a phantom meta entry. The meta() for that id
+// still returns the default (role=kUnknown, focused=false from meta(), even
+// though focused_ internally holds the id). This mirrors the tab-order
+// pre-bake contract.
+
+TEST(A11y, SetFocusOnUnknownIdIsSafe)
+{
+    a11y::A11yTree tree;
+    tree.register_widget(70U, { a11y::Role::kButton, "Real", "", false, false });
+
+    // Focus an id that has no registered meta.
+    tree.set_focus(80U);
+    ASSERT_TRUE(tree.focus().has_value());
+    EXPECT_EQ(*tree.focus(), 80U);
+
+    // meta() on the unknown focused id returns the default (not a crash).
+    const auto m = tree.meta(80U);
+    EXPECT_EQ(m.role, a11y::Role::kUnknown);
+    // The tree does not insert a phantom entry.
+    EXPECT_FALSE(tree.has(80U));
+    EXPECT_EQ(tree.size(), 1U);  // only the "Real" widget
+
+    // Switching focus back to a real widget clears the unknown focus.
+    tree.set_focus(70U);
+    EXPECT_EQ(*tree.focus(), 70U);
+    EXPECT_TRUE(tree.meta(70U).focused);
+}
+
+// ---- Case 25: focus_indicator_rect at origin and negative bounds -----------
+//
+// focus_indicator_rect is a constexpr arithmetic function; test it with
+// a zero-origin widget (common for root panels) and a widget at a negative
+// coordinate (e.g. partially off-screen). Also verifies the outset constant
+// is symmetric (x/y shift equals w/h growth / 2).
+
+TEST(A11y, FocusIndicatorRectAtOriginAndNegativeBounds)
+{
+
+    // Zero-origin widget: x=0, y=0, w=200, h=40.
+    constexpr cd::ui::Rect kZero { 0.0F, 0.0F, 200.0F, 40.0F };
+    constexpr auto kRingZero = a11y::focus_indicator_rect(kZero);
+    EXPECT_NEAR(kRingZero.x, -2.0F,  kEps);
+    EXPECT_NEAR(kRingZero.y, -2.0F,  kEps);
+    EXPECT_NEAR(kRingZero.w, 204.0F, kEps);
+    EXPECT_NEAR(kRingZero.h,  44.0F, kEps);
+
+    // Negative-origin widget: x=-10, y=-5, w=60, h=20.
+    constexpr cd::ui::Rect kNeg { -10.0F, -5.0F, 60.0F, 20.0F };
+    constexpr auto kRingNeg = a11y::focus_indicator_rect(kNeg);
+    EXPECT_NEAR(kRingNeg.x, -12.0F, kEps);
+    EXPECT_NEAR(kRingNeg.y,  -7.0F, kEps);
+    EXPECT_NEAR(kRingNeg.w,  64.0F, kEps);
+    EXPECT_NEAR(kRingNeg.h,  24.0F, kEps);
+
+    // Symmetry: x-shift and half of w-growth must both equal kFocusIndicatorOutsetPx.
+    EXPECT_NEAR(kZero.x - kRingZero.x, a11y::kFocusIndicatorOutsetPx, kEps);
+    EXPECT_NEAR((kRingZero.w - kZero.w) / 2.0F, a11y::kFocusIndicatorOutsetPx, kEps);
+}

@@ -170,6 +170,44 @@ std::vector<MarkerSample> Collector::samples_since(double cutoff_ms) const
     return result;
 }
 
+std::vector<MarkerAggregate> Collector::aggregate(double cutoff_ms) const
+{
+    std::scoped_lock lock(impl_->mtx);
+
+    // Use a map from name -> index-into-result to preserve first-seen order
+    // while accumulating stats in O(n).
+    std::vector<MarkerAggregate> result;
+    std::unordered_map<std::string, std::size_t> name_index;
+
+    for (const auto& s : impl_->ring)
+    {
+        if (s.start_ms < cutoff_ms)
+            continue;
+
+        auto it = name_index.find(s.name);
+        if (it == name_index.end())
+        {
+            name_index.emplace(s.name, result.size());
+            MarkerAggregate ag;
+            ag.name     = s.name;
+            ag.count    = 1U;
+            ag.total_ms = s.duration_ms;
+            ag.avg_ms   = s.duration_ms;
+            ag.max_ms   = s.duration_ms;
+            result.emplace_back(std::move(ag));
+        }
+        else
+        {
+            MarkerAggregate& ag = result[it->second];
+            ++ag.count;
+            ag.total_ms += s.duration_ms;
+            ag.max_ms    = std::max(ag.max_ms, s.duration_ms);
+            ag.avg_ms    = ag.total_ms / static_cast<double>(ag.count);
+        }
+    }
+    return result;
+}
+
 std::size_t Collector::sample_count() const noexcept
 {
     std::scoped_lock lock(impl_->mtx);
@@ -186,9 +224,93 @@ void Collector::clear() noexcept
 
 // ---- Overlay ----------------------------------------------------------------
 
+namespace
+{
+
+/// djb2 hash of a name — same function used by both draw() and compute_bars()
+/// so results are consistent.
+[[nodiscard]] std::uint32_t djb2_hash(std::string_view name) noexcept
+{
+    std::uint32_t h = 5381U;
+    for (const char c : name)
+        h = ((h << 5U) + h) + static_cast<std::uint32_t>(static_cast<unsigned char>(c));
+    return h;
+}
+
+[[nodiscard]] cd::ui::renderer::Color colour_from_hash(std::uint32_t h) noexcept
+{
+    const auto r = static_cast<std::uint8_t>(h & 0xFFu);
+    const auto g = static_cast<std::uint8_t>((h >> 8U) & 0xFFu);
+    const auto b = static_cast<std::uint8_t>((h >> 16U) & 0xFFu);
+    return cd::ui::renderer::Color { r, g, b, 200U };
+}
+
+/// Shared layout computation: fills `bars` with one entry per visible sample.
+/// `thread_ids` is also populated in first-seen order.
+void compute_layout(std::span<const MarkerSample> samples,
+                    Rect                          bounds,
+                    double                        time_range,
+                    std::vector<BarRect>&         bars,
+                    std::vector<std::uint32_t>&   thread_ids)
+{
+    if (samples.empty() || bounds.width <= 0.0F || bounds.height <= 0.0F)
+        return;
+
+    double min_start = samples[0].start_ms;
+    for (const auto& s : samples)
+        min_start = std::min(min_start, s.start_ms);
+
+    for (const auto& s : samples)
+    {
+        if (std::ranges::find(thread_ids, s.thread_id) == thread_ids.end())
+            thread_ids.push_back(s.thread_id);
+    }
+
+    const auto  lane_count  = static_cast<float>(thread_ids.empty() ? 1U : thread_ids.size());
+    const float lane_height = bounds.height / lane_count;
+    const float ppm         = bounds.width / static_cast<float>(time_range);
+
+    for (const auto& s : samples)
+    {
+        const double rel_start = s.start_ms - min_start;
+        if (rel_start + s.duration_ms < 0.0)
+            continue;
+        if (rel_start > time_range)
+            continue;
+
+        const auto it         = std::ranges::find(thread_ids, s.thread_id);
+        const auto lane_index = static_cast<float>(std::distance(thread_ids.begin(), it));
+
+        BarRect br;
+        br.x           = bounds.x + static_cast<float>(rel_start) * ppm;
+        br.y           = bounds.y + lane_index * lane_height;
+        br.w           = std::max(1.0F, static_cast<float>(s.duration_ms) * ppm);
+        br.h           = lane_height * 0.8F;
+        br.colour_hash = djb2_hash(s.name);
+        bars.emplace_back(br);
+    }
+}
+
+}  // namespace
+
 Overlay::Overlay(double window_ms)
     : window_ms_(window_ms)
 {
+}
+
+std::vector<BarRect>
+Overlay::compute_bars(std::span<const MarkerSample> samples,
+                      Rect                          bounds) const
+{
+    if (samples.empty() || bounds.width <= 0.0F || bounds.height <= 0.0F)
+        return {};
+
+    const double time_range = (window_ms_ > 0.0) ? window_ms_ : 1.0;
+
+    std::vector<BarRect>       bars;
+    std::vector<std::uint32_t> thread_ids;
+    compute_layout(samples, bounds, time_range, bars, thread_ids);
+    return bars;
 }
 
 void Overlay::draw(cd::ui::renderer::DrawBatcher& batcher,
@@ -198,62 +320,14 @@ void Overlay::draw(cd::ui::renderer::DrawBatcher& batcher,
     if (samples.empty() || bounds.width <= 0.0F || bounds.height <= 0.0F)
         return;
 
-    // Determine time range.
-    double min_start = samples[0].start_ms;
-    for (const auto& s : samples)
-        min_start = std::min(min_start, s.start_ms);
-
     const double time_range = (window_ms_ > 0.0) ? window_ms_ : 1.0;
 
-    // Collect distinct thread IDs to assign horizontal lanes.
+    std::vector<BarRect>       bars;
     std::vector<std::uint32_t> thread_ids;
-    for (const auto& s : samples)
-    {
-        if (std::ranges::find(thread_ids, s.thread_id) == thread_ids.end())
-            thread_ids.push_back(s.thread_id);
-    }
-    const auto lane_count =
-        static_cast<float>(thread_ids.empty() ? 1U : thread_ids.size());
-    const float lane_height = bounds.height / lane_count;
+    compute_layout(samples, bounds, time_range, bars, thread_ids);
 
-    // A simple hash-to-colour palette (Tracy-style hue cycling).
-    auto marker_colour = [](std::string_view name) -> cd::ui::renderer::Color
-    {
-        // djb2 hash of the name for a stable colour.
-        std::uint32_t h = 5381U;
-        for (const char c : name)
-            h = ((h << 5U) + h) + static_cast<std::uint32_t>(static_cast<unsigned char>(c));
-
-        // Map to a vivid HSV hue by spreading bits across R/G/B.
-        const auto r = static_cast<std::uint8_t>((h & 0xFFu));
-        const auto g = static_cast<std::uint8_t>(((h >> 8U) & 0xFFu));
-        const auto b = static_cast<std::uint8_t>(((h >> 16U) & 0xFFu));
-        return cd::ui::renderer::Color { r, g, b, 200U };
-    };
-
-    const float pixels_per_ms = bounds.width / static_cast<float>(time_range);
-
-    for (const auto& s : samples)
-    {
-        // Skip samples that start before or end after the visible window.
-        const double rel_start = s.start_ms - min_start;
-        if (rel_start + s.duration_ms < 0.0)
-            continue;
-        if (rel_start > time_range)
-            continue;
-
-        // Lane index for this thread.
-        const auto it         = std::ranges::find(thread_ids, s.thread_id);
-        const auto lane_index = static_cast<float>(std::distance(thread_ids.begin(), it));
-
-        const float bar_x = bounds.x + static_cast<float>(rel_start) * pixels_per_ms;
-        const float bar_y = bounds.y + lane_index * lane_height;
-        // Minimum 1 pixel wide so zero-duration markers are visible.
-        const float bar_w = std::max(1.0F, static_cast<float>(s.duration_ms) * pixels_per_ms);
-        const float bar_h = lane_height * 0.8F;  // 80% of lane height; 20% padding.
-
-        batcher.quad(bar_x, bar_y, bar_w, bar_h, marker_colour(s.name));
-    }
+    for (const auto& br : bars)
+        batcher.quad(br.x, br.y, br.w, br.h, colour_from_hash(br.colour_hash));
 }
 
 }  // namespace cd::profile::cpu_marker_overlay

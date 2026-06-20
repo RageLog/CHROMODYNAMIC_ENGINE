@@ -1,9 +1,10 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/net/session_replay/SessionReplay.cpp
-// Phase 600 — cd::net::session_replay Sprint-1 implementation
+// Phase 600 — cd::net::session_replay (Sprint-2 complete)
 // =============================================================================
 #include <cd/net/session_replay/SessionReplay.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <fstream>
@@ -199,6 +200,14 @@ bool Replayer::load_from_file(const std::filesystem::path& in_path)
         records.push_back(std::move(rec));
     }
 
+    // Enforce monotonicity: reject files whose timestamps are out of order.
+    // This guarantees the cursor-based next_packet() model is correct.
+    for (std::size_t i = 1; i < records.size(); ++i)
+    {
+        if (records[i].timestamp_ms < records[i - 1].timestamp_ms)
+            return false;
+    }
+
     records_ = std::move(records);
     cursor_  = 0;
     return true;
@@ -225,6 +234,28 @@ std::optional<PacketRecord> Replayer::next_packet(double current_ms)
 void Replayer::reset() noexcept
 {
     cursor_ = 0;
+}
+
+void Replayer::seek_to(double target_ms) noexcept
+{
+    // Binary-search for the first record whose timestamp_ms >= target_ms.
+    // Records are guaranteed monotonic by load_from_file().
+    const auto it = std::ranges::lower_bound(
+        records_,
+        target_ms,
+        std::less<double>{},
+        [](const PacketRecord& r) { return r.timestamp_ms; });
+    cursor_ = static_cast<std::size_t>(std::ranges::distance(records_.begin(), it));
+}
+
+bool Replayer::finished() const noexcept
+{
+    return cursor_ >= records_.size();
+}
+
+std::size_t Replayer::packet_count() const noexcept
+{
+    return records_.size();
 }
 
 }  // namespace cd::net::session_replay

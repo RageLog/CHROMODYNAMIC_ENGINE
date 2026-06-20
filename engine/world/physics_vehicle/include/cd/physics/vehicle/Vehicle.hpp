@@ -14,9 +14,13 @@
 //   * Simplified bicycle model: front axle steers, rear axle drives (or all
 //     four when all wheels have is_driven=true).
 //   * Longitudinal speed integration via semi-implicit Euler.
-//   * Kinematic-bicycle lateral response: yaw_rate = v * tan(delta) / wheelbase
-//     and lateral_accel = v * yaw_rate (linear small-slip; a Pacejka slip-angle
-//     tyre model is deferred — see ADR-20260616-band3-world-scope §2.4).
+//   * Lateral response: kinematic-bicycle yaw (v * tan(delta) / wheelbase)
+//     enriched by a dynamic linear-tyre single-track correction — steady-state
+//     slip angles, an understeer gradient K = m/L * (l_r/C_f - l_f/C_r), and a
+//     friction-circle clamp (a_lat_max = mu * g) so a hard steer at speed
+//     saturates. A full transient Pacejka Magic-Formula tyre model (vertical
+//     load transfer + combined-slip + relaxation length) remains sealed —
+//     see ADR-20260616-band3-world-scope §2.4 + Vehicle.cpp seal note.
 //   * Gear selection based on RPM threshold crossing.
 //   * Anti-roll and suspension stiffness influence handled as tuning constants
 //     (not full spring-damper integration — deferred to Sprint-2 + Jolt).
@@ -81,6 +85,20 @@ struct WheelConfig
     /// Maximum steering angle for this wheel (radians). 0 = non-steering
     /// (typically rear wheels).
     float steering_angle_max { 0.0F };
+
+    /// Linear-tyre cornering stiffness (N/rad): the lateral force a single
+    /// tyre develops per radian of slip angle in the small-slip regime,
+    /// F_y = C * alpha.  Passenger-car axle stiffness is ~40000–80000 N/rad
+    /// per tyre; the default 60000 N/rad models a typical road tyre. Used by
+    /// the dynamic single-track (linear-tyre) lateral model. Set to 0 to fall
+    /// back to the pure kinematic-bicycle response for this wheel.
+    float cornering_stiffness { 60000.0F };
+
+    /// Peak friction coefficient mu (dimensionless) used to cap the lateral
+    /// tyre force at the grip limit (F_y_max = mu * F_z). Dry tarmac ~1.0,
+    /// wet ~0.6, ice ~0.1. Bounds the traction-circle so a hard steer at speed
+    /// saturates instead of producing unbounded lateral acceleration.
+    float friction_coefficient { 1.0F };
 
     /// True if this wheel receives drive torque from the engine.
     bool is_driven { false };
@@ -169,10 +187,42 @@ struct VehicleState
     /// tyre model is deferred (ADR-20260616-band3-world-scope §2.4).
     float yaw_rate_rad_s { 0.0F };
 
-    /// Lateral (centripetal) acceleration (m/s^2) in the body frame from the
-    /// same kinematic bicycle model: a_lat = v * yaw_rate = v^2 * tan(delta)/L.
-    /// Useful for tyre-load transfer, camera shake, and grip-limit checks.
+    /// Lateral (centripetal) acceleration (m/s^2) in the body frame. Below the
+    /// grip limit this equals the kinematic value v^2 * tan(delta)/L; at and
+    /// above the limit it is clamped to max_lateral_accel_ms2 (traction circle)
+    /// by the dynamic linear-tyre model. Useful for tyre-load transfer, camera
+    /// shake, and grip-limit checks.
     float lateral_accel_ms2 { 0.0F };
+
+    /// Front-axle tyre slip angle (rad) from the dynamic single-track model:
+    /// alpha_f = delta - (v_y + l_f * yaw_rate) / v_x, evaluated at the
+    /// steady-state lateral velocity. Zero at standstill or zero steer.
+    float slip_angle_front_rad { 0.0F };
+
+    /// Rear-axle tyre slip angle (rad): alpha_r = -(v_y - l_r * yaw_rate)/v_x.
+    /// Sign relative to slip_angle_front_rad indicates under/oversteer balance.
+    float slip_angle_rear_rad { 0.0F };
+
+    /// Steady-state understeer gradient K (rad per m/s^2): the extra steer
+    /// angle required per unit lateral acceleration beyond the geometric
+    /// (Ackermann) angle. K > 0 understeer, K = 0 neutral, K < 0 oversteer.
+    /// Derived from axle cornering stiffness and the static load split:
+    /// K = m/L * (l_r/C_f - l_f/C_r). Independent of speed and steer.
+    float understeer_gradient { 0.0F };
+
+    /// Grip-limited maximum lateral acceleration (m/s^2) from the friction
+    /// circle: a_lat_max = mu * g. The dynamic model clamps lateral_accel_ms2
+    /// to this magnitude.
+    float max_lateral_accel_ms2 { 0.0F };
+
+    /// Ratio of the demanded (kinematic) lateral acceleration to the grip
+    /// limit, in [0, +inf). >= 1 means the tyres are saturated (the steer
+    /// demand exceeds available grip) and the vehicle is sliding.
+    float lateral_grip_ratio { 0.0F };
+
+    /// True when the cornering demand has reached the friction-circle limit
+    /// (lateral_grip_ratio >= 1): the tyres are at the traction limit.
+    bool is_traction_limited { false };
 
     /// True when each wheel is considered in contact with the ground.
     /// Sprint-1: always true (no terrain query yet; set by suspension model).
@@ -256,10 +306,30 @@ private:
     /// length. Always strictly positive.
     [[nodiscard]] float wheelbase() const noexcept;
 
-    /// Kinematic-bicycle lateral response for a forward speed `v_ms` (m/s) and
-    /// the current steer input. Writes yaw_rate_rad_s + lateral_accel_ms2 into
-    /// `out`. Linear small-slip model (no Pacejka); deterministic.
+    /// Lateral response for a forward speed `v_ms` (m/s) and the current steer
+    /// input. Writes yaw_rate_rad_s, lateral_accel_ms2, the slip angles, the
+    /// understeer gradient, the grip limit, and the traction-limited flag into
+    /// `out`.
+    ///
+    /// Layers two bounded models on top of one another, no external deps:
+    ///   1. Kinematic bicycle (geometry): yaw_rate0 = v * tan(delta) / L.
+    ///   2. Dynamic linear-tyre single-track correction: the steady-state slip
+    ///      angles + understeer gradient shrink/grow the achievable yaw versus
+    ///      the geometric value, and the friction circle (mu * g) caps the
+    ///      lateral acceleration so a hard steer at speed saturates rather than
+    ///      producing unbounded centripetal force.
+    /// Deterministic; a full transient Pacejka tyre model is sealed (see .cpp).
     void compute_lateral(float v_ms, VehicleState& out) const noexcept;
+
+    /// Longitudinal distance (m) from the centre of mass to the front axle
+    /// (l_f) and rear axle (l_r), packed as {l_f, l_r}. Sums to wheelbase().
+    /// Static 50/50 split when axle positions are not separately authored.
+    [[nodiscard]] std::array<float, 2> axle_distances() const noexcept;
+
+    /// Effective axle cornering stiffness (N/rad), packed as {C_f, C_r}: the
+    /// sum of the per-wheel cornering_stiffness over the steerable (front) and
+    /// non-steerable (rear) wheels respectively. Always non-negative.
+    [[nodiscard]] std::array<float, 2> axle_cornering_stiffness() const noexcept;
 
     // ---- State -------------------------------------------------------------
 

@@ -3,11 +3,14 @@
 // Phase 562 — cd::audio::dsp_fx implementation TU.
 //
 // The biquad filters + DelayLine are header-only (coefficient maths + span
-// loops). This TU holds the Reverb FDN implementation that should not live in
-// the header: the Schroeder/Freeverb-style network — RT60-derived feedback
-// gains, mutually-prime comb/allpass delay tuning, and the per-sample comb +
+// loops). This TU holds the real scalar Reverb FDN implementation: the
+// Schroeder/Freeverb-style network — RT60-derived feedback gains
+// (g = 10^(-3·N/(RT60·Fs))), mutually-prime comb/allpass delay tuning, the
+// Freeverb LBCF comb (one-pole damped feedback), and the true Schroeder
 // allpass tick math. SIMD-accelerated filter banks remain a perf
-// promote-on-need (ADR-20260616-band3-world-scope §2.3).
+// promote-on-need (ADR-20260616-band3-world-scope §2.3); the scalar path here
+// is the correctness contract any future SIMD bank must reproduce bit-for-bit
+// in behaviour.
 // =============================================================================
 #include <cd/audio/dsp_fx/DspFx.hpp>
 
@@ -56,7 +59,11 @@ void Reverb::CombFilter::configure(std::size_t delay_samples, float g, float d) 
 float Reverb::CombFilter::tick(float x) noexcept
 {
     const float v = delay_line.read(delay_line.max_samples());
-    const float s = v * (1.0F - damping) + s_prev * damping;
+    // One-pole low-pass in the feedback path (Freeverb "filterstore").
+    // Flush subnormals: the recursive accumulator decays into subnormal range
+    // during a long silent tail, which stalls some FPUs. Flushing is audibly
+    // transparent (~150 dB below unity) and keeps the tail cheap.
+    const float s = flush_denormal(v * (1.0F - damping) + s_prev * damping);
     s_prev = s;
     const float v_new = x + s * feedback;
     delay_line.write(v_new);

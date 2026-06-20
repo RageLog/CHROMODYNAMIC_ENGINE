@@ -39,13 +39,141 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <exception>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <utility>
 
 namespace cd::render
 {
+
+// -----------------------------------------------------------------------------
+// Per-submit completion token (the "small clean testable hook" — primitive-
+// internal, renderer-agnostic). A caller that needs to know when ONE specific
+// submitted job has finished (rather than blocking on global idle via
+// wait_idle()) takes a CompletionToken from enqueue_tracked() and either polls
+// is_complete() or blocks on wait(). The token is a self-contained completion
+// signal: it does NOT bind to any Renderer fence ring, so the primitive stays
+// fence-agnostic and the layer boundary is preserved.
+//
+// Lifetime: the shared state outlives both the token and the in-flight job
+// (shared_ptr); the worker signals it via an RAII guard so completion fires on
+// normal return AND on exception unwind. A token may be discarded freely — the
+// worker still signals its (now orphaned) state with no UB.
+//
+// Exception isolation: if the tracked job throws, the worker CAPTURES the
+// exception into the token (std::future semantics) instead of letting it kill
+// the worker thread. The capturing caller can observe it via has_exception()
+// or re-throw it on the caller's thread via wait() / rethrow_if_exception().
+// -----------------------------------------------------------------------------
+class CompletionToken
+{
+public:
+    CompletionToken() = default;  // empty/invalid token (valid() == false).
+
+    CompletionToken(const CompletionToken&) = delete;
+    CompletionToken& operator=(const CompletionToken&) = delete;
+    CompletionToken(CompletionToken&&) noexcept = default;
+    CompletionToken& operator=(CompletionToken&&) noexcept = default;
+    ~CompletionToken() = default;
+
+    /// True if this token tracks a real submission (non-empty state).
+    [[nodiscard]] bool valid() const noexcept { return state_ != nullptr; }
+
+    /// True once the tracked job has finished on the worker. An empty token
+    /// (default-constructed) reports complete — there is nothing to wait for.
+    [[nodiscard]] bool is_complete() const
+    {
+        if (!state_)
+            return true;
+        std::scoped_lock guard { state_->mu };
+        return state_->done;
+    }
+
+    /// True if the tracked job finished by throwing. Only meaningful once
+    /// is_complete() — before completion it reports false.
+    [[nodiscard]] bool has_exception() const
+    {
+        if (!state_)
+            return false;
+        std::scoped_lock guard { state_->mu };
+        return state_->error != nullptr;
+    }
+
+    /// Block until the tracked job has finished. No-op on an empty token. Does
+    /// NOT re-throw a captured exception — use rethrow_if_exception() for that.
+    void wait() const
+    {
+        if (!state_)
+            return;
+        std::unique_lock guard { state_->mu };
+        state_->cv.wait(guard, [this] { return state_->done; });
+    }
+
+    /// Block until complete, then re-throw the captured job exception (if any)
+    /// on the calling thread — std::future-style. No-op on an empty token or a
+    /// job that returned normally.
+    void rethrow_if_exception() const
+    {
+        if (!state_)
+            return;
+        std::exception_ptr err;
+        {
+            std::unique_lock guard { state_->mu };
+            state_->cv.wait(guard, [this] { return state_->done; });
+            err = state_->error;
+        }
+        if (err)
+            std::rethrow_exception(err);
+    }
+
+private:
+    friend class AsyncSubmit;
+    friend class AsyncSubmitN;
+
+    struct State
+    {
+        std::mutex mu;
+        std::condition_variable cv;
+        bool done { false };
+        std::exception_ptr error {};
+    };
+
+    explicit CompletionToken(std::shared_ptr<State> state) noexcept
+        : state_ { std::move(state) }
+    {
+    }
+
+    /// Worker-side: capture the in-flight job's exception (if any) into the
+    /// state before it is marked complete. Called from the worker's catch
+    /// block. Safe on a null state (untracked job).
+    static void capture_exception(const std::shared_ptr<State>& state,
+                                  std::exception_ptr err)
+    {
+        if (!state)
+            return;
+        std::scoped_lock guard { state->mu };
+        state->error = err;  // std::exception_ptr assign is by const-ref; no move
+    }
+
+    /// Worker-side: mark the state complete and wake every waiter. Static so it
+    /// can be invoked from an RAII guard holding only the shared_ptr (the token
+    /// itself may already be gone). Safe on a null state (untracked job).
+    static void signal(const std::shared_ptr<State>& state)
+    {
+        if (!state)
+            return;
+        {
+            std::scoped_lock guard { state->mu };
+            state->done = true;
+        }
+        state->cv.notify_all();
+    }
+
+    std::shared_ptr<State> state_ {};
+};
 
 class AsyncSubmit
 {
@@ -62,7 +190,7 @@ public:
         // Drain any pending job, then signal stop and join.
         wait_idle();
         {
-            std::lock_guard guard { mu_ };
+            std::scoped_lock guard { mu_ };
             stop_ = true;
         }
         have_job_.notify_all();
@@ -84,10 +212,31 @@ public:
         // Wait for any currently-running job to finish.
         job_done_.wait(guard, [this] { return !busy_; });
         pending_ = std::move(job);
+        pending_token_ = nullptr;  // untracked submission.
         busy_ = true;
         ++enqueue_count_;
         guard.unlock();
         have_job_.notify_one();
+    }
+
+    /// Like enqueue(), but returns a CompletionToken that becomes complete
+    /// exactly when THIS job has finished on the worker (including the empty-
+    /// job no-op and exception-unwind paths). Lets a caller wait on one
+    /// specific submission rather than global wait_idle().
+    [[nodiscard]] CompletionToken enqueue_tracked(Job job)
+    {
+        auto state = std::make_shared<CompletionToken::State>();
+        {
+            std::unique_lock guard { mu_ };
+            job_done_.wait(guard, [this] { return !busy_; });
+            pending_ = std::move(job);
+            pending_token_ = state;
+            busy_ = true;
+            ++enqueue_count_;
+            guard.unlock();
+            have_job_.notify_one();
+        }
+        return CompletionToken { std::move(state) };
     }
 
     /// Block until the worker is idle (no pending or running job).
@@ -102,7 +251,7 @@ public:
     /// busy-waiting in tests but use `wait_idle()` in production.
     [[nodiscard]] bool is_busy() const
     {
-        std::lock_guard guard { mu_ };
+        std::scoped_lock guard { mu_ };
         return busy_;
     }
 
@@ -124,6 +273,7 @@ private:
         while (true)
         {
             Job job;
+            std::shared_ptr<CompletionToken::State> token;
             {
                 std::unique_lock guard { mu_ };
                 have_job_.wait(guard, [this] { return busy_ || stop_; });
@@ -131,11 +281,33 @@ private:
                     return;
                 job = std::move(pending_);
                 pending_ = nullptr;
+                token = std::move(pending_token_);
+                pending_token_ = nullptr;
             }
-            if (job)
-                job();  // run outside the lock — must not access shared state.
+            // Exception isolation: a throwing job must not terminate the worker
+            // thread (which would leave busy_ stuck → wait_idle() deadlock). The
+            // RAII FinalSignal marks the token complete on every exit path; if
+            // the job threw, the exception is CAPTURED into the token (not
+            // swallowed) so the tracking caller can observe / re-throw it.
+            struct FinalSignal
             {
-                std::lock_guard guard { mu_ };
+                std::shared_ptr<CompletionToken::State> st;
+                ~FinalSignal() { CompletionToken::signal(st); }
+            } final_signal { token };
+            if (job)
+            {
+                // run outside the lock — must not access shared state.
+                try
+                {
+                    job();
+                }
+                catch (...)
+                {
+                    CompletionToken::capture_exception(token, std::current_exception());
+                }
+            }
+            {
+                std::scoped_lock guard { mu_ };
                 busy_ = false;
                 completion_count_.fetch_add(1, std::memory_order_release);
             }
@@ -147,6 +319,7 @@ private:
     std::condition_variable have_job_;
     std::condition_variable job_done_;
     Job pending_ {};
+    std::shared_ptr<CompletionToken::State> pending_token_ {};
     bool busy_ { false };
     bool stop_ { false };
     std::uint64_t enqueue_count_ { 0 };

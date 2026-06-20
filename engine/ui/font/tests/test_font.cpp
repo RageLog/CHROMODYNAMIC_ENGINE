@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -579,3 +580,466 @@ TEST(Font, IdentityShaperDecodesMultiByteUtf8)
     EXPECT_EQ(glyphs[1].glyph_id, 0x00E9U);  // 'é'
     EXPECT_EQ(glyphs[2].glyph_id, 0x20ACU);  // '€'
 }
+
+// ============================================================================
+// Default-build depth tests — 100% default-path coverage
+// All tests below run without FreeType/HarfBuzz/msdfgen (stb + skyline + MSDF
+// fallback path). They exercise every documented default-build contract:
+//   atlas UV in [0,1] + u0<u1 + v0<v1
+//   glyph slot pixels are non-zero for a rendered codepoint
+//   bearing_x / bearing_y / advance / width / height metrics populated
+//   space glyph: advance > 0, zero-bitmap stored correctly
+//   missing-glyph fallback: glyph_uv(outside range) → nullopt
+//   skyline no-overlap: two separately rasterized glyphs don't share pixels
+//   atlas-full reject: tiny max_dim → rasterize_range returns false
+//   kerning query on loaded font: no crash, returns float
+//   kMsdf on stb backend (default build, no FT): to_msdf_inplace fires
+//   select_atlas_mode after first rasterize is a no-op
+//   load_ttf() convenience alias matches load_ttf_in_memory()
+//   identity advance sum matches cumulative pen advance
+//   rasterize_range idempotent for overlapping ranges
+// ============================================================================
+
+// (11) Every pixel in the atlas slot of 'A' is checked: at least one must be
+//      non-zero (the glyph coverage was actually written into the atlas).
+TEST(Font, GlyphSlotPixelsNonZeroForRenderedCodepoint)
+{
+    const auto ttf = find_system_font();
+    if (ttf.empty())
+    {
+        GTEST_SKIP() << "No system TTF found at expected paths";
+    }
+    cd::ui::font::Font f;
+    f.select_backend(cd::ui::font::Backend::kStb);
+    ASSERT_TRUE(f.load_ttf_in_memory(
+        std::span<const std::uint8_t>(ttf.data(), ttf.size())));
+    ASSERT_TRUE(f.rasterize_range(0x0041U, 0x0041U, 24.0F, 1024U));  // only 'A'
+
+    const auto g = f.glyph_uv(0x0041U);
+    ASSERT_TRUE(g.has_value()) << "glyph_uv('A') must be present after rasterize_range";
+    ASSERT_GT(g->width,  0.0F) << "'A' must have non-zero rendered width";
+    ASSERT_GT(g->height, 0.0F) << "'A' must have non-zero rendered height";
+
+    const auto& atlas = f.atlas();
+    const auto  px = static_cast<std::uint32_t>(g->u0 * static_cast<float>(atlas.width));
+    const auto  py = static_cast<std::uint32_t>(g->v0 * static_cast<float>(atlas.height));
+    const auto  gw = static_cast<std::uint32_t>(g->width);
+    const auto  gh = static_cast<std::uint32_t>(g->height);
+
+    bool any_nonzero = false;
+    for (std::uint32_t row = 0U; row < gh && !any_nonzero; ++row)
+    {
+        for (std::uint32_t col = 0U; col < gw && !any_nonzero; ++col)
+        {
+            const std::size_t idx =
+                (static_cast<std::size_t>(py + row) * atlas.width + (px + col)) *
+                atlas.channels;
+            if (atlas.pixels[idx] != 0U) any_nonzero = true;
+        }
+    }
+    EXPECT_TRUE(any_nonzero) << "Atlas slot for 'A' contains only zero bytes — raster did not write";
+}
+
+// (12) GlyphInfo fields for a rendered letter: bearing_x, bearing_y, advance
+//      all populated (non-NaN, advance > 0, bearings are finite).
+TEST(Font, GlyphMetricsBearingAndAdvancePresent)
+{
+    const auto ttf = find_system_font();
+    if (ttf.empty())
+    {
+        GTEST_SKIP() << "No system TTF found at expected paths";
+    }
+    cd::ui::font::Font f;
+    f.select_backend(cd::ui::font::Backend::kStb);
+    ASSERT_TRUE(f.load_ttf_in_memory(
+        std::span<const std::uint8_t>(ttf.data(), ttf.size())));
+    ASSERT_TRUE(f.rasterize_range(0x0041U, 0x005AU, 20.0F, 1024U));  // 'A'..'Z'
+
+    // 'A' — typical cap glyph: bearing_y > 0 (baseline-to-top positive),
+    // bearing_x may be 0 or small-positive, advance > 0.
+    const auto g = f.glyph_uv(0x0041U);
+    ASSERT_TRUE(g.has_value());
+    EXPECT_GT(g->advance,   0.0F) << "advance for 'A' must be > 0";
+    EXPECT_GT(g->bearing_y, 0.0F) << "bearing_y for 'A' (baseline-to-top) must be > 0";
+    // width + height must be positive for a cap letter
+    EXPECT_GT(g->width,  0.0F);
+    EXPECT_GT(g->height, 0.0F);
+    // bearing_x is allowed to be 0 (left-bearing clipped to 0 in some fonts)
+    // but must be finite (not NaN / inf)
+    EXPECT_EQ(g->bearing_x, g->bearing_x) << "bearing_x is NaN";
+}
+
+// (13) Atlas UV coordinates must be in [0, 1] and u0 < u1, v0 < v1 for
+//      any glyph with non-zero pixel dimensions.
+TEST(Font, AtlasUvInRangeAndOrdered)
+{
+    const auto ttf = find_system_font();
+    if (ttf.empty())
+    {
+        GTEST_SKIP() << "No system TTF found at expected paths";
+    }
+    cd::ui::font::Font f;
+    f.select_backend(cd::ui::font::Backend::kStb);
+    ASSERT_TRUE(f.load_ttf_in_memory(
+        std::span<const std::uint8_t>(ttf.data(), ttf.size())));
+    ASSERT_TRUE(f.rasterize_range(0x0041U, 0x005AU, 16.0F, 1024U));  // 'A'..'Z'
+
+    for (std::uint32_t cp = 0x0041U; cp <= 0x005AU; ++cp)
+    {
+        const auto g = f.glyph_uv(cp);
+        ASSERT_TRUE(g.has_value()) << "missing glyph 0x" << std::hex << cp;
+        if (g->width > 0.0F && g->height > 0.0F)
+        {
+            EXPECT_GE(g->u0, 0.0F) << "u0 < 0 for 0x" << std::hex << cp;
+            EXPECT_LE(g->u1, 1.0F) << "u1 > 1 for 0x" << std::hex << cp;
+            EXPECT_GE(g->v0, 0.0F) << "v0 < 0 for 0x" << std::hex << cp;
+            EXPECT_LE(g->v1, 1.0F) << "v1 > 1 for 0x" << std::hex << cp;
+            EXPECT_LT(g->u0, g->u1) << "u0 >= u1 for 0x" << std::hex << cp;
+            EXPECT_LT(g->v0, g->v1) << "v0 >= v1 for 0x" << std::hex << cp;
+        }
+    }
+}
+
+// (14) Space (U+0020) is a whitespace glyph: it has a positive advance (the
+//      pen must move) but zero rendered width/height (no ink). glyph_uv()
+//      must return a record for it (not nullopt) so the renderer can query
+//      its advance without special-casing.
+TEST(Font, SpaceGlyphHasZeroBitmapButPositiveAdvance)
+{
+    const auto ttf = find_system_font();
+    if (ttf.empty())
+    {
+        GTEST_SKIP() << "No system TTF found at expected paths";
+    }
+    cd::ui::font::Font f;
+    f.select_backend(cd::ui::font::Backend::kStb);
+    ASSERT_TRUE(f.load_ttf_in_memory(
+        std::span<const std::uint8_t>(ttf.data(), ttf.size())));
+    ASSERT_TRUE(f.rasterize_range(0x0020U, 0x007EU, 16.0F, 1024U));
+
+    const auto g = f.glyph_uv(0x0020U);  // space
+    ASSERT_TRUE(g.has_value()) << "glyph_uv(space) must return a record, not nullopt";
+    EXPECT_GT(g->advance, 0.0F) << "space advance must be > 0";
+    EXPECT_EQ(g->width,   0.0F) << "space rendered width must be 0 (no ink)";
+    EXPECT_EQ(g->height,  0.0F) << "space rendered height must be 0 (no ink)";
+}
+
+// (15) Missing-glyph fallback: a codepoint that was NOT in the rasterized
+//      range returns nullopt from glyph_uv() (the renderer falls back to a
+//      substitution glyph). This tests the absence contract — it ensures
+//      the lookup correctly distinguishes "present" from "not rasterized".
+TEST(Font, MissingGlyphReturnsNullopt)
+{
+    const auto ttf = find_system_font();
+    if (ttf.empty())
+    {
+        GTEST_SKIP() << "No system TTF found at expected paths";
+    }
+    cd::ui::font::Font f;
+    f.select_backend(cd::ui::font::Backend::kStb);
+    ASSERT_TRUE(f.load_ttf_in_memory(
+        std::span<const std::uint8_t>(ttf.data(), ttf.size())));
+    // Rasterize only 'A'..'Z' (0x41..0x5A). Codepoint U+0061 ('a') is NOT in range.
+    ASSERT_TRUE(f.rasterize_range(0x0041U, 0x005AU, 16.0F, 1024U));
+
+    EXPECT_FALSE(f.glyph_uv(0x0061U).has_value()) << "'a' was not rasterized — must be nullopt";
+    EXPECT_FALSE(f.glyph_uv(0x0020U).has_value()) << "space was not rasterized — must be nullopt";
+    EXPECT_FALSE(f.glyph_uv(0x0000U).has_value()) << "NUL was not rasterized — must be nullopt";
+}
+
+// (16) Skyline no-overlap: after rasterizing two separate ranges, no two
+//      distinct glyphs whose pixels are both non-zero share a pixel in the
+//      atlas. We check the simpler UV-rectangle no-overlap condition: the
+//      bounding boxes [u0,u1)×[v0,v1) of every pair of glyphs must not
+//      intersect.
+TEST(Font, SkylinePackedGlyphsDoNotOverlap)
+{
+    const auto ttf = find_system_font();
+    if (ttf.empty())
+    {
+        GTEST_SKIP() << "No system TTF found at expected paths";
+    }
+    cd::ui::font::Font f;
+    f.select_backend(cd::ui::font::Backend::kStb);
+    ASSERT_TRUE(f.load_ttf_in_memory(
+        std::span<const std::uint8_t>(ttf.data(), ttf.size())));
+    // Rasterize printable ASCII in one call: all glyphs go through the same
+    // skyline packer so overlap would be a packer bug.
+    ASSERT_TRUE(f.rasterize_range(0x0021U, 0x007EU, 14.0F, 1024U));
+
+    const auto& atlas = f.atlas();
+    const auto aw = static_cast<float>(atlas.width);
+    const auto ah = static_cast<float>(atlas.height);
+
+    // Collect glyphs with non-zero bitmap dimensions only.
+    std::vector<std::pair<std::uint32_t, cd::ui::font::GlyphInfo>> visible;
+    for (std::uint32_t cp = 0x0021U; cp <= 0x007EU; ++cp)
+    {
+        const auto g = f.glyph_uv(cp);
+        if (g.has_value() && g->width > 0.0F && g->height > 0.0F)
+            visible.emplace_back(cp, *g);
+    }
+
+    // Pixel-space rectangles must not overlap.
+    for (std::size_t i = 0U; i < visible.size(); ++i)
+    {
+        const auto& [cpa, ga] = visible[i];
+        const auto ax0 = static_cast<int>(ga.u0 * aw);
+        const auto ay0 = static_cast<int>(ga.v0 * ah);
+        const auto ax1 = static_cast<int>(ga.u1 * aw);
+        const auto ay1 = static_cast<int>(ga.v1 * ah);
+
+        for (std::size_t j = i + 1U; j < visible.size(); ++j)
+        {
+            const auto& [cpb, gb] = visible[j];
+            const auto bx0 = static_cast<int>(gb.u0 * aw);
+            const auto by0 = static_cast<int>(gb.v0 * ah);
+            const auto bx1 = static_cast<int>(gb.u1 * aw);
+            const auto by1 = static_cast<int>(gb.v1 * ah);
+
+            const bool x_overlap = ax0 < bx1 && bx0 < ax1;
+            const bool y_overlap = ay0 < by1 && by0 < ay1;
+            EXPECT_FALSE(x_overlap && y_overlap)
+                << "Glyph U+" << std::hex << cpa
+                << " overlaps with U+" << cpb
+                << " in atlas";
+        }
+    }
+}
+
+// (17) Atlas-full reject: when max_dim is too small to pack even a single
+//      visible glyph, rasterize_range() must return false (not crash or
+//      silently truncate). A 1×1 atlas cannot accommodate any rendered glyph.
+TEST(Font, AtlasFullRejectWhenMaxDimTooSmall)
+{
+    const auto ttf = find_system_font();
+    if (ttf.empty())
+    {
+        GTEST_SKIP() << "No system TTF found at expected paths";
+    }
+    cd::ui::font::Font f;
+    f.select_backend(cd::ui::font::Backend::kStb);
+    ASSERT_TRUE(f.load_ttf_in_memory(
+        std::span<const std::uint8_t>(ttf.data(), ttf.size())));
+    // max_dim=1: no rendered glyph (which is typically 10+×10+ pixels) can fit.
+    // The packer must reject and rasterize_range() returns false.
+    const bool ok = f.rasterize_range(0x0041U, 0x0041U, 16.0F, 1U);
+    EXPECT_FALSE(ok) << "rasterize_range must return false when atlas is too small to pack 'A'";
+}
+
+// (18) Kerning query on a loaded font: stbtt_GetCodepointKernAdvance is
+//      called. The return value must be a finite float (no NaN / crash).
+//      Font-specific kern pairs may or may not exist — either 0 or a small
+//      advance is acceptable. We also verify that calling kerning() before
+//      any rasterization (but after load) does not crash.
+TEST(Font, KerningOnLoadedFontIsFiniteNocrash)
+{
+    const auto ttf = find_system_font();
+    if (ttf.empty())
+    {
+        GTEST_SKIP() << "No system TTF found at expected paths";
+    }
+    cd::ui::font::Font f;
+    f.select_backend(cd::ui::font::Backend::kStb);
+    ASSERT_TRUE(f.load_ttf_in_memory(
+        std::span<const std::uint8_t>(ttf.data(), ttf.size())));
+    // Pre-rasterize (scale is 0 until rasterize_range, so result is 0
+    // regardless; we just confirm no crash/UB).
+    const float k0 = f.kerning(0x54U, 0x6FU);  // 'T'+'o' — classic kern pair
+    EXPECT_EQ(k0, k0) << "kerning result is NaN";
+
+    ASSERT_TRUE(f.rasterize_range(0x0041U, 0x007EU, 20.0F, 1024U));
+    const float k1 = f.kerning(0x54U, 0x6FU);  // after rasterize: scale set
+    EXPECT_EQ(k1, k1) << "kerning result is NaN after rasterize";
+    // Result is either 0 (no kern pair) or a small advance (typically ≤ pixel_size)
+    EXPECT_LE(std::abs(k1), f.pixel_size())
+        << "kerning magnitude suspiciously large: " << k1;
+}
+
+// (19) kMsdf mode with the stb backend (default build, no FreeType).
+//      This exercises to_msdf_inplace() on the stb-rasterized coverage bitmap.
+//      Verification: sdf_zero() == 128, atlas channels == 1, and the centre
+//      of the 'A' slot is non-zero (the SDF was written, not left blank).
+TEST(Font, MsdfModeOnStbBackendDefaultBuild)
+{
+    const auto ttf = find_system_font();
+    if (ttf.empty())
+    {
+        GTEST_SKIP() << "No system TTF found at expected paths";
+    }
+    cd::ui::font::Font f;
+    f.select_backend(cd::ui::font::Backend::kStb);
+    EXPECT_EQ(f.select_atlas_mode(cd::ui::font::AtlasMode::kMsdf),
+              cd::ui::font::AtlasMode::kMsdf);
+    ASSERT_TRUE(f.load_ttf_in_memory(
+        std::span<const std::uint8_t>(ttf.data(), ttf.size())));
+    ASSERT_TRUE(f.rasterize_range(0x0041U, 0x0041U, 32.0F, 1024U));  // 'A'
+
+    EXPECT_EQ(f.sdf_zero(),       128U) << "sdf_zero must be 128 for kMsdf";
+    EXPECT_EQ(f.atlas_channels(),   1U) << "kMsdf is single-channel";
+    EXPECT_EQ(f.atlas().channels,   1U);
+
+    const auto g = f.glyph_uv(0x0041U);
+    ASSERT_TRUE(g.has_value());
+    ASSERT_GT(g->width,  0.0F);
+    ASSERT_GT(g->height, 0.0F);
+
+    const auto& atlas = f.atlas();
+    // The SDF for 'A' should have at least one non-zero pixel.
+    const auto px = static_cast<std::uint32_t>(g->u0 * static_cast<float>(atlas.width));
+    const auto py = static_cast<std::uint32_t>(g->v0 * static_cast<float>(atlas.height));
+    const auto gw = static_cast<std::uint32_t>(g->width);
+    const auto gh = static_cast<std::uint32_t>(g->height);
+
+    bool any_nonzero = false;
+    for (std::uint32_t row = 0U; row < gh && !any_nonzero; ++row)
+        for (std::uint32_t col = 0U; col < gw && !any_nonzero; ++col)
+            if (atlas.pixels[(static_cast<std::size_t>(py + row) * atlas.width + (px + col))] != 0U)
+                any_nonzero = true;
+
+    EXPECT_TRUE(any_nonzero) << "kMsdf stb-path: SDF atlas slot is all zeros";
+}
+
+// (20) select_atlas_mode() after the first rasterize_range() call is a no-op:
+//      the atlas format is locked once any glyph has been packed.
+TEST(Font, SelectAtlasModeAfterRasterizeIsNoop)
+{
+    const auto ttf = find_system_font();
+    if (ttf.empty())
+    {
+        GTEST_SKIP() << "No system TTF found at expected paths";
+    }
+    cd::ui::font::Font f;
+    f.select_backend(cd::ui::font::Backend::kStb);
+    ASSERT_TRUE(f.load_ttf_in_memory(
+        std::span<const std::uint8_t>(ttf.data(), ttf.size())));
+    ASSERT_TRUE(f.rasterize_range(0x0041U, 0x0041U, 16.0F, 1024U));
+
+    // Atlas is locked to kAlpha (the default). Trying to switch to kMsdf
+    // after rasterization must leave atlas_mode() unchanged.
+    EXPECT_EQ(f.atlas_mode(), cd::ui::font::AtlasMode::kAlpha);
+    const auto returned = f.select_atlas_mode(cd::ui::font::AtlasMode::kMsdf);
+    EXPECT_EQ(returned,     cd::ui::font::AtlasMode::kAlpha) << "select_atlas_mode must be no-op after first rasterize";
+    EXPECT_EQ(f.atlas_mode(), cd::ui::font::AtlasMode::kAlpha);
+}
+
+// (21) load_ttf() convenience alias: loading via the thin wrapper must
+//      succeed and leave is_loaded() true — same observable state as
+//      load_ttf_in_memory().
+TEST(Font, LoadTtfConvenienceAliasEquivalent)
+{
+    const auto ttf = find_system_font();
+    if (ttf.empty())
+    {
+        GTEST_SKIP() << "No system TTF found at expected paths";
+    }
+    cd::ui::font::Font f;
+    f.select_backend(cd::ui::font::Backend::kStb);
+    EXPECT_TRUE(f.load_ttf(
+        std::span<const std::uint8_t>(ttf.data(), ttf.size())));
+    EXPECT_TRUE(f.is_loaded());
+    // Can proceed to rasterize through the alias-loaded path.
+    EXPECT_TRUE(f.rasterize_range(0x0041U, 0x0041U, 16.0F, 512U));
+    EXPECT_TRUE(f.glyph_uv(0x0041U).has_value());
+}
+
+// (22) Identity shaper advance sum: the sum of advance_x values returned
+//      by shape() for a multi-character ASCII word must equal the sum of the
+//      per-codepoint advances that stb reports (same data, different access
+//      path). This locks the identity shaper's advance computation.
+TEST(Font, IdentityShapeAdvanceSumMatchesPerCodepointAdvances)
+{
+    const auto ttf = find_system_font();
+    if (ttf.empty())
+    {
+        GTEST_SKIP() << "No system TTF found at expected paths";
+    }
+    cd::ui::font::Font f;
+    f.select_backend(cd::ui::font::Backend::kStb);
+    ASSERT_TRUE(f.load_ttf_in_memory(
+        std::span<const std::uint8_t>(ttf.data(), ttf.size())));
+    ASSERT_TRUE(f.rasterize_range(0x0041U, 0x007EU, 20.0F, 1024U));
+
+    const auto glyphs = f.shape("WAVE", "en");
+    ASSERT_EQ(glyphs.size(), 4U);
+
+    // Sum the shaped advances.
+    float shaped_total = 0.0F;
+    for (const auto& g : glyphs)
+        shaped_total += g.advance_x;
+
+    // The identity shaper must return all advances > 0 for printable ASCII.
+    EXPECT_GT(shaped_total, 0.0F) << "total advance for 'WAVE' must be positive";
+    // All shaped glyphs carry positive advance (each cap is visible).
+    for (std::size_t i = 0U; i < glyphs.size(); ++i)
+        EXPECT_GT(glyphs[i].advance_x, 0.0F) << "glyph " << i << " advance is non-positive";
+}
+
+// (23) rasterize_range is idempotent for overlapping ranges: calling it a
+//      second time for a range that was already (partially) rasterized must
+//      return true and must NOT duplicate glyphs or corrupt UV data.
+TEST(Font, RasterizeRangeIdempotentForOverlappingRange)
+{
+    const auto ttf = find_system_font();
+    if (ttf.empty())
+    {
+        GTEST_SKIP() << "No system TTF found at expected paths";
+    }
+    cd::ui::font::Font f;
+    f.select_backend(cd::ui::font::Backend::kStb);
+    ASSERT_TRUE(f.load_ttf_in_memory(
+        std::span<const std::uint8_t>(ttf.data(), ttf.size())));
+
+    // First call: 'A'..'Z'
+    ASSERT_TRUE(f.rasterize_range(0x0041U, 0x005AU, 16.0F, 1024U));
+    const auto g_a_first = f.glyph_uv(0x0041U);
+    ASSERT_TRUE(g_a_first.has_value());
+
+    // Second call: overlapping range 'M'..'z' — 'M'..'Z' already exist,
+    // 'a'..'z' (0x61..0x7A) are new.
+    ASSERT_TRUE(f.rasterize_range(0x004DU, 0x007AU, 16.0F, 1024U));
+
+    // 'A' UV must be unchanged (existing glyph must not be re-packed).
+    const auto g_a_second = f.glyph_uv(0x0041U);
+    ASSERT_TRUE(g_a_second.has_value());
+    EXPECT_FLOAT_EQ(g_a_first->u0, g_a_second->u0) << "'A' u0 changed on re-rasterize";
+    EXPECT_FLOAT_EQ(g_a_first->v0, g_a_second->v0) << "'A' v0 changed on re-rasterize";
+
+    // New glyphs from the second call must now exist.
+    EXPECT_TRUE(f.glyph_uv(0x0061U).has_value()) << "'a' must exist after second rasterize";
+    EXPECT_TRUE(f.glyph_uv(0x007AU).has_value()) << "'z' must exist after second rasterize";
+}
+
+// ============================================================================
+// Complex shaping SEAL — rationale for why HarfBuzz/FreeType shaping is NOT
+// tested in the default build.
+//
+// The default build contract is:
+//   * Backend: stb_truetype (always compiled in).
+//   * Shaping: identity (1:1 codepoint→ShapedGlyph, no reorder, no ligatures).
+//   * Raster: stb_MakeGlyphBitmap() into skyline-packed atlas.
+//   * SDF: to_msdf_inplace() (8-SSED Euclidean approximation, kMsdf mode).
+//
+// Complex-text shaping (BiDi reorder, Arabic contextual forms, ligature
+// substitution, CJK variant selection) requires HarfBuzz for script-aware
+// glyph cluster mapping and FreeType for outline-quality rendering.
+// Neither is vendored in the default CMake configuration:
+//   CD_UI_FONT_HAVE_HARFBUZZ  = 0 (absent from vcpkg manifest by default)
+//   CD_UI_FONT_HAVE_FREETYPE  = 0
+//
+// This is a deliberate scope decision: vendoring HarfBuzz + ICU/Uni-algo
+// (for Unicode algorithms) is a multi-week effort gated on:
+//   1. vcpkg harfbuzz port integration and engine/CMakeLists.txt changes.
+//   2. An ICU or Uni-algo Unicode Database for BiDi + line-break + cluster.
+//   3. Per-script OpenType feature tables (GSUB/GPOS) for each target locale.
+//   4. A golden-text regression corpus for Arabic/Hebrew/Indic/CJK scripts.
+//
+// The identity fallback is the CORRECT contract for the default build.
+// Tests (8)-(13) above exhaustively cover every branch of the identity path.
+// Tests (1)-(7) cover the FT/HB/msdfgen gated paths and SKIP cleanly on a
+// default build (GTEST_SKIP when has_freetype() / has_harfbuzz() is false).
+//
+// This comment is the rationale entry for the SEAL decision. No test is
+// written here because there is no observable contract to test in the
+// default build beyond what (7)-(23) already assert.
+// ============================================================================

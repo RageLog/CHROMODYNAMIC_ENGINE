@@ -11,8 +11,14 @@
 //   Reverb        — Schroeder/Freeverb-style FDN: 4 parallel low-pass feedback
 //                   comb filters (RT60-derived feedback, mutually-prime delays)
 //                   feeding 2 series allpass diffusers, with a wet/dry mix.
-//                   Scalar v1 (no SIMD; SIMD is a perf promote-on-need —
-//                   ADR-20260616-band3-world-scope §2.3).
+//                   The comb is the Freeverb LBCF (one-pole damping in the
+//                   feedback path); the allpass is the true Schroeder/Gardner
+//                   allpass H(z) = (-g + z^-N)/(1 - g·z^-N) (unity magnitude at
+//                   every frequency). Feedback gains are RT60-derived
+//                   (g = 10^(-3·N/(RT60·Fs))) and clamped < 1 for stability.
+//                   Scalar (no SIMD; SIMD is a perf promote-on-need —
+//                   ADR-20260616-band3-world-scope §2.3 — the scalar path is
+//                   the correctness contract a future SIMD bank must match).
 //
 // Filter coefficient formulae follow:
 //   [unverified] Robert Bristow-Johnson, "Cookbook formulae for audio EQ
@@ -32,12 +38,31 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
+#include <numbers>
 #include <span>
 #include <array>
 #include <vector>
 
 namespace cd::audio::dsp_fx
 {
+
+// =============================================================================
+// flush_denormal — clamp subnormal floats to zero.
+//
+// The comb filter's one-pole "filterstore" is a recursive accumulator: as an
+// impulse response decays past ~1e-38 the values become subnormal, which on
+// many x86/ARM cores triggers a microcode-assisted slow path (the classic
+// "reverb tail CPU spike"). Flushing subnormals to zero costs one compare and
+// is audibly transparent (the magnitudes involved are ~150 dB below unity).
+// Reference: Freeverb's `undenormalise` macro, generalised here.
+// =============================================================================
+[[nodiscard]] inline float flush_denormal(float x) noexcept
+{
+    // std::abs of a subnormal is still subnormal; FLT_MIN is the smallest
+    // *normal* float, so anything strictly below it (and non-zero) is flushed.
+    return (std::abs(x) < std::numeric_limits<float>::min()) ? 0.0F : x;
+}
 
 // =============================================================================
 // BiquadCoeffs — second-order IIR coefficient set (direct-form II transposed)
@@ -94,8 +119,8 @@ public:
         const float fc = (cutoff_hz   > 0.0F) ? cutoff_hz   : 1000.0F;
 
         // Cookbook LPF: w0 = 2*pi*f0/Fs, alpha = sin(w0)/(2*Q), Q=0.7071
-        constexpr float kTwoPi = 6.28318530717958647692F;
-        constexpr float kQ     = 0.70710678118654752440F;  // 1/sqrt(2)
+        constexpr float kTwoPi = 2.0F * std::numbers::pi_v<float>;
+        constexpr float kQ     = std::numbers::sqrt2_v<float> / 2.0F;  // 1/sqrt(2)
         const float w0    = kTwoPi * fc / fs;
         const float cosw0 = std::cos(w0);
         const float sinw0 = std::sin(w0);
@@ -154,8 +179,8 @@ public:
         const float fc = (cutoff_hz   > 0.0F) ? cutoff_hz   : 1000.0F;
 
         // Cookbook HPF: same alpha, different b0/b1/b2.
-        constexpr float kTwoPi = 6.28318530717958647692F;
-        constexpr float kQ     = 0.70710678118654752440F;
+        constexpr float kTwoPi = 2.0F * std::numbers::pi_v<float>;
+        constexpr float kQ     = std::numbers::sqrt2_v<float> / 2.0F;
         const float w0    = kTwoPi * fc / fs;
         const float cosw0 = std::cos(w0);
         const float sinw0 = std::sin(w0);
@@ -255,11 +280,13 @@ private:
 };
 
 // =============================================================================
-// Reverb — Schroeder comb-filter + allpass network
+// Reverb — Schroeder comb-filter + allpass network (real scalar FDN)
 //
-// Sprint-2 implementation replacing the Sprint-1 passthrough stub.
-// Consists of 4 parallel Low-Pass Feedback Comb Filters (LBCF) for decay and
-// 2 series Allpass filters for diffusion.
+// 4 parallel Low-Pass Feedback Comb Filters (LBCF, Freeverb topology) for the
+// decaying late field, fed into 2 series Schroeder allpass filters for echo
+// diffusion. Comb feedback gains are derived from a room-size-mapped RT60 so
+// that the impulse-response envelope decays by 60 dB over the target time;
+// delay lengths are mutually prime to avoid coincident echo flutter.
 // =============================================================================
 class Reverb
 {

@@ -6,10 +6,26 @@
 // Implementation notes
 // --------------------
 //
-// Bicycle model (longitudinal only, Sprint-1):
+// Bicycle model (longitudinal):
 //   The vehicle is treated as a 1-DOF point mass moving along a forward axis.
-//   Lateral dynamics (slip angle, Pacejka lateral force) are deferred to
-//   Sprint-2 when the Jolt rigid-body handle provides a contact normal.
+//
+// Lateral model (dynamic linear-tyre single-track) — see compute_lateral():
+//   The kinematic yaw rate v*tan(delta)/L is corrected by the steady-state
+//   linear-tyre single-track model. With axle cornering stiffness C_f, C_r and
+//   CoM-to-axle distances l_f, l_r the understeer gradient is
+//       K = m/L * (l_r/C_f - l_f/C_r)   [rad per m/s^2]
+//   and the achievable lateral acceleration is the kinematic demand clamped to
+//   the friction circle a_lat_max = mu * g. This is bounded, closed-form and
+//   deterministic — no per-frame ODE integration of the (v_y, r) state needed.
+//
+// SEAL — full Pacejka "Magic Formula" tyre model:
+//   A complete transient tyre model (per-wheel vertical load from suspension +
+//   longitudinal load transfer, combined longitudinal/lateral slip on the
+//   traction circle, relaxation-length first-order lag, camber thrust) needs
+//   per-wheel normal forces that only the Jolt ray-cast suspension contact can
+//   supply (the gated Sprint-3 path) and is a multi-week tyre-model effort. It
+//   is intentionally NOT implemented here; the linear-tyre + friction-circle
+//   model above is the tractable, fully-tested subset. See README §Sprint-3.
 //
 //   Forward force chain:
 //     F_drive = (engine_torque * gear_ratio * final_drive) / wheel_radius
@@ -42,6 +58,7 @@
 #include <cd/physics/IPhysicsWorld.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -53,8 +70,8 @@ namespace cd::physics::vehicle
 // ---- Vehicle ctor/dtor (defined here so ~unique_ptr<JoltAdapter> sees the
 //      complete type; JoltAdapter.hpp is included above). PIMPL pattern. ---
 
-Vehicle::Vehicle() noexcept {}
-Vehicle::~Vehicle() noexcept {}
+Vehicle::Vehicle() noexcept = default;
+Vehicle::~Vehicle() noexcept = default;
 
 // ---- Physical constants (Sprint-1 fixed) -----------------------------------
 
@@ -252,8 +269,10 @@ void Vehicle::tick(float dt) noexcept
     const float f_brake     = f_brake_mag * (velocity_ms_ >= 0.0F ? 1.0F : -1.0F);
 
     // ---- Net force and acceleration -----------------------------------------
+    // Guard against a degenerate (zero/negative) total mass: an unphysical
+    // config must not divide by zero or fling the body. Treat as inert.
     const float f_net = f_drive - f_resist - f_brake;
-    const float accel = f_net / total_mass;
+    const float accel = total_mass > 1e-6F ? f_net / total_mass : 0.0F;
 
     // Semi-implicit Euler: integrate velocity.
     velocity_ms_ += accel * dt;
@@ -276,9 +295,9 @@ void Vehicle::tick(float dt) noexcept
     compute_lateral(velocity_ms_, state_);
 
     // Sprint-1: all wheels grounded (no terrain query).
-    for (int i = 0; i < 4; ++i)
+    for (bool& grounded : state_.wheels_grounded)
     {
-        state_.wheels_grounded[i] = true;
+        grounded = true;
     }
 }
 
@@ -344,6 +363,41 @@ float Vehicle::wheelbase() const noexcept
     return std::max(length_based, 0.5F);
 }
 
+// ---- Vehicle::axle_distances -----------------------------------------------
+
+std::array<float, 2> Vehicle::axle_distances() const noexcept
+{
+    // CoM-to-axle longitudinal distances {l_f, l_r}. Axle longitudinal offsets
+    // are not separately authored, so assume a static 50/50 split about the
+    // CoM: l_f = l_r = wheelbase / 2. Sums to wheelbase() by construction.
+    const float half_wb = 0.5F * wheelbase();
+    return { half_wb, half_wb };
+}
+
+// ---- Vehicle::axle_cornering_stiffness -------------------------------------
+
+std::array<float, 2> Vehicle::axle_cornering_stiffness() const noexcept
+{
+    // Front axle = wheels that can steer (steering_angle_max > 0); rear axle =
+    // the rest. Sum the per-wheel cornering stiffness so a 2-tyre axle is twice
+    // a single tyre. Clamp each contribution to be non-negative.
+    float c_front = 0.0F;
+    float c_rear  = 0.0F;
+    for (const auto& w : cfg_.wheels)
+    {
+        const float c = std::max(w.cornering_stiffness, 0.0F);
+        if (w.steering_angle_max > 0.0F)
+        {
+            c_front += c;
+        }
+        else
+        {
+            c_rear += c;
+        }
+    }
+    return { c_front, c_rear };
+}
+
 // ---- Vehicle::compute_lateral ----------------------------------------------
 
 void Vehicle::compute_lateral(float v_ms, VehicleState& out) const noexcept
@@ -363,18 +417,90 @@ void Vehicle::compute_lateral(float v_ms, VehicleState& out) const noexcept
 
     const float delta = steer_ * max_steer;  // radians, signed
 
-    // Kinematic bicycle model (linear, small-slip):
+    // ---- (1) Kinematic bicycle (geometry) ---------------------------------
     //   yaw_rate    = v * tan(delta) / wheelbase
     //   lateral_acc = v * yaw_rate          (= v^2 * tan(delta) / wheelbase)
     // At standstill (v ~ 0) both are zero; reversing (v < 0) flips yaw sign,
     // which is the physically correct behaviour for a kinematic bicycle.
+    // wheelbase() is clamped strictly positive, so this never divides by zero.
     const float wheelbase_m = wheelbase();
     const float tan_delta   = std::tan(delta);
-    const float yaw_rate    = (v_ms * tan_delta) / wheelbase_m;
-    const float lat_acc     = v_ms * yaw_rate;
+    const float yaw_kin     = (v_ms * tan_delta) / wheelbase_m;
+    const float lat_kin     = v_ms * yaw_kin;
 
-    out.yaw_rate_rad_s     = yaw_rate;
-    out.lateral_accel_ms2  = lat_acc;
+    // ---- (2) Static understeer gradient -----------------------------------
+    // K = m/L * (l_r/C_f - l_f/C_r)  [rad per m/s^2]. Front/rear cornering
+    // stiffness or mass may be degenerate (zero) for an unphysical config;
+    // guard every divisor so K stays finite (treated as neutral there).
+    float total_mass = cfg_.chassis_mass_kg;
+    for (const auto& w : cfg_.wheels)
+    {
+        total_mass += w.mass;
+    }
+    const auto dist  = axle_distances();
+    const auto stiff = axle_cornering_stiffness();
+    const float l_f = dist[0];
+    const float l_r = dist[1];
+    const float c_f = stiff[0];
+    const float c_r = stiff[1];
+
+    float k_understeer = 0.0F;
+    if (total_mass > 1e-6F && c_f > 1e-3F && c_r > 1e-3F)
+    {
+        k_understeer = (total_mass / wheelbase_m) * (l_r / c_f - l_f / c_r);
+    }
+
+    // ---- (3) Friction-circle grip limit -----------------------------------
+    // a_lat_max = mu * g, using the minimum friction coefficient across wheels
+    // (the weakest tyre governs the slide onset). Always positive.
+    float mu = cfg_.wheels[0].friction_coefficient;
+    for (const auto& w : cfg_.wheels)
+    {
+        mu = std::min(mu, w.friction_coefficient);
+    }
+    mu = std::max(mu, 0.0F);
+    const float a_lat_max = mu * kGravity;
+
+    // ---- (4) Dynamic correction: clamp demand to the traction circle -------
+    // The kinematic demand is the lateral acceleration the geometry asks for.
+    // Real tyres can only deliver up to a_lat_max; beyond that the vehicle
+    // slides and the centripetal acceleration saturates. The achievable yaw
+    // rate is scaled by the same factor so a_lat = v * yaw stays consistent.
+    const float demand_abs = std::fabs(lat_kin);
+    const float grip_ratio = a_lat_max > 1e-6F ? demand_abs / a_lat_max : 0.0F;
+    const bool  limited     = grip_ratio >= 1.0F;
+
+    float lat_acc = lat_kin;
+    float yaw_rate = yaw_kin;
+    if (limited && demand_abs > 1e-6F)
+    {
+        const float scale = a_lat_max / demand_abs;  // < 1 at saturation
+        lat_acc  = lat_kin * scale;
+        yaw_rate = yaw_kin * scale;
+    }
+
+    // ---- (5) Steady-state slip angles (linear-tyre) -----------------------
+    // The lateral tyre force per axle balances the centripetal demand split by
+    // the static load: F_f = m * l_r/L * a_lat, F_r = m * l_f/L * a_lat. The
+    // slip angle is alpha = F / C. Sign follows the achieved lateral accel.
+    float alpha_f = 0.0F;
+    float alpha_r = 0.0F;
+    if (total_mass > 1e-6F && c_f > 1e-3F && c_r > 1e-3F)
+    {
+        const float f_front = total_mass * (l_r / wheelbase_m) * lat_acc;
+        const float f_rear  = total_mass * (l_f / wheelbase_m) * lat_acc;
+        alpha_f = f_front / c_f;
+        alpha_r = f_rear / c_r;
+    }
+
+    out.yaw_rate_rad_s        = yaw_rate;
+    out.lateral_accel_ms2     = lat_acc;
+    out.slip_angle_front_rad  = alpha_f;
+    out.slip_angle_rear_rad   = alpha_r;
+    out.understeer_gradient   = k_understeer;
+    out.max_lateral_accel_ms2 = a_lat_max;
+    out.lateral_grip_ratio    = grip_ratio;
+    out.is_traction_limited   = limited;
 }
 
 }  // namespace cd::physics::vehicle

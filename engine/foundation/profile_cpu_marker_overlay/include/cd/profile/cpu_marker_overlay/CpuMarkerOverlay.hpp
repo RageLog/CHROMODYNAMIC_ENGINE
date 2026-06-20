@@ -52,10 +52,10 @@ namespace cd::profile::cpu_marker_overlay
 /// A single recorded CPU marker event.
 struct MarkerSample
 {
-    std::string   name;         ///< Region label (copy; safe after Collector flush).
-    double        start_ms;     ///< Absolute steady_clock time in milliseconds.
-    double        duration_ms;  ///< Duration in milliseconds.
-    std::uint32_t thread_id;    ///< OS-level thread ID (truncated to 32 bits).
+    std::string   name;                 ///< Region label (copy; safe after Collector flush).
+    double        start_ms { 0.0 };      ///< Absolute steady_clock time in milliseconds.
+    double        duration_ms { 0.0 };   ///< Duration in milliseconds.
+    std::uint32_t thread_id { 0 };       ///< OS-level thread ID (truncated to 32 bits).
 };
 
 // ---------------------------------------------------------------------------
@@ -84,6 +84,20 @@ struct Rect
 };
 
 // ---------------------------------------------------------------------------
+// MarkerAggregate — per-name statistics over a sample slice
+// ---------------------------------------------------------------------------
+
+/// Aggregated statistics for one marker name across N samples.
+struct MarkerAggregate
+{
+    std::string   name;        ///< Marker name (copy).
+    std::size_t   count   { 0 };    ///< Number of completed samples with this name.
+    double        total_ms{ 0.0 };  ///< Sum of duration_ms across all samples.
+    double        avg_ms  { 0.0 };  ///< total_ms / count; 0 if count == 0.
+    double        max_ms  { 0.0 };  ///< Maximum duration_ms observed.
+};
+
+// ---------------------------------------------------------------------------
 // Collector — thread-safe ring-buffer of MarkerSamples
 // ---------------------------------------------------------------------------
 
@@ -109,6 +123,11 @@ public:
 
     /// Return all samples whose start_ms >= cutoff_ms. O(n) scan.
     [[nodiscard]] std::vector<MarkerSample> samples_since(double cutoff_ms) const;
+
+    /// Return per-name aggregated statistics for samples whose
+    /// start_ms >= cutoff_ms. Order of entries matches first-seen order of
+    /// distinct names in the ring. O(n) scan.
+    [[nodiscard]] std::vector<MarkerAggregate> aggregate(double cutoff_ms = 0.0) const;
 
     /// Total number of completed samples retained in the ring (capped by capacity).
     [[nodiscard]] std::size_t sample_count() const noexcept;
@@ -152,6 +171,22 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// BarRect — host-side geometry for one marker bar (no GPU dependency)
+// ---------------------------------------------------------------------------
+
+/// The axis-aligned rectangle and colour hash for one marker bar as
+/// computed by Overlay::compute_bars().  Useful for host-side layout
+/// tests and for custom renderers that do not use cd::ui::renderer.
+struct BarRect
+{
+    float         x           { 0.0F };  ///< Left edge in the supplied bounds space.
+    float         y           { 0.0F };  ///< Top edge in the supplied bounds space.
+    float         w           { 0.0F };  ///< Width in pixels (>= 1.0).
+    float         h           { 0.0F };  ///< Height in pixels (80 % of lane height).
+    std::uint32_t colour_hash { 0U   };  ///< djb2 hash of the marker name; drives colour.
+};
+
+// ---------------------------------------------------------------------------
 // Overlay — Tracy-style horizontal bar chart into a DrawBatcher
 // ---------------------------------------------------------------------------
 
@@ -175,6 +210,14 @@ public:
     void draw(cd::ui::renderer::DrawBatcher& batcher,
               std::span<const MarkerSample>  samples,
               Rect                           bounds) const;
+
+    /// Pure host-side layout: returns the BarRect for every visible sample
+    /// without touching a DrawBatcher. Useful for unit testing the geometry
+    /// math and for custom rendering back-ends.
+    /// Samples that fall entirely outside the window are absent from the result.
+    [[nodiscard]] std::vector<BarRect>
+    compute_bars(std::span<const MarkerSample> samples,
+                 Rect                          bounds) const;
 
     void set_window_ms(double window_ms) noexcept { window_ms_ = window_ms; }
     [[nodiscard]] double window_ms() const noexcept { return window_ms_; }

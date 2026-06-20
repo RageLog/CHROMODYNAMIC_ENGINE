@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstddef>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -235,7 +236,7 @@ TEST(AsyncSubmitN, CapacityOneSerializesAndWrapsRing)
         q.enqueue([&, i] {
             const int rank = order.fetch_add(1, std::memory_order_acq_rel);
             (void)rank;
-            std::lock_guard guard { seen_mu };
+            std::scoped_lock guard { seen_mu };
             seen.push_back(i);
         });
     }
@@ -269,4 +270,283 @@ TEST(AsyncSubmit, FreshSubmitterHasZeroCounters)
     EXPECT_FALSE(async.is_busy());
     async.wait_idle();  // no-op on an idle fresh submitter
     EXPECT_FALSE(async.is_busy());
+}
+
+// =============================================================================
+// DEPTH PASS — per-submit CompletionToken (renderer-agnostic completion signal,
+// the "small clean testable hook" from the brief) + worker exception isolation
+// + shutdown/drain edge & negative coverage. Anti-flakiness: every wait is on a
+// cv/atomic/token — NO sleep_for in the new paths.
+// =============================================================================
+
+// ----- CompletionToken: empty / default-constructed contract ----------------
+
+TEST(CompletionToken, DefaultConstructedReportsCompleteAndInvalid)
+{
+    // Arrange / Act
+    const cd::render::CompletionToken tok;
+    // Assert: an empty token has nothing to wait for → complete, no exception.
+    EXPECT_FALSE(tok.valid());
+    EXPECT_TRUE(tok.is_complete());
+    EXPECT_FALSE(tok.has_exception());
+    tok.wait();                 // must not block / crash
+    tok.rethrow_if_exception(); // must not throw
+    SUCCEED();
+}
+
+// ----- AsyncSubmit (single-slot) tracked submission -------------------------
+
+TEST(AsyncSubmit, EnqueueTrackedTokenCompletesAfterJob)
+{
+    // Arrange
+    cd::render::AsyncSubmit async;
+    std::atomic<bool> ran { false };
+
+    // Act
+    auto tok = async.enqueue_tracked([&] { ran.store(true, std::memory_order_release); });
+    EXPECT_TRUE(tok.valid());
+    tok.wait();  // block on THIS submission, not global idle
+
+    // Assert: token completion happens-after the job body + the worker's
+    // completion bookkeeping (signal fires last in the loop iteration).
+    EXPECT_TRUE(ran.load(std::memory_order_acquire));
+    EXPECT_TRUE(tok.is_complete());
+    EXPECT_FALSE(tok.has_exception());
+    EXPECT_EQ(async.completion_count(), 1u);
+}
+
+TEST(AsyncSubmit, EnqueueTrackedEmptyJobCompletesToken)
+{
+    // Negative-ish: a null job is a no-op but still completes its token.
+    cd::render::AsyncSubmit async;
+    auto tok = async.enqueue_tracked({});
+    tok.wait();
+    EXPECT_TRUE(tok.is_complete());
+    EXPECT_FALSE(tok.has_exception());
+    EXPECT_EQ(async.completion_count(), 1u);
+}
+
+TEST(AsyncSubmit, UntrackedEnqueueDoesNotAffectTrackedToken)
+{
+    // A tracked submit followed by plain enqueue: the first token tracks ONLY
+    // its own job. Single-slot semantics mean the second enqueue blocks until
+    // the first completes, so by the time both return the token is complete.
+    cd::render::AsyncSubmit async;
+    std::atomic<int> hits { 0 };
+    auto tok = async.enqueue_tracked([&] { hits.fetch_add(1, std::memory_order_acq_rel); });
+    async.enqueue([&] { hits.fetch_add(1, std::memory_order_acq_rel); });
+    async.wait_idle();
+    EXPECT_TRUE(tok.is_complete());
+    EXPECT_EQ(hits.load(), 2);
+    EXPECT_EQ(async.completion_count(), 2u);
+}
+
+TEST(AsyncSubmit, DiscardedTokenSignalsWithoutCrash)
+{
+    // Lifetime edge: drop the token immediately. The worker still signals the
+    // (now orphaned) shared state — shared_ptr keeps it alive until signalled.
+    cd::render::AsyncSubmit async;
+    std::atomic<bool> ran { false };
+    {
+        auto tok = async.enqueue_tracked([&] { ran.store(true, std::memory_order_release); });
+        (void)tok;  // immediately goes out of scope
+    }
+    async.wait_idle();
+    EXPECT_TRUE(ran.load(std::memory_order_acquire));
+    EXPECT_EQ(async.completion_count(), 1u);
+}
+
+TEST(AsyncSubmit, WorkerSurvivesThrowingJobAndCapturesException)
+{
+    // Worker exception isolation: a throwing job must NOT terminate the worker.
+    // The token captures the exception; a subsequent good job still runs.
+    cd::render::AsyncSubmit async;
+    auto bad = async.enqueue_tracked([] { throw std::runtime_error { "boom" }; });
+    bad.wait();
+    EXPECT_TRUE(bad.is_complete());
+    EXPECT_TRUE(bad.has_exception());
+    EXPECT_THROW(bad.rethrow_if_exception(), std::runtime_error);
+
+    // Worker is still alive: a fresh submission completes normally.
+    std::atomic<bool> ran { false };
+    auto good = async.enqueue_tracked([&] { ran.store(true, std::memory_order_release); });
+    good.wait();
+    EXPECT_TRUE(ran.load(std::memory_order_acquire));
+    EXPECT_FALSE(good.has_exception());
+    EXPECT_EQ(async.completion_count(), 2u);  // both counted as completed
+}
+
+TEST(AsyncSubmit, RethrowIsNoopWhenJobReturnsNormally)
+{
+    cd::render::AsyncSubmit async;
+    auto tok = async.enqueue_tracked([] { /* no throw */ });
+    tok.wait();
+    EXPECT_FALSE(tok.has_exception());
+    tok.rethrow_if_exception();  // must NOT throw
+    SUCCEED();
+}
+
+TEST(AsyncSubmit, DoubleWaitIdleIsIdempotent)
+{
+    // Draining twice with nothing pending must not block or corrupt state.
+    cd::render::AsyncSubmit async;
+    async.enqueue([] {});
+    async.wait_idle();
+    async.wait_idle();  // second drain — predicate already satisfied
+    EXPECT_FALSE(async.is_busy());
+    EXPECT_EQ(async.completion_count(), 1u);
+}
+
+// ----- AsyncSubmitN (N-slot ring) tracked submission + ordering -------------
+
+TEST(AsyncSubmitN, EnqueueTrackedTokensCompleteInFifoOrder)
+{
+    // Ring + tokens: N tracked submits; each token completes when its own job
+    // finishes. With capacity 3 and FIFO execution the tokens complete in
+    // submission order. We gate each token on the next via the worker's order.
+    cd::render::AsyncSubmitN q { 3 };
+    std::atomic<int> order { 0 };
+    std::vector<cd::render::CompletionToken> toks;
+    std::vector<int> ranks(8, -1);
+    std::mutex ranks_mu;
+    constexpr int kJobs = 8;
+    toks.reserve(kJobs);
+    for (int i = 0; i < kJobs; ++i)
+    {
+        toks.push_back(q.enqueue_tracked([&, i] {
+            const int r = order.fetch_add(1, std::memory_order_acq_rel);
+            std::scoped_lock guard { ranks_mu };
+            ranks[static_cast<std::size_t>(i)] = r;
+        }));
+    }
+    for (auto& t : toks)
+        t.wait();
+    // Every token completed; FIFO means job i ran at rank i.
+    for (int i = 0; i < kJobs; ++i)
+    {
+        EXPECT_TRUE(toks[static_cast<std::size_t>(i)].is_complete());
+        EXPECT_EQ(ranks[static_cast<std::size_t>(i)], i);
+    }
+    EXPECT_EQ(q.completion_count(), static_cast<std::uint64_t>(kJobs));
+}
+
+TEST(AsyncSubmitN, TrackedTokenBackpressureOnFullRing)
+{
+    // Backpressure: capacity 1 forces the producer to block on enqueue_tracked
+    // until the worker drains the prior slot. We synchronize the first job's
+    // release via an atomic flag set FROM the test thread — no sleep_for.
+    cd::render::AsyncSubmitN q { 1 };
+    std::atomic<bool> release { false };
+    std::atomic<bool> first_started { false };
+
+    auto t0 = q.enqueue_tracked([&] {
+        first_started.store(true, std::memory_order_release);
+        while (!release.load(std::memory_order_acquire))
+            std::this_thread::yield();  // spin, not sleep — released by the test
+    });
+    // Spin until the worker has actually picked up the first job so the ring
+    // is genuinely occupied (capacity 1).
+    while (!first_started.load(std::memory_order_acquire))
+        std::this_thread::yield();
+
+    // The second tracked enqueue must block until the first job is released.
+    std::atomic<bool> second_enqueued { false };
+    std::thread producer([&] {
+        auto t1 = q.enqueue_tracked([] {});
+        second_enqueued.store(true, std::memory_order_release);
+        t1.wait();
+    });
+    // First job still running → second enqueue blocked → no completion yet.
+    EXPECT_FALSE(second_enqueued.load(std::memory_order_acquire));
+    EXPECT_FALSE(t0.is_complete());
+
+    release.store(true, std::memory_order_release);
+    t0.wait();
+    producer.join();
+    q.wait_idle();
+    EXPECT_TRUE(second_enqueued.load(std::memory_order_acquire));
+    EXPECT_EQ(q.completion_count(), 2u);
+}
+
+TEST(AsyncSubmitN, WorkerSurvivesThrowingJobMidRing)
+{
+    // A throwing job in the middle of the ring is isolated: prior + later jobs
+    // complete, the worker survives, and the bad token captures the exception.
+    cd::render::AsyncSubmitN q { 3 };
+    std::atomic<int> good_runs { 0 };
+    auto a = q.enqueue_tracked([&] { good_runs.fetch_add(1, std::memory_order_acq_rel); });
+    auto bad = q.enqueue_tracked([] { throw std::runtime_error { "mid" }; });
+    auto c = q.enqueue_tracked([&] { good_runs.fetch_add(1, std::memory_order_acq_rel); });
+    a.wait();
+    bad.wait();
+    c.wait();
+    EXPECT_FALSE(a.has_exception());
+    EXPECT_TRUE(bad.has_exception());
+    EXPECT_THROW(bad.rethrow_if_exception(), std::runtime_error);
+    EXPECT_FALSE(c.has_exception());
+    EXPECT_EQ(good_runs.load(), 2);
+    EXPECT_EQ(q.completion_count(), 3u);  // all three counted, including the thrower
+}
+
+TEST(AsyncSubmitN, ShutdownWithPendingDrainsAllTrackedTokens)
+{
+    // Destructor must drain (not drop) every pending job. We capture the
+    // tokens' shared state so we can assert post-destruction completion.
+    std::vector<cd::render::CompletionToken> toks;
+    std::atomic<int> ran { 0 };
+    {
+        cd::render::AsyncSubmitN q { 4 };
+        toks.reserve(4);
+        for (int i = 0; i < 4; ++i)
+            toks.push_back(q.enqueue_tracked([&] { ran.fetch_add(1, std::memory_order_acq_rel); }));
+        // ~q here: wait_idle() drains all 4, then stop + join.
+    }
+    // After the queue is destroyed, every tracked job ran and every token is
+    // complete (the shared state outlives the queue).
+    EXPECT_EQ(ran.load(), 4);
+    for (auto& t : toks)
+    {
+        EXPECT_TRUE(t.is_complete());
+        EXPECT_FALSE(t.has_exception());
+    }
+}
+
+TEST(AsyncSubmitN, EmptyDrainOnFreshTrackedQueueReturnsImmediately)
+{
+    // wait_idle() on a fresh queue + a token taken from an empty (null) job.
+    cd::render::AsyncSubmitN q { 2 };
+    q.wait_idle();  // nothing enqueued — must not block
+    auto tok = q.enqueue_tracked({});
+    tok.wait();
+    EXPECT_TRUE(tok.is_complete());
+    EXPECT_FALSE(tok.has_exception());
+    EXPECT_EQ(q.completion_count(), 1u);
+}
+
+TEST(AsyncSubmitN, CapacityOneTrackedTokensWrapRingFifo)
+{
+    // capacity 1 + tracked tokens exercises the ring wrap on every job while
+    // also signalling each token. 12 jobs, strict FIFO, no lost slot.
+    cd::render::AsyncSubmitN q { 1 };
+    std::vector<cd::render::CompletionToken> toks;
+    std::atomic<int> order { 0 };
+    std::vector<int> seen;
+    std::mutex seen_mu;
+    constexpr int kJobs = 12;
+    toks.reserve(kJobs);
+    for (int i = 0; i < kJobs; ++i)
+    {
+        toks.push_back(q.enqueue_tracked([&, i] {
+            (void)order.fetch_add(1, std::memory_order_acq_rel);
+            std::scoped_lock guard { seen_mu };
+            seen.push_back(i);
+        }));
+    }
+    for (auto& t : toks)
+        t.wait();
+    ASSERT_EQ(seen.size(), static_cast<std::size_t>(kJobs));
+    for (int i = 0; i < kJobs; ++i)
+        EXPECT_EQ(seen[static_cast<std::size_t>(i)], i);
+    EXPECT_EQ(q.completion_count(), static_cast<std::uint64_t>(kJobs));
+    EXPECT_EQ(q.size(), 0u);
 }

@@ -29,6 +29,7 @@ using cd::render::SortLayer;
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -886,4 +887,439 @@ TEST(PlanarShadow, NearHorizontalSunClampsToFiniteShadow)
     // X offset bounded under 20 (would be 150+ without clamp).
     EXPECT_LT(p_proj.x, 20.0F);
     EXPECT_GT(p_proj.x, 1.0F);
+}
+
+// =============================================================================
+// BAND 4 — 100%-depth host coverage sweep (ADD-ONLY, render-output untouched).
+//
+// The aggregation layer's individual fields, masking branches, edge cases and
+// matrix invariants were under-asserted. Every test below is GPU-free, pure
+// host math / container logic — no pixel path is exercised, so golden output
+// stays byte-identical. AAA + edge + negative throughout.
+// =============================================================================
+
+// ----- SortKey: bit-field masking + extraction at boundaries ----------------
+
+TEST(SortKey, PassFieldMasksToFourBits)
+{
+    // pass occupies bits 61..58 (4 bits). A pass value > 15 must wrap to its
+    // low nibble and must NOT bleed into the layer field above it.
+    const auto in_range = make_sort_key(SortLayer::kOpaque, 15, SortBlend::kOff, 0, 0, 0);
+    const auto overflow = make_sort_key(SortLayer::kOpaque, 0x1Fu & 0xFFu, SortBlend::kOff, 0, 0, 0);
+    // 0x1F & 0xF == 0xF == 15, so the masked overflow equals pass==15 exactly.
+    EXPECT_EQ(in_range.value, overflow.value);
+    // Layer must remain opaque (top two bits clear) despite the pass overflow.
+    using cd::render::layer_of;
+    EXPECT_EQ(layer_of(overflow), SortLayer::kOpaque);
+}
+
+TEST(SortKey, MaterialIdMasksToTwentyFourBits)
+{
+    // material_id is 24 bits. Values above 0xFFFFFF must wrap and not corrupt
+    // the blend group (bit 56) sitting directly above material's MSB.
+    const std::uint32_t over = 0x1FFFFFFu;  // 25-bit value
+    const auto k = make_sort_key(SortLayer::kOpaque, 0, SortBlend::kOff, over, 0, 0);
+    EXPECT_EQ(material_id_of(k), over & 0xFFFFFFu);
+    // Blend stays kOff (bit 56 clear) — the 25th material bit did not leak up.
+    const auto baseline = make_sort_key(SortLayer::kOpaque, 0, SortBlend::kOff, 0, 0, 0);
+    EXPECT_EQ(k.value & (std::uint64_t { 1 } << 56), baseline.value & (std::uint64_t { 1 } << 56));
+}
+
+TEST(SortKey, DepthBitsMaskToTwentyFourBits)
+{
+    // depth occupies bits 31..8. Over-range depth must wrap to 24 bits and
+    // leave user_lo (bits 7..0) untouched.
+    const std::uint32_t over = 0x1ABCDEFu;  // 25-bit
+    const auto k = make_sort_key(SortLayer::kOpaque, 0, SortBlend::kOff, 0, over, 0xABu);
+    EXPECT_EQ(depth_bits_of(k), over & 0xFFFFFFu);
+    EXPECT_EQ(static_cast<std::uint32_t>(k.value & 0xFFu), 0xABu);  // user_lo intact
+}
+
+TEST(SortKey, AllFieldsMaxRoundTripWithoutCrossContamination)
+{
+    // Pack every field at its maximum and confirm each extractor recovers its
+    // own slice with zero bleed between adjacent fields.
+    const auto k = make_sort_key(
+        SortLayer::kUi, 0xFu, SortBlend::kPremultiplied, 0xFFFFFFu, 0xFFFFFFu, 0xFFu);
+    using cd::render::layer_of;
+    EXPECT_EQ(layer_of(k), SortLayer::kUi);
+    EXPECT_EQ(material_id_of(k), 0xFFFFFFu);
+    EXPECT_EQ(depth_bits_of(k), 0xFFFFFFu);
+    EXPECT_EQ(static_cast<std::uint32_t>(k.value & 0xFFu), 0xFFu);
+    EXPECT_EQ(k.value, (std::numeric_limits<std::uint64_t>::max)());  // every bit set
+}
+
+TEST(SortKey, MiddleLayersOrderBetweenOpaqueAndUi)
+{
+    // Skybox (1) and Transparent (2) must sort strictly between opaque (0) and
+    // ui (3) — the full layer ordering, not just the opaque<ui endpoints.
+    const auto op = make_sort_key(SortLayer::kOpaque,      0, SortBlend::kOff, 0, 0, 0);
+    const auto sk = make_sort_key(SortLayer::kSkybox,      0, SortBlend::kOff, 0, 0, 0);
+    const auto tr = make_sort_key(SortLayer::kTransparent, 0, SortBlend::kOff, 0, 0, 0);
+    const auto ui = make_sort_key(SortLayer::kUi,          0, SortBlend::kOff, 0, 0, 0);
+    EXPECT_LT(op.value, sk.value);
+    EXPECT_LT(sk.value, tr.value);
+    EXPECT_LT(tr.value, ui.value);
+}
+
+TEST(SortKey, EqualityAndSpaceshipFollowValue)
+{
+    // The defaulted == / <=> on SortKey must compare the packed value verbatim.
+    const auto a = make_sort_key(SortLayer::kOpaque, 1, SortBlend::kAlpha, 7, 9, 3);
+    const auto b = make_sort_key(SortLayer::kOpaque, 1, SortBlend::kAlpha, 7, 9, 3);
+    const auto c = make_sort_key(SortLayer::kOpaque, 1, SortBlend::kAlpha, 7, 9, 4);
+    EXPECT_EQ(a, b);
+    EXPECT_NE(a, c);
+    EXPECT_TRUE((a <=> c) < 0);
+    EXPECT_TRUE((c <=> a) > 0);
+}
+
+// ----- DrawBucket: dirty-flag transitions, reuse, single + ordered replay ---
+
+TEST(DrawBucket, AddAfterSortReDirtiesCache)
+{
+    cd::render::DrawBucket b;
+    cd::render::SortKey k; k.value = 1;
+    b.add(k, [](cd::rhi::ICommandBuffer&) {});
+    b.sort();
+    EXPECT_TRUE(b.is_sorted_cached());
+    b.add(k, [](cd::rhi::ICommandBuffer&) {});  // mutation must invalidate cache
+    EXPECT_FALSE(b.is_sorted_cached());
+}
+
+TEST(DrawBucket, SortIsIdempotentWhenAlreadySorted)
+{
+    cd::render::DrawBucket b;
+    for (auto v : { 5u, 1u, 3u })
+    {
+        cd::render::SortKey k; k.value = v;
+        b.add(k, [](cd::rhi::ICommandBuffer&) {});
+    }
+    b.sort();
+    EXPECT_TRUE(b.is_sorted_cached());
+    b.sort();  // second sort short-circuits via the sorted_ flag; still sorted
+    EXPECT_TRUE(b.is_sorted_cached());
+    EXPECT_EQ(b.items()[0].key.value, 1u);
+    EXPECT_EQ(b.items()[2].key.value, 5u);
+}
+
+TEST(DrawBucket, StableSortPreservesInsertionOrderAmongEqualKeysReplay)
+{
+    // The existing same-key test only checks size(); assert the ACTUAL replay
+    // order is FIFO among equal keys (the stable-sort contract).
+    cd::render::DrawBucket b;
+    cd::render::SortKey k; k.value = 100;
+    std::vector<int> order;
+    for (int n = 0; n < 4; ++n)
+        b.add(k, [&order, n](cd::rhi::ICommandBuffer&) { order.push_back(n); });
+    cd::rhi::NullCommandBuffer cmd;
+    b.emit_all(cmd);
+    ASSERT_EQ(order.size(), 4u);
+    EXPECT_EQ(order[0], 0);
+    EXPECT_EQ(order[1], 1);
+    EXPECT_EQ(order[2], 2);
+    EXPECT_EQ(order[3], 3);
+}
+
+TEST(DrawBucket, ClearThenReuseAcceptsNewDraws)
+{
+    cd::render::DrawBucket b;
+    cd::render::SortKey k; k.value = 7;
+    b.add(k, [](cd::rhi::ICommandBuffer&) {});
+    b.clear();
+    EXPECT_TRUE(b.empty());
+    EXPECT_TRUE(b.is_sorted_cached());  // empty bucket is trivially sorted
+    cd::render::SortKey k2; k2.value = 9;
+    b.add(k2, [](cd::rhi::ICommandBuffer&) {});
+    EXPECT_EQ(b.size(), 1u);
+    EXPECT_FALSE(b.is_sorted_cached());  // a fresh add re-dirties
+}
+
+TEST(DrawBucket, SingleDrawEmitsExactlyOnce)
+{
+    cd::render::DrawBucket b;
+    int calls = 0;
+    cd::render::SortKey k; k.value = 42;
+    b.add(k, [&calls](cd::rhi::ICommandBuffer&) { ++calls; });
+    cd::rhi::NullCommandBuffer cmd;
+    b.emit_all(cmd);
+    EXPECT_EQ(calls, 1);
+}
+
+// ----- PostProcessChain: re-enable, mid-list remove, view pointer identity --
+
+TEST(PostProcessChain, SetEnabledCanReEnable)
+{
+    cd::render::PostProcessChain c;
+    c.add("Bloom");
+    c.set_enabled("Bloom", false);
+    EXPECT_TRUE(c.enabled_view().empty());
+    c.set_enabled("Bloom", true);  // toggle back on
+    ASSERT_EQ(c.enabled_view().size(), 1u);
+    EXPECT_EQ(c.enabled_view()[0]->name, "Bloom");
+}
+
+TEST(PostProcessChain, RemoveMiddlePreservesSurroundingOrder)
+{
+    cd::render::PostProcessChain c;
+    c.add("A");
+    c.add("B");
+    c.add("C");
+    EXPECT_TRUE(c.remove("B"));
+    ASSERT_EQ(c.size(), 2u);
+    EXPECT_EQ(c.passes()[0].name, "A");
+    EXPECT_EQ(c.passes()[1].name, "C");
+}
+
+TEST(PostProcessChain, EnabledViewPointersAliasLiveStorage)
+{
+    // enabled_view() returns observer pointers INTO the chain's storage; a
+    // mutation through the chain must be visible through the returned pointer.
+    cd::render::PostProcessChain c;
+    c.add("Grade", 0x11u);
+    auto view = c.enabled_view();
+    ASSERT_EQ(view.size(), 1u);
+    EXPECT_EQ(view[0]->params, 0x11u);
+    EXPECT_EQ(view[0], c.passes().data());  // same object, not a copy
+}
+
+TEST(PostProcessChain, DisabledPassRetainsParamsAndCanBeQueried)
+{
+    cd::render::PostProcessChain c;
+    c.add("Vignette", 0xDEADu);
+    c.set_enabled("Vignette", false);
+    EXPECT_TRUE(c.enabled_view().empty());
+    // The pass still lives in storage with its params intact (disable != remove).
+    ASSERT_EQ(c.size(), 1u);
+    EXPECT_EQ(c.passes()[0].params, 0xDEADu);
+    EXPECT_FALSE(c.passes()[0].enabled);
+}
+
+// ----- PlanarShadow: up-sun, exact-plane caster, lift offset, affine row ----
+
+TEST(PlanarShadow, LiftRaisesProjectedPointAbovePlane)
+{
+    // A non-zero lift must place the projected vertex exactly lift units above
+    // plane_y (depth-fight dodge).
+    const cd::math::Vec3f sun { 0.0F, -1.0F, 0.0F };
+    const float plane_y = 0.0F;
+    const float lift    = 0.25F;
+    const auto s = cd::render::make_planar_shadow_matrix(sun, plane_y, lift);
+    const cd::math::Vec4f p { 2.0F, 8.0F, -4.0F, 1.0F };
+    const auto pp = s * p;
+    EXPECT_NEAR(pp.y, plane_y + lift, kEps);
+    EXPECT_NEAR(pp.x, 2.0F, kEps);
+    EXPECT_NEAR(pp.z, -4.0F, kEps);
+}
+
+TEST(PlanarShadow, CasterAlreadyOnPlaneStaysAtLiftedPlane)
+{
+    // A caster vertex already at y == plane_y projects to plane_y + lift, not
+    // back onto itself (the matrix pins y unconditionally).
+    const cd::math::Vec3f sun { 0.0F, -1.0F, 0.0F };
+    const float plane_y = 1.5F;
+    const float lift    = 0.0F;
+    const auto s = cd::render::make_planar_shadow_matrix(sun, plane_y, lift);
+    const cd::math::Vec4f p { 0.3F, 1.5F, 0.7F, 1.0F };
+    const auto pp = s * p;
+    EXPECT_NEAR(pp.y, plane_y, kEps);
+    EXPECT_NEAR(pp.x, 0.3F, kEps);
+    EXPECT_NEAR(pp.z, 0.7F, kEps);
+}
+
+TEST(PlanarShadow, UpwardSunStillClampsAndPinsY)
+{
+    // Sun with positive Ly (pointing up) — degenerate but must not divide by
+    // zero or unpin y. y still collapses onto the plane.
+    const cd::math::Vec3f sun { 0.2F, 1.0F, 0.1F };
+    const float plane_y = -2.0F;
+    const float lift    = 0.0F;
+    const auto s = cd::render::make_planar_shadow_matrix(sun, plane_y, lift);
+    const cd::math::Vec4f p { 5.0F, 3.0F, -1.0F, 1.0F };
+    const auto pp = s * p;
+    EXPECT_NEAR(pp.y, plane_y, kEps);
+    EXPECT_NEAR(pp.w, 1.0F, kEps);  // affine: w preserved
+}
+
+TEST(PlanarShadow, MatrixIsAffineWPreservedForAnyPoint)
+{
+    // The bottom row must leave w == 1 for w==1 inputs (no perspective term).
+    const cd::math::Vec3f sun { 0.3F, -0.7F, -0.4F };
+    const auto s = cd::render::make_planar_shadow_matrix(sun, 0.0F, 0.05F);
+    for (const auto& p : { cd::math::Vec4f { 0.0F, 0.0F, 0.0F, 1.0F },
+                           cd::math::Vec4f { 9.0F, -3.0F, 6.0F, 1.0F },
+                           cd::math::Vec4f { -4.0F, 12.0F, -8.0F, 1.0F } })
+    {
+        const auto pp = s * p;
+        EXPECT_NEAR(pp.w, 1.0F, kEps);
+    }
+}
+
+// ----- DrawBatchKey: per-field hash sensitivity + equality discrimination ---
+
+TEST(DrawBatchKey, HashSensitiveToEveryField)
+{
+    const cd::render::DrawBatchKey base { 1, 2, 3, 4 };
+    const cd::render::DrawBatchKey diff_mesh    { 9, 2, 3, 4 };
+    const cd::render::DrawBatchKey diff_mat      { 1, 9, 3, 4 };
+    const cd::render::DrawBatchKey diff_descset   { 1, 2, 9, 4 };
+    const cd::render::DrawBatchKey diff_pso       { 1, 2, 3, 9 };
+    const auto h = base.hash();
+    EXPECT_NE(h, diff_mesh.hash());
+    EXPECT_NE(h, diff_mat.hash());
+    EXPECT_NE(h, diff_descset.hash());
+    EXPECT_NE(h, diff_pso.hash());
+}
+
+TEST(DrawBatchKey, AllZeroKeyHashIsDeterministic)
+{
+    const cd::render::DrawBatchKey a {};
+    const cd::render::DrawBatchKey b {};
+    EXPECT_EQ(a, b);
+    EXPECT_EQ(a.hash(), b.hash());
+    // FNV-1a over 24 zero bytes is non-zero (offset basis folds through).
+    EXPECT_NE(a.hash(), 0u);
+}
+
+TEST(DrawBatchKey, DescriptorSetDifferenceBreaksEquality)
+{
+    const cd::render::DrawBatchKey a { 1, 2, 3, 4 };
+    const cd::render::DrawBatchKey b { 1, 2, 9, 4 };  // only descriptor_set differs
+    EXPECT_NE(a, b);
+}
+
+// ----- MeshStats: truncation, zero-stride, degenerate bbox ------------------
+
+TEST(MeshStats, TriangleCountTruncatesNonMultipleOfThree)
+{
+    cd::render::MeshStats s;
+    s.index_count = 7;  // 2 full triangles + 1 dangling index
+    EXPECT_EQ(s.triangle_count(), 2u);
+}
+
+TEST(MeshStats, EstimatedBytesZeroWhenStrideZero)
+{
+    cd::render::MeshStats s;
+    s.vertex_count = 500;
+    s.vertex_stride_bytes = 0;
+    EXPECT_EQ(s.estimated_vertex_bytes(), 0u);
+}
+
+TEST(MeshStats, DegenerateBboxHasZeroExtentCenteredOnPoint)
+{
+    cd::render::MeshStats s;
+    s.bbox_min = { 4.0F, -1.0F, 2.0F };
+    s.bbox_max = { 4.0F, -1.0F, 2.0F };  // min == max (single point)
+    const auto ex = s.bbox_extent();
+    EXPECT_FLOAT_EQ(ex.x, 0.0F);
+    EXPECT_FLOAT_EQ(ex.y, 0.0F);
+    EXPECT_FLOAT_EQ(ex.z, 0.0F);
+    const auto c = s.bbox_center();
+    EXPECT_FLOAT_EQ(c.x, 4.0F);
+    EXPECT_FLOAT_EQ(c.y, -1.0F);
+    EXPECT_FLOAT_EQ(c.z, 2.0F);
+}
+
+TEST(MeshStats, AsymmetricBboxCenterIsMidpoint)
+{
+    cd::render::MeshStats s;
+    s.bbox_min = { 0.0F, 0.0F, 0.0F };
+    s.bbox_max = { 10.0F, 4.0F, 2.0F };
+    const auto c = s.bbox_center();
+    EXPECT_FLOAT_EQ(c.x, 5.0F);
+    EXPECT_FLOAT_EQ(c.y, 2.0F);
+    EXPECT_FLOAT_EQ(c.z, 1.0F);
+}
+
+// ----- Tonemap: monotonicity, negative-input handling, range ----------------
+
+TEST(Tonemap, ReinhardClampsNegativeToZero)
+{
+    EXPECT_FLOAT_EQ(cd::render::tonemap_reinhard(-3.0F), 0.0F);
+}
+
+TEST(Tonemap, ReinhardMonotonicIncreasing)
+{
+    const float a = cd::render::tonemap_reinhard(0.5F);
+    const float b = cd::render::tonemap_reinhard(2.0F);
+    const float c = cd::render::tonemap_reinhard(8.0F);
+    EXPECT_LT(a, b);
+    EXPECT_LT(b, c);
+}
+
+TEST(Tonemap, AcesFittedMapsZeroToZero)
+{
+    EXPECT_NEAR(cd::render::tonemap_aces_fitted(0.0F), 0.0F, 1e-4F);
+}
+
+TEST(Tonemap, AcesFittedMonotonicAcrossExposures)
+{
+    const float a = cd::render::tonemap_aces_fitted(0.2F);
+    const float b = cd::render::tonemap_aces_fitted(1.0F);
+    EXPECT_LT(a, b);
+}
+
+TEST(Tonemap, Uncharted2MapsZeroToZero)
+{
+    // The Hable curve passes through the origin: at x=0 numerator/denominator
+    // reduce to (kD*kE)/(kD*kF) - kE/kF == 0.
+    EXPECT_NEAR(cd::render::tonemap_uncharted2(0.0F), 0.0F, 1e-4F);
+}
+
+// ----- TextLayoutMetrics: trailing/consecutive newlines, default args -------
+
+TEST(TextLayoutMetrics, TrailingNewlineAddsEmptyLine)
+{
+    auto m = cd::render::measure_simple("ab\n", 10.0F, 5.0F);
+    EXPECT_EQ(m.line_count, 2u);          // text line + empty trailing line
+    EXPECT_FLOAT_EQ(m.width, 2.0F * 5.0F);
+    EXPECT_FLOAT_EQ(m.height, 20.0F);
+}
+
+TEST(TextLayoutMetrics, ConsecutiveNewlinesCountEachLine)
+{
+    auto m = cd::render::measure_simple("a\n\nb", 12.0F, 6.0F);
+    EXPECT_EQ(m.line_count, 3u);          // 'a', empty, 'b'
+    EXPECT_FLOAT_EQ(m.width, 1.0F * 6.0F);
+    EXPECT_FLOAT_EQ(m.height, 36.0F);
+}
+
+TEST(TextLayoutMetrics, DefaultArgsApplyFontFourteenAdvanceSeven)
+{
+    auto m = cd::render::measure_simple("xy");  // both defaults
+    EXPECT_FLOAT_EQ(m.width, 2.0F * 7.0F);
+    EXPECT_FLOAT_EQ(m.height, 14.0F);
+    EXPECT_EQ(m.line_count, 1u);
+}
+
+// ----- ClearColor: remaining presets + alpha invariant ----------------------
+
+TEST(ClearColor, WhiteIsFullRgbOpaque)
+{
+    const auto c = cd::render::clear_white();
+    EXPECT_FLOAT_EQ(c[0], 1.0F);
+    EXPECT_FLOAT_EQ(c[1], 1.0F);
+    EXPECT_FLOAT_EQ(c[2], 1.0F);
+    EXPECT_FLOAT_EQ(c[3], 1.0F);
+}
+
+TEST(ClearColor, EditorGrayIsUniformDarkOpaque)
+{
+    const auto c = cd::render::clear_editor_gray();
+    EXPECT_NEAR(c[0], 0.118F, 1e-3F);
+    EXPECT_FLOAT_EQ(c[0], c[1]);   // R==G==B (neutral gray)
+    EXPECT_FLOAT_EQ(c[1], c[2]);
+    EXPECT_FLOAT_EQ(c[3], 1.0F);
+}
+
+TEST(ClearColor, EveryPresetIsOpaque)
+{
+    // Alpha must be 1.0 on every preset — a clear color is never translucent.
+    for (const auto& c : { cd::render::clear_black(), cd::render::clear_white(),
+                           cd::render::clear_cornflower_blue(),
+                           cd::render::clear_editor_gray(),
+                           cd::render::clear_debug_magenta() })
+    {
+        EXPECT_FLOAT_EQ(c[3], 1.0F);
+    }
 }

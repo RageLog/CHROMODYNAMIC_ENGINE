@@ -87,12 +87,17 @@ enum class Role : std::uint8_t
 // `focused` is the model bit owned by the a11y tree -- the widget
 // itself does not carry a focus flag because focus is a tree-global
 // invariant (exactly one focused widget at any time).
+// `disabled` mirrors WAI-ARIA aria-disabled: the widget is present in the
+// a11y tree and can be narrated, but keyboard navigation (focus_next /
+// focus_prev) skips it. The widget cannot be focused via tab traversal
+// while disabled, matching the ARIA pattern for unavailable controls.
 struct A11yMeta
 {
-    Role        role    { Role::kUnknown };
-    std::string label   {};
-    std::string hint    {};
-    bool        focused { false };
+    Role        role     { Role::kUnknown };
+    std::string label    {};
+    std::string hint     {};
+    bool        focused  { false };
+    bool        disabled { false };
 
     friend bool operator==(const A11yMeta&, const A11yMeta&) = default;
 };
@@ -138,8 +143,23 @@ struct Rgba
 // overwhelmingly small text.
 enum class ThemeVariant : std::uint8_t
 {
-    kStandardTheme    = 0,
+    kStandardTheme        = 0,
     k_high_contrast_theme = 1,
+};
+
+// ---- Contrast context -------------------------------------------------------
+//
+// WCAG 2.1 defines different ratio thresholds depending on the use-site:
+//   kBodyText   -- small text / UI labels      AA >= 4.5 / AAA >= 7.0
+//   kLargeText  -- >= 18pt or >= 14pt bold     AA >= 3.0 / AAA >= 4.5
+//   kNonText    -- icons, borders, focus rings  AA >= 3.0
+// This enum selects the active threshold independently of the theme variant.
+// The default for most editor / HUD elements is kBodyText.
+enum class ContrastContext : std::uint8_t
+{
+    kBodyText  = 0,
+    kLargeText = 1,
+    kNonText   = 2,
 };
 
 [[nodiscard]] constexpr float min_required_contrast(ThemeVariant v) noexcept
@@ -147,9 +167,31 @@ enum class ThemeVariant : std::uint8_t
     return (v == ThemeVariant::k_high_contrast_theme) ? 7.0F : 4.5F;
 }
 
+// Context-aware overload: selects the threshold from both the theme variant
+// and the use-site context.  For kBodyText the existing per-variant cut-offs
+// apply. For kLargeText / kNonText the baseline AA cut-off is 3:1 (and AAA
+// is 4.5:1 for large text, still 3:1 for non-text in high-contrast mode as
+// the extra half-point of strictness is already covered by the visual size).
+[[nodiscard]] constexpr float min_required_contrast(ThemeVariant v,
+                                                    ContrastContext ctx) noexcept
+{
+    if (ctx == ContrastContext::kBodyText)
+    {
+        return min_required_contrast(v);
+    }
+    // Large text / non-text: 3:1 for standard, 4.5:1 for high-contrast.
+    return (v == ThemeVariant::k_high_contrast_theme) ? 4.5F : 3.0F;
+}
+
 [[nodiscard]] constexpr bool passes_contrast(Rgba fg, Rgba bg, ThemeVariant v) noexcept
 {
     return compute_contrast_ratio(fg, bg) >= min_required_contrast(v);
+}
+
+[[nodiscard]] constexpr bool passes_contrast(Rgba fg, Rgba bg, ThemeVariant v,
+                                             ContrastContext ctx) noexcept
+{
+    return compute_contrast_ratio(fg, bg) >= min_required_contrast(v, ctx);
 }
 
 // ---- Focus indicator -------------------------------------------------------
@@ -192,6 +234,13 @@ public:
     /// passed to focus_indicator_rect() at query time.
     void register_widget(WidgetId widget_id, A11yMeta meta);
 
+    /// Partial update: merge `patch` fields into the existing meta for
+    /// `widget_id`. Returns true if the id was found and updated, false if
+    /// `widget_id` is not registered (no-op, does not insert).  Avoids a
+    /// full round-trip through the caller when only the label or disabled
+    /// flag changes mid-frame.
+    bool update_meta(WidgetId widget_id, A11yMeta patch);
+
     /// Remove a widget from the tree. No-op if `widget_id` is not known.
     void unregister_widget(WidgetId widget_id);
 
@@ -229,12 +278,15 @@ public:
     }
 
     /// Advance focus to the next entry in tab_order(). Wraps around at
-    /// the end. No-op if tab_order() is empty. If no widget is currently
-    /// focused, focuses the first entry.
+    /// the end. No-op if tab_order() is empty or all entries are disabled.
+    /// If no widget is currently focused, focuses the first non-disabled
+    /// entry. Disabled widgets (A11yMeta::disabled == true) are skipped;
+    /// they remain in the tab order so they can be narrated but are not
+    /// reachable via keyboard Tab.
     void focus_next();
 
     /// Walk to the previous entry in tab_order() (Shift+Tab semantics).
-    /// Wraps around at the start.
+    /// Wraps around at the start. Disabled widgets are skipped.
     void focus_prev();
 
     /// Screen-reader narration accessor: returns the hint string of the
@@ -242,10 +294,45 @@ public:
     /// / UIA / AT-SPI read from here.
     [[nodiscard]] std::string_view screen_reader_hint(WidgetId widget_id) const;
 
+    // ---- Nested-node adjacency --------------------------------------------
+    //
+    // The parallel tree tracks parent→children relationships so AT bridges
+    // can expose the ARIA tree structure (aria-owns / NSAccessibilityChildren
+    // / UIA NavigateDirection). The adjacency is stored separately from
+    // A11yMeta so the tree can be built incrementally: a parent may be
+    // registered before its children and vice-versa.
+    //
+    // Constraints:
+    //  * A widget may have at most one parent.  set_parent(child, parent)
+    //    replaces any previous parent assignment for `child`.
+    //  * Setting parent to the child itself is a no-op (self-loop guard).
+    //  * Unregistering a widget also removes it as a child of its parent
+    //    and clears the parent pointers of all its children.
+
+    /// Assign `parent_id` as the parent of `child_id`. No-op if
+    /// child_id == parent_id (self-loop guard). `child_id` and `parent_id`
+    /// need not be registered yet (pre-bake contract mirrors set_tab_order).
+    void set_parent(WidgetId child_id, WidgetId parent_id);
+
+    /// Remove any parent assignment for `child_id`. No-op if child has no
+    /// parent.
+    void clear_parent(WidgetId child_id);
+
+    /// Returns the parent of `child_id`, or nullopt if none.
+    [[nodiscard]] std::optional<WidgetId> parent_of(WidgetId child_id) const;
+
+    /// Returns the ordered list of direct children of `parent_id`.
+    /// Empty span if the widget has no children or is not registered.
+    [[nodiscard]] std::vector<WidgetId> children_of(WidgetId parent_id) const;
+
 private:
-    std::unordered_map<WidgetId, A11yMeta> metas_ {};
-    std::vector<WidgetId>                  tab_order_ {};
-    std::optional<WidgetId>                focused_ {};
+    std::unordered_map<WidgetId, A11yMeta>           metas_     {};
+    std::vector<WidgetId>                             tab_order_ {};
+    std::optional<WidgetId>                           focused_   {};
+    // parent adjacency: child_id -> parent_id
+    std::unordered_map<WidgetId, WidgetId>            parents_   {};
+    // child adjacency: parent_id -> ordered child ids (insertion order)
+    std::unordered_map<WidgetId, std::vector<WidgetId>> children_ {};
 };
 
 }  // namespace cd::ui::a11y

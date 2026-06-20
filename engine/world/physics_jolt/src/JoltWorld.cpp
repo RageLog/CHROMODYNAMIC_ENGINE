@@ -447,6 +447,12 @@ public:
 
     void step(float dt) override
     {
+        // A non-positive dt is a no-op: Jolt's Update() requires a strictly
+        // positive delta time and asserts/UB otherwise, so guard before the call.
+        if (dt <= 0.0F)
+        {
+            return;
+        }
         // Jolt's Update() performs broadphase, narrowphase, constraint solver,
         // and integration in one call. collisionSteps=1 is correct for 60 Hz.
         physics_.Update(dt, 1, &temp_alloc_, &job_system_);
@@ -657,7 +663,10 @@ private:
 
     // Handle mapping + component side-band
     HandleTable  handles_ {};
-    std::uint64_t next_idx_ { 0U };
+    // Start at 1: index 0 packs to BodyHandle value 0, which cd::core::Handle
+    // treats as the null sentinel (is_valid()==false) — so the FIRST body must
+    // not get index 0, or its handle reports invalid despite being usable.
+    std::uint64_t next_idx_ { 1U };
     std::unordered_map<std::uint32_t, components::RigidBodyComponent> rigid_components_ {};
     std::unordered_map<std::uint32_t, std::vector<components::ColliderComponent>> colliders_ {};
     std::vector<components::JointComponent> joints_ {};

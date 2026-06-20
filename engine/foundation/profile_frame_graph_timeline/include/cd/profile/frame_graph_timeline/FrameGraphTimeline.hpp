@@ -19,6 +19,10 @@
 //     while begin_frame/end_frame are in flight; the "last" frame is what
 //     last_frame_passes() / last_frame_total_ms() expose. This lets the UI
 //     read the previous frame's data while the new frame builds up.
+//   * record_pass() without a prior begin_frame() call appends to whatever
+//     state is current; callers are expected to call begin_frame() first, but
+//     no assertion is raised (GPU-readback pipelines may produce readbacks
+//     before the logical frame boundary is established).
 //   * TimelineOverlay depends on cd::ui_renderer (DrawBatcher). The include
 //     is in the .cpp only; the header forward-declares DrawBatcher so this
 //     header remains lightweight.
@@ -113,13 +117,33 @@ public:
     [[nodiscard]] std::span<const PassRecord> last_frame_passes() const noexcept;
 
     /// Sum of all gpu_duration_ms in the last completed frame.
-    /// Returns 0.0 before the first end_frame().
+    /// Returns 0.0 before the first end_frame() or after reset().
     [[nodiscard]] double last_frame_total_ms() const noexcept;
 
+    /// Minimum gpu_duration_ms among all passes in the last completed frame.
+    /// Returns 0.0 if the last frame had no passes.
+    [[nodiscard]] double last_frame_min_pass_ms() const noexcept;
+
+    /// Maximum gpu_duration_ms among all passes in the last completed frame.
+    /// Returns 0.0 if the last frame had no passes.
+    [[nodiscard]] double last_frame_max_pass_ms() const noexcept;
+
+    /// Pre-allocate internal storage for at least n pass records per buffer.
+    /// Call before the render loop to avoid mid-frame allocations.
+    void reserve(std::size_t n);
+
+    /// Clear both the current-frame accumulator and the last-frame snapshot.
+    /// After reset(): last_frame_passes() is empty, last_frame_total_ms() is
+    /// 0.0, last_frame_min_pass_ms() is 0.0, last_frame_max_pass_ms() is 0.0.
+    /// begin_frame() is still required before the next record_pass().
+    void reset() noexcept;
+
 private:
-    std::vector<PassRecord> current_passes_;  ///< Accumulates during current frame.
-    std::vector<PassRecord> last_passes_;     ///< Snapshot from the last end_frame().
-    double                  last_total_ms_  { 0.0 };
+    std::vector<PassRecord> current_passes_;     ///< Accumulates during current frame.
+    std::vector<PassRecord> last_passes_;        ///< Snapshot from the last end_frame().
+    double                  last_total_ms_   { 0.0 };
+    double                  last_min_ms_     { 0.0 };
+    double                  last_max_ms_     { 0.0 };
 };
 
 // ---------------------------------------------------------------------------

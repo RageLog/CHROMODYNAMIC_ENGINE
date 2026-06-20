@@ -7,7 +7,9 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <numeric>
+#include <ranges>
 
 namespace cd::profile::frame_graph_timeline
 {
@@ -36,12 +38,23 @@ void Timeline::record_pass(std::string_view pass_name,
 
 void Timeline::end_frame()
 {
-    // Compute total GPU time for this frame before swapping.
+    if (current_passes_.empty())
+    {
+        last_total_ms_ = 0.0;
+        last_min_ms_   = 0.0;
+        last_max_ms_   = 0.0;
+        last_passes_   = std::move(current_passes_);
+        current_passes_.clear();
+        return;
+    }
+
+    // Compute total, min, and max GPU durations before swapping.
+    const auto proj = [](const PassRecord& pr) noexcept { return pr.gpu_duration_ms; };
     last_total_ms_ = std::accumulate(
-        current_passes_.begin(),
-        current_passes_.end(),
-        0.0,
+        current_passes_.begin(), current_passes_.end(), 0.0,
         [](double acc, const PassRecord& pr) { return acc + pr.gpu_duration_ms; });
+    last_min_ms_ = proj(*std::ranges::min_element(current_passes_, {}, proj));
+    last_max_ms_ = proj(*std::ranges::max_element(current_passes_, {}, proj));
 
     // Swap: current becomes last, clearing current for the next frame.
     last_passes_ = std::move(current_passes_);
@@ -56,6 +69,31 @@ std::span<const PassRecord> Timeline::last_frame_passes() const noexcept
 double Timeline::last_frame_total_ms() const noexcept
 {
     return last_total_ms_;
+}
+
+double Timeline::last_frame_min_pass_ms() const noexcept
+{
+    return last_min_ms_;
+}
+
+double Timeline::last_frame_max_pass_ms() const noexcept
+{
+    return last_max_ms_;
+}
+
+void Timeline::reserve(std::size_t n)
+{
+    current_passes_.reserve(n);
+    last_passes_.reserve(n);
+}
+
+void Timeline::reset() noexcept
+{
+    current_passes_.clear();
+    last_passes_.clear();
+    last_total_ms_ = 0.0;
+    last_min_ms_   = 0.0;
+    last_max_ms_   = 0.0;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,9 +131,8 @@ void TimelineOverlay::draw(cd::ui::renderer::DrawBatcher&  batcher,
         return;
 
     // Determine the earliest start time in the pass list.
-    double min_start = passes[0].gpu_start_ms;
-    for (const auto& p : passes)
-        min_start = std::min(min_start, p.gpu_start_ms);
+    const auto start_proj = [](const PassRecord& p) noexcept { return p.gpu_start_ms; };
+    const double min_start = start_proj(*std::ranges::min_element(passes, {}, start_proj));
 
     const double time_range   = (window_ms_ > 0.0) ? window_ms_ : 1.0;
     const float  pixels_per_ms = bounds.width / static_cast<float>(time_range);

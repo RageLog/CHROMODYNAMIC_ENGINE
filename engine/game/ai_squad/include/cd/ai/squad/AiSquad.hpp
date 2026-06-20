@@ -47,7 +47,9 @@
 #include <cd/core/Defines.hpp>
 
 #include <array>
+#include <cmath>
 #include <cstdint>
+#include <numbers>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -55,6 +57,105 @@
 
 namespace cd::ai::squad
 {
+
+// =============================================================================
+// FormationShape — geometric pattern used when computing slot offsets.
+//
+//   kLine   — members placed side-by-side along the right-axis (X).
+//             slot 0 is on-axis; slot i is at i*spacing right.
+//   kWedge  — V-formation. Slot 0 is the point; subsequent pairs spread
+//             back and outward symmetrically (left/right alternating).
+//   kColumn — single-file behind the leader. Slot i is at -i*spacing along
+//             the forward axis (Z negative = behind).
+//   kCircle — members distributed evenly around the centroid at `radius`.
+//
+// All offsets are in a local right-handed coordinate frame where:
+//   +X = right   +Y = up (unused for 2D ground squads)   +Z = forward
+// The caller transforms them into world space using the squad's heading.
+// =============================================================================
+enum class FormationShape : std::uint8_t
+{
+    kLine   = 0,  ///< Side-by-side line.
+    kWedge  = 1,  ///< V-formation with the leader at the tip.
+    kColumn = 2,  ///< Single-file column.
+    kCircle = 3,  ///< Even ring around the centroid.
+};
+
+// =============================================================================
+// slot_offset_for — return the local-space 2D offset (X,Z) for slot `index`
+// in the given `shape`, using `spacing` as the uniform inter-member distance.
+//
+// Returns std::array<float,2>{dx, dz} in the local frame described above.
+// The Y (up) component is always 0 — callers that need 3D can splat it in.
+//
+// Slot 0 is always the leader/pointman position (origin or tip).
+// =============================================================================
+[[nodiscard]] inline std::array<float, 2> slot_offset_for(
+    FormationShape shape,
+    std::uint8_t   index,
+    float          spacing) noexcept
+{
+    const auto i = static_cast<float>(index);
+
+    switch (shape)
+    {
+    case FormationShape::kLine:
+        // Centred line: slot 0 at x=0, then alternate ±spacing.
+        //   0 → 0,  1 → +s,  2 → -s,  3 → +2s,  4 → -2s …
+        {
+            const float sign   = (index % 2U == 0U) ? 1.0F : -1.0F;
+            const auto  pair   = (index + 1U) / 2U;  // integer pair step (floor)
+            const float offset = static_cast<float>(pair) * spacing;
+            return {sign * offset, 0.0F};
+        }
+
+    case FormationShape::kWedge:
+        // Slot 0 is the tip (origin). Slots 1,2 fan back ±spacing on X and
+        // back spacing on Z. General: side = index is odd → right (+X),
+        // even (>0) → left (-X). Depth increases one step per pair.
+        {
+            if (index == 0U) { return {0.0F, 0.0F}; }
+            const float side  = (index % 2U == 1U) ? 1.0F : -1.0F;
+            const auto  pair  = (index + 1U) / 2U;  // integer pair step (floor)
+            const auto  depth = static_cast<float>(pair);
+            return {side * depth * spacing, -depth * spacing};
+        }
+
+    case FormationShape::kColumn:
+        // Single file: slot i is at (0, -i*spacing).
+        return {0.0F, -i * spacing};
+
+    case FormationShape::kCircle:
+        // Ring placement requires the total member count to compute angle
+        // fractions. slot_offset_for() cannot carry that without an extra
+        // parameter, so kCircle always returns {0,0} here. Callers that
+        // need per-slot ring offsets must use slot_offset_circle() directly.
+        return {0.0F, 0.0F};
+    }
+    return {0.0F, 0.0F};
+}
+
+// =============================================================================
+// slot_offset_circle — dedicated ring overload that takes the total member
+// count so the angle fraction can be computed exactly.
+//
+//   ring_radius — distance from centroid to each member.
+//   index       — this member's slot index [0, member_count).
+//   member_count — total members in the ring (≥ 1).
+//
+// Returns {dx, dz} in local squad space.
+// =============================================================================
+[[nodiscard]] inline std::array<float, 2> slot_offset_circle(
+    float        ring_radius,
+    std::uint8_t index,
+    std::uint8_t member_count) noexcept
+{
+    if (member_count == 0U) { return {0.0F, 0.0F}; }
+    const float angle = 2.0F * std::numbers::pi_v<float>
+                        * static_cast<float>(index)
+                        / static_cast<float>(member_count);
+    return {ring_radius * std::cos(angle), ring_radius * std::sin(angle)};
+}
 
 // =============================================================================
 // SquadRole — tactical role assigned to a squad member.
@@ -183,6 +284,10 @@ public:
     /// No-op if `entity_id` is not a member.
     void remove_member(uint64_t entity_id);
 
+    /// Reassign the tactical role of an existing member.
+    /// No-op if `entity_id` is not a member.
+    void assign_role(uint64_t entity_id, SquadRole role);
+
     // -------------------------------------------------------------------------
     // Per-frame state feed
     // -------------------------------------------------------------------------
@@ -207,6 +312,33 @@ public:
 
     /// Write a named fact into the shared blackboard.
     void set_fact(const std::string& key, float value);
+
+    // -------------------------------------------------------------------------
+    // Formation shape control
+    // -------------------------------------------------------------------------
+
+    /// Set the geometric pattern used by slot_offset_for() queries.
+    /// Default: kLine.
+    void set_formation_shape(FormationShape shape) noexcept;
+
+    /// Return the current formation shape.
+    [[nodiscard]] FormationShape formation_shape() const noexcept;
+
+    /// Return the inter-member spacing used for slot offset calculations.
+    /// Default: 2.0 m.
+    [[nodiscard]] float spacing() const noexcept;
+
+    /// Set the inter-member spacing (must be > 0; values ≤ 0 are clamped to 0.1).
+    void set_spacing(float s) noexcept;
+
+    // -------------------------------------------------------------------------
+    // Cohesion / regroup
+    // -------------------------------------------------------------------------
+
+    /// True when every member is within `radius` metres of the formation
+    /// centroid. Useful for "are we regrouped?" queries after a scatter.
+    /// Returns true for an empty squad (vacuously true).
+    [[nodiscard]] bool within_cohesion(float radius) const noexcept;
 
     // -------------------------------------------------------------------------
     // Advance
@@ -246,9 +378,11 @@ private:
     // -------------------------------------------------------------------------
     // State
     // -------------------------------------------------------------------------
-    std::vector<SquadMember> members_   {};
-    Formation                formation_ {};
-    Blackboard               blackboard_{};
+    std::vector<SquadMember> members_         {};
+    Formation                formation_        {};
+    Blackboard               blackboard_       {};
+    FormationShape           shape_            {FormationShape::kLine};
+    float                    spacing_          {2.0F};  ///< Inter-member spacing (metres).
 };
 
 }  // namespace cd::ai::squad

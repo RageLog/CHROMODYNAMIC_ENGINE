@@ -51,6 +51,18 @@ void Squad::remove_member(uint64_t entity_id)
     }
 }
 
+void Squad::assign_role(uint64_t entity_id, SquadRole role)
+{
+    for (auto& m : members_)
+    {
+        if (m.entity_id == entity_id)
+        {
+            m.role = role;
+            return;
+        }
+    }
+}
+
 // =============================================================================
 // Squad — per-frame state feed
 // =============================================================================
@@ -77,6 +89,49 @@ void Squad::update_health(uint64_t entity_id, float health)
             return;
         }
     }
+}
+
+// =============================================================================
+// Squad — formation shape control
+// =============================================================================
+
+void Squad::set_formation_shape(FormationShape shape) noexcept
+{
+    shape_ = shape;
+}
+
+FormationShape Squad::formation_shape() const noexcept
+{
+    return shape_;
+}
+
+float Squad::spacing() const noexcept
+{
+    return spacing_;
+}
+
+void Squad::set_spacing(float s) noexcept
+{
+    spacing_ = (s > 0.0F) ? s : 0.1F;
+}
+
+// =============================================================================
+// Squad — cohesion / regroup
+// =============================================================================
+
+bool Squad::within_cohesion(float radius) const noexcept
+{
+    // Empty squad is vacuously regrouped.
+    if (members_.empty()) { return true; }
+
+    const float r2 = radius * radius;
+    return std::ranges::all_of(members_, [&](const SquadMember& m)
+    {
+        const float dx = m.position[0] - formation_.centroid[0];
+        const float dy = m.position[1] - formation_.centroid[1];
+        const float dz = m.position[2] - formation_.centroid[2];
+        return (dx * dx + dy * dy + dz * dz) <= r2;
+    });
 }
 
 // =============================================================================
@@ -195,10 +250,7 @@ void Squad::recompute_formation() noexcept
         const float dy = m.position[1] - formation_.centroid[1];
         const float dz = m.position[2] - formation_.centroid[2];
         const float d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 > max_dist_sq)
-        {
-            max_dist_sq = d2;
-        }
+        max_dist_sq = std::max(max_dist_sq, d2);
     }
     formation_.radius       = std::sqrt(max_dist_sq);
     formation_.member_count = static_cast<uint8_t>(count);
