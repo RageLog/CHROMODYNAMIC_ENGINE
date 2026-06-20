@@ -99,7 +99,10 @@ struct SubmitterCreateInfo
 class Submitter
 {
 public:
-    Submitter() = default;
+    // Out-of-line (defined in Submitter.cpp where Impl is complete): a header
+    // `= default` would force inline ~unique_ptr<Impl> instantiation against the
+    // incomplete PIMPL type and fail to compile in default-constructing consumers.
+    Submitter() noexcept;
     ~Submitter();
 
     Submitter(const Submitter&) = delete;

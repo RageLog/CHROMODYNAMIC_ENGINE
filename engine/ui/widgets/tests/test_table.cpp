@@ -187,3 +187,132 @@ TEST(UiWidgetsTable, SortableFlagRespected)
     EXPECT_TRUE (t.columns()[1].sortable);
     EXPECT_FALSE(t.columns()[2].sortable);
 }
+
+// =============================================================================
+// Case 8: clear_selection resets both row and block selection.
+// =============================================================================
+TEST(UiWidgetsTable, ClearSelectionResetsBothFields)
+{
+    w::Table t;
+    const auto cols = three_cols();
+    t.set_columns(cols);
+    t.set_row_count(5U);
+
+    // Establish a row selection via simulate_click.
+    const float click_y = kBounds.y + w::Table::kHeaderHeight + 1.0F;
+    t.simulate_click(kBounds.x + 50.0F, click_y, kBounds);
+
+    ASSERT_TRUE(t.selected_row().has_value());
+    ASSERT_TRUE(t.selection().has_value());
+
+    t.clear_selection();
+
+    EXPECT_FALSE(t.selected_row().has_value());
+    EXPECT_FALSE(t.selection().has_value());
+}
+
+// =============================================================================
+// Case 9: CellRange::contains respects both row and column bounds.
+// =============================================================================
+TEST(UiWidgetsTable, CellRangeContainsBothAxes)
+{
+    const w::CellRange cr { 2U, 3U, 1U, 2U };  // rows 2-4, cols 1-2
+
+    EXPECT_TRUE(cr.contains(2U, 1U));   // top-left corner
+    EXPECT_TRUE(cr.contains(4U, 2U));   // bottom-right corner
+    EXPECT_TRUE(cr.contains(3U, 1U));   // interior
+
+    EXPECT_FALSE(cr.contains(1U, 1U));  // row before start
+    EXPECT_FALSE(cr.contains(5U, 1U));  // row after end
+    EXPECT_FALSE(cr.contains(3U, 0U));  // col before start
+    EXPECT_FALSE(cr.contains(3U, 3U));  // col after end
+}
+
+// =============================================================================
+// Case 10: set_columns clears cells that belonged to orphaned columns.
+// =============================================================================
+TEST(UiWidgetsTable, SetColumnsEvictsOrphanedCells)
+{
+    w::Table t;
+    const auto cols = three_cols();
+    t.set_columns(cols);     // 3 columns
+    t.set_row_count(3U);
+
+    t.set_cell_text(0U, 2U, "col2-data");
+    ASSERT_EQ(t.cell_text(0U, 2U), "col2-data");
+
+    // Shrink to 2 columns — col 2 cell must be evicted.
+    const std::array<w::Column, 2> short_cols {{
+        w::Column { "A", 60.0F, false },
+        w::Column { "B", 60.0F, false },
+    }};
+    t.set_columns(short_cols);
+
+    EXPECT_EQ(t.cell_text(0U, 2U), "");
+}
+
+// =============================================================================
+// Case 11: simulate_click on the header row is a no-op (no row selection change).
+// =============================================================================
+TEST(UiWidgetsTable, SimulateClickOnHeaderIsNoOp)
+{
+    w::Table t;
+    const auto cols = three_cols();
+    t.set_columns(cols);
+    t.set_row_count(5U);
+
+    // Click in the header band.
+    const float header_mid_y = kBounds.y + w::Table::kHeaderHeight * 0.5F;
+    t.simulate_click(kBounds.x + 50.0F, header_mid_y, kBounds);
+
+    EXPECT_FALSE(t.selected_row().has_value());
+}
+
+// =============================================================================
+// Case 12: set_row_count clears selection when selected row falls beyond new count.
+// =============================================================================
+TEST(UiWidgetsTable, SetRowCountClearsOutOfRangeSelection)
+{
+    w::Table t;
+    const auto cols = three_cols();
+    t.set_columns(cols);
+    t.set_row_count(10U);
+
+    // Select row 8.
+    const float click_y = kBounds.y + w::Table::kHeaderHeight
+                        + 8.0F * w::Table::kRowHeight + 2.0F;
+    t.simulate_click(kBounds.x + 50.0F, click_y, kBounds);
+    ASSERT_TRUE(t.selected_row().has_value());
+    EXPECT_EQ(*t.selected_row(), 8U);
+
+    // Shrink row count to 5 — selection at row 8 must be cleared.
+    t.set_row_count(5U);
+    EXPECT_FALSE(t.selected_row().has_value());
+    EXPECT_FALSE(t.selection().has_value());
+}
+
+// =============================================================================
+// Case 13: Column layout distributes extra space evenly when sum < bounds_w.
+// =============================================================================
+TEST(UiWidgetsTable, ColumnLayoutDistributesExtraSpaceEvenly)
+{
+    // Two equal min_width columns in a bounds wider than their sum.
+    // Each should get (total - 2*min_w) / 2 extra space.
+    const std::array<w::Column, 2> two_cols {{
+        w::Column { "X", 60.0F, false },
+        w::Column { "Y", 60.0F, false },
+    }};
+    const w::Rect wide_bounds { 0.0F, 0.0F, 200.0F, 200.0F };
+
+    w::Table t;
+    t.set_columns(two_cols);
+    t.set_row_count(1U);
+
+    // Click in the right half (>= 100 px) — must select col 1.
+    const float click_x = 150.0F;
+    const float click_y = wide_bounds.y + w::Table::kHeaderHeight + 2.0F;
+    t.simulate_click(click_x, click_y, wide_bounds);
+
+    ASSERT_TRUE(t.selection().has_value());
+    EXPECT_EQ(t.selection()->col_start, 1U);
+}

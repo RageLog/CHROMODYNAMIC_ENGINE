@@ -3,6 +3,16 @@ cd_add_test(submitter
   DEPS    cd::ui_renderer_rhi cd::ui_renderer cd::rhi cd::core
 )
 
+# ≥80→100 marathon -- host-side state + ring vb/ib sizing + scissor-sentinel
+# + pre-init/null-input guards + move semantics + Route-A inert-variant
+# rejection. Runs against NullDevice ONLY, so it needs NO Vulkan gate and
+# executes on every CI host. cd::material is required for the UiVariant /
+# UiThemePaletteUbo types used in the no-op-accessor + inert-variant cases.
+cd_add_test(submitter_host_state
+  SOURCES test_submitter_host_state.cpp
+  DEPS    cd::ui_renderer_rhi cd::ui_renderer cd::rhi cd::material cd::shader cd::core
+)
+
 # Phase 554 / M3 W1A -- Route B inline GLSL pipeline factory tests.
 # Gated on CD_ENABLE_VULKAN because the inline-shader path is best
 # exercised against a real backend; the test itself GTEST_SKIPs when

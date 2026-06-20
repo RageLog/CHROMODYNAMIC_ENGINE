@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <numbers>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -75,7 +76,7 @@ struct SpeakerSlot
 [[nodiscard]] inline std::span<const SpeakerSlot>
 layout_slots(SpeakerLayout layout) noexcept
 {
-    constexpr float kDeg = 3.14159265F / 180.0F;
+    constexpr float kDeg = std::numbers::pi_v<float> / 180.0F;
     static const SpeakerSlot kMono[] = {
         { 0.0F, false }
     };

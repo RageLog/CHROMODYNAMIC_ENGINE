@@ -149,3 +149,62 @@ TEST(UiWidgetsPopoutDock, SimulateDragOnNonDetachedIsNoOp)
     dock.simulate_drag("GhostPanel", kDragPos);
     EXPECT_TRUE(dock.detached_windows().empty());
 }
+
+// =============================================================================
+// Case 9: Multiple panels maintain correct order in detached_windows().
+// =============================================================================
+TEST(UiWidgetsPopoutDock, MultipleDetachedPanelsOrderPreserved)
+{
+    w::PopoutDock dock;
+    EXPECT_TRUE(dock.detach_panel("A", kPos0, kSize0));
+    EXPECT_TRUE(dock.detach_panel("B", kPos1, kSize1));
+
+    const auto wins = dock.detached_windows();
+    ASSERT_EQ(wins.size(), 2U);
+
+    // Insertion order preserved.
+    EXPECT_EQ(wins[0].panel_id, "A");
+    EXPECT_EQ(wins[1].panel_id, "B");
+
+    // Both are marked active.
+    EXPECT_TRUE(wins[0].is_active);
+    EXPECT_TRUE(wins[1].is_active);
+}
+
+// =============================================================================
+// Case 10: Reattaching one of multiple panels only removes that panel.
+// =============================================================================
+TEST(UiWidgetsPopoutDock, ReattachOneOfManyRemovesOnlyThat)
+{
+    w::PopoutDock dock;
+    EXPECT_TRUE(dock.detach_panel("X", kPos0, kSize0));
+    EXPECT_TRUE(dock.detach_panel("Y", kPos1, kSize1));
+    EXPECT_TRUE(dock.detach_panel("Z", kPos0, kSize1));
+    ASSERT_EQ(dock.detached_windows().size(), 3U);
+
+    EXPECT_TRUE(dock.reattach_panel("Y"));
+    ASSERT_EQ(dock.detached_windows().size(), 2U);
+    EXPECT_FALSE(dock.is_detached("Y"));
+    EXPECT_TRUE(dock.is_detached("X"));
+    EXPECT_TRUE(dock.is_detached("Z"));
+}
+
+// =============================================================================
+// Case 11: simulate_drag does not alter size, only position.
+// =============================================================================
+TEST(UiWidgetsPopoutDock, SimulateDragPreservesSize)
+{
+    w::PopoutDock dock;
+    EXPECT_TRUE(dock.detach_panel("Inspector", kPos0, kSize0));
+
+    constexpr std::array<float, 2U> kNewPos { 999.0F, 42.0F };
+    dock.simulate_drag("Inspector", kNewPos);
+
+    const auto wins = dock.detached_windows();
+    ASSERT_EQ(wins.size(), 1U);
+    EXPECT_EQ(wins[0].position[0], kNewPos[0]);
+    EXPECT_EQ(wins[0].position[1], kNewPos[1]);
+    // Size must be unchanged.
+    EXPECT_EQ(wins[0].size[0], kSize0[0]);
+    EXPECT_EQ(wins[0].size[1], kSize0[1]);
+}

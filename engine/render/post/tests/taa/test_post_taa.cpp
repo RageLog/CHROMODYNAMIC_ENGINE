@@ -5,6 +5,11 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <string_view>
+
 namespace
 {
 
@@ -103,6 +108,102 @@ TEST(PostTaa, GlslKernelNonEmptyAndDeclaresClipFn)
     EXPECT_FALSE(cd::post::taa::kTaaResolveCS.empty());
     EXPECT_NE(cd::post::taa::kTaaResolveCS.find("clip_aabb"),
               std::string_view::npos);
+}
+
+// =============================================================================
+// Edge / negative coverage (≥80→100).
+// =============================================================================
+
+TEST(PostTaa, DefaultSettingsAreKaris)
+{
+    const Settings s {};
+    EXPECT_FLOAT_EQ(s.min_blend_factor, 0.04F);
+    EXPECT_FLOAT_EQ(s.max_blend_factor, 0.50F);
+    EXPECT_FLOAT_EQ(s.variance_clip_gamma, 1.0F);
+    EXPECT_FLOAT_EQ(s.motion_blend_scale, 100.0F);
+    EXPECT_EQ(s.jitter_phase_count, 8U);
+}
+
+TEST(PostTaa, HaltonZeroIndexIsZero)
+{
+    // Halton(0, b) terminates immediately -> 0 (the loop never runs).
+    EXPECT_NEAR(halton(0, 2), 0.0F, kEps);
+    EXPECT_NEAR(halton(0, 3), 0.0F, kEps);
+}
+
+TEST(PostTaa, JitterCyclesWithPhaseCount)
+{
+    // frame_index and frame_index+phase_count map to the same Halton index
+    // (the helper does (frame % phase) + 1), so the jitter repeats exactly.
+    const auto a = jitter_offset(2, 8);
+    const auto b = jitter_offset(2 + 8, 8);
+    EXPECT_NEAR(a.x, b.x, kEps);
+    EXPECT_NEAR(a.y, b.y, kEps);
+}
+
+TEST(PostTaa, JitterIsNotConstantAcrossPhases)
+{
+    // Consecutive phases must differ (a constant jitter defeats TAA).
+    const auto j0 = jitter_offset(0, 8);
+    const auto j1 = jitter_offset(1, 8);
+    const bool differs = std::abs(j0.x - j1.x) > kEps ||
+                         std::abs(j0.y - j1.y) > kEps;
+    EXPECT_TRUE(differs);
+}
+
+TEST(PostTaa, ClipAabbHistoryEqualsCentreIsStable)
+{
+    // Degenerate ray (history == centre): dir ~ 0, the t_for guard returns
+    // 1.0 per-axis so the output is the centre (no NaN from /0).
+    const cd::math::Vec3f lo { 0.0F, 0.0F, 0.0F };
+    const cd::math::Vec3f hi { 1.0F, 1.0F, 1.0F };
+    const cd::math::Vec3f c  { 0.5F, 0.5F, 0.5F };
+    const auto out = clip_aabb(lo, hi, c, c);
+    EXPECT_NEAR(out.x, 0.5F, kEps);
+    EXPECT_NEAR(out.y, 0.5F, kEps);
+    EXPECT_NEAR(out.z, 0.5F, kEps);
+}
+
+TEST(PostTaa, NeighborhoodBoxNonUniformHasPositiveExtent)
+{
+    // A spread of values yields lo < mean < hi (non-degenerate variance box).
+    std::array<cd::math::Vec3f, 9> n {};
+    for (std::size_t i = 0; i < n.size(); ++i)
+    {
+        const float v = static_cast<float>(i) * 0.1F;  // 0.0 .. 0.8
+        n[i] = { v, v, v };
+    }
+    const auto box = neighborhood_box(n, 1.0F);
+    EXPECT_LT(box.lo.x, box.hi.x);
+    EXPECT_GT(box.hi.x - box.lo.x, kEps);
+}
+
+TEST(PostTaa, NeighborhoodBoxGammaWidensExtent)
+{
+    // A larger variance-clip gamma must widen the box (more tolerant clip).
+    std::array<cd::math::Vec3f, 9> n {};
+    for (std::size_t i = 0; i < n.size(); ++i)
+    {
+        const float v = static_cast<float>(i) * 0.1F;
+        n[i] = { v, v, v };
+    }
+    const auto narrow = neighborhood_box(n, 1.0F);
+    const auto wide   = neighborhood_box(n, 2.0F);
+    EXPECT_GT(wide.hi.x - wide.lo.x, narrow.hi.x - narrow.lo.x);
+}
+
+TEST(PostTaa, ResolveZeroMotionLeansHistory)
+{
+    // Zero motion -> blend == min_blend_factor (0.04), so the output is
+    // dominated by the (in-box) history sample, not the current frame.
+    std::array<cd::math::Vec3f, 9> n {};
+    for (auto& v : n) v = { 0.5F, 0.5F, 0.5F };
+    const cd::math::Vec3f curr { 1.0F, 1.0F, 1.0F };
+    const cd::math::Vec3f hist { 0.5F, 0.5F, 0.5F };  // inside the box
+    Settings s {};
+    const auto out = resolve(curr, hist, n, /*motion_px=*/0.0F, s);
+    // out = curr*0.04 + clipped*0.96; clipped == hist (0.5) since in-box.
+    EXPECT_NEAR(out.x, 1.0F * 0.04F + 0.5F * 0.96F, kEps);
 }
 
 }  // namespace

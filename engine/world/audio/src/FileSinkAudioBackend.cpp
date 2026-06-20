@@ -90,7 +90,7 @@ public:
 
     [[nodiscard]] cd::core::Result<VoiceHandle> do_play(ClipHandle clip, float volume, bool looping) override
     {
-        if (clips_.find(clip.index()) == clips_.end())
+        if (!clips_.contains(clip.index()))
         {
             return std::unexpected(audio_errors::make(audio_errors::Code::kUnknownClip, "play: clip not found"));
         }
@@ -112,7 +112,7 @@ public:
     {
         auto it = voices_.find(voice.index());
         if (it != voices_.end())
-            it->second.volume = volume;
+            it->second.volume = std::clamp(volume, 0.0F, 1.0F);
     }
 
     [[nodiscard]] bool is_playing(VoiceHandle voice) const noexcept override
@@ -128,7 +128,7 @@ public:
 
     void set_master_volume(float v) noexcept override
     {
-        master_ = v;
+        master_ = std::clamp(v, 0.0F, 1.0F);
     }
 
     [[nodiscard]] float master_volume() const noexcept override
@@ -140,7 +140,7 @@ public:
 
     void render(std::uint32_t frames) override
     {
-        rendered_.reserve(static_cast<std::size_t>(rendered_.size() + frames * channels_));
+        rendered_.reserve(rendered_.size() + static_cast<std::size_t>(frames) * channels_);
         for (std::uint32_t i = 0; i < frames; ++i)
         {
             // For each output channel, sum every active voice (mono clips

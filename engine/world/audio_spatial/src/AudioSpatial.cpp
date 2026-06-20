@@ -23,13 +23,14 @@
 //   This gives unity on both sides when source is directly in front (azimuth=0),
 //   and max right / min left when the source is to the far right.
 //
-// Distance attenuation (1/r):
+// Distance attenuation — three models (see AttenuationModel):
 //   d = distance(listener, source)
-//   if d <= inner: attenuation = 1.0
-//   if d >= outer: attenuation = 0.0
-//   else:          attenuation = inner / d    (inverse linear, not inverse-square,
-//                                              matches OpenAL LINEAR_DISTANCE_CLAMPED
-//                                              feel for game audio)
+//   if d <= inner: attenuation = 1.0          (all models)
+//   if d >= outer: attenuation = 0.0          (all models)
+//   else:
+//     kLinear       : inner / d
+//     kInverseSquare: (inner / d)^2
+//     kExponential  : exp(-rolloff*(d-inner)/inner)
 //
 // Doppler:
 //   Classical approximation using projected velocities along listener-source axis:
@@ -98,7 +99,7 @@ SourceMix SpatialMixer::compute_mix(uint64_t source_id) const noexcept
     const float dist = distance(listener_.position, src.position);
 
     // -------------------------------------------------------------------------
-    // 2. Distance attenuation (inverse linear, clamped)
+    // 2. Distance attenuation — model selected by src.attenuation_model
     // -------------------------------------------------------------------------
     const float inner = (src.radius_inner > 0.0F) ? src.radius_inner : 0.001F;
     const float outer = (src.radius_outer > inner) ? src.radius_outer : inner + 0.001F;
@@ -110,7 +111,31 @@ SourceMix SpatialMixer::compute_mix(uint64_t source_id) const noexcept
     }
     else if (dist > inner)
     {
-        atten = inner / dist;  // 1/r falloff in [inner, outer]
+        const float ratio = inner / dist;  // in (0, 1) when dist in (inner, outer)
+
+        switch (src.attenuation_model)
+        {
+        case AttenuationModel::kLinear:
+            // OpenAL AL_LINEAR_DISTANCE_CLAMPED: smooth, easy to tune.
+            atten = ratio;
+            break;
+
+        case AttenuationModel::kInverseSquare:
+            // Physical 1/r^2 point-source law: double distance → quarter power.
+            atten = ratio * ratio;
+            break;
+
+        case AttenuationModel::kExponential:
+        {
+            // OpenAL AL_EXPONENT_DISTANCE_CLAMPED:
+            //   atten = exp(-rolloff * (d - inner) / inner)
+            // rolloff_factor=1 → half-power at d = inner*(1+ln2) ≈ 1.693*inner.
+            const float rf = (src.rolloff_factor > 0.0F) ? src.rolloff_factor : 1.0F;
+            atten = std::exp(-rf * (dist - inner) / inner);
+            break;
+        }
+        }
+
         atten = std::clamp(atten, 0.0F, 1.0F);
     }
 

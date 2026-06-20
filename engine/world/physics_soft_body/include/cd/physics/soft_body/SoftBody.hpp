@@ -31,7 +31,18 @@
 //   * Disabled by default (enable_self_collision = false) → zero overhead
 //     for existing Sprint-1 ropes.
 //
-// Sprint-3 (deferred): GPU compute (Vulkan/D3D12 compute shader port).
+// Sprint-2.5 scope (depth pass):
+//   * BendingConstraint — Provot (1995) flexion springs (i..i+2 distance) so
+//     cloth/rope resist folding independently of structural stretch stiffness.
+//   * GroundPlane — half-space (infinite plane) unilateral collision response
+//     with optional Coulomb tangential friction. Default disabled.
+//   Both are opt-in (empty vector / disabled flag) -> Sprint-1/2 sims unchanged.
+//
+// Sprint-3 (deferred / SEALED — large solver): GPU compute (Vulkan/D3D12
+// compute shader port) and FEM / continuum volumetric soft bodies. A full
+// co-rotational FEM tetrahedral solver and GPU XPBD port are multi-week
+// efforts outside the mass-spring/PBD charter of this library; they are
+// intentionally not implemented here. See README "Sealed scope".
 //
 // MOMENT: A character has a cape that responds to wind + gravity via real
 // cloth sim — not bone-driven fake animation. Half-Life 2 gravity-gun-pull-
@@ -102,6 +113,74 @@ struct SpringConstraint
 };
 
 // ---------------------------------------------------------------------------
+// BendingConstraint — Provot (1995) bending resistance.
+//
+// A bending constraint is a *distance* constraint spanning two particles that
+// are NOT directly spring-connected (typically i and i+2 along a rope, or the
+// opposite corners of two adjacent cloth triangles). Driving |p[b] - p[a]|
+// toward bend_rest_length penalizes folding while leaving the structural
+// (rest-length) springs free to stretch/shear. This is exactly the
+// "flexion / bend spring" of Provot, "Deformation Constraints in a Mass-Spring
+// Model to Describe Rigid Cloth Behaviour", Graphics Interface 1995.
+//
+// It reuses the identical PBD distance projection as SpringConstraint; the
+// separate type exists so callers can tune bend stiffness independently of the
+// structural springs (cloth is usually much softer in bending than in stretch).
+// ---------------------------------------------------------------------------
+
+struct BendingConstraint
+{
+    /// Index of the first particle (must be < SoftBodyConfig::particles.size()).
+    uint32_t a { 0 };
+
+    /// Index of the second particle (must be < SoftBodyConfig::particles.size()
+    /// and != a). Typically a + 2 along a rope, or the across-fold pair on cloth.
+    uint32_t b { 0 };
+
+    /// Rest length (m) of the bend span. Solver drives |p[b] - p[a]| toward this.
+    float bend_rest_length { 0.0F };
+
+    /// Bend stiffness in [0, 1]. 0.0 = no bending resistance (fully floppy),
+    /// 1.0 = maximally rigid per iteration. Cloth typically << structural
+    /// stiffness so the sheet drapes but does not crease sharply.
+    float stiffness { 0.1F };
+};
+
+// ---------------------------------------------------------------------------
+// GroundPlane — half-space (infinite plane) collision response.
+//
+// Models an immovable ground / wall as the half-space n . x >= offset. After
+// each PBD iteration any particle that has penetrated the plane
+// (n . position < offset) is projected back onto the plane surface along n.
+// This is the standard PBD inequality (unilateral) constraint:
+//   C(x) = n . x - offset >= 0,  corrected only when violated.
+//
+// Tangential (Coulomb) friction optionally damps the in-plane velocity of a
+// contacting particle by scaling the tangential component of (pos - prev_pos).
+// friction == 0 -> frictionless slide; friction == 1 -> sticking contact.
+// ---------------------------------------------------------------------------
+
+struct GroundPlane
+{
+    /// Master switch. When false (default) no ground constraint is applied —
+    /// existing rope/cloth simulations are byte-identical to the pre-ground build.
+    bool enable_ground { false };
+
+    /// Outward plane normal (need not be unit length; it is normalised at use).
+    /// Default points up (+Y), i.e. a horizontal floor.
+    std::array<float, 3> normal { 0.0F, 1.0F, 0.0F };
+
+    /// Plane offset along the (normalised) normal: the half-space kept free is
+    /// n_hat . x >= offset. For a floor at world height y = h with normal +Y,
+    /// set offset = h.
+    float offset { 0.0F };
+
+    /// Tangential friction in [0, 1] applied to contacting particles.
+    /// 0 = frictionless, 1 = full stick (tangential velocity killed on contact).
+    float friction { 0.0F };
+};
+
+// ---------------------------------------------------------------------------
 // SelfCollision — Sprint-2 particle-particle repulsion configuration.
 // ---------------------------------------------------------------------------
 
@@ -139,6 +218,11 @@ struct SoftBodyConfig
     /// iterative); however, Gauss-Seidel ordering in constraint order is used.
     std::vector<SpringConstraint> constraints {};
 
+    /// Bending constraints (Provot flexion springs). Default empty -> no
+    /// bending resistance, so existing structural-only sims are unchanged.
+    /// Solved with the same PBD distance projection after the structural pass.
+    std::vector<BendingConstraint> bending_constraints {};
+
     /// Number of PBD constraint solver iterations per tick.
     /// Higher values improve rigidity at the cost of CPU time.
     /// Typical cloth: 5–20. Rope: 10–30.
@@ -152,6 +236,9 @@ struct SoftBodyConfig
 
     /// Sprint-2 self-collision parameters. Default-constructed: disabled.
     SelfCollision self_collision {};
+
+    /// Ground / half-space collision plane. Default-constructed: disabled.
+    GroundPlane ground {};
 };
 
 // ---------------------------------------------------------------------------
@@ -182,7 +269,8 @@ public:
 
     /// Advance the simulation by `dt` seconds.
     ///   1. Verlet integration applies gravity + damping.
-    ///   2. PBD distance constraints iterated solver_iterations times.
+    ///   2. Per iteration (solver_iterations): structural distance constraints,
+    ///      bending constraints, self-collision, ground plane, then pin re-fix.
     ///   3. Pinned particles are fixed back to their configured positions.
     ///
     /// @param dt       Time step (seconds). Positive. Zero or negative is no-op.
@@ -212,8 +300,16 @@ public:
 private:
     // ---- Internal helpers ----------------------------------------------------
 
-    /// Run one pass of PBD distance constraint correction.
+    /// Run one pass of PBD distance constraint correction (structural springs).
     void solve_constraints() noexcept;
+
+    /// Run one pass of PBD bending-constraint correction (Provot flexion).
+    /// No-op when cfg_.bending_constraints is empty.
+    void solve_bending() noexcept;
+
+    /// Run one pass of half-space ground collision response. No-op when
+    /// cfg_.ground.enable_ground == false or the plane normal is degenerate.
+    void solve_ground() noexcept;
 
     /// Run one pass of Sprint-2 particle-particle self-collision repulsion
     /// using a uniform spatial-hash broad-phase. No-op when

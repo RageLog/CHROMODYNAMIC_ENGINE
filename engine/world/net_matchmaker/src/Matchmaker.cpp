@@ -2,6 +2,7 @@
 // CHROMODYNAMIC — cd/net/matchmaker/Matchmaker.cpp
 // Phase 563 / Sprint W5B  — cd::net::matchmaker Sprint-1 implementation
 // Phase 784 / FINALE-E4   — SkillScorer + FillStrategy real scoring
+// Phase 825 / FINALE-E5   — MatchmakingQueue + skill-window widening
 // =============================================================================
 #include <cd/net/matchmaker/Matchmaker.hpp>
 
@@ -45,7 +46,7 @@ const Lobby* LobbyRegistry::find_lobby(std::uint64_t lobby_id) const noexcept
 void LobbyRegistry::register_player(PlayerProfile profile)
 {
     const std::uint64_t id = profile.id;
-    m_profiles.insert_or_assign(id, std::move(profile));
+    m_profiles.insert_or_assign(id, profile);  // PlayerProfile is trivially copyable; std::move is a no-op
 }
 
 const PlayerProfile* LobbyRegistry::profile_of(std::uint64_t player_id) const noexcept
@@ -166,7 +167,7 @@ float SkillScorer::score_pair(const PlayerProfile& a,
     const float norm_dist     = dist_km / kMaxDistanceKm;     // [0, 1]
 
     // --- History avoidance component ---
-    const float hist_penalty  = m_history.count(make_pair_key(a.id, b.id)) > 0U
+    const float hist_penalty  = m_history.contains(make_pair_key(a.id, b.id))
                                  ? 1.0F : 0.0F;
 
     return m_w_skill * norm_skill
@@ -297,6 +298,234 @@ SkillBasedFinder::find_match(const PlayerProfile& candidate,
     }
 
     return best_id;
+}
+
+// ---------------------------------------------------------------------------
+// MatchmakingQueue
+// ---------------------------------------------------------------------------
+
+void MatchmakingQueue::set_target_lobby_size(std::uint32_t size) noexcept
+{
+    m_target_size = (size > 0U) ? size : 1U;
+}
+
+void MatchmakingQueue::set_max_wait_ticks(std::uint64_t ticks) noexcept
+{
+    m_max_wait_ticks = ticks;
+}
+
+void MatchmakingQueue::advance_clock() noexcept
+{
+    ++m_current_tick;
+}
+
+std::uint64_t MatchmakingQueue::current_tick() const noexcept
+{
+    return m_current_tick;
+}
+
+float MatchmakingQueue::effective_window(const MatchTicket& t) const noexcept
+{
+    const std::uint64_t age = (m_current_tick >= t.enqueue_tick)
+                              ? (m_current_tick - t.enqueue_tick)
+                              : 0ULL;
+    const float widened = t.skill_window + t.widen_per_tick * static_cast<float>(age);
+    if (t.max_skill_window > 0.0F)
+        return std::min(widened, t.max_skill_window);
+    return widened;
+}
+
+std::optional<std::uint64_t>
+MatchmakingQueue::enqueue(MatchTicket ticket, LobbyRegistry& /*registry*/)
+{
+    // Duplicate guard: reject if the player already has a kPending ticket.
+    if (m_player_pending.contains(ticket.player_id))
+        return std::nullopt;
+
+    ticket.ticket_id    = m_next_ticket_id++;
+    ticket.enqueue_tick = m_current_tick;
+    ticket.status       = TicketStatus::kPending;
+    ticket.lobby_id     = 0U;
+
+    const std::uint64_t tid = ticket.ticket_id;
+    m_player_pending[ticket.player_id] = tid;
+
+    const std::size_t idx = m_tickets.size();
+    m_tickets.emplace_back(std::move(ticket));
+    m_id_index[tid] = idx;
+
+    return tid;
+}
+
+bool MatchmakingQueue::cancel(std::uint64_t ticket_id) noexcept
+{
+    const auto it = m_id_index.find(ticket_id);
+    if (it == m_id_index.end())
+        return false;
+
+    MatchTicket& t = m_tickets[it->second];
+    if (t.status != TicketStatus::kPending)
+        return false;
+
+    t.status = TicketStatus::kCancelled;
+    m_player_pending.erase(t.player_id);
+    return true;
+}
+
+const MatchTicket* MatchmakingQueue::status_of(std::uint64_t ticket_id) const noexcept
+{
+    const auto it = m_id_index.find(ticket_id);
+    if (it == m_id_index.end())
+        return nullptr;
+    return &m_tickets[it->second];
+}
+
+std::size_t MatchmakingQueue::total_enqueued() const noexcept
+{
+    return m_tickets.size();
+}
+
+std::size_t MatchmakingQueue::pending_count() const noexcept
+{
+    std::size_t count { 0 };
+    for (const auto& t : m_tickets)
+    {
+        if (t.status == TicketStatus::kPending)
+            ++count;
+    }
+    return count;
+}
+
+MatchResult MatchmakingQueue::run_cycle(LobbyRegistry& registry,
+                                         const std::string& game_mode)
+{
+    MatchResult result;
+
+    // --- Step 1: expire tickets that have waited too long. ---
+    if (m_max_wait_ticks > 0U)
+    {
+        for (auto& t : m_tickets)
+        {
+            if (t.status != TicketStatus::kPending)
+                continue;
+            const std::uint64_t age = (m_current_tick >= t.enqueue_tick)
+                                      ? (m_current_tick - t.enqueue_tick)
+                                      : 0ULL;
+            if (age > m_max_wait_ticks)
+            {
+                t.status = TicketStatus::kExpired;
+                m_player_pending.erase(t.player_id);
+                ++result.tickets_expired;
+            }
+        }
+    }
+
+    // --- Step 2: collect indices of pending tickets and sort. ---
+    std::vector<std::size_t> pending_idx;
+    pending_idx.reserve(m_tickets.size());
+    for (std::size_t i = 0; i < m_tickets.size(); ++i)
+    {
+        if (m_tickets[i].status == TicketStatus::kPending)
+            pending_idx.emplace_back(i);
+    }
+
+    // Sort: higher priority first, then FIFO by enqueue_tick.
+    std::ranges::sort(pending_idx, [this](std::size_t a, std::size_t b) -> bool
+    {
+        const MatchTicket& ta = m_tickets[a];
+        const MatchTicket& tb = m_tickets[b];
+        if (ta.priority != tb.priority)
+            return ta.priority > tb.priority;
+        return ta.enqueue_tick < tb.enqueue_tick;
+    });
+
+    // --- Step 3: greedy grouping. ---
+    // matched_in_cycle[i] = true when pending_idx[i] is already consumed.
+    std::vector<bool> consumed(pending_idx.size(), false);
+
+    for (std::size_t head = 0; head < pending_idx.size(); ++head)
+    {
+        if (consumed[head])
+            continue;
+
+        const MatchTicket& leader = m_tickets[pending_idx[head]];
+        const PlayerProfile* leader_profile = registry.profile_of(leader.player_id);
+
+        // Build a group starting from this leader.
+        std::vector<std::size_t> group_ticket_indices; // indices into pending_idx
+        group_ticket_indices.emplace_back(head);
+        consumed[head] = true;
+
+        for (std::size_t j = head + 1;
+             j < pending_idx.size()
+             && group_ticket_indices.size() < static_cast<std::size_t>(m_target_size);
+             ++j)
+        {
+            if (consumed[j])
+                continue;
+
+            const MatchTicket& candidate = m_tickets[pending_idx[j]];
+            const PlayerProfile* cand_profile = registry.profile_of(candidate.player_id);
+
+            // If either profile is absent, no constraint — accept freely.
+            bool compatible { true };
+            if (leader_profile != nullptr && cand_profile != nullptr)
+            {
+                // Skill window: use the minimum effective window of the two.
+                const float eff_lead = effective_window(leader);
+                const float eff_cand = effective_window(candidate);
+                const float window   = std::min(eff_lead, eff_cand);
+
+                const float delta = std::fabs(leader_profile->skill_rating
+                                              - cand_profile->skill_rating);
+                if (delta > window)
+                    compatible = false;
+
+                if (compatible && leader_profile->region != cand_profile->region)
+                    compatible = false;
+            }
+
+            if (compatible)
+            {
+                group_ticket_indices.emplace_back(j);
+                consumed[j] = true;
+            }
+        }
+
+        // --- Step 4: group ready — only seal + match when exactly full. ---
+        // Partial groups leave tickets kPending so widening can help next cycle.
+        const bool full_group =
+            group_ticket_indices.size() >= static_cast<std::size_t>(m_target_size);
+
+        if (full_group)
+        {
+            const std::uint64_t lid = registry.create_lobby(game_mode);
+            ++result.lobbies_created;
+
+            for (const std::size_t gi : group_ticket_indices)
+            {
+                MatchTicket& t = m_tickets[pending_idx[gi]];
+                static_cast<void>(registry.join_lobby(lid, t.player_id));
+                t.status   = TicketStatus::kMatched;
+                t.lobby_id = lid;
+                m_player_pending.erase(t.player_id);
+                ++result.tickets_matched;
+            }
+
+            registry.close_lobby(lid);  // seal after all members have joined
+        }
+        else
+        {
+            // Un-consume all members so they remain kPending for the next cycle.
+            for (const std::size_t gi : group_ticket_indices)
+                consumed[gi] = false;
+        }
+    }
+
+    // Count remaining pending tickets.
+    result.tickets_pending = static_cast<std::uint32_t>(pending_count());
+
+    return result;
 }
 
 }  // namespace cd::net::matchmaker

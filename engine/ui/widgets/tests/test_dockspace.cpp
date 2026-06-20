@@ -11,6 +11,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 #include <array>
 #include <cstdint>
 #include <string>
@@ -366,4 +368,139 @@ TEST(UiWidgetsDockSpace, DropFloatingOnCenterZoneMergesAsTab)
     EXPECT_EQ(ds.root()->panels()[0], "Target");
     EXPECT_EQ(ds.root()->panels()[1], "Drifter");
     EXPECT_EQ(ds.root()->active_tab(), 1U);
+}
+
+// =============================================================================
+// Case 13: find_panel_owner returns the correct node for a known panel.
+// =============================================================================
+TEST(UiWidgetsDockSpace, FindPanelOwnerReturnsCorrectNode)
+{
+    w::DockSpace ds;
+    ds.set_rect(kFullRect);
+    ds.tab_merge(ds.root(), "A");
+    ds.split(ds.root(), w::DockAxis::kVertical, "B", 0.5F);
+    // root = Split{ TabGroup["A"] | TabGroup["B"] }
+
+    const w::DockNode* owner_a = ds.find_panel_owner("A");
+    const w::DockNode* owner_b = ds.find_panel_owner("B");
+
+    ASSERT_NE(owner_a, nullptr);
+    ASSERT_NE(owner_b, nullptr);
+
+    // They must be different nodes.
+    EXPECT_NE(owner_a, owner_b);
+
+    // Each owner must contain the expected panel id.
+    const auto has_panel = [](const w::DockNode* node, std::string_view id) {
+        return std::ranges::any_of(node->panels(), [id](std::string_view p) { return p == id; });
+    };
+    EXPECT_TRUE(has_panel(owner_a, "A"));
+    EXPECT_TRUE(has_panel(owner_b, "B"));
+
+    // Unknown panel -> nullptr.
+    EXPECT_EQ(ds.find_panel_owner("ZZZ"), nullptr);
+}
+
+// =============================================================================
+// Case 14: has_panel reflects register_panel / duplicate register.
+// =============================================================================
+TEST(UiWidgetsDockSpace, HasPanelReflectsRegistration)
+{
+    w::DockSpace ds;
+    EXPECT_FALSE(ds.has_panel("Inspector"));
+
+    ds.register_panel("Inspector",
+        [](const w::Rect&, r::DrawBatcher&, cd::ui::font::Font*, const w::Theme&) {});
+
+    EXPECT_TRUE(ds.has_panel("Inspector"));
+    EXPECT_FALSE(ds.has_panel("Console"));
+
+    // Re-register same id overwrites -- still returns true.
+    ds.register_panel("Inspector",
+        [](const w::Rect&, r::DrawBatcher&, cd::ui::font::Font*, const w::Theme&) {});
+    EXPECT_TRUE(ds.has_panel("Inspector"));
+}
+
+// =============================================================================
+// Case 15: DockNode::set_ratio clamps to [0.05, 0.95].
+// =============================================================================
+TEST(UiWidgetsDockSpace, SplitRatioClampedToSafeRange)
+{
+    w::DockSpace ds;
+    ds.set_rect(kFullRect);
+    ds.split(ds.root(), w::DockAxis::kVertical, "B", 0.5F);
+
+    w::DockNode* root = ds.root();
+    ASSERT_EQ(root->kind(), w::DockNodeKind::kSplit);
+
+    root->set_ratio(0.001F);  // below min
+    EXPECT_GE(root->ratio(), 0.05F);
+    EXPECT_LE(root->ratio(), 0.95F);
+
+    root->set_ratio(0.999F);  // above max
+    EXPECT_GE(root->ratio(), 0.05F);
+    EXPECT_LE(root->ratio(), 0.95F);
+
+    root->set_ratio(0.3F);    // valid
+    EXPECT_NEAR(root->ratio(), 0.3F, 1e-5F);
+}
+
+// =============================================================================
+// Case 16: drop_floating with kNone zone is a no-op.
+// =============================================================================
+TEST(UiWidgetsDockSpace, DropFloatingKNoneIsNoOp)
+{
+    w::DockSpace ds;
+    ds.set_rect(kFullRect);
+    ds.tab_merge(ds.root(), "Main");
+    ds.tab_merge(ds.root(), "Float");
+    ASSERT_TRUE(ds.undock("Float"));
+    EXPECT_EQ(ds.floating_count(), 1U);
+
+    // drop_floating with kNone must not consume the floating panel.
+    const bool result = ds.drop_floating(ds.root(), w::DockDropZone::kNone);
+    EXPECT_FALSE(result);
+    EXPECT_EQ(ds.floating_count(), 1U);
+}
+
+// =============================================================================
+// Case 17: restore() with a valid-magic but truncated payload returns false.
+// =============================================================================
+TEST(UiWidgetsDockSpace, RestoreTruncatedPayloadReturnsFalse)
+{
+    w::DockSpace src;
+    src.set_rect(kFullRect);
+    src.tab_merge(src.root(), "P0");
+    const std::vector<std::byte> full_bytes = src.serialize();
+
+    // Take only the first 8 bytes (magic only, no node data).
+    const std::vector<std::byte> truncated(full_bytes.begin(),
+                                           full_bytes.begin() + 8);
+
+    w::DockSpace dst;
+    dst.tab_merge(dst.root(), "Original");
+
+    EXPECT_FALSE(dst.restore(std::span<const std::byte>(truncated)));
+    // Tree must be unchanged.
+    ASSERT_EQ(dst.root()->panels().size(), 1U);
+    EXPECT_EQ(dst.root()->panels()[0], "Original");
+}
+
+// =============================================================================
+// Case 18: set_active_tab clamps when index >= panel count.
+// =============================================================================
+TEST(UiWidgetsDockSpace, SetActiveTabClampedToLastPanel)
+{
+    w::DockSpace ds;
+    ds.tab_merge(ds.root(), "P0");
+    ds.tab_merge(ds.root(), "P1");
+    ASSERT_EQ(ds.root()->panels().size(), 2U);
+
+    // Out-of-range: must clamp to last valid index (1).
+    ds.root()->set_active_tab(99U);
+    EXPECT_EQ(ds.root()->active_tab(), 1U);
+
+    // Valid in-range.
+    ds.root()->set_active_tab(0U);
+    EXPECT_EQ(ds.root()->active_tab(), 0U);
 }

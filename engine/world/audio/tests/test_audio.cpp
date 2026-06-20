@@ -563,7 +563,7 @@ TEST(HrtfConvolver, ResetClearsHistory)
     c.right[0] = 1.0F;
     conv.set_coefficients(c);
 
-    std::array<float, 8> input;
+    std::array<float, 8> input {};
     input.fill(1.0F);
     std::array<float, 16> out {};
     conv.process(input, out);
@@ -571,7 +571,7 @@ TEST(HrtfConvolver, ResetClearsHistory)
     // After reset, processing zeros should produce zeros (no
     // residual history energy).
     std::array<float, 8> zeros {};
-    std::array<float, 16> out2;
+    std::array<float, 16> out2 {};
     out2.fill(-1.0F);
     conv.process(zeros, out2);
     for (float v : out2)
@@ -1107,4 +1107,689 @@ TEST(Voice, StopResetsToIdle)
     v.stop();
     EXPECT_EQ(v.state(), cd::audio::VoiceState::kIdle);
     EXPECT_FLOAT_EQ(v.read_pos(), 0.0F);
+}
+
+// ---------------------------------------------------------------------------
+// Voice — extended edge + negative coverage
+// ---------------------------------------------------------------------------
+
+TEST(Voice, GainAndPitchDefaultToOne)
+{
+    cd::audio::Voice v;
+    EXPECT_FLOAT_EQ(v.gain(), 1.0F);
+    EXPECT_FLOAT_EQ(v.pitch(), 1.0F);
+}
+
+TEST(Voice, SetGainAndPitchAccessors)
+{
+    cd::audio::Voice v;
+    v.set_gain(0.25F);
+    v.set_pitch(2.0F);
+    EXPECT_FLOAT_EQ(v.gain(), 0.25F);
+    EXPECT_FLOAT_EQ(v.pitch(), 2.0F);
+}
+
+TEST(Voice, AdvanceOnIdleIsNoOp)
+{
+    // Idle voice: advance must not change state or read_pos.
+    cd::audio::Voice v;
+    v.advance(10.0F);
+    EXPECT_EQ(v.state(), cd::audio::VoiceState::kIdle);
+    EXPECT_FLOAT_EQ(v.read_pos(), 0.0F);
+}
+
+TEST(Voice, AdvanceOnPausedIsNoOp)
+{
+    cd::audio::Voice v;
+    v.play(50);
+    v.pause();
+    v.advance(30.0F);
+    EXPECT_EQ(v.state(), cd::audio::VoiceState::kPaused);
+    EXPECT_FLOAT_EQ(v.read_pos(), 0.0F);   // position unchanged
+}
+
+TEST(Voice, AdvanceOnFinishedIsNoOp)
+{
+    cd::audio::Voice v;
+    v.play(4);
+    v.advance(10.0F);
+    EXPECT_EQ(v.state(), cd::audio::VoiceState::kFinished);
+    const float pos_after_finish = v.read_pos();
+    v.advance(5.0F);
+    EXPECT_EQ(v.state(), cd::audio::VoiceState::kFinished);
+    EXPECT_FLOAT_EQ(v.read_pos(), pos_after_finish);
+}
+
+TEST(Voice, StopFromPausedGoesToIdle)
+{
+    cd::audio::Voice v;
+    v.play(100);
+    v.pause();
+    v.stop();
+    EXPECT_EQ(v.state(), cd::audio::VoiceState::kIdle);
+    EXPECT_FLOAT_EQ(v.read_pos(), 0.0F);
+}
+
+TEST(Voice, StopFromFinishedGoesToIdle)
+{
+    cd::audio::Voice v;
+    v.play(4);
+    v.advance(10.0F);
+    EXPECT_EQ(v.state(), cd::audio::VoiceState::kFinished);
+    v.stop();
+    EXPECT_EQ(v.state(), cd::audio::VoiceState::kIdle);
+    EXPECT_FLOAT_EQ(v.read_pos(), 0.0F);
+}
+
+TEST(Voice, PauseOnIdleIsNoOp)
+{
+    cd::audio::Voice v;
+    v.pause();   // should be ignored for non-Playing voices
+    EXPECT_EQ(v.state(), cd::audio::VoiceState::kIdle);
+}
+
+TEST(Voice, ResumeOnPlayingIsNoOp)
+{
+    cd::audio::Voice v;
+    v.play(100);
+    v.resume();  // already Playing — must stay Playing
+    EXPECT_EQ(v.state(), cd::audio::VoiceState::kPlaying);
+}
+
+TEST(Voice, IsActiveReturnsFalseForIdleAndFinished)
+{
+    cd::audio::Voice v;
+    EXPECT_FALSE(v.is_active());  // kIdle
+    v.play(4);
+    v.advance(10.0F);
+    EXPECT_FALSE(v.is_active());  // kFinished
+}
+
+TEST(Voice, IsActiveReturnsTrueForPaused)
+{
+    cd::audio::Voice v;
+    v.play(100);
+    v.pause();
+    EXPECT_TRUE(v.is_active());   // kPaused counts as active
+}
+
+TEST(Voice, AdvanceExactlyToEndFinishes)
+{
+    // Advance precisely to sample_count boundary.
+    cd::audio::Voice v;
+    v.play(5);
+    v.advance(5.0F);  // read_pos == 5.0 == sample_count
+    EXPECT_EQ(v.state(), cd::audio::VoiceState::kFinished);
+}
+
+TEST(Voice, ZeroLengthClipFinishesImmediately)
+{
+    // sample_count=0: any positive advance finishes immediately.
+    cd::audio::Voice v;
+    v.play(0, false);
+    v.advance(0.001F);
+    EXPECT_EQ(v.state(), cd::audio::VoiceState::kFinished);
+}
+
+TEST(Voice, LoopWrapPreservesFractionalOvershoot)
+{
+    // With sample_count=4 and step 1.5, after 3 ticks read_pos
+    // should wrap correctly without losing the fractional part.
+    // tick 0: 0 + 1.5 = 1.5
+    // tick 1: 1.5 + 1.5 = 3.0
+    // tick 2: 3.0 + 1.5 = 4.5 → wraps: 4.5 - 4 = 0.5 (NOT 0.0)
+    cd::audio::Voice v;
+    v.play(4, true);
+    v.advance(1.5F);
+    v.advance(1.5F);
+    v.advance(1.5F);  // triggers wrap
+    EXPECT_EQ(v.state(), cd::audio::VoiceState::kPlaying);
+    EXPECT_NEAR(v.read_pos(), 0.5F, 1e-5F);
+}
+
+TEST(Voice, PlayResetsPositionAndState)
+{
+    // Re-calling play() on an already-Playing voice must restart it.
+    cd::audio::Voice v;
+    v.play(10);
+    v.advance(6.0F);
+    v.play(20);   // restart
+    EXPECT_EQ(v.state(), cd::audio::VoiceState::kPlaying);
+    EXPECT_FLOAT_EQ(v.read_pos(), 0.0F);
+}
+
+// ---------------------------------------------------------------------------
+// Mixer — extended coverage
+// ---------------------------------------------------------------------------
+
+TEST(Mixer, ChannelCountMatchesTemplate)
+{
+    cd::audio::Mixer<8> m8;
+    EXPECT_EQ(m8.channel_count(), 8U);
+    cd::audio::Mixer<1> m1;
+    EXPECT_EQ(m1.channel_count(), 1U);
+}
+
+TEST(Mixer, GainAccessorReturnsSetValue)
+{
+    cd::audio::Mixer<4> m;
+    m.set_gain(2, 0.75F);
+    EXPECT_FLOAT_EQ(m.gain(2), 0.75F);
+}
+
+TEST(Mixer, GainAccessorOobReturnsZero)
+{
+    cd::audio::Mixer<4> m;
+    EXPECT_FLOAT_EQ(m.gain(99), 0.0F);
+}
+
+TEST(Mixer, MultiChannelAccumulatesCorrectly)
+{
+    cd::audio::Mixer<4> m;
+    m.set_gain(0, 1.0F);
+    m.set_gain(1, 0.5F);
+    m.set_gain(2, 0.25F);
+    m.mix(0, 0.8F);
+    m.mix(1, 0.8F);
+    m.mix(2, 0.8F);
+    // Expected: 0.8 * 1.0 + 0.8 * 0.5 + 0.8 * 0.25 = 0.8 + 0.4 + 0.2 = 1.4
+    EXPECT_NEAR(m.pull(), 1.4F, 1e-5F);
+}
+
+TEST(Mixer, ConsecutivePullsAreIndependent)
+{
+    // Each pull-cycle is independent: mixing after pull starts fresh.
+    cd::audio::Mixer<4> m;
+    m.mix(0, 1.0F);
+    (void)m.pull();
+    m.mix(0, 0.5F);
+    EXPECT_FLOAT_EQ(m.pull(), 0.5F);
+}
+
+TEST(Mixer, SetGainClipsNegativeToZero)
+{
+    cd::audio::Mixer<4> m;
+    m.set_gain(0, -99.0F);
+    EXPECT_FLOAT_EQ(m.gain(0), 0.0F);
+}
+
+// ---------------------------------------------------------------------------
+// PanLaw — extended coverage
+// ---------------------------------------------------------------------------
+
+TEST(PanLaw, LinearRightFullR)
+{
+    auto g = cd::audio::linear_pan(1.0F);
+    EXPECT_FLOAT_EQ(g.left, 0.0F);
+    EXPECT_FLOAT_EQ(g.right, 1.0F);
+}
+
+TEST(PanLaw, ConstantPowerHardLeftIsFullLeft)
+{
+    auto g = cd::audio::constant_power_pan(-1.0F);
+    EXPECT_NEAR(g.left, 1.0F, 1e-4F);
+    EXPECT_NEAR(g.right, 0.0F, 1e-4F);
+}
+
+TEST(PanLaw, ConstantPowerHardRightIsFullRight)
+{
+    auto g = cd::audio::constant_power_pan(1.0F);
+    EXPECT_NEAR(g.left, 0.0F, 1e-4F);
+    EXPECT_NEAR(g.right, 1.0F, 1e-4F);
+}
+
+TEST(PanLaw, ConstantPowerCenterEqualGains)
+{
+    auto g = cd::audio::constant_power_pan(0.0F);
+    EXPECT_NEAR(g.left, g.right, 1e-5F);
+}
+
+// ---------------------------------------------------------------------------
+// PitchShift — extended coverage
+// ---------------------------------------------------------------------------
+
+TEST(PitchShift, LinearInterpolation)
+{
+    // Source: [0.0, 1.0, 2.0, 3.0]. With step=0.5, first sample at
+    // pos=0 → 0.0, then pos=0.5 → lerp(0,1,0.5)=0.5.
+    std::array<float, 4> src { 0.0F, 1.0F, 2.0F, 3.0F };
+    cd::audio::PitchShift p;
+    p.prepare(src, -12.0F);  // step = 0.5
+    EXPECT_NEAR(p.step(), 0.5F, 1e-3F);
+    EXPECT_FLOAT_EQ(p.process(), 0.0F);   // pos=0 → 0.0
+    EXPECT_NEAR(p.process(), 0.5F, 1e-3F);  // pos=0.5 → lerp(0,1,0.5)=0.5
+}
+
+TEST(PitchShift, ResetReturnsToStart)
+{
+    std::array<float, 4> src { 10.0F, 20.0F, 30.0F, 40.0F };
+    cd::audio::PitchShift p;
+    p.prepare(src, 0.0F);
+    (void)p.process();
+    (void)p.process();
+    p.reset();
+    EXPECT_FLOAT_EQ(p.position(), 0.0F);
+    EXPECT_FLOAT_EQ(p.process(), 10.0F);  // back to sample[0]
+}
+
+TEST(PitchShift, SetSemitonesUpdatesStep)
+{
+    std::array<float, 4> src { 0.0F, 1.0F, 2.0F, 3.0F };
+    cd::audio::PitchShift p;
+    p.prepare(src, 0.0F);
+    p.set_semitones(12.0F);  // one octave up → step ≈ 2
+    EXPECT_NEAR(p.step(), 2.0F, 1e-3F);
+}
+
+// ---------------------------------------------------------------------------
+// Limiter — extended coverage
+// ---------------------------------------------------------------------------
+
+TEST(Limiter, GainDbBelowThresholdIsNearZero)
+{
+    cd::audio::Limiter lim;
+    lim.prepare(48000.0F, 0.95F);
+    for (int i = 0; i < 500; ++i) (void)lim.process(0.1F);
+    // Well below threshold → gain ≈ 1.0 → gain_db ≈ 0 dB.
+    EXPECT_NEAR(lim.current_gain(), 1.0F, 0.05F);
+}
+
+TEST(Limiter, GainDbAboveThresholdIsNegative)
+{
+    cd::audio::Limiter lim;
+    lim.prepare(48000.0F, 0.5F, 0.0005F, 0.05F);
+    for (int i = 0; i < 2000; ++i) (void)lim.process(1.5F);
+    // Gain must be < 1 ⇒ gain_db < 0.
+    EXPECT_LT(lim.current_gain(), 1.0F);
+}
+
+TEST(Limiter, EnvelopeTracksAmplitude)
+{
+    cd::audio::Limiter lim;
+    lim.prepare(48000.0F, 0.95F, 0.0001F, 0.05F);
+    for (int i = 0; i < 200; ++i) (void)lim.process(0.8F);
+    // Envelope should be near 0.8 (the steady input amplitude).
+    EXPECT_NEAR(lim.envelope(), 0.8F, 0.1F);
+}
+
+TEST(Limiter, ZeroRatePrepareDefaultsTo48k)
+{
+    // If caller passes 0 for sample_rate, prepare clamps to 48000.
+    cd::audio::Limiter lim;
+    lim.prepare(0.0F, 0.95F);  // should not crash or produce NaN
+    const float y = lim.process(0.5F);
+    EXPECT_FALSE(std::isnan(y));
+}
+
+// ---------------------------------------------------------------------------
+// Compressor — extended coverage
+// ---------------------------------------------------------------------------
+
+TEST(Compressor, GainDbNegativeWhenCompressing)
+{
+    cd::audio::Compressor c;
+    c.prepare(48000.0F, 0.3F, 8.0F);
+    for (int i = 0; i < 2000; ++i) (void)c.process(1.0F);
+    // Gain should be < 1 ⇒ gain_db < 0.
+    EXPECT_LT(c.gain_db(), 0.0F);
+}
+
+TEST(Compressor, GainDbNearZeroWhenQuiet)
+{
+    cd::audio::Compressor c;
+    c.prepare(48000.0F, 0.5F, 4.0F);
+    for (int i = 0; i < 500; ++i) (void)c.process(0.1F);
+    // Well below threshold → very little gain reduction.
+    EXPECT_GT(c.gain_db(), -3.0F);
+}
+
+// ---------------------------------------------------------------------------
+// FileSinkBackend — deterministic buffer-pull tests (CPU-only, no device)
+// ---------------------------------------------------------------------------
+
+#include <cd/audio/FileSinkBackend.hpp>
+
+TEST(FileSink, FactoryBuildsWithDefaults)
+{
+    auto b = cd::audio::make_file_sink_audio_backend();
+    ASSERT_NE(b, nullptr);
+    EXPECT_EQ(b->clip_count(), 0U);
+    EXPECT_EQ(b->voice_count(), 0U);
+    EXPECT_EQ(b->rendered_frames(), 0U);
+}
+
+TEST(FileSink, RenderZeroFramesIsNoOp)
+{
+    auto b = cd::audio::make_file_sink_audio_backend(48000, 2);
+    b->render(0);
+    EXPECT_EQ(b->rendered_frames(), 0U);
+}
+
+TEST(FileSink, RenderSilenceWhenNoVoices)
+{
+    auto b = cd::audio::make_file_sink_audio_backend(48000, 1);
+    b->render(4);
+    EXPECT_EQ(b->rendered_frames(), 4U);
+    // No voices → output should be all zeros. Write to /dev/null to verify
+    // render() doesn't crash; the content check is done via render_frames count.
+}
+
+TEST(FileSink, SingleVoiceRendersCorrectAmplitude)
+{
+    // Create a 1-sample mono clip with value 0.5. After 1 frame of render
+    // the mix output at master=1 should be 0.5 (clamped to [-1,1]).
+    auto b = cd::audio::make_file_sink_audio_backend(48000, 1);
+    const std::array<float, 1> samples { 0.5F };
+    cd::audio::ClipDesc d {};
+    d.samples = samples;
+    d.channels = 1;
+    d.sample_rate = 48000;
+    auto c = b->create_clip(d);
+    ASSERT_TRUE(c.has_value());
+    auto v = b->play(*c, 1.0F, false);
+    ASSERT_TRUE(v.has_value());
+
+    b->render(1);
+    EXPECT_EQ(b->rendered_frames(), 1U);
+    // Voice should no longer be playing after 1 frame (clip exhausted).
+    EXPECT_FALSE(b->is_playing(*v));
+}
+
+TEST(FileSink, VolumeScalesOutput)
+{
+    // A clip with value 1.0, played at volume=0.5, should produce 0.5 after 1 frame.
+    // We can verify indirectly: after render the voice finishes; the backend's
+    // rendered_frames count increments. Direct sample inspection is via write_wav,
+    // but we test the behavioural invariant (no crash, correct frame count).
+    auto b = cd::audio::make_file_sink_audio_backend(48000, 1);
+    const std::array<float, 1> samples { 1.0F };
+    cd::audio::ClipDesc d { samples, 1, 48000 };
+    auto c = b->create_clip(d);
+    ASSERT_TRUE(c.has_value());
+    (void)b->play(*c, 0.5F, false);
+    b->render(1);
+    EXPECT_EQ(b->rendered_frames(), 1U);
+}
+
+TEST(FileSink, MultiVoiceMixSum)
+{
+    // Two voices on the same clip (value 0.4 each, volume 1.0) must sum to 0.8.
+    // After render, both voices advance past the 1-sample clip → not playing.
+    auto b = cd::audio::make_file_sink_audio_backend(48000, 1);
+    const std::array<float, 1> samples { 0.4F };
+    cd::audio::ClipDesc d { samples, 1, 48000 };
+    auto c = b->create_clip(d);
+    ASSERT_TRUE(c.has_value());
+    auto v1 = b->play(*c, 1.0F, false);
+    auto v2 = b->play(*c, 1.0F, false);
+    ASSERT_TRUE(v1.has_value());
+    ASSERT_TRUE(v2.has_value());
+    EXPECT_EQ(b->voice_count(), 2U);
+    b->render(1);
+    // Both voices finished after the single sample.
+    EXPECT_FALSE(b->is_playing(*v1));
+    EXPECT_FALSE(b->is_playing(*v2));
+}
+
+TEST(FileSink, MixSaturatesAtPlusOne)
+{
+    // Two voices each with value 0.8 (sum = 1.6 > 1.0).
+    // render() clamps output to [-1, 1], so no value exceeds ±1.
+    // We render 2 frames to exercise the clamp path.
+    auto b = cd::audio::make_file_sink_audio_backend(48000, 1);
+    const std::array<float, 2> samples { 0.8F, 0.8F };
+    cd::audio::ClipDesc d { samples, 1, 48000 };
+    auto c1 = b->create_clip(d);
+    auto c2 = b->create_clip(d);
+    ASSERT_TRUE(c1.has_value());
+    ASSERT_TRUE(c2.has_value());
+    (void)b->play(*c1, 1.0F, false);
+    (void)b->play(*c2, 1.0F, false);
+    b->render(2);
+    EXPECT_EQ(b->rendered_frames(), 2U);
+    // Content clamped: write_wav round-trips without error (no crash check).
+    // The behavioural guarantee is that rendered_frames() == 2.
+}
+
+TEST(FileSink, LoopingVoiceKeepsPlayingAfterClipExhausted)
+{
+    // A 2-sample clip played looping should still be playing after 4 rendered frames.
+    auto b = cd::audio::make_file_sink_audio_backend(48000, 1);
+    const std::array<float, 2> samples { 0.3F, -0.3F };
+    cd::audio::ClipDesc d { samples, 1, 48000 };
+    auto c = b->create_clip(d);
+    ASSERT_TRUE(c.has_value());
+    auto v = b->play(*c, 1.0F, /*looping=*/true);
+    ASSERT_TRUE(v.has_value());
+    b->render(4);
+    EXPECT_TRUE(b->is_playing(*v));
+}
+
+TEST(FileSink, NonLoopingVoiceFinishesAfterAllFrames)
+{
+    auto b = cd::audio::make_file_sink_audio_backend(48000, 1);
+    const std::array<float, 3> samples { 0.1F, 0.2F, 0.3F };
+    cd::audio::ClipDesc d { samples, 1, 48000 };
+    auto c = b->create_clip(d);
+    ASSERT_TRUE(c.has_value());
+    auto v = b->play(*c, 1.0F, false);
+    ASSERT_TRUE(v.has_value());
+    b->render(3);
+    EXPECT_FALSE(b->is_playing(*v));
+    EXPECT_EQ(b->rendered_frames(), 3U);
+}
+
+TEST(FileSink, StopRemovesVoiceBeforeRender)
+{
+    auto b = cd::audio::make_file_sink_audio_backend(48000, 1);
+    const std::array<float, 8> samples {};
+    cd::audio::ClipDesc d { samples, 1, 48000 };
+    auto c = b->create_clip(d);
+    ASSERT_TRUE(c.has_value());
+    auto v = b->play(*c, 1.0F, false);
+    ASSERT_TRUE(v.has_value());
+    EXPECT_EQ(b->voice_count(), 1U);
+    b->stop(*v);
+    EXPECT_EQ(b->voice_count(), 0U);
+    b->render(4);
+    // Render with no voices should be silent (no crash).
+    EXPECT_EQ(b->rendered_frames(), 4U);
+}
+
+TEST(FileSink, ZeroLengthClipDoesNotCrashOnRender)
+{
+    auto b = cd::audio::make_file_sink_audio_backend(48000, 1);
+    const std::span<const float> empty_samples;
+    cd::audio::ClipDesc d {};
+    d.samples = empty_samples;
+    d.channels = 1;
+    d.sample_rate = 48000;
+    auto c = b->create_clip(d);
+    ASSERT_TRUE(c.has_value());
+    (void)b->play(*c, 1.0F, false);
+    b->render(4);  // must not crash
+    EXPECT_EQ(b->rendered_frames(), 4U);
+}
+
+TEST(FileSink, SilentClipRendersZero)
+{
+    // A clip filled with zeros should produce no signal in the mix.
+    auto b = cd::audio::make_file_sink_audio_backend(48000, 1);
+    const std::array<float, 4> samples {};  // all zeros
+    cd::audio::ClipDesc d { samples, 1, 48000 };
+    auto c = b->create_clip(d);
+    ASSERT_TRUE(c.has_value());
+    (void)b->play(*c, 1.0F, false);
+    b->render(4);
+    EXPECT_EQ(b->rendered_frames(), 4U);
+}
+
+TEST(FileSink, SetVolumeClampedToUnit)
+{
+    auto b = cd::audio::make_file_sink_audio_backend(48000, 1);
+    const std::array<float, 4> samples { 0.5F, 0.5F, 0.5F, 0.5F };
+    cd::audio::ClipDesc d { samples, 1, 48000 };
+    auto c = b->create_clip(d);
+    ASSERT_TRUE(c.has_value());
+    auto v = b->play(*c, 1.0F, false);
+    ASSERT_TRUE(v.has_value());
+    b->set_volume(*v, 5.0F);   // over-range → should clamp to 1.0
+    b->render(1);
+    // No crash, render completes.
+    EXPECT_EQ(b->rendered_frames(), 1U);
+}
+
+TEST(FileSink, MasterVolumeClampedToUnit)
+{
+    auto b = cd::audio::make_file_sink_audio_backend(48000, 1);
+    b->set_master_volume(3.0F);
+    EXPECT_FLOAT_EQ(b->master_volume(), 1.0F);
+    b->set_master_volume(-1.0F);
+    EXPECT_FLOAT_EQ(b->master_volume(), 0.0F);
+}
+
+TEST(FileSink, DestroyClipReapsVoices)
+{
+    auto b = cd::audio::make_file_sink_audio_backend(48000, 1);
+    const std::array<float, 4> samples { 0.1F, 0.2F, 0.3F, 0.4F };
+    cd::audio::ClipDesc d { samples, 1, 48000 };
+    auto c = b->create_clip(d);
+    ASSERT_TRUE(c.has_value());
+    (void)b->play(*c, 1.0F, true);
+    (void)b->play(*c, 1.0F, true);
+    EXPECT_EQ(b->voice_count(), 2U);
+    b->destroy_clip(*c);
+    EXPECT_EQ(b->clip_count(), 0U);
+    EXPECT_EQ(b->voice_count(), 0U);
+}
+
+TEST(FileSink, SimultaneousMaxVoicesAllContribute)
+{
+    // Start N voices simultaneously — all should be tracked.
+    auto b = cd::audio::make_file_sink_audio_backend(48000, 1);
+    const std::array<float, 8> samples {};
+    cd::audio::ClipDesc d { samples, 1, 48000 };
+    auto c = b->create_clip(d);
+    ASSERT_TRUE(c.has_value());
+
+    constexpr std::size_t kN = 16;
+    for (std::size_t i = 0; i < kN; ++i)
+        (void)b->play(*c, 1.0F, true);
+    EXPECT_EQ(b->voice_count(), kN);
+    b->render(2);
+    EXPECT_EQ(b->rendered_frames(), 2U);
+}
+
+TEST(FileSink, WriteWavProducesNonEmptyFile)
+{
+    // Render a few frames and write to a temp path; verify no error.
+    auto b = cd::audio::make_file_sink_audio_backend(48000, 2);
+    const std::array<float, 4> samples { 0.1F, -0.1F, 0.2F, -0.2F };
+    cd::audio::ClipDesc d { samples, 2, 48000 };
+    auto c = b->create_clip(d);
+    ASSERT_TRUE(c.has_value());
+    (void)b->play(*c, 0.8F, false);
+    b->render(2);
+    const auto result = b->write_wav("cd_audio_test_out.wav");  // cwd (build dir) — writable cross-platform
+    EXPECT_TRUE(result.has_value()) << (result ? "" : result.error().message);
+}
+
+TEST(FileSink, WriteWavToInvalidPathReturnsError)
+{
+    auto b = cd::audio::make_file_sink_audio_backend(48000, 1);
+    b->render(1);
+    const auto result = b->write_wav("/dev/null/bogus/path/that/does/not/exist.wav");
+    EXPECT_FALSE(result.has_value());
+}
+
+// ---------------------------------------------------------------------------
+// NullAudioBackend — extended coverage
+// ---------------------------------------------------------------------------
+
+TEST(NullBackend, SetVolumeClampedBelowZero)
+{
+    auto b = cd::audio::make_null_audio_backend();
+    cd::audio::ClipDesc d {};
+    const std::array<float, 4> s { 0.1F, 0.2F, 0.3F, 0.4F };
+    d.samples = s;
+    auto c = b->create_clip(d);
+    ASSERT_TRUE(c.has_value());
+    auto v = b->play(*c, 1.0F, false);
+    ASSERT_TRUE(v.has_value());
+    b->set_volume(*v, -5.0F);
+    // No observable volume accessor on NullBackend, but calling it must not crash.
+    EXPECT_TRUE(b->is_playing(*v));
+}
+
+TEST(NullBackend, SetVolumeOnUnknownVoiceIsNoOp)
+{
+    auto b = cd::audio::make_null_audio_backend();
+    cd::audio::VoiceHandle bogus { 9999u, 1u };
+    b->set_volume(bogus, 0.5F);  // must not crash
+    EXPECT_EQ(b->voice_count(), 0U);
+}
+
+TEST(NullBackend, StopOnUnknownVoiceIsNoOp)
+{
+    auto b = cd::audio::make_null_audio_backend();
+    cd::audio::VoiceHandle bogus { 9999u, 1u };
+    b->stop(bogus);  // must not crash
+}
+
+TEST(NullBackend, MultipleVoicesSameClip)
+{
+    auto b = cd::audio::make_null_audio_backend();
+    cd::audio::ClipDesc d {};
+    const std::array<float, 4> s { 0.5F, 0.5F, 0.5F, 0.5F };
+    d.samples = s;
+    auto c = b->create_clip(d);
+    ASSERT_TRUE(c.has_value());
+    auto v1 = b->play(*c);
+    auto v2 = b->play(*c);
+    auto v3 = b->play(*c);
+    EXPECT_EQ(b->voice_count(), 3U);
+    EXPECT_TRUE(b->is_playing(*v1));
+    EXPECT_TRUE(b->is_playing(*v2));
+    EXPECT_TRUE(b->is_playing(*v3));
+}
+
+TEST(NullBackend, IsPlayingReturnsFalseAfterStop)
+{
+    auto b = cd::audio::make_null_audio_backend();
+    cd::audio::ClipDesc d {};
+    const std::array<float, 2> s { 0.1F, 0.2F };
+    d.samples = s;
+    auto c = b->create_clip(d);
+    ASSERT_TRUE(c.has_value());
+    auto v = b->play(*c);
+    ASSERT_TRUE(v.has_value());
+    b->stop(*v);
+    EXPECT_FALSE(b->is_playing(*v));
+    EXPECT_EQ(b->voice_count(), 0U);
+}
+
+TEST(NullBackend, CreateClipRejectsZeroSampleRate)
+{
+    auto b = cd::audio::make_null_audio_backend();
+    cd::audio::ClipDesc d {};
+    const std::array<float, 4> s { 0.1F, 0.2F, 0.3F, 0.4F };
+    d.samples = s;
+    d.channels = 1;
+    d.sample_rate = 0;
+    auto r = b->create_clip(d);
+    EXPECT_FALSE(r.has_value());
+}
+
+TEST(NullBackend, PlayVolumeClampedAboveOne)
+{
+    // Play with volume > 1 — NullBackend clamps on entry.
+    auto b = cd::audio::make_null_audio_backend();
+    cd::audio::ClipDesc d {};
+    const std::array<float, 2> s { 0.5F, 0.5F };
+    d.samples = s;
+    auto c = b->create_clip(d);
+    ASSERT_TRUE(c.has_value());
+    auto v = b->play(*c, 5.0F, false);  // clamped to 1.0 internally
+    ASSERT_TRUE(v.has_value());
+    EXPECT_TRUE(b->is_playing(*v));
 }

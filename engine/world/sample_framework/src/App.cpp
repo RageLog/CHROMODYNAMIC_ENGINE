@@ -19,6 +19,7 @@ struct App::Impl
     AppConfig cfg;
     std::uint64_t frames_pumped { 0u };
     bool shutdown_requested { false };
+    bool has_run { false };          // double-init guard
     double total_time_sec { 0.0 };
 
     explicit Impl(AppConfig c) noexcept
@@ -49,8 +50,25 @@ bool App::shutdown_requested() const noexcept
     return p_->shutdown_requested;
 }
 
+std::uint64_t App::frames_pumped() const noexcept
+{
+    return p_->frames_pumped;
+}
+
+bool App::has_run() const noexcept
+{
+    return p_->has_run;
+}
+
 int App::run()
 {
+    // Double-init guard: run() must only be called once per instance.
+    if (p_->has_run)
+    {
+        return 1;
+    }
+    p_->has_run = true;
+
     // Boot phase. Returning an error must skip on_frame and still
     // invoke on_shutdown to honor the lifecycle contract.
     if (auto r = on_boot(); !r.has_value())

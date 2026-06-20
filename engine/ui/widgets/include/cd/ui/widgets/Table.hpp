@@ -112,8 +112,8 @@ public:
 
     Table(const Table&)            = default;
     Table& operator=(const Table&) = default;
-    Table(Table&&)                 = default;
-    Table& operator=(Table&&)      = default;
+    Table(Table&&) noexcept        = default;
+    Table& operator=(Table&&) noexcept      = default;
 
     // ---- Column / row setup -------------------------------------------------
 
@@ -142,7 +142,7 @@ public:
 
     [[nodiscard]] std::span<const Column> columns() const noexcept
     {
-        return std::span<const Column>(columns_.data(), columns_.size());
+        return { columns_.data(), columns_.size() };
     }
 
     /// Get cell text. Returns empty string_view when (row, col) is out of range

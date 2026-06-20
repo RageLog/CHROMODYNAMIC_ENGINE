@@ -362,3 +362,189 @@ TEST(UiColorPickerDraw, EmitsQuadsWithoutFont)
     EXPECT_GT(batcher.index_count(),  0U);
     EXPECT_GT(batcher.command_count(), 0U);
 }
+
+// =============================================================================
+// Case 7 -- HSV set_hsv: hue wraps correctly (negative and >360)
+// =============================================================================
+
+TEST(UiColorPickerHsv, SetHsvHueWrap)
+{
+    w::ColorPicker cp;
+    cp.set_rect(kPickerRect);
+
+    // Negative hue: -90 should normalise to 270.
+    cp.set_hsv(-90.0F, 1.0F, 1.0F);
+    EXPECT_NEAR(cp.hue(), 270.0F, 1e-3F);
+
+    // Hue > 360: 450 should normalise to 90.
+    cp.set_hsv(450.0F, 1.0F, 1.0F);
+    EXPECT_NEAR(cp.hue(), 90.0F, 1e-3F);
+
+    // Exactly 360: wraps to 0.
+    cp.set_hsv(360.0F, 0.5F, 0.5F);
+    EXPECT_NEAR(cp.hue(), 0.0F, 1e-3F);
+}
+
+// =============================================================================
+// Case 8 -- set_hsv clamps s and v to [0,1]
+// =============================================================================
+
+TEST(UiColorPickerHsv, SetHsvClampsOutOfRange)
+{
+    w::ColorPicker cp;
+    cp.set_rect(kPickerRect);
+
+    cp.set_hsv(180.0F, -0.5F, 2.0F);
+    EXPECT_NEAR(cp.saturation(), 0.0F, 1e-5F);
+    EXPECT_NEAR(cp.brightness(), 1.0F, 1e-5F);
+}
+
+// =============================================================================
+// Case 9 -- set_hsv preserves hue for greyscale (s near 0)
+// =============================================================================
+
+TEST(UiColorPickerHsv, GreyscalePreservesHue)
+{
+    w::ColorPicker cp;
+    cp.set_rect(kPickerRect);
+
+    // Set a known hue, then drop saturation to zero.
+    cp.set_hsv(200.0F, 1.0F, 1.0F);
+    const float hue_before = cp.hue();
+
+    // Setting an RGB value that is grey should not clobber the hue.
+    cp.set_value(w::ColorF { 0.5F, 0.5F, 0.5F, 1.0F });
+    // sync_hsv_from_rgb preserves hue when saturation collapses.
+    EXPECT_NEAR(cp.hue(), hue_before, 1e-2F);
+}
+
+// =============================================================================
+// Case 10 -- on_change fires ONLY on drag-release, not during intermediate ticks
+// =============================================================================
+
+TEST(UiColorPickerCallback, OnChangeFiresOnlyOnRelease)
+{
+    int call_count = 0;
+    w::ColorPicker cp { w::ColorF { 1.0F, 0.0F, 0.0F, 1.0F },
+                        [&](w::ColorF) { ++call_count; } };
+    cp.set_rect(kPickerRect);
+
+    // Slider y-coord for R channel.
+    const float r_mid_y = 159.6F + 14.4F;
+    const float r_mid_x = 4.0F + 126.0F;   // 50% along track
+
+    // Press — no callback.
+    cp.tick(make_press(r_mid_x, r_mid_y));
+    EXPECT_EQ(call_count, 0);
+
+    // Drag — still no callback.
+    cp.tick(make_drag(r_mid_x + 20.0F, r_mid_y));
+    EXPECT_EQ(call_count, 0);
+
+    // Release — callback fires exactly once.
+    cp.tick(make_release(r_mid_x + 20.0F, r_mid_y));
+    EXPECT_EQ(call_count, 1);
+}
+
+// =============================================================================
+// Case 11 -- set_value updates the hex_string mirror
+// =============================================================================
+
+TEST(UiColorPickerValue, SetValueUpdatesHexString)
+{
+    w::ColorPicker cp;
+    cp.set_value(w::ColorF { 1.0F, 0.0F, 0.0F, 1.0F });
+    EXPECT_EQ(cp.hex_string(), "#FF0000");
+
+    cp.set_value(w::ColorF { 0.0F, 1.0F, 0.0F, 0.5F });
+    // alpha=0.5 -> 0x80 -> hex has 9 chars
+    const std::string s = cp.hex_string();
+    ASSERT_EQ(s[0], '#');
+    EXPECT_EQ(s.size(), 9U);
+}
+
+// =============================================================================
+// Case 12 -- ColorF to_color8 / from_color8 round-trip stays within 1 LSB
+// =============================================================================
+
+TEST(UiColorPickerColorF, ToColor8FromColor8RoundTrip)
+{
+    const w::ColorF orig { 0.2F, 0.5F, 0.8F, 0.6F };
+    const w::Color c8 = orig.to_color8();
+    const w::ColorF back = w::ColorF::from_color8(c8);
+
+    EXPECT_NEAR(back.r, orig.r, 1.0F / 255.0F);
+    EXPECT_NEAR(back.g, orig.g, 1.0F / 255.0F);
+    EXPECT_NEAR(back.b, orig.b, 1.0F / 255.0F);
+    EXPECT_NEAR(back.a, orig.a, 1.0F / 255.0F);
+}
+
+// =============================================================================
+// Case 13 -- HSV <-> RGB round-trip for primary colours
+// =============================================================================
+
+TEST(UiColorPickerHsv, HsvRgbRoundTrip)
+{
+    // Primary and secondary colours have well-known HSV values.
+    struct Sample { float r; float g; float b; float hue; float sat; float val; };
+    constexpr std::array<Sample, 6> kSamples {{
+        { 1.0F, 0.0F, 0.0F,   0.0F, 1.0F, 1.0F },   // red
+        { 0.0F, 1.0F, 0.0F, 120.0F, 1.0F, 1.0F },   // green
+        { 0.0F, 0.0F, 1.0F, 240.0F, 1.0F, 1.0F },   // blue
+        { 1.0F, 1.0F, 0.0F,  60.0F, 1.0F, 1.0F },   // yellow
+        { 0.0F, 1.0F, 1.0F, 180.0F, 1.0F, 1.0F },   // cyan
+        { 1.0F, 0.0F, 1.0F, 300.0F, 1.0F, 1.0F },   // magenta
+    }};
+
+    for (const auto& s : kSamples)
+    {
+        const w::Float3 hsv = w::rgb_to_hsv(s.r, s.g, s.b);
+        EXPECT_NEAR(hsv.x, s.hue, 0.5F) << "hue r=" << s.r;
+        EXPECT_NEAR(hsv.y, s.sat, 1e-4F);
+        EXPECT_NEAR(hsv.z, s.val, 1e-4F);
+
+        const w::Float3 rgb = w::hsv_to_rgb(s.hue, s.sat, s.val);
+        EXPECT_NEAR(rgb.x, s.r, 1e-4F);
+        EXPECT_NEAR(rgb.y, s.g, 1e-4F);
+        EXPECT_NEAR(rgb.z, s.b, 1e-4F);
+    }
+}
+
+// =============================================================================
+// Case 14 -- Palette pick loads a previously committed colour
+// =============================================================================
+
+TEST(UiColorPickerPalette, PalettePickRestoresCommittedColour)
+{
+    w::ColorPicker cp;
+    cp.set_rect(kPickerRect);
+
+    // Commit a known colour.
+    const w::ColorF kRed { 1.0F, 0.0F, 0.0F, 1.0F };
+    cp.set_value(kRed);
+    cp.commit_to_palette();
+
+    // Change to something else.
+    cp.set_value(w::ColorF { 0.0F, 0.0F, 1.0F, 1.0F });
+    EXPECT_NEAR(cp.value().r, 0.0F, 1e-4F);
+
+    // Click the first (most-recently committed) swatch.
+    // The palette row starts at some y below the sliders; use a simulated
+    // position that is inside palette_row — we verify the palette data directly
+    // since the exact pixel geometry is layout-internal.
+    ASSERT_EQ(cp.palette_used(), 1U);
+    EXPECT_NEAR(cp.palette()[0].r, kRed.r, 1.0F / 255.0F);
+}
+
+// =============================================================================
+// Case 15 -- Hex parse: lowercase hex digits accepted
+// =============================================================================
+
+TEST(UiColorPickerHex, LowercaseHexDigitsAccepted)
+{
+    w::ColorPicker cp;
+    EXPECT_TRUE(cp.set_from_hex("#ff8000"));
+    EXPECT_NEAR(cp.value().r, 1.0F,             1e-3F);
+    EXPECT_NEAR(cp.value().g, 128.0F / 255.0F,  1e-3F);
+    EXPECT_NEAR(cp.value().b, 0.0F,             1e-3F);
+}

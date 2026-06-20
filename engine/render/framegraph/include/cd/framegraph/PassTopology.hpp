@@ -22,6 +22,7 @@
 
 #include <cd/core/Defines.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <queue>
 #include <unordered_map>
@@ -70,6 +71,32 @@ struct TopoResult
     }
     out.has_cycle = (out.order.size() != node_count);
     return out;
+}
+
+/// Identify the nodes that could NOT be topologically ordered — i.e. the nodes
+/// that participate in (or are dominated by) a cycle. When `topo_sort` reports
+/// `has_cycle`, callers building a render/job DAG need the *offending* node set
+/// for a useful diagnostic ("pass X feeds a cycle"), not just a bool.
+///
+/// Returns the sorted, ascending list of node IDs absent from `result.order`.
+/// Empty when the graph is acyclic (every node was scheduled). Pure: it derives
+/// the answer from the already-computed order, touching no device/graph state.
+[[nodiscard]] inline std::vector<std::uint32_t>
+topo_cyclic_nodes(std::uint32_t node_count, const TopoResult& result)
+{
+    std::vector<bool> scheduled(node_count, false);
+    for (const auto n : result.order)
+        if (n < node_count)
+            scheduled[n] = true;
+
+    std::vector<std::uint32_t> cyclic;
+    for (std::uint32_t i = 0; i < node_count; ++i)
+        if (!scheduled[i])
+            cyclic.push_back(i);
+    // Already ascending by construction; keep the post-condition explicit so
+    // callers may rely on a deterministic, sorted diagnostic list.
+    std::ranges::sort(cyclic);
+    return cyclic;
 }
 
 }  // namespace cd::framegraph

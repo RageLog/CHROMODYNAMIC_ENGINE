@@ -12,8 +12,11 @@
 //           wraps around the head (~21 cm head radius model).
 //   ILD  — Interaural Level Difference: linear gain split between L and R
 //           channels based on azimuth (simple cos/sin shadow model).
-//   Distance attenuation — inverse-square (1/r) law clamped to [inner, outer]
-//           radius:  0 attenuation inside inner, 0 gain outside outer.
+//   Distance attenuation — three selectable models clamped to [inner, outer]:
+//           kLinear      : atten = inner / d            (OpenAL LINEAR_DISTANCE)
+//           kInverseSquare: atten = (inner / d)^2       (physical 1/r^2 law)
+//           kExponential : atten = exp(-rolloff*(d-inner)/inner)
+//           All models clamp to 1.0 inside inner, 0.0 outside outer.
 //   Doppler — classical shift: f' = f * (c + v_listener) / (c + v_source)
 //             approximated in linear pitch ratio.
 //
@@ -36,27 +39,56 @@ namespace cd::audio::spatial
 {
 
 // =============================================================================
+// AttenuationModel — selects how gain falls off with distance.
+//
+//   kLinear       : atten = inner / d
+//                   Matches OpenAL AL_LINEAR_DISTANCE_CLAMPED.  Smooth and
+//                   easy to tune; the default.
+//
+//   kInverseSquare: atten = (inner / d)^2
+//                   Physical acoustic law for a point source in free space.
+//                   More dramatic falloff; useful for gunshots, explosions.
+//
+//   kExponential  : atten = exp( -rolloff_factor * (d - inner) / inner )
+//                   Matches OpenAL AL_EXPONENT_DISTANCE_CLAMPED.  rolloff_factor
+//                   scales the decay rate: 1.0 = half power at d=inner*ln(2)+inner.
+//
+// All three models clamp to 1.0 when d <= inner and to 0.0 when d >= outer.
+// =============================================================================
+enum class AttenuationModel : uint8_t
+{
+    kLinear        = 0,  ///< inner / d               (default)
+    kInverseSquare = 1,  ///< (inner / d)^2
+    kExponential   = 2,  ///< exp(-rolloff*(d-inner)/inner)
+};
+
+// =============================================================================
 // SoundSource — describes a 3D positional sound emitter
 //
-// id            : unique emitter identifier (caller-assigned).
-// position      : world-space position [x, y, z] in metres.
-// velocity      : world-space velocity [x, y, z] in m/s (used for Doppler).
-// gain          : master gain scalar [0, ∞).  1.0 = unity.
-// pitch         : base pitch shift applied before Doppler (1.0 = none).
-// radius_inner  : distance (m) inside which attenuation is 1.0 (no falloff).
-// radius_outer  : distance (m) outside which attenuation is 0.0 (full cut).
-// loop          : hint to the 2D audio mixer whether this source loops.
+// id               : unique emitter identifier (caller-assigned).
+// position         : world-space position [x, y, z] in metres.
+// velocity         : world-space velocity [x, y, z] in m/s (used for Doppler).
+// gain             : master gain scalar [0, ∞).  1.0 = unity.
+// pitch            : base pitch shift applied before Doppler (1.0 = none).
+// radius_inner     : distance (m) inside which attenuation is 1.0 (no falloff).
+// radius_outer     : distance (m) outside which attenuation is 0.0 (full cut).
+// rolloff_factor   : exponential-model decay rate (ignored for other models).
+//                    1.0 = half power at d ≈ inner * (1 + ln 2) ≈ inner * 1.69.
+// attenuation_model: selects the distance falloff curve (see AttenuationModel).
+// loop             : hint to the 2D audio mixer whether this source loops.
 // =============================================================================
 struct SoundSource
 {
-    uint64_t                 id            { 0 };
-    std::array<float, 3>     position      { 0.0F, 0.0F, 0.0F };
-    std::array<float, 3>     velocity      { 0.0F, 0.0F, 0.0F };
-    float                    gain          { 1.0F };
-    float                    pitch         { 1.0F };
-    float                    radius_inner  { 1.0F };
-    float                    radius_outer  { 20.0F };
-    bool                     loop          { false };
+    uint64_t                 id                 { 0 };
+    std::array<float, 3>     position           { 0.0F, 0.0F, 0.0F };
+    std::array<float, 3>     velocity           { 0.0F, 0.0F, 0.0F };
+    float                    gain               { 1.0F };
+    float                    pitch              { 1.0F };
+    float                    radius_inner       { 1.0F };
+    float                    radius_outer       { 20.0F };
+    float                    rolloff_factor     { 1.0F };
+    AttenuationModel         attenuation_model  { AttenuationModel::kLinear };
+    bool                     loop               { false };
 };
 
 // =============================================================================

@@ -89,12 +89,24 @@ public:
     [[nodiscard]] const AppConfig& config() const noexcept;
 
     /// Set from inside on_frame to break the loop early. Polled by the
-    /// driver after every on_frame invocation.
+    /// driver after every on_frame invocation. Idempotent — safe to call
+    /// multiple times.
     void request_shutdown() noexcept;
 
     /// True after `request_shutdown` was called or the M2A frame cap
     /// has been reached.
     [[nodiscard]] bool shutdown_requested() const noexcept;
+
+    /// Number of on_frame calls completed so far. Returns 0 before run()
+    /// and after a boot failure. Updated atomically relative to the
+    /// single-threaded frame loop — read-only from on_frame itself.
+    [[nodiscard]] std::uint64_t frames_pumped() const noexcept;
+
+    /// Guard against double invocation. Returns non-zero immediately if
+    /// run() has already been called on this instance (either completed
+    /// or in progress). Calling run() a second time is a programming
+    /// error; the guard surfaces it without crashing.
+    [[nodiscard]] bool has_run() const noexcept;
 
 protected:
     /// Allocate sample-owned resources. Called once before the first

@@ -258,3 +258,145 @@ TEST(UiWidgetsTreeView, ToggleExpandOutOfRangeIsNoOp)
     EXPECT_EQ(tv.node_count(), 5U);
     EXPECT_FALSE(tv.node(0U).expanded);
 }
+
+// =============================================================================
+// Case 8: set_nodes resets the selection to empty.
+// =============================================================================
+TEST(UiWidgetsTreeView, SetNodesResetsSelection)
+{
+    w::TreeView tv;
+    const auto nodes = simple_tree();
+    tv.set_nodes(nodes);
+
+    // Select a node.
+    const float click_y = kBounds.y + w::TreeView::kRowHeight * 0.5F;
+    tv.simulate_click(kBounds.x + 50.0F, click_y, kBounds);
+    ASSERT_TRUE(tv.selected_node_index().has_value());
+
+    // Replace nodes — selection must clear.
+    tv.set_nodes(nodes);
+    EXPECT_FALSE(tv.selected_node_index().has_value());
+}
+
+// =============================================================================
+// Case 9: clear_selection removes the selection without altering nodes.
+// =============================================================================
+TEST(UiWidgetsTreeView, ClearSelectionRemovesSelectionOnly)
+{
+    w::TreeView tv;
+    const auto nodes = simple_tree();
+    tv.set_nodes(nodes);
+
+    const float click_y = kBounds.y + w::TreeView::kRowHeight * 0.5F;
+    tv.simulate_click(kBounds.x + 50.0F, click_y, kBounds);
+    ASSERT_TRUE(tv.selected_node_index().has_value());
+
+    tv.clear_selection();
+    EXPECT_FALSE(tv.selected_node_index().has_value());
+    // Nodes unchanged.
+    EXPECT_EQ(tv.node_count(), 5U);
+}
+
+// =============================================================================
+// Case 10: root_count reflects multi-root trees correctly.
+// =============================================================================
+TEST(UiWidgetsTreeView, RootCountCorrectForMultiRootTree)
+{
+    // simple_tree has roots at indices 0, 2, 4 (nodes 1 and 3 are children).
+    w::TreeView tv;
+    const auto nodes = simple_tree();
+    tv.set_nodes(nodes);
+
+    EXPECT_EQ(tv.root_count(), 3U);
+
+    // A single-root tree: chain 0->1->2 (no node is unreferenced except 0).
+    std::vector<w::Node> chain(3U);
+    chain[0].id = "r"; chain[0].child_indices = { 1U };
+    chain[1].id = "m"; chain[1].child_indices = { 2U };
+    chain[2].id = "l";
+    tv.set_nodes(chain);
+    EXPECT_EQ(tv.root_count(), 1U);
+}
+
+// =============================================================================
+// Case 11: Expanding a node with no children does not add visible rows.
+// =============================================================================
+TEST(UiWidgetsTreeView, ExpandLeafNodeAddsNoVisibleRows)
+{
+    w::TreeView tv;
+    const auto nodes = simple_tree();
+    tv.set_nodes(nodes);
+
+    // Node 4 ("Root C") has no children.
+    ASSERT_TRUE(tv.node(4U).child_indices.empty());
+
+    r::DrawBatcher batcher;
+
+    // Collapsed: 3 roots visible -> 3 quads (12 vertices).
+    batcher.begin_frame();
+    tv.draw(batcher, make_theme(), kBounds);
+    EXPECT_EQ(batcher.vertex_count(), 3U * 4U);
+
+    // Toggle expand on the leaf node — should still show 3 roots.
+    tv.toggle_expand(4U);
+    batcher.begin_frame();
+    tv.draw(batcher, make_theme(), kBounds);
+    EXPECT_EQ(batcher.vertex_count(), 3U * 4U);
+}
+
+// =============================================================================
+// Case 12: simulate_click out-of-bounds (y below all rows) clears selection.
+// =============================================================================
+TEST(UiWidgetsTreeView, SimulateClickBelowAllRowsClearsSelection)
+{
+    w::TreeView tv;
+    const auto nodes = simple_tree();
+    tv.set_nodes(nodes);
+
+    // First select something.
+    const float click_y = kBounds.y + w::TreeView::kRowHeight * 0.5F;
+    tv.simulate_click(kBounds.x + 50.0F, click_y, kBounds);
+    ASSERT_TRUE(tv.selected_node_index().has_value());
+
+    // Click well below the visible area.
+    const float below_y = kBounds.y + 100.0F * w::TreeView::kRowHeight;
+    tv.simulate_click(kBounds.x + 50.0F, below_y, kBounds);
+    EXPECT_FALSE(tv.selected_node_index().has_value());
+}
+
+// =============================================================================
+// Case 13: Nested expand: expanding two levels reveals grandchildren.
+// =============================================================================
+TEST(UiWidgetsTreeView, NestedExpandRevealsTwoLevels)
+{
+    // Build: 0 -> 1 -> 2 (three-level chain).
+    std::vector<w::Node> nodes(3U);
+    nodes[0].id = "g"; nodes[0].child_indices = { 1U }; nodes[0].expanded = false;
+    nodes[1].id = "p"; nodes[1].child_indices = { 2U }; nodes[1].expanded = false;
+    nodes[2].id = "c";                                   nodes[2].expanded = false;
+
+    w::TreeView tv;
+    tv.set_nodes(nodes);
+    EXPECT_EQ(tv.root_count(), 1U);
+
+    r::DrawBatcher batcher;
+
+    // Collapsed: only root visible -> 1 quad (4 vertices).
+    batcher.begin_frame();
+    tv.draw(batcher, make_theme(), kBounds);
+    EXPECT_EQ(batcher.vertex_count(), 1U * 4U);
+
+    // Expand root only: root + parent visible (2 rows; parent at depth 1 -> 1 guide).
+    tv.toggle_expand(0U);
+    batcher.begin_frame();
+    tv.draw(batcher, make_theme(), kBounds);
+    // root (1 quad) + parent (1 bg + 1 guide = 2 quads) = 3 quads = 12 vertices.
+    EXPECT_EQ(batcher.vertex_count(), 3U * 4U);
+
+    // Expand parent too: root + parent + child visible.
+    // root depth 0 (1 quad), parent depth 1 (2 quads), child depth 2 (3 quads) = 6 quads.
+    tv.toggle_expand(1U);
+    batcher.begin_frame();
+    tv.draw(batcher, make_theme(), kBounds);
+    EXPECT_EQ(batcher.vertex_count(), 6U * 4U);
+}

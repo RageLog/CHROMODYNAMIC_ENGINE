@@ -176,7 +176,7 @@ public:
     // -- tab fields --
     [[nodiscard]] std::span<const std::string> panels() const noexcept
     {
-        return std::span<const std::string>(panels_.data(), panels_.size());
+        return { panels_.data(), panels_.size() };
     }
     [[nodiscard]] std::size_t active_tab() const noexcept { return active_tab_; }
     /// Set the active tab. Clamped to `panels().size() - 1` (no-op when empty).
@@ -255,8 +255,8 @@ public:
 
     DockSpace(const DockSpace&)            = delete;
     DockSpace& operator=(const DockSpace&) = delete;
-    DockSpace(DockSpace&&)                 = default;
-    DockSpace& operator=(DockSpace&&)      = default;
+    DockSpace(DockSpace&&) noexcept        = default;
+    DockSpace& operator=(DockSpace&&) noexcept = default;
 
     /// Whole-space pixel rect. The root node inherits this every tick.
     void set_rect(Rect r) noexcept { rect_ = r; }

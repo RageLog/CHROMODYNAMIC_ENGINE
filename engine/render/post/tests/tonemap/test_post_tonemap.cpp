@@ -9,6 +9,7 @@ namespace
 {
 
 using cd::post::tonemap::agx;
+using cd::post::tonemap::hable;
 using cd::post::tonemap::hill_aces;
 using cd::post::tonemap::narkowicz;
 using cd::post::tonemap::Operator;
@@ -56,8 +57,9 @@ TEST(PostTonemap, MonotonicallyIncreasing)
                      Operator::kHable, Operator::kAgx })
     {
         float prev = -1.0F;
-        for (float v = 0.0F; v <= 2.0F; v += 0.05F)
+        for (int vi = 0; vi <= 40; ++vi)
         {
+            const float v = 0.05F * static_cast<float>(vi);
             const auto out = tonemap({ v, v, v }, op);
             EXPECT_GE(out.x + kEps, prev) << "op=" << static_cast<int>(op)
                                           << " v=" << v;
@@ -101,6 +103,65 @@ TEST(PostTonemap, GlslDispatcherReturnsNonEmptyForEveryOperator)
         // Sanity: every operator's GLSL must define the cd_tonemap entry.
         EXPECT_NE(src.find("cd_tonemap"), std::string_view::npos)
             << "op=" << static_cast<int>(op);
+    }
+}
+
+// =============================================================================
+// Edge / contract coverage (≥80→100).
+// =============================================================================
+
+TEST(PostTonemap, OperatorEnumValuesAreStable)
+{
+    // The composite FS rounds pc.fx.x to these exact integer IDs; drift
+    // would silently re-route the tonemap operator in the rendered frame.
+    EXPECT_EQ(static_cast<int>(Operator::kNarkowicz), 0);
+    EXPECT_EQ(static_cast<int>(Operator::kHill), 1);
+    EXPECT_EQ(static_cast<int>(Operator::kHable), 2);
+    EXPECT_EQ(static_cast<int>(Operator::kAgx), 3);
+}
+
+TEST(PostTonemap, DispatcherMatchesDirectCallForEachOperator)
+{
+    const cd::math::Vec3f c { 0.6F, 0.3F, 0.9F };
+    const auto n = tonemap(c, Operator::kNarkowicz);
+    const auto h = tonemap(c, Operator::kHill);
+    const auto b = tonemap(c, Operator::kHable);
+    const auto a = tonemap(c, Operator::kAgx);
+    EXPECT_NEAR(n.x, narkowicz(c).x, kEps);
+    EXPECT_NEAR(h.y, hill_aces(c).y, kEps);
+    EXPECT_NEAR(b.z, hable(c).z, kEps);
+    EXPECT_NEAR(a.x, agx(c).x, kEps);
+}
+
+TEST(PostTonemap, HableWhitePointMapsNearUnity)
+{
+    // Hable normalises by 1/curve(W=11.2); feeding the white point W back in
+    // should land at ~1.0 (the curve's defined display-white anchor).
+    const auto out = hable({ 11.2F, 11.2F, 11.2F });
+    EXPECT_NEAR(out.x, 1.0F, 0.02F);
+}
+
+TEST(PostTonemap, HillAcesUnitInputIsBelowWhite)
+{
+    // Hill ACES at linear 1.0 sits below display white (the shoulder rolls
+    // off); lock it to a sane mid-high value so a coefficient typo trips.
+    const auto out = hill_aces({ 1.0F, 1.0F, 1.0F });
+    EXPECT_GT(out.x, 0.6F);
+    EXPECT_LT(out.x, 1.0F);
+}
+
+TEST(PostTonemap, AllOperatorsClampNegativeInputToZeroFloor)
+{
+    // Negative HDR (e.g. from an over-eager subtractive effect upstream)
+    // must not produce negative LDR — the inline clamp pins the floor at 0.
+    const cd::math::Vec3f neg { -1.0F, -0.5F, -0.25F };
+    for (auto op : { Operator::kNarkowicz, Operator::kHill,
+                     Operator::kHable, Operator::kAgx })
+    {
+        const auto o = tonemap(neg, op);
+        EXPECT_GE(o.x, 0.0F - kEps) << "op=" << static_cast<int>(op);
+        EXPECT_GE(o.y, 0.0F - kEps) << "op=" << static_cast<int>(op);
+        EXPECT_GE(o.z, 0.0F - kEps) << "op=" << static_cast<int>(op);
     }
 }
 

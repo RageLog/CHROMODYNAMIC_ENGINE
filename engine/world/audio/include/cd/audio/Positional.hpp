@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 
 namespace cd::audio
 {
@@ -144,7 +145,7 @@ to_local_direction(const ListenerPose& l, const cd::math::Vec3f& src) noexcept
     const float theta = std::atan2(local.x, std::max(local.z, 1.0e-6F));
     constexpr float kPiOver2 = 1.5707963F;
     const float pan = std::clamp(theta / kPiOver2, -1.0F, 1.0F);  // -1 left, +1 right
-    const float angle = (pan + 1.0F) * 0.25F * 3.14159265F;  // 0 → π/2
+    const float angle = (pan + 1.0F) * 0.25F * std::numbers::pi_v<float>;  // 0 → π/2
     const float L = std::cos(angle);
     const float R = std::sin(angle);
     return { std::clamp(attenuation * L, 0.0F, 1.0F),

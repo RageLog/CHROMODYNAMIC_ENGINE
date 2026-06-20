@@ -32,7 +32,7 @@ out-of-charter subsystem may remain — and only with an explicit one-paragraph 
 | **84** | time |
 | **83** | restir_di |
 | **82** | net_lobby · world_container · ddgi |
-| **80** | config · plugin · script · imgdiff · framegraph · debug_draw · post · audio · audio_spatial · net_matchmaker · physics_soft_body · sample_framework · ui_renderer_rhi · ui_widgets |
+| **80** | config · plugin · script · imgdiff · framegraph ✅ · debug_draw · post · audio · audio_spatial · net_matchmaker · physics_soft_body · sample_framework · ui_renderer_rhi · ui_widgets |
 
 ## Execution log
 - ✅ **Batch 1 (phase1253)** — tier 92 + non-golden tier-90 → 100%: frame_timing (ring/median bug-fix + last_dt/percentile/jitter + 21 tests), game::quest (10 tests, +1 test-offset fix), game::save (JSON forward-compat parser fix + 20 tests), bench (print max/stddev + 12 tests), game::ai_bt (UntilFailure+Condition nodes + 16 tests), game::cutscene_player (seek/restart/total_duration + 21 tests). ~100 new tests. 3 agent-introduced WAE fixed. Gate: build clean -Werror, ctest 317/317, no render touched.
@@ -135,3 +135,18 @@ out-of-charter subsystem may remain — and only with an explicit one-paragraph 
   - **script** (80→100): +48 tests/2 files (compile/runtime/missing Result split, moved-from degradation, instruction-cap, nil-padding, (nil,message) ECS contract, Vec/Mat operators, event unregister/erroring-handler) + stale "Wave 72" doc fix. No production-logic change.
   - **imgdiff** (80→100): +33 tests (ImageDiff/SsimLite/GaussianBlur/FlipLite/FlipFull/SsimGaussian edge + reference values). No FLIP/SSIM/Gaussian math touched (it IS the golden-diff tool).
   - Gate fixes: 1 compile (net_lobby missing <algorithm> for std::ranges::none_of) + 2 WAE (trigger hicpp-use-auto, ddgi bugprone-implicit-widening). Gate: build clean -Werror (0/0); ctest 332/332 (100%, +5 new bins, no flake); golden/sponza/chrome BYTE-IDENTICAL; WAE 0.
+- ✅ **Batch 10 (phase1263)** — FINAL tier 80, 10 libs → 100% (~298 new tests, 5 real bugs/features). **TIER 80 COMPLETE → MARATHON COMPLETE: every ≥80% lib now at genuine 100%.**
+  - **framegraph** (80→100): +14 tests + new host-side topo_cyclic_nodes() diagnostic. No scheduling change; aliasing+reorder SEALED (ADR-20260616).
+  - **debug_draw** (80→100): +21 tests. No vertex math change.
+  - **post** (80→100): +79 tests/10 files + new cd_test_post_camera bin (per-effect Settings/kernel/Push/GLSL contract locks). No effect math/GLSL/default touched. GTAO crude-integrator + exposure GPU-reduce + composite 3D-LUT SEALED.
+  - **audio** (80→100): +59 tests + 3 REAL BUGS (Voice loop-wrap fractional overshoot, set_volume + set_master_volume unclamped).
+  - **audio_spatial** (80→100): +27 tests + REAL FEATURE (3 attenuation models linear/inverse-square/exponential + rolloff_factor; default kLinear keeps existing behavior).
+  - **net_matchmaker** (80→100): +24 tests + REAL FEATURE (MatchmakingQueue + MatchTicket/TicketStatus/MatchResult + skill-window widening).
+  - **physics_soft_body** (80→100): +19 tests + 2 REAL FEATURES (Provot bending constraints + ground-plane collision w/ Coulomb friction; both opt-in → existing sims byte-identical). FEM/GPU SEALED.
+  - **sample_framework** (80→100): App lifecycle deepening (App.hpp +14, App.cpp +18) + 556 test lines.
+  - **ui_renderer_rhi** (80→100): +16 tests (glyph-atlas host path verified+tested) + PIMPL fix (Submitter default-ctor moved out-of-line so default-construction works cross-TU).
+  - **ui_widgets** (80→100): +39 tests across 7 widget files. NativeWindow cross-platform SEALED.
+  - Gate fixes: 2 compile (ui_renderer_rhi Submitter PIMPL incomplete-Impl on default-ctor → out-of-line; sample_framework 19× nodiscard app.run() → static_cast<void>) + 2 test-tolerance RCA (gtao fast_acos is an approximation: 0.01→0.2 + finiteness/ordering; sample dt float-seeded accumulation 1e-9→1e-6) + 47 WAE (26 argument-comment, 11 float-loop-induction→int, 3 pi-literal→std::numbers, 2 braced-init, 2 noexcept-move, audio contains/widening/member-init, net_matchmaker move-const/contains, use-auto, any_of, min-max, audio /tmp WAV→cwd path). Gate: build clean -Werror (0/0); ctest 334/334 (100%, +7 new bins); golden/sponza/chrome BYTE-IDENTICAL; WAE 0.
+
+## MARATHON COMPLETE
+All engine libraries that were at ≥80% implementation depth are now at genuine 100% (real implementation + tests, or formally-sealed multi-week out-of-charter subsystems). 11 commits phase1253–1263, 73 libraries driven to 100%, ~1875 new tests, ~17 real bugs/features. Every checkpoint: build clean -Werror, full ctest green, golden byte-identical, clang-tidy WAE clean.

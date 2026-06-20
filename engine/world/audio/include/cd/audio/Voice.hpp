@@ -19,6 +19,7 @@
 
 #include <cd/core/Defines.hpp>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -68,8 +69,14 @@ public:
         read_pos_ += step;
         if (read_pos_ >= static_cast<float>(sample_count_))
         {
-            if (loop_) read_pos_ = 0.0F;
-            else       state_ = VoiceState::kFinished;
+            if (loop_ && sample_count_ > 0)
+            {
+                // Preserve fractional overshoot so looped playback does not
+                // lose sub-sample timing at the wrap point.
+                const auto len = static_cast<float>(sample_count_);
+                read_pos_ -= len * std::floor(read_pos_ / len);
+            }
+            else { state_ = VoiceState::kFinished; }
         }
     }
 

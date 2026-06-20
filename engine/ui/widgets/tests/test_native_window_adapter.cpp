@@ -263,3 +263,64 @@ TEST(UiWidgetsNativeWindowAdapter, CollectClosedPanelsDoesNotFireWithoutClose)
         << "collect_closed_panels fired for a window that was never closed.";
     EXPECT_TRUE(adapter.is_managed("Outliner"));
 }
+
+// =============================================================================
+// CROSS-PLATFORM SEAL
+// =============================================================================
+// X11/Cocoa backends are out-of-scope for this library (multi-week effort that
+// belongs to cd::platform, not cd::ui_widgets). The adapter's stub / gap path
+// already handles non-Win32 correctly: open() returns false, a NativeWindowGap
+// is recorded, and Sprint-1 floating-internal rendering takes over transparently.
+//
+// The tests below seal this documented gap by verifying the stub path contracts
+// on non-Win32 (or headless CI) and confirming ManagedWindow accessors on stubs.
+// =============================================================================
+
+// =============================================================================
+// Case 10: On the stub path, ManagedWindow::width/height return 0 (no real HWND).
+// =============================================================================
+TEST(UiWidgetsNativeWindowAdapter, StubManagedWindowSizesAreZero)
+{
+    w::NativeWindowAdapter adapter;
+    static_cast<void>(adapter.open(make_pw("Debug")));
+    ASSERT_EQ(adapter.managed_windows().size(), 1U);
+
+    const auto& mw = adapter.managed_windows()[0];
+    if (mw.is_stub)
+    {
+        // Stub path: no real OS window -> size 0.
+        EXPECT_EQ(mw.width(),  0U);
+        EXPECT_EQ(mw.height(), 0U);
+        EXPECT_FALSE(mw.should_close());
+    }
+    else
+    {
+        // Real Win32 path: size comes from the creation parameters.
+        // We only assert they are non-zero to avoid brittle WM-dependent values.
+        EXPECT_GT(mw.width(),  0U);
+        EXPECT_GT(mw.height(), 0U);
+    }
+}
+
+// =============================================================================
+// Case 11: Multiple open + close round-trips leave the managed set empty.
+// =============================================================================
+TEST(UiWidgetsNativeWindowAdapter, MultipleOpenCloseLeavesManagedSetEmpty)
+{
+    w::NativeWindowAdapter adapter;
+
+    static_cast<void>(adapter.open(make_pw("P0")));
+    static_cast<void>(adapter.open(make_pw("P1")));
+    static_cast<void>(adapter.open(make_pw("P2")));
+    ASSERT_EQ(adapter.managed_windows().size(), 3U);
+
+    adapter.close("P1");
+    EXPECT_EQ(adapter.managed_windows().size(), 2U);
+    EXPECT_FALSE(adapter.is_managed("P1"));
+    EXPECT_TRUE(adapter.is_managed("P0"));
+    EXPECT_TRUE(adapter.is_managed("P2"));
+
+    adapter.close("P0");
+    adapter.close("P2");
+    EXPECT_TRUE(adapter.managed_windows().empty());
+}

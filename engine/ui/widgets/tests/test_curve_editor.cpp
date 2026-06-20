@@ -25,6 +25,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <limits>
 
 namespace w = cd::ui::widgets;
 
@@ -314,4 +315,175 @@ TEST(CurveEditor, FreeZeroTangentsHermiteArc)
     // Verify arc shape: value at t=0.25 should equal smoothstep(0.25)
     //   = 3*(0.0625) - 2*(0.015625) = 0.1875 - 0.03125 = 0.15625.
     EXPECT_NEAR(c.evaluate(0.25F), 0.15625F, kEps);
+}
+
+// =============================================================================
+// 11. set_keyframe with a new time re-sorts and returns the correct new index.
+// =============================================================================
+TEST(CurveEditor, SetKeyframeMoveResorts)
+{
+    // Start: keys at t=0, t=0.5, t=1.
+    w::Curve c{"move"};
+    w::KeyFrame k0; k0.time = 0.0F;  k0.value = 0.0F; k0.mode = w::TangentMode::kLinear;
+    w::KeyFrame k1; k1.time = 0.5F;  k1.value = 5.0F; k1.mode = w::TangentMode::kLinear;
+    w::KeyFrame k2; k2.time = 1.0F;  k2.value = 0.0F; k2.mode = w::TangentMode::kLinear;
+    (void)c.add_keyframe(k0);
+    (void)c.add_keyframe(k1);
+    (void)c.add_keyframe(k2);
+    ASSERT_EQ(c.keyframe_count(), 3U);
+
+    // Move the keyframe at index 2 (t=1) to t=0.25 — it should become index 1.
+    w::KeyFrame moved; moved.time = 0.25F; moved.value = 3.0F;
+    moved.mode = w::TangentMode::kLinear;
+    const std::size_t new_idx = c.set_keyframe(2U, moved);
+
+    EXPECT_EQ(new_idx, 1U);
+    // Order invariant: ascending by time.
+    for (std::size_t i = 1U; i < c.keyframe_count(); ++i)
+    {
+        EXPECT_LE(c.keyframes()[i - 1U].time, c.keyframes()[i].time);
+    }
+}
+
+// =============================================================================
+// 12. set_keyframe out-of-range is a no-op (returns the original index).
+// =============================================================================
+TEST(CurveEditor, SetKeyframeOutOfRangeIsNoOp)
+{
+    w::Curve c{"noop"};
+    w::KeyFrame k; k.time = 0.5F; k.value = 1.0F;
+    (void)c.add_keyframe(k);
+    ASSERT_EQ(c.keyframe_count(), 1U);
+
+    const std::size_t ret = c.set_keyframe(999U, k);
+    // No change; returned index is the original out-of-range value.
+    EXPECT_EQ(ret, 999U);
+    EXPECT_EQ(c.keyframe_count(), 1U);
+}
+
+// =============================================================================
+// 13. kFree tangent is NOT overwritten by auto-recompute when a neighbour changes.
+// =============================================================================
+TEST(CurveEditor, FreeTangentNotOverwrittenByAutoRecompute)
+{
+    // Two kAuto keys around a kFree key.
+    w::Curve c{"free"};
+    w::KeyFrame k0; k0.time = 0.0F; k0.value = 0.0F; k0.mode = w::TangentMode::kAuto;
+    w::KeyFrame k1; k1.time = 0.5F; k1.value = 1.0F; k1.mode = w::TangentMode::kFree;
+    k1.out_tangent = 99.0F;   // sentinel value
+    w::KeyFrame k2; k2.time = 1.0F; k2.value = 0.0F; k2.mode = w::TangentMode::kAuto;
+    (void)c.add_keyframe(k0);
+    (void)c.add_keyframe(k1);
+    (void)c.add_keyframe(k2);
+
+    // After a re-sort/recompute triggered by adding k2, the kFree knob (index 1)
+    // must retain its sentinel tangent.
+    EXPECT_NEAR(c.keyframes()[1U].out_tangent, 99.0F, kEps);
+    EXPECT_EQ(c.keyframes()[1U].mode, w::TangentMode::kFree);
+}
+
+// =============================================================================
+// 14. remove_curve clamps active curve index to the new last curve.
+// =============================================================================
+TEST(CurveEditor, RemoveCurveClampsActiveIndex)
+{
+    w::CurveEditor editor;
+    (void)editor.add_curve(w::Curve{"c0"});
+    (void)editor.add_curve(w::Curve{"c1"});
+    (void)editor.add_curve(w::Curve{"c2"});
+    editor.set_active_curve(2U);  // last
+    EXPECT_EQ(editor.active_curve(), 2U);
+
+    // Remove the active curve — active should clamp to new last (1).
+    editor.remove_curve(2U);
+    EXPECT_EQ(editor.curve_count(), 2U);
+    EXPECT_EQ(editor.active_curve(), 1U);
+}
+
+// =============================================================================
+// 15. set_view_range rejects degenerate (t_max <= t_min).
+// =============================================================================
+TEST(CurveEditor, SetViewRangeRejectsDegenerate)
+{
+    w::CurveEditor editor;
+    editor.set_view_range(0.0F, 1.0F, 0.0F, 1.0F);
+
+    // Try to set degenerate t range — must be ignored.
+    editor.set_view_range(0.5F, 0.5F, 0.0F, 1.0F);
+    EXPECT_NEAR(editor.view_t_min(), 0.0F, kEps);
+    EXPECT_NEAR(editor.view_t_max(), 1.0F, kEps);
+
+    // Try reverse t range — must be ignored.
+    editor.set_view_range(1.0F, 0.0F, 0.0F, 1.0F);
+    EXPECT_NEAR(editor.view_t_min(), 0.0F, kEps);
+    EXPECT_NEAR(editor.view_t_max(), 1.0F, kEps);
+}
+
+// =============================================================================
+// 16. Curve name and color accessors round-trip.
+// =============================================================================
+TEST(CurveEditor, CurveNameAndColorAccessors)
+{
+    w::Curve c{"velocity"};
+    EXPECT_EQ(c.name(), "velocity");
+
+    c.set_name("acceleration");
+    EXPECT_EQ(c.name(), "acceleration");
+
+    const w::Color kGreen { 0U, 200U, 0U, 255U };
+    c.set_color(kGreen);
+    EXPECT_EQ(c.color().g, kGreen.g);
+    EXPECT_EQ(c.color().r, 0U);
+}
+
+// =============================================================================
+// 17. CurveEditor::tick: drag (hold) on an existing knob moves it.
+//
+// Rect {0,0,200,100}, view_range [0..1, 0..1].
+// Keyframe at (t=0.8, v=0.2) maps to widget pixel:
+//   px = 0 + 0.8 * 200 = 160
+//   py = 0 + 100 - 0.2 * 100 = 80
+// Both inside the half-open rect [0,200) x [0,100). Radius 6 px => click
+// at (160, 80) hits the knob.
+// =============================================================================
+TEST(CurveEditor, TickDragMovesSelectedKeyframe)
+{
+    w::CurveEditor editor;
+    w::Curve c{"drag"};
+    w::KeyFrame k0; k0.time = 0.0F; k0.value = 0.0F; k0.mode = w::TangentMode::kFree;
+    w::KeyFrame k1; k1.time = 0.8F; k1.value = 0.2F; k1.mode = w::TangentMode::kFree;
+    (void)c.add_keyframe(k0);
+    (void)c.add_keyframe(k1);
+    (void)editor.add_curve(std::move(c));
+    editor.set_rect(w::Rect { 0.0F, 0.0F, 200.0F, 100.0F });
+    editor.set_view_range(0.0F, 1.0F, 0.0F, 1.0F);
+
+    // Press on the second keyframe (pixel 160, 80). focused=false so no context menu.
+    {
+        w::InputState press;
+        press.pointer.mouse_x      = 160.0F;
+        press.pointer.mouse_y      = 80.0F;
+        press.pointer.left_down    = true;
+        press.pointer.left_pressed = true;
+        press.focused              = false;
+        (void)editor.tick(press);
+    }
+
+    // Drag to pixel (100, 50) => curve space (0.5, 0.5).
+    {
+        w::InputState drag;
+        drag.pointer.mouse_x      = 100.0F;
+        drag.pointer.mouse_y      = 50.0F;
+        drag.pointer.left_down    = true;
+        drag.pointer.left_pressed = false;
+        drag.focused              = false;
+        const bool mutated = editor.tick(drag);
+        EXPECT_TRUE(mutated);
+    }
+
+    // After drag the selected keyframe should be near curve-space (0.5, 0.5).
+    const std::size_t sel = editor.selected_keyframe();
+    EXPECT_NE(sel, std::numeric_limits<std::size_t>::max());
+    EXPECT_NEAR(editor.curve(0U).keyframes()[sel].time,  0.5F, 0.05F);
+    EXPECT_NEAR(editor.curve(0U).keyframes()[sel].value, 0.5F, 0.05F);
 }

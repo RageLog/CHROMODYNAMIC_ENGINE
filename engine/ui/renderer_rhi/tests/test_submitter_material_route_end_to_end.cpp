@@ -237,3 +237,100 @@ TEST(SubmitterMaterialRouteEndToEnd, NoDescriptorVariantSpritSetAccessorsNoOp)
     EXPECT_FALSE(sub.set_sdf_atlas(cd::rhi::TextureViewHandle {},
                                    cd::rhi::SamplerHandle {}));
 }
+
+// -----------------------------------------------------------------------------
+// Glyph-atlas host path -- create-time binding. ≥80→100 marathon gap-close:
+// when the Sprint-2 variant carries an SDF sampler AND the caller pre-supplies
+// `info.atlas_view` + `info.atlas_sampler`, the factory must write the
+// CombinedImageSampler descriptor at create-time (NOT defer to set_sdf_atlas).
+// This is the documented "glyph atlas path lands w/ material variant" host
+// surface; it is purely host-side descriptor management and records cleanly
+// against a real Vulkan device. We never present, so no rendered frame is
+// affected (UI glyphs are not part of any golden scene).
+// -----------------------------------------------------------------------------
+TEST(SubmitterMaterialRouteEndToEnd, CreateTimeAtlasBindingWritesSdfDescriptor)
+{
+    auto vk = try_make_vulkan();
+    if (vk == nullptr)
+    {
+        GTEST_SKIP() << "no Vulkan ICD; create-time atlas binding needs a real device";
+    }
+    if (cd::shader::make_glslang_compiler() == nullptr)
+    {
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+    }
+
+    // Sprint-2 variant carrying the SDF sampler descriptor.
+    auto var_r = make_sprint2_variant(*vk);
+    ASSERT_TRUE(var_r.has_value()) << var_r.error().message;
+    ASSERT_TRUE(var_r->has_sdf_sampler());
+
+    // Build a live R8 atlas texture + view + sampler BEFORE create() so the
+    // factory's create-time branch (`info.atlas_view.is_valid() && ...`) fires.
+    cd::rhi::TextureDesc td {};
+    td.type   = cd::rhi::TextureType::k2D;
+    td.format = cd::rhi::Format::kR8Unorm;
+    td.extent = { 8U, 8U, 1U };
+    td.usage  = cd::rhi::TextureUsage::kSampled | cd::rhi::TextureUsage::kTransferDst;
+    td.memory = cd::rhi::MemoryUsage::kGpuOnly;
+    auto tex_r = vk->create_texture(td);
+    ASSERT_TRUE(tex_r.has_value()) << tex_r.error().message;
+
+    cd::rhi::TextureViewDesc tvd {};
+    tvd.texture = *tex_r;
+    tvd.format  = cd::rhi::Format::kR8Unorm;
+    auto view_r = vk->create_texture_view(tvd);
+    ASSERT_TRUE(view_r.has_value()) << view_r.error().message;
+
+    cd::rhi::SamplerDesc sd {};
+    sd.address_u = cd::rhi::SamplerAddressMode::kClampToEdge;
+    sd.address_v = cd::rhi::SamplerAddressMode::kClampToEdge;
+    auto smp_r = vk->create_sampler(sd);
+    ASSERT_TRUE(smp_r.has_value()) << smp_r.error().message;
+
+    rh::SubmitterCreateInfo info {};
+    info.max_vertices  = 1024U;
+    info.max_indices   = 4096U;
+    info.color_format  = cd::rhi::Format::kBGRA8Unorm;
+    info.atlas_view    = *view_r;     // create-time atlas binding
+    info.atlas_sampler = *smp_r;
+    auto sub_r = rh::Submitter::create_with_material_ui_variant(
+        *vk, info, std::move(*var_r));
+    ASSERT_TRUE(sub_r.has_value())
+        << "create_with_material_ui_variant (create-time atlas) failed: "
+        << "domain=" << sub_r.error().domain
+        << " code="  << sub_r.error().code
+        << " msg="   << std::string(sub_r.error().message);
+    auto& sub = *sub_r;
+    EXPECT_TRUE(sub.is_valid());
+
+    // Push 1 glyph quad and record. The descriptor was bound at create-time,
+    // so record() binds the variant + set + issues one draw without crashing.
+    ur::DrawBatcher batcher;
+    batcher.begin_frame();
+    const ur::AtlasUv kFullUv { 0.0F, 0.0F, 1.0F, 1.0F };
+    batcher.glyph(40.0F, 8.0F, 24.0F, 24.0F,
+                  /*texture_slot=*/0U, kFullUv, ur::Color::white());
+    EXPECT_TRUE(sub.upload(batcher));
+    EXPECT_EQ(sub.vertex_count(),  4U);
+    EXPECT_EQ(sub.index_count(),   6U);
+    EXPECT_EQ(sub.command_count(), 1U);
+
+    auto cmd = vk->create_command_buffer(cd::rhi::QueueType::kGraphics);
+    ASSERT_NE(cmd, nullptr);
+    cmd->begin();
+    sub.record(*cmd, cd::rhi::Extent2D { 800U, 600U });
+    cmd->end();
+
+    // A subsequent set_sdf_atlas with INVALID handles must be rejected
+    // (negative path) -- the create-time binding stays intact.
+    EXPECT_FALSE(sub.set_sdf_atlas(cd::rhi::TextureViewHandle {},
+                                   cd::rhi::SamplerHandle {}));
+    // ...and a re-bind with the same live handles must succeed (idempotent
+    // descriptor rewrite -- the editor swaps atlases mid-session this way).
+    EXPECT_TRUE(sub.set_sdf_atlas(*view_r, *smp_r));
+
+    vk->destroy_sampler(*smp_r);
+    vk->destroy_texture_view(*view_r);
+    vk->destroy_texture(*tex_r);
+}

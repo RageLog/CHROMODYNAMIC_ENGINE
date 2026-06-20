@@ -2,6 +2,7 @@
 // CHROMODYNAMIC — cd/net/matchmaker/Matchmaker.hpp
 // Phase 563 / Sprint W5B  — cd::net::matchmaker Sprint-1
 // Phase 784 / FINALE-E4   — SkillScorer + FillStrategy (real scoring)
+// Phase 825 / FINALE-E5   — MatchTicket queue + skill-window widening
 //
 // In-memory matchmaking primitives. Network transport is Sprint-2.
 //
@@ -17,6 +18,10 @@
 //                      kStratified — skill bracket must be close, then distance.
 //                      kFastFill   — return the first qualifying lobby immediately.
 //   SkillBasedFinder — find an existing open lobby using SkillScorer + strategy.
+//   MatchTicket      — enqueued matchmaking request for a single player.
+//   TicketStatus     — current disposition of a MatchTicket.
+//   MatchResult      — outcome returned by MatchmakingQueue::run_cycle.
+//   MatchmakingQueue — FIFO queue with skill-window widening on a logical clock.
 //
 // All operations are single-threaded (no internal locks). Callers that share
 // a registry across threads must apply external synchronisation.
@@ -278,6 +283,166 @@ private:
     float                m_w_history        { 1.0F };
     FillStrategy         m_strategy         { FillStrategy::kBalanced };
     const SkillScorer*   m_scorer           { nullptr };
+};
+
+// ---------------------------------------------------------------------------
+// MatchTicket
+// ---------------------------------------------------------------------------
+
+/// Disposition of a ticket inside MatchmakingQueue.
+enum class TicketStatus : std::uint8_t
+{
+    kPending   = 0,  ///< In the queue waiting for a match.
+    kMatched   = 1,  ///< Successfully matched; lobby_id is valid.
+    kCancelled = 2,  ///< Cancelled by the player or host.
+    kExpired   = 3,  ///< Wait-time exceeded the queue's max_wait_ticks.
+};
+
+/// A single matchmaking request issued by one player.
+///
+/// `ticket_id`        — monotonically increasing, assigned by MatchmakingQueue.
+/// `enqueue_tick`     — logical clock tick at enqueue time (set by queue).
+/// `skill_window`     — initial skill delta; widens by `widen_per_tick` each
+///                      logical tick until it reaches `max_skill_window`.
+/// `widen_per_tick`   — skill window expansion per advance_clock() call.
+/// `max_skill_window` — ceiling for widening; 0 means no widening.
+/// `priority`         — higher value = processed earlier in a cycle.
+///                      Equal-priority tickets are FIFO by enqueue_tick.
+struct MatchTicket
+{
+    std::uint64_t ticket_id        { 0 };
+    std::uint64_t player_id        { 0 };
+    std::string   game_mode;
+    std::uint64_t enqueue_tick     { 0 };
+    float         skill_window     { 100.0F };
+    float         widen_per_tick   { 0.0F };
+    float         max_skill_window { 0.0F };
+    std::uint32_t priority         { 0 };
+    TicketStatus  status           { TicketStatus::kPending };
+    std::uint64_t lobby_id         { 0 };  ///< Valid when status == kMatched.
+};
+
+/// Result of a single run_cycle() call.
+struct MatchResult
+{
+    std::uint32_t tickets_matched  { 0 };  ///< Number of tickets matched this cycle.
+    std::uint32_t tickets_expired  { 0 };  ///< Tickets whose wait exceeded max_wait_ticks.
+    std::uint32_t tickets_pending  { 0 };  ///< Still waiting for a match.
+    std::uint32_t lobbies_created  { 0 };  ///< New lobbies opened this cycle.
+};
+
+// ---------------------------------------------------------------------------
+// MatchmakingQueue
+// ---------------------------------------------------------------------------
+
+/// Priority-FIFO ticket queue with skill-window widening on a logical clock.
+///
+/// Design notes
+/// ============
+/// * **Logical clock** — `advance_clock()` increments an internal tick counter.
+///   No real-time is used; callers drive progression (deterministic + testable).
+/// * **Widening** — each tick the effective skill window for a ticket grows by
+///   `ticket.widen_per_tick` until `ticket.max_skill_window` is reached.
+/// * **Priority** — within a `run_cycle()` pass tickets are sorted descending
+///   by `priority`, then ascending by `enqueue_tick` (FIFO tie-break).
+/// * **Matching** — the queue creates lobbies itself via the supplied
+///   LobbyRegistry; `target_lobby_size` players fill one lobby per cycle pass.
+///   After a lobby reaches `target_lobby_size` it is closed immediately.
+/// * **Duplicate guard** — enqueue() returns false if the player already has a
+///   kPending ticket in the queue.
+/// * **Partial groups** — groups smaller than target_lobby_size are NOT matched;
+///   tickets stay kPending so skill-window widening can unlock them next cycle.
+/// * **Expiry** — tickets older than `max_wait_ticks` logical ticks are marked
+///   kExpired and removed during run_cycle().
+///
+/// Thread safety: same as LobbyRegistry — single-threaded; caller locks.
+class MatchmakingQueue
+{
+public:
+    MatchmakingQueue() noexcept = default;
+    ~MatchmakingQueue() noexcept = default;
+    MatchmakingQueue(const MatchmakingQueue&) = delete;
+    MatchmakingQueue& operator=(const MatchmakingQueue&) = delete;
+    MatchmakingQueue(MatchmakingQueue&&) noexcept = default;
+    MatchmakingQueue& operator=(MatchmakingQueue&&) noexcept = default;
+
+    // ---- Configuration ----
+
+    /// Number of players required to seal a lobby (default 4).
+    void set_target_lobby_size(std::uint32_t size) noexcept;
+
+    /// Maximum logical ticks a ticket may wait before expiry (0 = never expire).
+    void set_max_wait_ticks(std::uint64_t ticks) noexcept;
+
+    // ---- Clock ----
+
+    /// Advance the logical clock by one tick.
+    /// After calling this, skill windows of all pending tickets widen.
+    void advance_clock() noexcept;
+
+    /// Return the current logical tick.
+    [[nodiscard]] std::uint64_t current_tick() const noexcept;
+
+    // ---- Ticket management ----
+
+    /// Enqueue a new matchmaking request.
+    ///
+    /// Returns the assigned ticket_id on success, or std::nullopt if:
+    ///   - player_id already has a kPending ticket (duplicate guard).
+    ///   - registry is nullptr.
+    ///
+    /// The `skill_window`, `widen_per_tick`, `max_skill_window` and `priority`
+    /// fields of `ticket` are read before insertion; `ticket_id` and
+    /// `enqueue_tick` are set by the queue.
+    [[nodiscard]] std::optional<std::uint64_t>
+    enqueue(MatchTicket ticket, LobbyRegistry& registry);
+
+    /// Cancel a pending ticket.
+    /// Returns true if the ticket was kPending and is now kCancelled.
+    /// Returns false if not found or already in a terminal state.
+    [[nodiscard]] bool cancel(std::uint64_t ticket_id) noexcept;
+
+    /// Look up the current status of a ticket.
+    /// Returns nullptr if the ticket_id is unknown.
+    [[nodiscard]] const MatchTicket* status_of(std::uint64_t ticket_id) const noexcept;
+
+    // ---- Matching ----
+
+    /// Run one matching cycle over all pending tickets.
+    ///
+    /// Algorithm:
+    ///   1. Expire tickets exceeding max_wait_ticks.
+    ///   2. Sort pending tickets by priority (desc) then enqueue_tick (asc).
+    ///   3. Greedily group compatible tickets: two tickets are compatible if
+    ///      their player profiles are registered in `registry` and
+    ///      |skill_a - skill_b| <= min(eff_window_a, eff_window_b) and
+    ///      region tags match.
+    ///   4. When a group reaches target_lobby_size, create + seal the lobby.
+    ///   5. Partial groups (< target_lobby_size) remain kPending; no lobby is
+    ///      created.  Their skill windows widen each advance_clock() call.
+    ///
+    /// Returns a MatchResult summary.
+    [[nodiscard]] MatchResult run_cycle(LobbyRegistry& registry,
+                                        const std::string& game_mode);
+
+    /// Total number of tickets ever enqueued (including cancelled/expired/matched).
+    [[nodiscard]] std::size_t total_enqueued() const noexcept;
+
+    /// Number of tickets currently in kPending state.
+    [[nodiscard]] std::size_t pending_count() const noexcept;
+
+private:
+    std::vector<MatchTicket>                      m_tickets;
+    std::unordered_map<std::uint64_t, std::size_t> m_id_index;  ///< ticket_id -> m_tickets index
+    std::unordered_map<std::uint64_t, std::uint64_t> m_player_pending; ///< player_id -> ticket_id
+
+    std::uint64_t m_next_ticket_id  { 1 };
+    std::uint64_t m_current_tick    { 0 };
+    std::uint32_t m_target_size     { 4 };
+    std::uint64_t m_max_wait_ticks  { 0 };  ///< 0 = never expire.
+
+    /// Effective skill window for a ticket at the current tick.
+    [[nodiscard]] float effective_window(const MatchTicket& t) const noexcept;
 };
 
 }  // namespace cd::net::matchmaker

@@ -137,6 +137,7 @@ struct Submitter::Impl
 
 // ---- ctor / dtor / move ---------------------------------------------------
 
+Submitter::Submitter() noexcept = default;
 Submitter::~Submitter() { destroy(); }
 
 Submitter::Submitter(Submitter&&) noexcept = default;

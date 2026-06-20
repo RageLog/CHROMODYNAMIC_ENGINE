@@ -39,6 +39,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <numbers>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -104,7 +105,7 @@ synthesize_hrtf(const ListenerPose& listener,
     const float ild_lin_far = std::pow(10.0F, -std::abs(ild_db) / 20.0F);  // far-ear gain ≤ 1
     // Constant-power stereo balance for the broadband gain envelope.
     const float pan = std::clamp(azimuth / 1.5707963F, -1.0F, 1.0F);
-    const float pan_angle = (pan + 1.0F) * 0.25F * 3.14159265F;
+    const float pan_angle = (pan + 1.0F) * 0.25F * std::numbers::pi_v<float>;
     const float L_broad = std::cos(pan_angle);
     const float R_broad = std::sin(pan_angle);
 

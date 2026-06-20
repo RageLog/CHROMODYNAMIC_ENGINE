@@ -116,6 +116,7 @@ add_subdirectory(exposure)
 
 if(CD_ENABLE_TESTING)
   add_subdirectory(tests/bloom)
+  add_subdirectory(tests/camera)
   add_subdirectory(tests/composite)
   add_subdirectory(tests/dof)
   add_subdirectory(tests/fx)

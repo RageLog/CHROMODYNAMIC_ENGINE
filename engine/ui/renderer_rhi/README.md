@@ -49,7 +49,13 @@ cmd->end_render_pass();
 - Atlas descriptor set updates beyond create-time bind
 - Push-constant projection matrix upload
 
-**Test command**: `ctest --preset ninja-debug -R cd_test_submitter --output-on-failure`. Covers ~6 cases: create/zero-capacity/destroy-idempotent/upload-success/upload-overflow/record-smoke.
+**Test command**: `ctest --preset ninja-debug -R cd_test_submitter --output-on-failure`. 28 cases across four binaries:
+
+- `submitter` — NullDevice lifecycle (create / zero-capacity / destroy-idempotent / upload-success / upload-overflow / record-smoke).
+- `submitter_host_state` — NullDevice host-side gap-close (15 cases): zero-max-indices + both-zero capacity reject, full-cap create, vertex/index upload byte-exact sizing, exact-cap boundary + one-quad-over reject, empty-batcher zero-state, no-clip + explicit scissor record, default-constructed inert-safe guards, upload-after-destroy, `set_*` no-op on plain-create, Route-A inert-variant `kInvalidArgument` reject, move-construct + move-assign ownership, re-upload overwrite.
+- `submitter_inline` / `submitter_material_route` / `submitter_material_route_end_to_end` — Vulkan-gated (`GTEST_SKIP` w/o ICD or glslang): Route B inline pipeline, Route A variant pipeline, full Sprint-2 theme-UBO + SDF wire-up, **create-time atlas binding** (`info.atlas_view`/`atlas_sampler` writes the SDF descriptor at create) + idempotent `set_sdf_atlas` re-bind.
+
+**Glyph-atlas host path** (the documented ≥80 gap): IMPLEMENTED. Two host-side entry points feed the SDF sampler descriptor — (1) `SubmitterCreateInfo::atlas_view` + `atlas_sampler` write it at create-time when the variant carries an SDF sampler; (2) `set_sdf_atlas(view, sampler)` rebinds it between frames (the editor swaps atlases this way). Both are covered by GPU-gated tests. Actual on-screen glyph *pixels* require a presenting swapchain and belong to `hello_ui`; they are not part of any golden scene, so wiring the host path does not alter any rendered frame.
 
 **Notes**:
 - Real GPU validation belongs in the Phase 1.5 `hello_ui` sample with a Vulkan device. This library proves the API shape + lifecycle is sound; the draw-call recording works against NullDevice without crashing.
