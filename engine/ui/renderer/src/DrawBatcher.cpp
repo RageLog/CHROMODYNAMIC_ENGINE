@@ -3,10 +3,11 @@
 //
 // CPU-side batcher impl. See header for shape and contract.
 //
-// Index format: u16. A single batch supports up to 65535 vertices; once
-// reached, callers should `begin_frame()` again and submit (Phase 2 will
-// auto-split). 16K vertices = 4K quads which is more than enough for
-// any reasonable Phase 1 UI page.
+// Index format: u16. kMaxVertices = 65532 (largest multiple-of-4 that fits
+// safely in a uint16_t index, avoiding GPU sentinel 0xFFFF).  Once the
+// limit is reached, emit_quad() silently drops the quad and
+// at_vertex_limit() returns true.  No auto-split: callers must
+// begin_frame() and re-submit.  16K quads covers any realistic Phase 1 UI.
 // =============================================================================
 #include <cd/ui/renderer/DrawBatcher.hpp>
 
@@ -69,16 +70,21 @@ void DrawBatcher::emit_quad(float x, float y, float w, float h,
     // Reject empty quads up-front so the batch + index buffers stay tight.
     if (w <= 0.0F || h <= 0.0F) return;
 
+    // Guard: u16 indices cannot address more than kMaxVertices vertices.
+    // No auto-split is performed (see README / kMaxVertices rationale);
+    // the caller must begin_frame() and re-emit when this limit is reached.
+    if (vertices_.size() >= static_cast<std::size_t>(kMaxVertices)) return;
+
     const auto base = static_cast<std::uint16_t>(vertices_.size());
     // top-left, top-right, bottom-right, bottom-left
     Vertex v0 { x,     y,     uv.u0, uv.v0, color.r, color.g, color.b, color.a, variant, 0U, 0U, 0U };
     Vertex v1 { x + w, y,     uv.u1, uv.v0, color.r, color.g, color.b, color.a, variant, 0U, 0U, 0U };
     Vertex v2 { x + w, y + h, uv.u1, uv.v1, color.r, color.g, color.b, color.a, variant, 0U, 0U, 0U };
     Vertex v3 { x,     y + h, uv.u0, uv.v1, color.r, color.g, color.b, color.a, variant, 0U, 0U, 0U };
-    vertices_.push_back(v0);
-    vertices_.push_back(v1);
-    vertices_.push_back(v2);
-    vertices_.push_back(v3);
+    vertices_.emplace_back(v0);
+    vertices_.emplace_back(v1);
+    vertices_.emplace_back(v2);
+    vertices_.emplace_back(v3);
 
     const std::uint16_t i0 = base;
     const auto i1 = static_cast<std::uint16_t>(base + 1U);
@@ -132,3 +138,4 @@ void DrawBatcher::glyph(float x, float y, float w, float h,
 }
 
 }  // namespace cd::ui::renderer
+

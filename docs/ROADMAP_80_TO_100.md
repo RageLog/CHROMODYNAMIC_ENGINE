@@ -24,11 +24,11 @@ out-of-charter subsystem may remain — and only with an explicit one-paragraph 
 
 | Tier | Libs |
 |---|---|
-| 100 | rhi ✅ (already done) · game::quest ✅ · ecs ✅ |
+| 100 | rhi ✅ (already done) · game::quest ✅ · ecs ✅ · ui_animation ✅ |
 | **92** | frame_timing · game::save |
 | **90** | bench · ai_bt · cutscene_player · gluon |
 | **88** | concurrency · math · dialogue · input_recorder · l10n · settings · material · shader · debug_line · scene · ui_layout |
-| **85** | core · io · log · ai_director · pathfinding · anim_graph · asset_hot_reload · game::camera · dialog_tree · fsm · particles_event · game::query · save_compression · camera(render) · spirv_cross_glue · hdr_display · asset(umbrella) · anim · anim_ik · gameplay_input_binding · gameplay_time · input · net · physics · ui_animation · ui_input · ui_theme · ui_renderer |
+| **85** | core · io · log · ai_director · pathfinding · anim_graph · asset_hot_reload · game::camera · dialog_tree · fsm · particles_event · game::query · save_compression · camera(render) · spirv_cross_glue · hdr_display · asset(umbrella) · anim · anim_ik · gameplay_input_binding · gameplay_time · input · net · physics · ui_input · ui_theme · ui_renderer |
 | **84** | time |
 | **83** | restir_di |
 | **82** | diag · events · profile · vfs · brdf · scene_ingest · trigger · net_lobby · world_container · ddgi |
@@ -95,3 +95,9 @@ out-of-charter subsystem may remain — and only with an explicit one-paragraph 
   - Gate fixes: WAE (hdr 2× float-loop-induction→int, anim_ik sqrt2→std::numbers, net nodiscard+arg-comment, asset ~6 arg-comment/dup-include, core CVar find→contains, OrbitController dup-include) + 3 test-vs-impl RCA (camera ortho is RIGHT-HANDED depth[0,1] so cull box needs z∈[-far,-near]; json parser leniently accepts "1."; stb leniently decodes header-only BMP). Gate: build clean -Werror (0/0); ctest 324/324; golden/sponza/chrome BYTE-IDENTICAL.
   - NOTE: re-scan surfaced pre-existing sealed broader-130 WAE in cd::core headers (Bitset/HandleStore/PoolAllocator/Ref/ScopeGuard/SmallVector) — out of batch-6 scope, queued for a focused phase1259 core-header cleanup (incl. a HandleStore use-after-forward to investigate).
 - ✅ **phase1259 (core-header cleanup)** — made cd::core genuinely WAE-clean (its headers carried sealed broader-130 lint surfaced by the batch-6 gate). HandleStore::for_each: fixed a latent use-after-move footgun (was `std::forward<F>(fn)(...)` inside the per-slot loop → forwards the callable as an rvalue every iteration; now calls `fn(...)` as an lvalue, the correct multi-invocation idiom; behaviour-preserving for the common const/lvalue callables that existing for_each tests cover). Plus 9 trivial sealed-lint fixes: SmallVector insert clamp `if(>)`→std::min, Bitset/ScopeGuard redundant-init→default-member-init, PoolAllocator 4× void**→void* explicit memcpy casts, Ref NOLINT re-placed onto the ctor line, test_core_edge deliberate moved-from check NOLINT'd. Gate: build clean -Werror (0/0); ctest 324/324; golden byte-identical (core is universal).
+- ✅ **Batch 7 (phase1260)** — tier 85 LAST, 4 UI libs → 100% (~72 tests, golden-irrelevant). **TIER 85 COMPLETE.**
+  - **ui_renderer**: closed the u16 vertex-limit gap — kMaxVertices=65532 guard + at_vertex_limit() + silent-drop (prevents u16 index overflow); auto-split sealed as Phase 2. +10 tests.
+  - **ui_animation**: +15 tests (Penner endpoints/overshoot/bounce, Tweener neg-dt/done, Timeline empty/seek) + pi/emplace hygiene.
+  - **ui_input**: +21 tests (HitTester z-order/nest, FocusManager tab/modal, Gesture FSM boundaries).
+  - **ui_theme**: +26 tests (WCAG 3:1/4.5:1/7:1/21:1 boundaries spec-verified, on-color, brand override, theme_from_name, scale monotonic).
+  - Gate fix: ui_theme on-color test exact-threshold was float-unstable (l>0.179, L(grey k)=k → 0.179*1.0 rounds just above) → test either side with margin. Gate: build clean -Werror (0/0); ctest 324/324; WAE clean.

@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 
 namespace cd::ui::animation
 {
@@ -99,7 +100,7 @@ namespace
         return 1.0F;
     }
     // c4 = (2*pi) / 3 -- matches easings.net reference output.
-    constexpr float kC4 = 2.0943951023931953F;  // (2 * pi) / 3
+    constexpr float kC4 = 2.0F * std::numbers::pi_v<float> / 3.0F;
     const float     d  = std::pow(2.0F, -10.0F * t);
     const float     s  = std::sin((t * 10.0F - 0.75F) * kC4);
     return d * s + 1.0F;
@@ -163,7 +164,7 @@ ChannelId Timeline::add(float at_time_s, const Animation<float>& anim)
     Entry e {};
     e.start_s = (at_time_s < 0.0F) ? 0.0F : at_time_s;
     e.anim    = anim;
-    channels_.push_back(e);
+    channels_.emplace_back(e);
     return ChannelId { static_cast<std::uint32_t>(channels_.size() - 1U) };
 }
 

@@ -121,6 +121,17 @@ struct AtlasUv
     float v1 { 1.0F };
 };
 
+// ---- Batcher limits -------------------------------------------------------
+
+/// Maximum number of vertices the batcher accepts per frame.
+/// u16 indices cap the vertex buffer at 65535 entries (indices 0–65534;
+/// 65535 == 0xFFFF is used as a sentinel in some GPU APIs, so we treat
+/// it as out-of-range too).  A frame with ≥ 65532 vertices (the last
+/// group-of-four that would still fit) cannot accept another quad without
+/// overflowing a u16 index.  The batcher does NOT auto-split across
+/// frames: callers must `begin_frame()` and re-emit.  See README §notes.
+inline constexpr std::uint32_t kMaxVertices = 65532U;  // largest multiple of 4 ≤ 65535
+
 // ---- Batcher -------------------------------------------------------------
 
 class DrawBatcher
@@ -177,6 +188,15 @@ public:
     [[nodiscard]] std::size_t vertex_count() const noexcept { return vertices_.size(); }
     [[nodiscard]] std::size_t index_count()  const noexcept { return indices_.size(); }
     [[nodiscard]] std::size_t command_count() const noexcept { return commands_.size(); }
+
+    /// True once the vertex buffer has reached or exceeded kMaxVertices.
+    /// When true, subsequent emit calls are silently dropped until the
+    /// next begin_frame().  Callers that draw large UIs should check this
+    /// and flush early rather than losing draws.
+    [[nodiscard]] bool at_vertex_limit() const noexcept
+    {
+        return vertices_.size() >= static_cast<std::size_t>(kMaxVertices);
+    }
 
 private:
     std::vector<Vertex>         vertices_;

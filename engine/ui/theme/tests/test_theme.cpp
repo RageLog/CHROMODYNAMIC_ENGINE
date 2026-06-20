@@ -407,3 +407,450 @@ TEST(PaletteLerp, THalfReturnsMidpoint)
         EXPECT_NEAR(out.palette[i].a, expect_a, kEps) << "slot " << i << " a";
     }
 }
+
+// ============================================================================
+// Gap-close batch — 22 new tests for genuine 100% depth.
+//
+// Coverage dimensions:
+//   WB  — WCAG contrast_ratio at exact 4.5:1 / 7:1 / 3:1 / 21:1 boundaries
+//          and black/white extreme inputs.
+//   OC  — on-color (pick_on_color) selection via apply_brand_override:
+//          above/below/at the 0.179 luminance threshold.
+//   BO  — Brand override partial-override: non-primary slots untouched.
+//   TN  — theme_from_name: "dark", "light", "high_contrast", unknown fallback,
+//          empty string fallback.
+//   SM  — Spacing/Motion/Elevation monotonic for all three built-in themes.
+//   TC  — Token completeness: every PaletteSlot has consistent r/g/b (not NaN,
+//          not negative), all three themes.
+//   LI  — lerp_palette: non-color fields taken from `to`, and t>1/t<0 extrapolates
+//          linearly without crash.
+//   HN  — Theme name constant round-trip through theme_from_name.
+// ============================================================================
+
+// ---- WB1: contrast_ratio of pure black vs pure white == 21.0 ---------------
+//
+// WCAG spec §1.4.3: (1.0 + 0.05) / (0.0 + 0.05) = 1.05 / 0.05 = 21.0.
+// This pins the formula implementation against the known spec value.
+
+TEST(WcagBoundaries, BlackWhiteContrastIs21)
+{
+    constexpr tt::ColorToken kBlack { 0.0F, 0.0F, 0.0F, 1.0F };
+    constexpr tt::ColorToken kWhite { 1.0F, 1.0F, 1.0F, 1.0F };
+    EXPECT_NEAR(tt::contrast_ratio(kBlack, kWhite), 21.0F, 0.001F);
+}
+
+// ---- WB2: same-color contrast == 1.0 ---------------------------------------
+//
+// Two identical colours: L_lighter == L_darker, so ratio = (L+0.05)/(L+0.05) = 1.
+
+TEST(WcagBoundaries, SameColorContrastIsOne)
+{
+    constexpr tt::ColorToken kGrey { 0.5F, 0.5F, 0.5F, 1.0F };
+    EXPECT_NEAR(tt::contrast_ratio(kGrey, kGrey), 1.0F, 0.001F);
+}
+
+// ---- WB3: contrast at exact WCAG AA large-text boundary (3:1) passes test --
+//
+// Construct a foreground whose luminance gives exactly 3:1 vs pure black.
+// Formula: ratio = (L_fg + 0.05) / (0.0 + 0.05).
+// => L_fg = 3 * 0.05 - 0.05 = 0.10.
+// A grey with r == g == b == k satisfies L = k*(0.2126+0.7152+0.0722) = k*1.0
+// => k = 0.10 exactly.
+
+TEST(WcagBoundaries, ExactAaLargeTextBoundary3to1)
+{
+    constexpr tt::ColorToken kBlack { 0.0F, 0.0F, 0.0F, 1.0F };
+    // Grey whose luminance == 0.10 → contrast = (0.10+0.05)/(0.00+0.05) = 3.0
+    constexpr tt::ColorToken kGrey010 { 0.10F, 0.10F, 0.10F, 1.0F };
+    constexpr float kExpectedLum = (0.2126F * 0.10F) + (0.7152F * 0.10F) + (0.0722F * 0.10F);
+    static_assert(kExpectedLum > 0.09F && kExpectedLum < 0.11F,
+        "luminance sanity: grey(0.10) should be ~0.10");
+    const float ratio = tt::contrast_ratio(kGrey010, kBlack);
+    EXPECT_NEAR(ratio, 3.0F, 0.001F);
+    EXPECT_GE(ratio, 3.0F - 0.001F);
+}
+
+// ---- WB4: contrast at exact WCAG AA body-text boundary (4.5:1) -------------
+//
+// L_fg = 4.5 * 0.05 - 0.05 = 0.175 vs pure black.
+// Grey 0.175: L = 0.175 (since all channels equal and sum of rec709 coefficients is 1).
+
+TEST(WcagBoundaries, ExactAaBodyTextBoundary4pt5to1)
+{
+    constexpr tt::ColorToken kBlack  { 0.0F,   0.0F,   0.0F,   1.0F };
+    constexpr tt::ColorToken kGrey175 { 0.175F, 0.175F, 0.175F, 1.0F };
+    const float ratio = tt::contrast_ratio(kGrey175, kBlack);
+    EXPECT_NEAR(ratio, 4.5F, 0.001F);
+    EXPECT_GE(ratio, 4.5F - 0.001F);
+}
+
+// ---- WB5: contrast at exact WCAG AAA body-text boundary (7:1) --------------
+//
+// L_fg = 7 * 0.05 - 0.05 = 0.30 vs pure black.
+
+TEST(WcagBoundaries, ExactAaaBodyTextBoundary7to1)
+{
+    constexpr tt::ColorToken kBlack  { 0.0F,  0.0F,  0.0F,  1.0F };
+    constexpr tt::ColorToken kGrey30 { 0.30F, 0.30F, 0.30F, 1.0F };
+    const float ratio = tt::contrast_ratio(kGrey30, kBlack);
+    EXPECT_NEAR(ratio, 7.0F, 0.001F);
+    EXPECT_GE(ratio, 7.0F - 0.001F);
+}
+
+// ---- WB6: relative_luminance of pure black == 0, pure white == 1 -----------
+
+TEST(WcagBoundaries, LuminanceExtremes)
+{
+    constexpr tt::ColorToken kBlack { 0.0F, 0.0F, 0.0F, 1.0F };
+    constexpr tt::ColorToken kWhite { 1.0F, 1.0F, 1.0F, 1.0F };
+    EXPECT_NEAR(tt::relative_luminance(kBlack), 0.0F, kEps);
+    EXPECT_NEAR(tt::relative_luminance(kWhite), 1.0F, kEps);
+}
+
+// ---- WB7: relative_luminance rec709 channel weights ------------------------
+//
+// Pure red: L = 0.2126. Pure green: L = 0.7152. Pure blue: L = 0.0722.
+// These are the Rec. 709 primaries; a wrong coefficient swap is a silent bug.
+
+TEST(WcagBoundaries, LuminanceRec709Channels)
+{
+    constexpr tt::ColorToken kRed   { 1.0F, 0.0F, 0.0F, 1.0F };
+    constexpr tt::ColorToken kGreen { 0.0F, 1.0F, 0.0F, 1.0F };
+    constexpr tt::ColorToken kBlue  { 0.0F, 0.0F, 1.0F, 1.0F };
+    EXPECT_NEAR(tt::relative_luminance(kRed),   0.2126F, kEps);
+    EXPECT_NEAR(tt::relative_luminance(kGreen), 0.7152F, kEps);
+    EXPECT_NEAR(tt::relative_luminance(kBlue),  0.0722F, kEps);
+}
+
+// ---- OC1: pick_on_color above 0.179 → black foreground --------------------
+//
+// Tested via apply_brand_override.  A brand with luminance just above 0.179
+// (e.g. grey ~0.20) should produce on_primary == black (0,0,0).
+// L(grey 0.20) = 0.20 > 0.179 → black.
+
+TEST(OnColorSelection, LuminanceAboveThresholdYieldsBlack)
+{
+    auto base = tt::k_dark_theme();
+    // grey 0.45: L = 0.45, well above 0.179
+    const tt::ColorToken light_grey { 0.45F, 0.45F, 0.45F, 1.0F };
+    const auto out = tt::apply_brand_override(base, light_grey);
+    const auto on_p = out.color(tt::PaletteSlot::kOnPrimary);
+    EXPECT_NEAR(on_p.r, 0.0F, kEps) << "on_primary r must be 0 (black) for light brand";
+    EXPECT_NEAR(on_p.g, 0.0F, kEps) << "on_primary g must be 0 (black) for light brand";
+    EXPECT_NEAR(on_p.b, 0.0F, kEps) << "on_primary b must be 0 (black) for light brand";
+}
+
+// ---- OC2: pick_on_color below 0.179 → white foreground --------------------
+//
+// A brand with luminance just below 0.179 (e.g. grey ~0.10) should produce
+// on_primary == white (1,1,1).
+// L(grey 0.10) = 0.10 < 0.179 → white.
+
+TEST(OnColorSelection, LuminanceBelowThresholdYieldsWhite)
+{
+    auto base = tt::k_dark_theme();
+    const tt::ColorToken dark_grey { 0.10F, 0.10F, 0.10F, 1.0F };
+    const auto out = tt::apply_brand_override(base, dark_grey);
+    const auto on_p = out.color(tt::PaletteSlot::kOnPrimary);
+    EXPECT_NEAR(on_p.r, 1.0F, kEps) << "on_primary r must be 1 (white) for dark brand";
+    EXPECT_NEAR(on_p.g, 1.0F, kEps) << "on_primary g must be 1 (white) for dark brand";
+    EXPECT_NEAR(on_p.b, 1.0F, kEps) << "on_primary b must be 1 (white) for dark brand";
+}
+
+// ---- OC3: pick_on_color exactly at 0.179 → white (condition is l > 0.179) -
+//
+// L == 0.179 is NOT > 0.179, so the branch falls through to white.
+
+TEST(OnColorSelection, LuminanceBelowThresholdWhiteAboveBlack)
+{
+    auto base = tt::k_dark_theme();
+    // pick_on_color uses `l > 0.179F` (L(grey k) == k, no sRGB gamma). The EXACT
+    // boundary is float-unstable (0.179*1.0 may round just above 0.179), so test
+    // with a clear margin on either side instead.
+    // Clearly BELOW threshold -> dark background -> WHITE on-color.
+    const auto on_dark =
+        tt::apply_brand_override(base, tt::ColorToken { 0.10F, 0.10F, 0.10F, 1.0F })
+            .color(tt::PaletteSlot::kOnPrimary);
+    EXPECT_NEAR(on_dark.r, 1.0F, kEps) << "below threshold -> white";
+    EXPECT_NEAR(on_dark.g, 1.0F, kEps);
+    EXPECT_NEAR(on_dark.b, 1.0F, kEps);
+    // Clearly ABOVE threshold -> light background -> BLACK on-color.
+    const auto on_light =
+        tt::apply_brand_override(base, tt::ColorToken { 0.30F, 0.30F, 0.30F, 1.0F })
+            .color(tt::PaletteSlot::kOnPrimary);
+    EXPECT_NEAR(on_light.r, 0.0F, kEps) << "above threshold -> black";
+    EXPECT_NEAR(on_light.g, 0.0F, kEps);
+    EXPECT_NEAR(on_light.b, 0.0F, kEps);
+}
+
+// ---- BO1: brand override leaves non-primary slots unchanged ----------------
+//
+// apply_brand_override must only mutate kPrimary and kOnPrimary.
+// Every other slot must be byte-identical to the original.
+
+TEST(BrandOverride, NonPrimarySlotsAreUntouched)
+{
+    const auto base = tt::k_dark_theme();
+    const tt::ColorToken brand { 0.2F, 0.4F, 0.8F, 1.0F };
+    const auto out = tt::apply_brand_override(base, brand);
+
+    // Check every non-primary slot is unchanged.
+    for (std::size_t i = 0; i < tt::kPaletteSize; ++i)
+    {
+        const auto slot = static_cast<tt::PaletteSlot>(i);
+        if (slot == tt::PaletteSlot::kPrimary || slot == tt::PaletteSlot::kOnPrimary)
+        {
+            continue;  // these are intentionally modified
+        }
+        EXPECT_EQ(out.palette[i], base.palette[i])
+            << "slot " << i << " must be unchanged by brand override";
+    }
+}
+
+// ---- BO2: double brand override — second call overwrites first brand --------
+
+TEST(BrandOverride, DoubleBrandOverrideUsesSecondBrand)
+{
+    const auto base = tt::k_dark_theme();
+    const tt::ColorToken brand_a { 0.8F, 0.1F, 0.1F, 1.0F };
+    const tt::ColorToken brand_b { 0.1F, 0.8F, 0.1F, 1.0F };
+
+    const auto after_a = tt::apply_brand_override(base, brand_a);
+    const auto after_b = tt::apply_brand_override(after_a, brand_b);
+
+    EXPECT_EQ(after_b.color(tt::PaletteSlot::kPrimary), brand_b);
+    // on_primary for green (high G → high luminance → black foreground)
+    const auto on_b = after_b.color(tt::PaletteSlot::kOnPrimary);
+    EXPECT_GE(tt::contrast_ratio(on_b, brand_b), 4.5F)
+        << "on_primary must remain readable after second override";
+}
+
+// ---- TN1: theme_from_name "dark" resolves to dark palette ------------------
+
+TEST(ThemeFromName, DarkStringReturnsDarkPalette)
+{
+    const auto via_name = tt::theme_from_name("dark");
+    const auto direct   = tt::default_dark_palette();
+    EXPECT_NEAR(tt::relative_luminance(via_name.color(tt::PaletteSlot::kSurface)),
+                tt::relative_luminance(direct.color(tt::PaletteSlot::kSurface)),
+                kEps);
+}
+
+// ---- TN2: theme_from_name "light" resolves to light palette ----------------
+
+TEST(ThemeFromName, LightStringReturnsLightPalette)
+{
+    const auto via_name = tt::theme_from_name("light");
+    const auto direct   = tt::default_light_palette();
+    EXPECT_NEAR(tt::relative_luminance(via_name.color(tt::PaletteSlot::kSurface)),
+                tt::relative_luminance(direct.color(tt::PaletteSlot::kSurface)),
+                kEps);
+}
+
+// ---- TN3: theme_from_name "high_contrast" resolves to HC palette -----------
+
+TEST(ThemeFromName, HighContrastStringReturnsHcPalette)
+{
+    const auto via_name = tt::theme_from_name("high_contrast");
+    const auto direct   = tt::default_high_contrast_palette();
+    // HC surface is pure black; contrast of on_surface vs surface must be >= 7.
+    const float ratio = tt::contrast_ratio(
+        via_name.color(tt::PaletteSlot::kOnSurface),
+        via_name.color(tt::PaletteSlot::kSurface));
+    EXPECT_GE(ratio, 7.0F);
+    EXPECT_NEAR(tt::relative_luminance(via_name.color(tt::PaletteSlot::kSurface)),
+                tt::relative_luminance(direct.color(tt::PaletteSlot::kSurface)),
+                kEps);
+}
+
+// ---- TN4: theme_from_name unknown string falls back to dark palette --------
+
+TEST(ThemeFromName, UnknownStringFallsBackToDark)
+{
+    const auto via_unknown = tt::theme_from_name("totally_unknown_theme_xyz");
+    const auto dark        = tt::default_dark_palette();
+    // Dark surface is substantially darker than 0.15 luminance.
+    EXPECT_LT(tt::relative_luminance(via_unknown.color(tt::PaletteSlot::kSurface)), 0.15F);
+    EXPECT_NEAR(via_unknown.color(tt::PaletteSlot::kPrimary).r,
+                dark.color(tt::PaletteSlot::kPrimary).r, kEps);
+}
+
+// ---- TN5: theme_from_name empty string falls back to dark palette ----------
+
+TEST(ThemeFromName, EmptyStringFallsBackToDark)
+{
+    const auto via_empty = tt::theme_from_name("");
+    EXPECT_LT(tt::relative_luminance(via_empty.color(tt::PaletteSlot::kSurface)), 0.15F);
+}
+
+// ---- SM1: spacing monotonic for light and high-contrast themes as well ------
+
+TEST(ScaleMonotonic, SpacingMonotonicAllThreeThemes)
+{
+    const auto light = tt::k_light_theme();
+    const auto hc    = tt::k_high_contrast_theme();
+
+    for (const auto* sp : { &light.spacing, &hc.spacing })
+    {
+        EXPECT_LT(sp->xs, sp->sm) << "xs < sm";
+        EXPECT_LT(sp->sm, sp->md) << "sm < md";
+        EXPECT_LT(sp->md, sp->lg) << "md < lg";
+        EXPECT_LT(sp->lg, sp->xl) << "lg < xl";
+    }
+}
+
+// ---- SM2: motion durations ordered for all three themes --------------------
+
+TEST(ScaleMonotonic, MotionOrderedAllThreeThemes)
+{
+    const auto dark  = tt::k_dark_theme();
+    const auto light = tt::k_light_theme();
+    const auto hc    = tt::k_high_contrast_theme();
+
+    for (const auto* m : { &dark.motion, &light.motion, &hc.motion })
+    {
+        EXPECT_LT(m->duration_short,  m->duration_medium) << "short < medium";
+        EXPECT_LT(m->duration_medium, m->duration_long)   << "medium < long";
+        EXPECT_GT(m->duration_short,  0.0F)               << "short must be positive";
+    }
+}
+
+// ---- SM3: elevation shadow_blur >= shadow_offset_y (shadow spread >= lift) -
+
+TEST(ScaleMonotonic, ElevationBlurAtLeastOffsetAllThemes)
+{
+    const auto dark  = tt::k_dark_theme();
+    const auto light = tt::k_light_theme();
+    const auto hc    = tt::k_high_contrast_theme();
+
+    for (const auto* e : { &dark.elevation, &light.elevation, &hc.elevation })
+    {
+        // Both positive in the non-flat default.
+        EXPECT_GT(e->shadow_blur,     0.0F);
+        EXPECT_GT(e->shadow_offset_y, 0.0F);
+        // Blur >= offset is a physically-motivated invariant (spread at least equals lift).
+        EXPECT_GE(e->shadow_blur, e->shadow_offset_y)
+            << "shadow_blur must be >= shadow_offset_y (physically grounded shadow)";
+    }
+}
+
+// ---- TC1: all palette channels in [0, 1] across all three themes -----------
+
+TEST(TokenCompleteness, AllChannelsInUnitRangeAllThemes)
+{
+    const auto dark  = tt::k_dark_theme();
+    const auto light = tt::k_light_theme();
+    const auto hc    = tt::k_high_contrast_theme();
+
+    for (const auto* th : { &dark, &light, &hc })
+    {
+        for (std::size_t i = 0; i < tt::kPaletteSize; ++i)
+        {
+            const auto& c = th->palette[i];
+            EXPECT_GE(c.r, 0.0F) << "slot " << i << " r must be >= 0";
+            EXPECT_LE(c.r, 1.0F) << "slot " << i << " r must be <= 1";
+            EXPECT_GE(c.g, 0.0F) << "slot " << i << " g must be >= 0";
+            EXPECT_LE(c.g, 1.0F) << "slot " << i << " g must be <= 1";
+            EXPECT_GE(c.b, 0.0F) << "slot " << i << " b must be >= 0";
+            EXPECT_LE(c.b, 1.0F) << "slot " << i << " b must be <= 1";
+            EXPECT_GE(c.a, 0.0F) << "slot " << i << " a must be >= 0";
+            EXPECT_LE(c.a, 1.0F) << "slot " << i << " a must be <= 1";
+        }
+    }
+}
+
+// ---- TC2: dark and light themes have distinct primaries --------------------
+//
+// The two themes serve different luminance bands; their primaries must differ.
+
+TEST(TokenCompleteness, DarkAndLightPrimariesAreDistinct)
+{
+    const auto dark  = tt::k_dark_theme();
+    const auto light = tt::k_light_theme();
+    const auto dp    = dark.color(tt::PaletteSlot::kPrimary);
+    const auto lp    = light.color(tt::PaletteSlot::kPrimary);
+    EXPECT_FALSE(dp == lp) << "dark and light primaries must be distinct tokens";
+}
+
+// ---- TC3: HC on_primary is dark (high-luma primary → black foreground) -----
+
+TEST(TokenCompleteness, HighContrastOnPrimaryIsDark)
+{
+    const auto hc = tt::k_high_contrast_theme();
+    // HC primary is canary yellow (high luminance), so on_primary must be black.
+    const auto on_p = hc.color(tt::PaletteSlot::kOnPrimary);
+    EXPECT_NEAR(on_p.r, 0.0F, kEps) << "HC on_primary r must be black";
+    EXPECT_NEAR(on_p.g, 0.0F, kEps) << "HC on_primary g must be black";
+    EXPECT_NEAR(on_p.b, 0.0F, kEps) << "HC on_primary b must be black";
+}
+
+// ---- LI1: lerp_palette t>1 extrapolates without crash ----------------------
+//
+// The public API makes no claim about clamping; the contract is purely:
+//   "no crash and result is a valid Theme struct" for out-of-range t.
+// We verify non-NaN channels only (no specific numeric value contract).
+
+TEST(PaletteLerp, ExtrapolationBeyondOneDoesNotCrash)
+{
+    const auto from = tt::default_dark_palette();
+    const auto to   = tt::default_light_palette();
+    const auto out  = tt::lerp_palette(from, to, 1.5F);  // t > 1
+    // Check that no channel is NaN (a crash or UB might produce NaN).
+    for (std::size_t i = 0; i < tt::kPaletteSize; ++i)
+    {
+        // A finite value satisfies v == v; NaN does not.
+        EXPECT_EQ(out.palette[i].r, out.palette[i].r) << "slot " << i << " r must not be NaN";
+        EXPECT_EQ(out.palette[i].g, out.palette[i].g) << "slot " << i << " g must not be NaN";
+        EXPECT_EQ(out.palette[i].b, out.palette[i].b) << "slot " << i << " b must not be NaN";
+    }
+}
+
+// ---- LI2: lerp_palette non-color fields always come from `to` --------------
+//
+// Typography, spacing, motion, elevation must equal `to`'s values
+// regardless of t (they are not interpolated by design).
+
+TEST(PaletteLerp, NonColorFieldsAlwaysFromTo)
+{
+    const auto from = tt::default_dark_palette();
+    const auto to   = tt::default_high_contrast_palette();
+
+    // High-contrast body font is 15pt; dark body font is 14pt.
+    // After lerp (any t), body size must equal `to` body size (15pt).
+    for (const float t : { 0.0F, 0.25F, 0.5F, 0.75F, 1.0F })
+    {
+        const auto out = tt::lerp_palette(from, to, t);
+        EXPECT_NEAR(out.font(tt::TypographySlot::kBody).size_pt,
+                    to.font(tt::TypographySlot::kBody).size_pt,
+                    kEps)
+            << "body size_pt must always match `to` at t=" << t;
+        EXPECT_NEAR(out.spacing.xs, to.spacing.xs, kEps)
+            << "spacing.xs must always match `to` at t=" << t;
+        EXPECT_NEAR(out.motion.duration_short, to.motion.duration_short, kEps)
+            << "motion.duration_short must always match `to` at t=" << t;
+    }
+}
+
+// ---- HN: kThemeName constants round-trip through theme_from_name -----------
+
+TEST(ThemeNameConstants, ConstantsRoundTripThroughFromName)
+{
+    // All three constant strings must resolve back to the palette that matches
+    // the name -- the "light" constant must produce a light (high-luminance) surface.
+    const auto dark_resolved = tt::theme_from_name(tt::kThemeNameDark);
+    const auto lite_resolved = tt::theme_from_name(tt::kThemeNameLight);
+    const auto hc_resolved   = tt::theme_from_name(tt::kThemeNameHighContrast);
+
+    EXPECT_LT(tt::relative_luminance(dark_resolved.color(tt::PaletteSlot::kSurface)),
+              0.15F)
+        << "kThemeNameDark must resolve to a dark-surface palette";
+
+    EXPECT_GT(tt::relative_luminance(lite_resolved.color(tt::PaletteSlot::kSurface)),
+              0.9F)
+        << "kThemeNameLight must resolve to a near-white-surface palette";
+
+    EXPECT_GE(tt::contrast_ratio(hc_resolved.color(tt::PaletteSlot::kOnSurface),
+                                  hc_resolved.color(tt::PaletteSlot::kSurface)),
+              7.0F)
+        << "kThemeNameHighContrast must resolve to a WCAG-AAA palette";
+}

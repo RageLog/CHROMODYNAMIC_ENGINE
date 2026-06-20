@@ -23,11 +23,38 @@
 //   * Quick directional swipe with velocity > min -> kSwipe* correct direction
 //   * Empty event stream produces no gestures
 //   * Multiple recognizers on same input behave independently
+//
+// Phase 2.3 coverage — depth / edge / negative / boundary (21 new tests):
+//   HitTester:
+//     * OutsideAllRects — point clearly off all rects returns kInvalidWidget
+//     * ZOrderTieExact  — two identical rects, last entry wins
+//     * NestedContainment — three fully-nested rects, deepest z-wins
+//     * NegativeCoordRects — rects with negative x/y origins
+//     * SinglePixelBoundary — inclusion at (x,y), exclusion at (x+w, y+h)
+//   FocusManager:
+//     * BlurDoesNotPopModal — blur() keeps modal stack intact
+//     * PopModalOnEmptyStack — safe no-op, returns 0
+//     * ClearResetsEverything — clear() wipes chain + modal + focus
+//     * FocusRemovedWidget — widget removed via set_chain loses focus
+//     * RegisterWidgetInvalidId — invalid id silently ignored
+//     * ModalNoSubchainTabPinnedToModal — next/prev stay on modal id
+//     * SetChainPreservesValidFocus — focus kept when id stays in new chain
+//     * DoubleModalPushPop — depth 2 unwind restores original focus
+//   GestureRecognizer:
+//     * DragThresholdBoundaryJustUnder — move < threshold fires no drag
+//     * LongPressAtExactBoundary — elapsed exactly >= threshold fires kLongPress
+//     * DoubleClickAtExactBoundary — elapsed exactly <= window fires kDoubleClick
+//     * PinchInTwoPointersMoveCloser — dist shrinks -> kPinchIn + scale < 1
+//     * SwipeLeft — fast move leftward -> kSwipeLeft
+//     * SwipeDown — fast downward move -> kSwipeDown
+//     * SlowReleaseAfterDragNoSwipe — velocity below threshold: no kSwipe*
+//     * ResetMidGestureNullifies — reset during drag prevents swipe on release
 // =============================================================================
 #include <cd/ui/input/Input.hpp>
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <vector>
@@ -583,4 +610,453 @@ TEST(UiInputGestureRecognizer, MultipleRecognizersAreIndependent)
     // Crucially: the two instances' event lists are separate objects --
     // gr_a's reset had zero effect on gr_b's accumulated state.
     EXPECT_NE(events_a.data(), events_b.data());
+}
+
+// =============================================================================
+// Phase 2.3 — HitTester: edge / negative / boundary
+// =============================================================================
+
+/// Point clearly outside every rect returns kInvalidWidget even with a large
+/// list present (guards the common "off-screen click" code path).
+TEST(UiInputHitTester, OutsideAllRects)
+{
+    const std::array<ui::HitRect, 3> rects {{
+        ui::HitRect { Id(1), 0.0F,   0.0F,  50.0F,  50.0F },
+        ui::HitRect { Id(2), 60.0F,  60.0F, 50.0F,  50.0F },
+        ui::HitRect { Id(3), 200.0F, 0.0F,  100.0F, 100.0F },
+    }};
+
+    // Point in the gap between all rects.
+    EXPECT_EQ(ui::HitTester::hit_test(rects, 55.0F, 55.0F), ui::kInvalidWidget);
+    // Point far to the right.
+    EXPECT_EQ(ui::HitTester::hit_test(rects, 400.0F, 400.0F), ui::kInvalidWidget);
+    // Negative-coordinate point (no rect covers negative space).
+    EXPECT_EQ(ui::HitTester::hit_test(rects, -1.0F, -1.0F), ui::kInvalidWidget);
+}
+
+/// Two perfectly identical rects at the same position: the LAST one in the
+/// list must win (z-order tie-break = topmost = last-in-list).
+TEST(UiInputHitTester, ZOrderTieExact)
+{
+    const std::array<ui::HitRect, 2> rects {{
+        ui::HitRect { Id(1), 0.0F, 0.0F, 100.0F, 100.0F },
+        ui::HitRect { Id(2), 0.0F, 0.0F, 100.0F, 100.0F },
+    }};
+
+    // Centre of both rects: last entry (Id 2) must win.
+    EXPECT_EQ(ui::HitTester::hit_test(rects, 50.0F, 50.0F), Id(2));
+
+    // Reverse the list: now Id(1) is last and must win.
+    const std::array<ui::HitRect, 2> reversed {{
+        ui::HitRect { Id(2), 0.0F, 0.0F, 100.0F, 100.0F },
+        ui::HitRect { Id(1), 0.0F, 0.0F, 100.0F, 100.0F },
+    }};
+    EXPECT_EQ(ui::HitTester::hit_test(reversed, 50.0F, 50.0F), Id(1));
+}
+
+/// Three fully-nested rects (outer → middle → inner): a point in the
+/// innermost area must resolve to the innermost id.
+TEST(UiInputHitTester, NestedContainment)
+{
+    const std::array<ui::HitRect, 3> rects {{
+        ui::HitRect { Id(10), 0.0F,  0.0F,  200.0F, 200.0F },  // outer
+        ui::HitRect { Id(20), 50.0F, 50.0F, 100.0F, 100.0F },  // middle
+        ui::HitRect { Id(30), 80.0F, 80.0F,  40.0F,  40.0F },  // inner
+    }};
+
+    EXPECT_EQ(ui::HitTester::hit_test(rects, 90.0F, 90.0F), Id(30));  // inner
+    EXPECT_EQ(ui::HitTester::hit_test(rects, 55.0F, 55.0F), Id(20));  // middle only
+    EXPECT_EQ(ui::HitTester::hit_test(rects, 10.0F, 10.0F), Id(10));  // outer only
+}
+
+/// Rects with negative x/y origins are valid; a point inside them must match.
+TEST(UiInputHitTester, NegativeCoordRects)
+{
+    const std::array<ui::HitRect, 2> rects {{
+        ui::HitRect { Id(1), -50.0F, -50.0F, 100.0F, 100.0F },  // spans -50..50
+        ui::HitRect { Id(2),  10.0F,  10.0F,  20.0F,  20.0F },  // positive region
+    }};
+
+    EXPECT_EQ(ui::HitTester::hit_test(rects, -10.0F, -10.0F), Id(1));  // inside neg rect
+    EXPECT_EQ(ui::HitTester::hit_test(rects,  15.0F,  15.0F), Id(2));  // inside positive (topmost)
+    EXPECT_EQ(ui::HitTester::hit_test(rects,  60.0F,  60.0F), ui::kInvalidWidget); // outside all
+}
+
+/// Boundary exactness: (x, y) is INSIDE; (x+w, y+h) is OUTSIDE (exclusive
+/// right/bottom edge). Verifies the `x < x1` condition in the implementation.
+TEST(UiInputHitTester, SinglePixelBoundary)
+{
+    // Rect covers [10, 20) × [30, 40) (width=10, height=10).
+    const std::array<ui::HitRect, 1> rects {{
+        ui::HitRect { Id(5), 10.0F, 30.0F, 10.0F, 10.0F },
+    }};
+
+    EXPECT_EQ(ui::HitTester::hit_test(rects, 10.0F, 30.0F), Id(5));   // top-left corner: IN
+    EXPECT_EQ(ui::HitTester::hit_test(rects, 19.0F, 39.0F), Id(5));   // one inside the edge: IN
+    EXPECT_EQ(ui::HitTester::hit_test(rects, 20.0F, 35.0F), ui::kInvalidWidget); // right edge: OUT
+    EXPECT_EQ(ui::HitTester::hit_test(rects, 15.0F, 40.0F), ui::kInvalidWidget); // bottom edge: OUT
+}
+
+// =============================================================================
+// Phase 2.3 — FocusManager: edge / negative / boundary
+// =============================================================================
+
+/// blur() clears focus but must NOT pop the modal stack.
+TEST(UiInputFocusManager, BlurDoesNotPopModal)
+{
+    ui::FocusManager fm;
+    fm.register_widget(Id(1));
+    fm.register_widget(Id(99));
+
+    fm.push_modal(Id(99));
+    EXPECT_EQ(fm.modal_depth(), 1U);
+    EXPECT_EQ(fm.focused(), Id(99));
+
+    fm.blur();
+    EXPECT_EQ(fm.focused(), ui::kInvalidWidget);
+    EXPECT_EQ(fm.modal_depth(), 1U);   // modal stack unchanged
+    EXPECT_EQ(fm.modal_top(), Id(99));
+}
+
+/// pop_modal() on an empty stack is a safe no-op (returns 0).
+TEST(UiInputFocusManager, PopModalOnEmptyStack)
+{
+    ui::FocusManager fm;
+    fm.register_widget(Id(1));
+    ASSERT_TRUE(fm.focus(Id(1)));
+
+    // No modal pushed: pop must silently return 0.
+    const std::size_t depth = fm.pop_modal();
+    EXPECT_EQ(depth, 0U);
+    EXPECT_EQ(fm.modal_depth(), 0U);
+    // Focus must be preserved (no side-effect on empty pop).
+    EXPECT_EQ(fm.focused(), Id(1));
+}
+
+/// clear() wipes chain, modal stack, and focused in one call.
+TEST(UiInputFocusManager, ClearResetsEverything)
+{
+    ui::FocusManager fm;
+    fm.register_widget(Id(1));
+    fm.register_widget(Id(2));
+    ASSERT_TRUE(fm.focus(Id(1)));
+    fm.push_modal(Id(2));
+
+    fm.clear();
+
+    EXPECT_EQ(fm.chain_size(), 0U);
+    EXPECT_EQ(fm.modal_depth(), 0U);
+    EXPECT_EQ(fm.focused(), ui::kInvalidWidget);
+    // After clear, next/prev are safe no-ops.
+    EXPECT_EQ(fm.next(), ui::kInvalidWidget);
+    EXPECT_EQ(fm.prev(), ui::kInvalidWidget);
+}
+
+/// A widget that was focused, then removed from the chain via set_chain, must
+/// lose focus (stale focus guard).
+TEST(UiInputFocusManager, FocusRemovedWidgetBecomesInvalid)
+{
+    ui::FocusManager fm;
+    const std::array<ui::WidgetId, 3> chain_a {{ Id(1), Id(2), Id(3) }};
+    fm.set_chain(chain_a);
+    ASSERT_TRUE(fm.focus(Id(3)));
+    EXPECT_EQ(fm.focused(), Id(3));
+
+    // Replace chain without Id(3).
+    const std::array<ui::WidgetId, 2> chain_b {{ Id(1), Id(2) }};
+    fm.set_chain(chain_b);
+
+    EXPECT_EQ(fm.focused(), ui::kInvalidWidget);
+    EXPECT_EQ(fm.chain_size(), 2U);
+}
+
+/// register_widget() with kInvalidWidget must be a silent no-op (chain size
+/// stays the same; the id does not appear in the chain).
+TEST(UiInputFocusManager, RegisterWidgetInvalidIdIgnored)
+{
+    ui::FocusManager fm;
+    fm.register_widget(Id(1));
+    fm.register_widget(ui::kInvalidWidget);  // must be ignored
+    fm.register_widget(Id(2));
+
+    EXPECT_EQ(fm.chain_size(), 2U);
+    EXPECT_FALSE(fm.is_in_active_chain(ui::kInvalidWidget));
+}
+
+/// When a modal is pushed with no sub-chain registered, next() and prev()
+/// must stay pinned to the modal id (cycling within a single-element chain).
+TEST(UiInputFocusManager, ModalNoSubchainTabPinnedToModal)
+{
+    ui::FocusManager fm;
+    fm.register_widget(Id(1));
+    fm.register_widget(Id(2));
+    fm.register_widget(Id(99));
+
+    ASSERT_TRUE(fm.focus(Id(1)));
+    fm.push_modal(Id(99));
+    // No register_modal_subchain call: the only reachable node is Id(99).
+
+    EXPECT_EQ(fm.next(), Id(99));
+    EXPECT_EQ(fm.next(), Id(99));  // wraps to itself
+    EXPECT_EQ(fm.prev(), Id(99));
+    EXPECT_EQ(fm.prev(), Id(99));
+
+    EXPECT_FALSE(fm.is_in_active_chain(Id(1)));
+    EXPECT_FALSE(fm.is_in_active_chain(Id(2)));
+}
+
+/// set_chain must PRESERVE focus when the previously-focused id still appears
+/// in the new chain.
+TEST(UiInputFocusManager, SetChainPreservesValidFocus)
+{
+    ui::FocusManager fm;
+    const std::array<ui::WidgetId, 3> chain_a {{ Id(1), Id(2), Id(3) }};
+    fm.set_chain(chain_a);
+    ASSERT_TRUE(fm.focus(Id(2)));
+
+    // Replace chain; Id(2) still present.
+    const std::array<ui::WidgetId, 4> chain_b {{ Id(4), Id(2), Id(5), Id(6) }};
+    fm.set_chain(chain_b);
+
+    // Focus must be preserved.
+    EXPECT_EQ(fm.focused(), Id(2));
+    EXPECT_EQ(fm.chain_size(), 4U);
+}
+
+/// Push two modals and then pop both; final focused must be the one that was
+/// active before the first push.
+TEST(UiInputFocusManager, DoubleModalPushPopRestoresOriginal)
+{
+    ui::FocusManager fm;
+    fm.register_widget(Id(1));
+    fm.register_widget(Id(2));
+    fm.register_widget(Id(50));
+    fm.register_widget(Id(60));
+
+    ASSERT_TRUE(fm.focus(Id(2)));
+
+    fm.push_modal(Id(50));
+    EXPECT_EQ(fm.modal_depth(), 1U);
+    EXPECT_EQ(fm.focused(), Id(50));
+
+    fm.push_modal(Id(60));
+    EXPECT_EQ(fm.modal_depth(), 2U);
+    EXPECT_EQ(fm.focused(), Id(60));
+
+    // Pop inner (prior_focused at level 2 = Id(50)).
+    fm.pop_modal();
+    EXPECT_EQ(fm.modal_depth(), 1U);
+    EXPECT_EQ(fm.focused(), Id(50));
+
+    // Pop outer (prior_focused at level 1 = Id(2)).
+    fm.pop_modal();
+    EXPECT_EQ(fm.modal_depth(), 0U);
+    EXPECT_EQ(fm.focused(), Id(2));
+
+    EXPECT_TRUE(fm.is_in_active_chain(Id(1)));
+    EXPECT_TRUE(fm.is_in_active_chain(Id(2)));
+}
+
+// =============================================================================
+// Phase 2.3 — GestureRecognizer: boundary / negative / cancel
+// =============================================================================
+
+/// Move displacement of EXACTLY (drag_threshold_px - epsilon) must NOT trigger
+/// a drag. The threshold is a >= comparison so the pixel just under must be
+/// silent.
+TEST(UiInputGestureRecognizer, DragThresholdBoundaryJustUnder)
+{
+    ui::GestureThresholds th;
+    th.drag_threshold_px = 8.0F;  // custom threshold
+    ui::GestureRecognizer gr { th };
+
+    std::vector<ui::GestureEvent> events;
+    gr.on_gesture([&](const ui::GestureEvent& e) { events.push_back(e); });
+
+    gr.feed(press_at(0.0F, 0.0F), 0.000);
+    // Move 7.99 px along x — strictly less than 8 px threshold.
+    gr.feed(move_to(7.99F, 0.0F), 0.010);
+    gr.feed(release_at(7.99F, 0.0F), 0.020);
+
+    // No drag must have fired; no swipe (velocity huge but drag never started).
+    const bool has_drag = std::ranges::any_of(events,
+        [](const ui::GestureEvent& e){ return e.kind == ui::GestureKind::kDrag; });
+    EXPECT_FALSE(has_drag);
+}
+
+/// Press and hold for EXACTLY the long_press_window_ms threshold -> kLongPress
+/// must fire (>= comparison).
+TEST(UiInputGestureRecognizer, LongPressAtExactBoundary)
+{
+    ui::GestureThresholds th;
+    th.long_press_window_ms = 400.0F;
+    ui::GestureRecognizer gr { th };
+
+    std::vector<ui::GestureEvent> events;
+    gr.on_gesture([&](const ui::GestureEvent& e) { events.push_back(e); });
+
+    gr.feed(press_at(50.0F, 50.0F),   0.000);
+    // Release at exactly 400 ms (0.400 s).
+    gr.feed(release_at(50.0F, 50.0F), 0.400);
+
+    ASSERT_EQ(events.size(), 1U);
+    EXPECT_EQ(events[0].kind, ui::GestureKind::kLongPress);
+}
+
+/// Second click at EXACTLY double_click_window_ms -> kDoubleClick must fire
+/// (<= comparison).
+TEST(UiInputGestureRecognizer, DoubleClickAtExactBoundary)
+{
+    ui::GestureThresholds th;
+    th.double_click_window_ms = 300.0F;
+    ui::GestureRecognizer gr { th };
+
+    std::vector<ui::GestureEvent> events;
+    gr.on_gesture([&](const ui::GestureEvent& e) { events.push_back(e); });
+
+    // Click 1 at t=0 (press→release instantaneous for simplicity).
+    gr.feed(press_at(10.0F, 10.0F),   0.000);
+    gr.feed(release_at(10.0F, 10.0F), 0.001);
+
+    // Click 2 at exactly 300 ms after first release.
+    gr.feed(press_at(10.0F, 10.0F),   0.301);
+    gr.feed(release_at(10.0F, 10.0F), 0.302);
+
+    // The gap between last_click_t_ (0.001) and second release is ~301 ms
+    // which must be <= 300 ms window if we measure press-to-press.
+    // Actual implementation measures (t_release2 - last_click_t_) in ms.
+    // t=0.302 - t=0.001 = 301 ms which is > 300 ms. So test the real boundary:
+    // second click exactly at window_ms from first click (t=0.001 + 0.300 = 0.301).
+    // Reset and re-run with tighter timestamps.
+    gr.reset();
+    events.clear();
+
+    gr.feed(press_at(10.0F, 10.0F),   0.000);
+    gr.feed(release_at(10.0F, 10.0F), 0.000);  // click 1 at t=0.000
+    // Second click: gap = 0.300 s = exactly 300.0 ms -> must fire.
+    gr.feed(press_at(10.0F, 10.0F),   0.299);
+    gr.feed(release_at(10.0F, 10.0F), 0.300);  // (0.300 - 0.000) * 1000 = 300.0 ms
+
+    ASSERT_EQ(events.size(), 1U);
+    EXPECT_EQ(events[0].kind, ui::GestureKind::kDoubleClick);
+}
+
+/// Two pointers that start apart and MOVE CLOSER together past the threshold
+/// must produce kPinchIn with a scale factor < 1.
+TEST(UiInputGestureRecognizer, PinchInTwoPointersMoveCloser)
+{
+    ui::GestureRecognizer gr;
+    std::vector<ui::GestureEvent> events;
+    gr.on_gesture([&](const ui::GestureEvent& e) { events.push_back(e); });
+
+    // Left pointer at x=100, right pointer at x=200 (initial dist = 100 px).
+    gr.feed(press_at(100.0F, 150.0F),  0.000);
+    gr.feed(rpress_at(200.0F, 150.0F), 0.001);
+
+    // Move right pointer CLOSER to x=180 (dist becomes 80 px, diff = -20 < -4 threshold).
+    const ui::MouseEvent rmove {
+        180.0F, 150.0F, ui::MouseButton::kRight, ui::MouseAction::kMove
+    };
+    gr.feed(rmove, 0.050);
+
+    const bool has_pinch_in = std::ranges::any_of(events,
+        [](const ui::GestureEvent& e){ return e.kind == ui::GestureKind::kPinchIn; });
+    ASSERT_TRUE(has_pinch_in);
+
+    // Find the first pinch-in event and verify scale < 1 (pointers moved closer).
+    for (const auto& e : events)
+    {
+        if (e.kind == ui::GestureKind::kPinchIn)
+        {
+            EXPECT_LT(e.scale, 1.0F);
+            break;
+        }
+    }
+}
+
+/// A fast leftward swipe -> kSwipeLeft.
+TEST(UiInputGestureRecognizer, FastSwipeLeft)
+{
+    ui::GestureRecognizer gr;
+    std::vector<ui::GestureEvent> events;
+    gr.on_gesture([&](const ui::GestureEvent& e) { events.push_back(e); });
+
+    // Press at x=200, release at x=0 after 0.1 s -> velocity = 2000 px/s leftward.
+    gr.feed(press_at(200.0F, 100.0F),  0.000);
+    gr.feed(move_to(100.0F, 100.0F),   0.050);  // exceeds drag threshold
+    gr.feed(release_at(0.0F, 100.0F),  0.100);
+
+    const bool found = std::ranges::any_of(events,
+        [](const ui::GestureEvent& e){ return e.kind == ui::GestureKind::kSwipeLeft; });
+    EXPECT_TRUE(found);
+}
+
+/// A fast downward swipe (positive y delta) -> kSwipeDown.
+TEST(UiInputGestureRecognizer, FastSwipeDown)
+{
+    ui::GestureRecognizer gr;
+    std::vector<ui::GestureEvent> events;
+    gr.on_gesture([&](const ui::GestureEvent& e) { events.push_back(e); });
+
+    // Press at y=0, release at y=200 after 0.1 s (screen-space y grows down).
+    gr.feed(press_at(100.0F, 0.0F),    0.000);
+    gr.feed(move_to(100.0F, 100.0F),   0.050);  // exceeds drag threshold
+    gr.feed(release_at(100.0F, 200.0F), 0.100);
+
+    const bool found = std::ranges::any_of(events,
+        [](const ui::GestureEvent& e){ return e.kind == ui::GestureKind::kSwipeDown; });
+    EXPECT_TRUE(found);
+}
+
+/// A drag that ends with velocity BELOW the swipe threshold must NOT emit
+/// any kSwipe* event (only kDrag was already emitted on the move).
+TEST(UiInputGestureRecognizer, SlowReleaseAfterDragNoSwipe)
+{
+    ui::GestureThresholds th;
+    th.drag_threshold_px           = 4.0F;
+    th.swipe_min_velocity_px_per_s = 500.0F;  // high threshold
+    ui::GestureRecognizer gr { th };
+
+    std::vector<ui::GestureEvent> events;
+    gr.on_gesture([&](const ui::GestureEvent& e) { events.push_back(e); });
+
+    // Drag 10 px over 1 second -> velocity = 10 px/s, well below 500 px/s.
+    gr.feed(press_at(0.0F, 0.0F),    0.000);
+    gr.feed(move_to(10.0F, 0.0F),    0.010);   // triggers drag
+    gr.feed(release_at(10.0F, 0.0F), 1.000);   // very slow release
+
+    const bool has_swipe = std::ranges::any_of(events,
+        [](const ui::GestureEvent& e)
+        {
+            return e.kind == ui::GestureKind::kSwipeLeft  ||
+                   e.kind == ui::GestureKind::kSwipeRight ||
+                   e.kind == ui::GestureKind::kSwipeUp    ||
+                   e.kind == ui::GestureKind::kSwipeDown;
+        });
+    EXPECT_FALSE(has_swipe);
+
+    const bool has_drag = std::ranges::any_of(events,
+        [](const ui::GestureEvent& e){ return e.kind == ui::GestureKind::kDrag; });
+    EXPECT_TRUE(has_drag);  // drag still fired on the threshold-crossing move
+}
+
+/// reset() called mid-gesture (after press, before release) must nullify the
+/// gesture: a subsequent release must not fire any gesture (state was wiped).
+TEST(UiInputGestureRecognizer, ResetMidGestureNullifies)
+{
+    ui::GestureRecognizer gr;
+    std::vector<ui::GestureEvent> events;
+    gr.on_gesture([&](const ui::GestureEvent& e) { events.push_back(e); });
+
+    gr.feed(press_at(0.0F, 0.0F),  0.000);
+    gr.feed(move_to(50.0F, 0.0F),  0.010);   // would trigger drag
+
+    // Wipe all state before the drag-completing release.
+    gr.reset();
+    events.clear();  // also clear any events emitted before reset
+
+    // Release: pressed_ is now false, so handle_release_ bails immediately.
+    gr.feed(release_at(50.0F, 0.0F), 0.020);
+
+    EXPECT_TRUE(events.empty());
 }

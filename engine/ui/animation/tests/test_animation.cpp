@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <tuple>
 
 namespace ani = cd::ui::animation;
 
@@ -310,4 +311,274 @@ TEST(Tweener, ZeroDurationReturnsTo)
     a.duration_s = 0.0F;
     tw.start(a);
     EXPECT_NEAR(tw.value(), 42.0F, kEps);
+}
+
+// ---- Tweener: negative dt treated as zero (elapsed unchanged) --------------
+
+TEST(Tweener, NegativeDtTreatedAsZero)
+{
+    ani::Tweener<float> tw;
+    ani::Animation<float> a {};
+    a.from       = 0.0F;
+    a.to         = 10.0F;
+    a.duration_s = 1.0F;
+    a.easing     = ani::Easing::kLinear;
+    tw.start(a);
+    tw.tick(0.4F);
+    const float v_before = tw.value();
+    tw.tick(-0.5F);
+    EXPECT_NEAR(tw.value(), v_before, kEps);
+    EXPECT_NEAR(tw.elapsed_s(), 0.4F, kEps);
+    EXPECT_FALSE(tw.done());
+}
+
+// ---- Tweener: tick after done() has no further effect ----------------------
+
+TEST(Tweener, TickAfterDoneIsNoOp)
+{
+    ani::Tweener<float> tw;
+    ani::Animation<float> a {};
+    a.from       = 0.0F;
+    a.to         = 1.0F;
+    a.duration_s = 0.5F;
+    a.easing     = ani::Easing::kLinear;
+    tw.start(a);
+    tw.tick(1.0F);
+    EXPECT_TRUE(tw.done());
+    EXPECT_NEAR(tw.value(), 1.0F, kEps);
+    EXPECT_NEAR(tw.elapsed_s(), 0.5F, kEps);
+
+    // Further ticks must not change elapsed or value.
+    tw.tick(2.0F);
+    EXPECT_NEAR(tw.value(), 1.0F, kEps);
+    EXPECT_NEAR(tw.elapsed_s(), 0.5F, kEps);
+}
+
+// ---- Tweener: default-constructed is immediately done() --------------------
+
+TEST(Tweener, DefaultConstructedIsDone)
+{
+    const ani::Tweener<float> tw;
+    // active_ starts false -> done() is true; value() returns default-T (0).
+    EXPECT_TRUE(tw.done());
+    EXPECT_NEAR(tw.value(), 0.0F, kEps);
+}
+
+// ---- Easing: every curve maps t=0 to 0 and t=1 to 1 -----------------------
+
+TEST(Easing, AllCurvesHaveCleanEndpoints)
+{
+    // Includes overshoot curves: elastic/back boundaries are exact by design.
+    const ani::Easing all_curves[] = {
+        ani::Easing::kLinear,
+        ani::Easing::kEaseInQuad,
+        ani::Easing::kEaseOutQuad,
+        ani::Easing::kEaseInOutQuad,
+        ani::Easing::kEaseInCubic,
+        ani::Easing::kEaseOutCubic,
+        ani::Easing::kEaseInOutCubic,
+        ani::Easing::kEaseOutBack,
+        ani::Easing::kEaseOutElastic,
+        ani::Easing::kEaseOutBounce,
+    };
+    for (auto c : all_curves)
+    {
+        EXPECT_NEAR(ani::ease(0.0F, c), 0.0F, kEps) << "curve=" << static_cast<int>(c) << " at t=0";
+        EXPECT_NEAR(ani::ease(1.0F, c), 1.0F, kEps) << "curve=" << static_cast<int>(c) << " at t=1";
+    }
+}
+
+// ---- Easing: back overshoot peak is bounded above ~1.2 ---------------------
+
+TEST(Easing, EaseOutBackOvershootBoundedBelow1p15)
+{
+    // c1=1.70158 -> theoretical peak ≈ 1.0998. We assert it never exceeds 1.2
+    // (sanity bound) and never dips below 0 (t=0 → 0; curve is monotone first).
+    for (int i = 0; i <= 100; ++i)
+    {
+        const float t = static_cast<float>(i) / 100.0F;
+        const float v = ani::ease(t, ani::Easing::kEaseOutBack);
+        EXPECT_LE(v, 1.15F) << "kEaseOutBack peak above 1.15 at t=" << t;
+        EXPECT_GE(v, -0.1F) << "kEaseOutBack below -0.1 at t=" << t;
+    }
+}
+
+// ---- Easing: elastic oscillates above 1 at some interior t ----------------
+
+TEST(Easing, EaseOutElasticOvershoots)
+{
+    // The damped sine produces values > 1.0 somewhere before settling at 1.
+    bool saw_above = false;
+    for (int i = 1; i < 99; ++i)
+    {
+        const float t = static_cast<float>(i) / 100.0F;
+        if (ani::ease(t, ani::Easing::kEaseOutElastic) > 1.0F + 1e-3F)
+        {
+            saw_above = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(saw_above);
+}
+
+// ---- Easing: bounce stays within [0..1] everywhere ------------------------
+
+TEST(Easing, EaseOutBounceStaysInUnitInterval)
+{
+    for (int i = 0; i <= 200; ++i)
+    {
+        const float t = static_cast<float>(i) / 200.0F;
+        const float v = ani::ease(t, ani::Easing::kEaseOutBounce);
+        EXPECT_GE(v, -kEps) << "kEaseOutBounce below 0 at t=" << t;
+        EXPECT_LE(v, 1.0F + kEps) << "kEaseOutBounce above 1 at t=" << t;
+    }
+}
+
+// ---- Easing: EaseInOutQuad is symmetric (f(1-t) == 1-f(t)) ----------------
+
+TEST(Easing, EaseInOutQuadIsSymmetric)
+{
+    for (int i = 0; i <= 50; ++i)
+    {
+        const float t    = static_cast<float>(i) / 100.0F;
+        const float ft   = ani::ease(t,        ani::Easing::kEaseInOutQuad);
+        const float fmt  = ani::ease(1.0F - t, ani::Easing::kEaseInOutQuad);
+        EXPECT_NEAR(ft + fmt, 1.0F, kEps) << "symmetry broken at t=" << t;
+    }
+}
+
+// ---- Easing: EaseInOutCubic is symmetric ----------------------------------
+
+TEST(Easing, EaseInOutCubicIsSymmetric)
+{
+    for (int i = 0; i <= 50; ++i)
+    {
+        const float t    = static_cast<float>(i) / 100.0F;
+        const float ft   = ani::ease(t,        ani::Easing::kEaseInOutCubic);
+        const float fmt  = ani::ease(1.0F - t, ani::Easing::kEaseInOutCubic);
+        EXPECT_NEAR(ft + fmt, 1.0F, kEps) << "symmetry broken at t=" << t;
+    }
+}
+
+// ---- Easing: out-of-range t is clamped ------------------------------------
+
+TEST(Easing, OutOfRangeTIsClamped)
+{
+    // t < 0 clamps to 0; t > 1 clamps to 1 (monotonic family).
+    const ani::Easing mono[] = {
+        ani::Easing::kLinear,
+        ani::Easing::kEaseInQuad,
+        ani::Easing::kEaseOutQuad,
+        ani::Easing::kEaseInCubic,
+        ani::Easing::kEaseOutCubic,
+    };
+    for (auto c : mono)
+    {
+        EXPECT_NEAR(ani::ease(-1.0F, c), 0.0F, kEps) << "curve=" << static_cast<int>(c);
+        EXPECT_NEAR(ani::ease( 2.0F, c), 1.0F, kEps) << "curve=" << static_cast<int>(c);
+    }
+}
+
+// ---- Timeline: empty timeline is immediately done() -----------------------
+
+TEST(Timeline, EmptyTimelineIsDone)
+{
+    const ani::Timeline tl;
+    EXPECT_TRUE(tl.done());
+    EXPECT_EQ(tl.channel_count(), 0U);
+    EXPECT_NEAR(tl.now_s(), 0.0F, kEps);
+}
+
+// ---- Timeline: invalid channel returns 0.0F -------------------------------
+
+TEST(Timeline, InvalidChannelReturnsZero)
+{
+    ani::Timeline tl;
+    ani::Animation<float> a {};
+    a.from       = 5.0F;
+    a.to         = 10.0F;
+    a.duration_s = 1.0F;
+    std::ignore = tl.add(0.0F, a);
+    tl.tick(0.5F);
+
+    EXPECT_NEAR(tl.value_for(ani::kInvalidChannel), 0.0F, kEps);
+    // Out-of-range index (well past valid channels) is also guarded.
+    const ani::ChannelId oob { 999U };
+    EXPECT_NEAR(tl.value_for(oob), 0.0F, kEps);
+}
+
+// ---- Timeline: negative at_time_s clamped to 0 ----------------------------
+
+TEST(Timeline, NegativeStartTimeClamped)
+{
+    ani::Timeline tl;
+    ani::Animation<float> a {};
+    a.from       = 0.0F;
+    a.to         = 1.0F;
+    a.duration_s = 1.0F;
+    a.easing     = ani::Easing::kLinear;
+    // Schedule with a negative start time; should behave as if start_s == 0.
+    const auto ch = tl.add(-5.0F, a);
+    // At now=0, the channel has start_s=0 so it is at its start, value = from.
+    EXPECT_NEAR(tl.value_for(ch), 0.0F, kEps);
+    tl.tick(0.5F);
+    EXPECT_NEAR(tl.value_for(ch), 0.5F, kEps);
+    tl.tick(0.5F);
+    EXPECT_NEAR(tl.value_for(ch), 1.0F, kEps);
+    EXPECT_TRUE(tl.done());
+}
+
+// ---- Timeline: seek via reset + bulk tick to target time ------------------
+
+TEST(Timeline, SeekViaResetAndBulkTick)
+{
+    ani::Timeline tl;
+    ani::Animation<float> a {};
+    a.from       = 0.0F;
+    a.to         = 10.0F;
+    a.duration_s = 2.0F;
+    a.easing     = ani::Easing::kLinear;
+    const auto ch = tl.add(0.0F, a);
+
+    // Advance to 1.0s (mid-point).
+    tl.tick(1.0F);
+    EXPECT_NEAR(tl.value_for(ch), 5.0F, kEps);
+
+    // "Seek" back to t=0.5s: reset then tick to target.
+    tl.reset();
+    tl.tick(0.5F);
+    EXPECT_NEAR(tl.value_for(ch), 2.5F, kEps);
+    EXPECT_NEAR(tl.now_s(), 0.5F, kEps);
+}
+
+// ---- Timeline: overlapping channels sum independently ----------------------
+
+TEST(Timeline, OverlappingChannelsAreIndependent)
+{
+    // Two channels start at the same time and run independently.
+    ani::Timeline tl;
+
+    ani::Animation<float> a1 {};
+    a1.from       = 0.0F;
+    a1.to         = 100.0F;
+    a1.duration_s = 1.0F;
+    a1.easing     = ani::Easing::kLinear;
+
+    ani::Animation<float> a2 {};
+    a2.from       = 200.0F;
+    a2.to         = 0.0F;
+    a2.duration_s = 1.0F;
+    a2.easing     = ani::Easing::kLinear;
+
+    const auto ch1 = tl.add(0.0F, a1);
+    const auto ch2 = tl.add(0.0F, a2);
+
+    tl.tick(0.25F);
+    EXPECT_NEAR(tl.value_for(ch1),  25.0F, 1e-3F);
+    EXPECT_NEAR(tl.value_for(ch2), 150.0F, 1e-3F);
+
+    tl.tick(0.75F);  // total 1.0 -> both at `to`
+    EXPECT_NEAR(tl.value_for(ch1), 100.0F, kEps);
+    EXPECT_NEAR(tl.value_for(ch2),   0.0F, kEps);
+    EXPECT_TRUE(tl.done());
 }
