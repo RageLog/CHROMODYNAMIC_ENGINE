@@ -202,6 +202,7 @@ public:
         return !close_requested_;
     }
 
+    [[nodiscard]] bool should_close() const noexcept override { return close_requested_; }
     void request_close() noexcept override { close_requested_ = true; }
 
     [[nodiscard]] void* native_window_handle() const noexcept override
@@ -234,6 +235,12 @@ private:
 
 cd::core::Result<std::unique_ptr<IWindow>> create_window(const WindowDesc& d)
 {
+    if (d.width == 0 || d.height == 0)
+    {
+        return std::unexpected(platform_errors::make(
+            platform_errors::Code::kInvalidArgument,
+            "create_window: width and height must be > 0"));
+    }
     auto w = std::make_unique<X11Window>();
     if (!w->create(d))
     {

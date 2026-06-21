@@ -14,9 +14,9 @@
 
 #include <cd/asset/streamer_pool/StreamerPool.hpp>
 
-#include <algorithm>
-#include <array>
 #include <cstdint>
+#include <string>
+#include <utility>
 
 namespace cd::asset::streamer_pool
 {
@@ -61,11 +61,120 @@ void StreamerPool::attach_shader(cd::asset::shader_cache::ShaderCache* cache)
 }
 
 // =============================================================================
+// Convenience enqueue facades
+// =============================================================================
+
+void StreamerPool::enqueue_scene(cd::asset::scene_streamer::StreamRequest request)
+{
+    if (scene_ != nullptr)
+    {
+        tracked_scene_paths_.push_back(request.asset_path);
+        scene_->enqueue(std::move(request));
+    }
+}
+
+void StreamerPool::enqueue_texture(cd::asset::texture_streamer::StreamRequest request)
+{
+    if (texture_ != nullptr)
+    {
+        tracked_texture_paths_.push_back(request.asset_path);
+        texture_->enqueue(std::move(request));
+    }
+}
+
+void StreamerPool::enqueue_audio(cd::asset::audio_streamer::StreamRequest request)
+{
+    if (audio_ != nullptr)
+    {
+        tracked_audio_paths_.push_back(request.asset_path);
+        audio_->enqueue(std::move(request));
+    }
+}
+
+// =============================================================================
+// Backpressure
+// =============================================================================
+
+void StreamerPool::pause() noexcept
+{
+    paused_ = true;
+}
+
+void StreamerPool::resume() noexcept
+{
+    paused_ = false;
+}
+
+bool StreamerPool::is_paused() const noexcept
+{
+    return paused_;
+}
+
+// =============================================================================
+// Cancellation
+// =============================================================================
+
+void StreamerPool::cancel_all()
+{
+    // Cancel every path submitted via the pool's own enqueue_* facades.
+    // Each child streamer's cancel(path) is idempotent for unknown or
+    // already-loaded paths, so iterating the tracked lists is safe even if
+    // some items completed between enqueue and cancel_all.
+    //
+    // Paths enqueued directly on the child streamer (bypassing the pool facade)
+    // are NOT tracked here — callers that bypass the facade must cancel those
+    // themselves.  This is the behaviour-preserving contract: only pool-mediated
+    // enqueues are managed by the pool.
+
+    if (scene_ != nullptr)
+    {
+        for (const std::string& path : tracked_scene_paths_)
+        {
+            scene_->cancel(path);
+        }
+    }
+    tracked_scene_paths_.clear();
+
+    if (texture_ != nullptr)
+    {
+        for (const std::string& path : tracked_texture_paths_)
+        {
+            texture_->cancel(path);
+        }
+    }
+    tracked_texture_paths_.clear();
+
+    if (audio_ != nullptr)
+    {
+        for (const std::string& path : tracked_audio_paths_)
+        {
+            audio_->cancel(path);
+        }
+    }
+    tracked_audio_paths_.clear();
+}
+
+// =============================================================================
+// set_completion_callback
+// =============================================================================
+
+void StreamerPool::set_completion_callback(CompletionCallback cb)
+{
+    completion_cb_ = std::move(cb);
+}
+
+// =============================================================================
 // tick — priority-weighted round-robin
 // =============================================================================
 
 void StreamerPool::tick(const float dt)
 {
+    // Backpressure gate.
+    if (paused_)
+    {
+        return;
+    }
+
     // ---- Determine active streamers (attached + have pending work) -----------
 
     const bool scene_active   = (scene_   != nullptr) && (scene_->pending_count()   > 0U);
@@ -116,24 +225,59 @@ void StreamerPool::tick(const float dt)
     const std::uint32_t texture_tokens = compute_tokens(deficit_texture_,  cfg_.texture_priority, texture_active);
     const std::uint32_t audio_tokens   = compute_tokens(deficit_audio_,    cfg_.audio_priority,   audio_active);
 
-    // ---- Dispatch -----------------------------------------------------------
+    // ---- Dispatch (with optional completion callback) -----------------------
+
+    const bool has_cb = static_cast<bool>(completion_cb_);
 
     for (std::uint32_t i = 0U; i < scene_tokens; ++i)
     {
         if (scene_->pending_count() == 0U) { break; }
+        const auto before = has_cb ? scene_->completed_count() : std::size_t{0U};
         scene_->tick(dt);
+        if (has_cb)
+        {
+            const auto after = scene_->completed_count();
+            if (after > before)
+            {
+                completion_cb_(StreamerDomain::Scene,
+                               std::string{},
+                               static_cast<std::uint32_t>(after));
+            }
+        }
     }
 
     for (std::uint32_t i = 0U; i < texture_tokens; ++i)
     {
         if (texture_->pending_count() == 0U) { break; }
+        const auto before = has_cb ? texture_->completed_count() : std::size_t{0U};
         texture_->tick(dt, *device_);
+        if (has_cb)
+        {
+            const auto after = texture_->completed_count();
+            if (after > before)
+            {
+                completion_cb_(StreamerDomain::Texture,
+                               std::string{},
+                               static_cast<std::uint32_t>(after));
+            }
+        }
     }
 
     for (std::uint32_t i = 0U; i < audio_tokens; ++i)
     {
         if (audio_->pending_count() == 0U) { break; }
+        const auto before = has_cb ? audio_->completed_count() : std::size_t{0U};
         audio_->tick(dt);
+        if (has_cb)
+        {
+            const auto after = audio_->completed_count();
+            if (after > before)
+            {
+                completion_cb_(StreamerDomain::Audio,
+                               std::string{},
+                               static_cast<std::uint32_t>(after));
+            }
+        }
     }
 }
 
@@ -170,6 +314,31 @@ PoolStats StreamerPool::stats() const
     }
 
     return s;
+}
+
+// =============================================================================
+// is_idle
+// =============================================================================
+
+bool StreamerPool::is_idle() const
+{
+    if (scene_   != nullptr && scene_->pending_count()   > 0U) { return false; }
+    if (texture_ != nullptr && texture_->pending_count() > 0U) { return false; }
+    if (audio_   != nullptr && audio_->pending_count()   > 0U) { return false; }
+    return true;
+}
+
+// =============================================================================
+// total_pending
+// =============================================================================
+
+std::uint32_t StreamerPool::total_pending() const
+{
+    std::uint32_t n = 0U;
+    if (scene_   != nullptr) { n += static_cast<std::uint32_t>(scene_->pending_count());   }
+    if (texture_ != nullptr) { n += static_cast<std::uint32_t>(texture_->pending_count()); }
+    if (audio_   != nullptr) { n += static_cast<std::uint32_t>(audio_->pending_count());   }
+    return n;
 }
 
 }  // namespace cd::asset::streamer_pool

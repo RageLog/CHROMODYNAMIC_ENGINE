@@ -25,8 +25,6 @@
 #include <cd/core/Defines.hpp>
 #include <cd/ecs/Entity.hpp>
 #include <cd/math/Vector.hpp>
-
-#include <algorithm>
 #include <cstdint>
 #include <vector>
 

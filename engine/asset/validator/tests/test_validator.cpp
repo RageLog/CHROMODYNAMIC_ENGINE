@@ -34,6 +34,31 @@
 //   T25 policy() accessor returns default values on fresh Validator
 //   T26 policy() accessor reflects values after configure()
 //   T27 SEAL: deep schema parse is out-of-scope; magic-sniff is the full contract
+//
+// Depth-100 additions (T28–T50):
+//   T28 required_color_spaces all-3-slots set => kInfo emitted
+//   T29 required_color_spaces partial (1 slot) => no kInfo
+//   T30 required_color_spaces two-of-three => no kInfo
+//   T31 kInfo message contains all three slot names
+//   T32 asset_path propagated verbatim (texture / gltf / audio — 3 TEST cases)
+//   T33 multi-issue kError + kWarning in one call (wrong magic + oversized)
+//   T34 multi-issue kInfo + kError in one call (color-spaces + bad magic)
+//   T35 multi-issue kInfo + kWarning in one call (color-spaces + oversized, valid magic)
+//   T36 ValidationIssue::message is non-empty (empty-blob error / bad-audio-magic — 2 cases)
+//   T37 empty asset_path stored verbatim, no crash, no substitution
+//   T38 Severity enum: kInfo, kWarning, kError are all distinct values
+//   T39 GLB version = UINT32_MAX => kWarning (extreme boundary)
+//   T40 WAV WAVE tag read from exactly offset 8 (not 0+N) => accepted
+//   T41 OGG exactly-4-byte blob ("OggS") => no issues
+//   T42 OGG 3-byte blob ('O','g','g') => kError (too short for 4-byte magic)
+//   T43 max_texture_pixels = 0 => kWarning on any blob with >= 4 bytes
+//   T44 required_color_spaces cleared by second configure() => kInfo stops
+//   T45 HDR exactly-2-byte blob ("#?") => no issues (minimum valid)
+//   T46 HDR 1-byte '#' blob => kError (magic needs 2 bytes)
+//   T47 SEAL: max_mesh_vertices round-trips policy; no validate_mesh_blob() in Sprint-1
+//   T48 JSON glTF single-brace '{' blob => no issues
+//   T49 JSON glTF array-root '[' blob => kError
+//   T50 gltf/audio validators never emit kInfo for required_color_spaces
 // =============================================================================
 
 #include <cd/asset/validator/Validator.hpp>
@@ -637,6 +662,489 @@ TEST(Validator, DeepSchemaParseOutOfScope_MagicSniffIsContract)
     // No kError: magic is valid, body depth is sealed out-of-scope.
     EXPECT_FALSE(has_error(issues))
         << "SEAL: deep body parse is out-of-scope; magic-sniff is the full contract";
+}
+
+// ---- T28: required_color_spaces — all three slots set => kInfo emitted ------
+// When all three required_color_spaces slots are non-empty the validator
+// emits a single kInfo noting the active color-space requirements.
+
+TEST(Validator, RequiredColorSpacesAllSetEmitsInfo)
+{
+    Validator v;
+    ValidatorPolicy policy;
+    policy.required_color_spaces[0] = "sRGB";
+    policy.required_color_spaces[1] = "linear";
+    policy.required_color_spaces[2] = "ACEScg";
+    v.configure(policy);
+
+    // Use a blob large enough that conservative_pixels does not exceed the
+    // default pixel limit, so only the kInfo fires (no kWarning interference).
+    const auto issues = v.validate_texture_blob(
+        std::span<const std::uint8_t>{ kPngSig }, "albedo.png");
+
+    EXPECT_TRUE(has_severity(issues, Severity::kInfo))
+        << "All three required_color_spaces set must emit kInfo";
+    EXPECT_FALSE(has_error(issues))
+        << "kInfo for color-spaces must not produce kError";
+    EXPECT_FALSE(has_warning(issues))
+        << "kInfo for color-spaces must not produce kWarning when blob is valid and in-limit";
+}
+
+// ---- T29: required_color_spaces — partial (only 1 or 2 slots set) => no kInfo
+// kInfo is only emitted when ALL THREE slots are non-empty; partial fill is silent.
+
+TEST(Validator, RequiredColorSpacesPartialFillNoInfo)
+{
+    Validator v;
+    ValidatorPolicy policy;
+    policy.required_color_spaces[0] = "sRGB";
+    // slots 1 and 2 remain empty
+    v.configure(policy);
+
+    const auto issues = v.validate_texture_blob(
+        std::span<const std::uint8_t>{ kPngSig }, "albedo.png");
+
+    EXPECT_FALSE(has_severity(issues, Severity::kInfo))
+        << "Partial required_color_spaces fill must NOT emit kInfo";
+}
+
+// ---- T30: required_color_spaces — two slots set, one empty => no kInfo ------
+
+TEST(Validator, RequiredColorSpacesTwoOfThreeNoInfo)
+{
+    Validator v;
+    ValidatorPolicy policy;
+    policy.required_color_spaces[0] = "sRGB";
+    policy.required_color_spaces[1] = "linear";
+    // slot 2 empty
+    v.configure(policy);
+
+    const auto issues = v.validate_texture_blob(
+        std::span<const std::uint8_t>{ kPngSig }, "albedo.png");
+
+    EXPECT_FALSE(has_severity(issues, Severity::kInfo))
+        << "Two-of-three required_color_spaces must NOT emit kInfo";
+}
+
+// ---- T31: required_color_spaces kInfo message contains all three slot names -
+
+TEST(Validator, RequiredColorSpacesInfoMessageContainsSlotNames)
+{
+    Validator v;
+    ValidatorPolicy policy;
+    policy.required_color_spaces[0] = "sRGB";
+    policy.required_color_spaces[1] = "linear";
+    policy.required_color_spaces[2] = "ACEScg";
+    v.configure(policy);
+
+    const auto issues = v.validate_texture_blob(
+        std::span<const std::uint8_t>{ kPngSig }, "albedo.png");
+
+    const auto info_it = std::ranges::find_if(
+        issues,
+        [](const ValidationIssue& i)
+        {
+            return i.severity == Severity::kInfo;
+        });
+    ASSERT_NE(info_it, issues.end())
+        << "Expected at least one kInfo issue for color-spaces";
+
+    EXPECT_NE(info_it->message.find("sRGB"),   std::string::npos)
+        << "kInfo message must contain slot-0 name 'sRGB'";
+    EXPECT_NE(info_it->message.find("linear"), std::string::npos)
+        << "kInfo message must contain slot-1 name 'linear'";
+    EXPECT_NE(info_it->message.find("ACEScg"), std::string::npos)
+        << "kInfo message must contain slot-2 name 'ACEScg'";
+}
+
+// ---- T32: asset_path is propagated into ValidationIssue::asset_path ---------
+// Each validate_*_blob() must copy the caller-supplied path into every issue.
+
+TEST(Validator, AssetPathPropagatedIntoIssue_Texture)
+{
+    const Validator v;
+    const std::string_view kPath{ "textures/missing_magic.bin" };
+    // Garbage blob => kError with unrecognised-format message.
+    constexpr std::array<std::uint8_t, 4> kGarbage{ 0x00U, 0x00U, 0x00U, 0x00U };
+    const auto issues = v.validate_texture_blob(
+        std::span<const std::uint8_t>{ kGarbage }, kPath);
+
+    ASSERT_FALSE(issues.empty());
+    EXPECT_EQ(issues.front().asset_path, kPath)
+        << "asset_path must be copied verbatim into the issue struct (texture)";
+}
+
+TEST(Validator, AssetPathPropagatedIntoIssue_Gltf)
+{
+    const Validator v;
+    const std::string_view kPath{ "scenes/corrupt.gltf" };
+    // Blob that doesn't start with '{' or "glTF".
+    constexpr std::array<std::uint8_t, 4> kBad{ 'X', 'X', 'X', 'X' };
+    const auto issues = v.validate_gltf_blob(
+        std::span<const std::uint8_t>{ kBad }, kPath);
+
+    ASSERT_FALSE(issues.empty());
+    EXPECT_EQ(issues.front().asset_path, kPath)
+        << "asset_path must be copied verbatim into the issue struct (gltf)";
+}
+
+TEST(Validator, AssetPathPropagatedIntoIssue_Audio)
+{
+    const Validator v;
+    const std::string_view kPath{ "sfx/bad_format.bin" };
+    constexpr std::array<std::uint8_t, 4> kGarbage{ 0x00U, 0x00U, 0x00U, 0x00U };
+    const auto issues = v.validate_audio_blob(
+        std::span<const std::uint8_t>{ kGarbage }, kPath);
+
+    ASSERT_FALSE(issues.empty());
+    EXPECT_EQ(issues.front().asset_path, kPath)
+        << "asset_path must be copied verbatim into the issue struct (audio)";
+}
+
+// ---- T33: multi-issue aggregation — wrong magic AND oversized in one call ---
+// A blob with unrecognised magic AND a size that exceeds the conservative pixel
+// limit must accumulate BOTH kError (bad magic) AND kWarning (size) in one
+// validate_texture_blob() call — neither short-circuits the other.
+
+TEST(Validator, MultiIssueAggregation_ErrorAndWarningInSameCall)
+{
+    Validator v;
+    ValidatorPolicy policy;
+    policy.max_texture_pixels = 1ULL;  // 1-pixel limit: conservative_pixels=blob/4 > 1
+    v.configure(policy);
+
+    // 8-byte garbage blob: unknown magic + size = 8 bytes => conservative_pixels=2>1.
+    constexpr std::array<std::uint8_t, 8> kGarbage{
+        0x00U, 0x00U, 0x00U, 0x00U,
+        0x00U, 0x00U, 0x00U, 0x00U
+    };
+    const auto issues = v.validate_texture_blob(
+        std::span<const std::uint8_t>{ kGarbage }, "multi.bin");
+
+    EXPECT_TRUE(has_error(issues))
+        << "Unrecognised magic must produce kError even when size is also over limit";
+    EXPECT_TRUE(has_warning(issues))
+        << "Oversized blob must produce kWarning even when magic is also invalid";
+    EXPECT_GE(issues.size(), std::size_t{ 2 })
+        << "Both kError and kWarning must be present in the same issue list";
+}
+
+// ---- T34: kInfo + kError aggregation — color-space note alongside bad magic -
+// When the policy has all three required_color_spaces set AND the blob has an
+// unrecognised magic, the result must contain BOTH kError and kInfo.
+
+TEST(Validator, MultiIssueAggregation_InfoAndErrorInSameCall)
+{
+    Validator v;
+    ValidatorPolicy policy;
+    policy.required_color_spaces[0] = "sRGB";
+    policy.required_color_spaces[1] = "linear";
+    policy.required_color_spaces[2] = "ACEScg";
+    v.configure(policy);
+
+    constexpr std::array<std::uint8_t, 4> kGarbage{ 0xAAU, 0xBBU, 0xCCU, 0xDDU };
+    const auto issues = v.validate_texture_blob(
+        std::span<const std::uint8_t>{ kGarbage }, "dual.bin");
+
+    EXPECT_TRUE(has_error(issues))
+        << "Unrecognised magic must still produce kError";
+    EXPECT_TRUE(has_severity(issues, Severity::kInfo))
+        << "All-slots color-space note must still produce kInfo";
+}
+
+// ---- T35: kInfo + kWarning aggregation — color-space + oversized, valid magic
+// Valid PNG magic + all color-spaces set + oversized => kInfo + kWarning, no kError.
+
+TEST(Validator, MultiIssueAggregation_InfoAndWarning_ValidMagic)
+{
+    Validator v;
+    ValidatorPolicy policy;
+    policy.max_texture_pixels      = 1ULL;
+    policy.required_color_spaces[0] = "sRGB";
+    policy.required_color_spaces[1] = "linear";
+    policy.required_color_spaces[2] = "ACEScg";
+    v.configure(policy);
+
+    // 8-byte PNG sig => conservative_pixels = 8/4 = 2 > 1 => kWarning.
+    const auto issues = v.validate_texture_blob(
+        std::span<const std::uint8_t>{ kPngSig }, "tagged.png");
+
+    EXPECT_FALSE(has_error(issues))
+        << "Valid PNG magic must not produce kError";
+    EXPECT_TRUE(has_warning(issues))
+        << "Oversized blob must produce kWarning";
+    EXPECT_TRUE(has_severity(issues, Severity::kInfo))
+        << "All-slots color-space policy must produce kInfo";
+    EXPECT_GE(issues.size(), std::size_t{ 2 })
+        << "kWarning + kInfo must both be present";
+}
+
+// ---- T36: issue message is non-empty for every error/warning path -----------
+
+TEST(Validator, IssueMessageNonEmpty_EmptyTexture)
+{
+    const Validator v;
+    const auto issues = v.validate_texture_blob({}, "empty.png");
+    ASSERT_FALSE(issues.empty());
+    EXPECT_FALSE(issues.front().message.empty())
+        << "ValidationIssue::message must not be empty for empty-blob kError";
+}
+
+TEST(Validator, IssueMessageNonEmpty_BadAudioMagic)
+{
+    const Validator v;
+    constexpr std::array<std::uint8_t, 4> kBad{ 0x00U, 0x00U, 0x00U, 0x00U };
+    const auto issues = v.validate_audio_blob(
+        std::span<const std::uint8_t>{ kBad }, "bad.bin");
+    ASSERT_FALSE(issues.empty());
+    EXPECT_FALSE(issues.front().message.empty())
+        << "ValidationIssue::message must not be empty for bad-magic audio kError";
+}
+
+// ---- T37: empty asset_path string is stored as-is (no crash, no default) ----
+// Callers may legitimately pass an empty path (e.g. in-memory blob with no
+// associated file).  The validator must store it unchanged.
+
+TEST(Validator, EmptyAssetPathStoredVerbatim)
+{
+    const Validator v;
+    const auto issues = v.validate_texture_blob({}, "");
+    ASSERT_FALSE(issues.empty()) << "Empty blob must produce kError";
+    EXPECT_TRUE(issues.front().asset_path.empty())
+        << "Empty path string must be stored verbatim, not replaced";
+}
+
+// ---- T38: severity enum — kInfo < kWarning < kError ordering ----------------
+// Ensure all three severity enumerators are distinct and ordered as documented.
+
+TEST(Validator, SeverityEnumValuesAreDistinct)
+{
+    EXPECT_NE(Severity::kInfo,    Severity::kWarning);
+    EXPECT_NE(Severity::kWarning, Severity::kError);
+    EXPECT_NE(Severity::kInfo,    Severity::kError);
+}
+
+// ---- T39: GLB version = UINT32_MAX => kWarning (extreme boundary) -----------
+
+TEST(Validator, GlbVersionMaxUint32IsWarning)
+{
+    const Validator v;
+    constexpr std::array<std::uint8_t, 12> kGlbMaxVer{
+        0x67U, 0x6CU, 0x54U, 0x46U,  // "glTF"
+        0xFFU, 0xFFU, 0xFFU, 0xFFU,  // version = UINT32_MAX (LE)
+        0x0CU, 0x00U, 0x00U, 0x00U   // length = 12
+    };
+    const auto issues = v.validate_gltf_blob(
+        std::span<const std::uint8_t>{ kGlbMaxVer }, "future.glb");
+    EXPECT_TRUE(has_warning(issues))
+        << "GLB version=UINT32_MAX must produce kWarning (not version 2)";
+    EXPECT_FALSE(has_error(issues))
+        << "GLB version=UINT32_MAX must not produce kError";
+}
+
+// ---- T40: WAV with RIFF tag and correct WAVE tag at exactly offset 8 --------
+// Verify the sub-span indexing is correct: the WAVE fourCC must be read from
+// exactly offset 8 (bytes 8–11), not offset 0+N.
+
+TEST(Validator, WavWaveTagAtExactOffset8Accepted)
+{
+    const Validator v;
+    // "RIFF" + 4-byte size + "WAVE" — the canonical 12-byte minimal WAV.
+    // Altering byte 7 (just before WAVE) must still work if bytes 8–11 == "WAVE".
+    constexpr std::array<std::uint8_t, 12> kWavExact{
+        'R', 'I', 'F', 'F',
+        0x01U, 0xF4U, 0x00U, 0x00U,  // chunk size = 500 (dummy)
+        'W', 'A', 'V', 'E'
+    };
+    const auto issues = v.validate_audio_blob(
+        std::span<const std::uint8_t>{ kWavExact }, "sample.wav");
+    EXPECT_TRUE(issues.empty())
+        << "Valid 12-byte RIFF/WAVE blob must produce no issues";
+}
+
+// ---- T41: OGG: exactly 4-byte blob with correct magic => no issues ----------
+// Minimum possible OGG blob (just the capture pattern).
+
+TEST(Validator, OggExactly4BytesNoIssues)
+{
+    const Validator v;
+    constexpr std::array<std::uint8_t, 4> kOgg4{ 'O', 'g', 'g', 'S' };
+    const auto issues = v.validate_audio_blob(
+        std::span<const std::uint8_t>{ kOgg4 }, "min.ogg");
+    EXPECT_TRUE(issues.empty())
+        << "Exactly-4-byte OggS blob must produce no issues";
+}
+
+// ---- T42: OGG: 3-byte blob starting 'O','g','g' => kError (too short) ------
+// OGG magic requires exactly 4 bytes "OggS"; 3 bytes must fail the magic check.
+
+TEST(Validator, OggThreeBytesBlobIsError)
+{
+    const Validator v;
+    constexpr std::array<std::uint8_t, 3> kOgg3{ 'O', 'g', 'g' };
+    const auto issues = v.validate_audio_blob(
+        std::span<const std::uint8_t>{ kOgg3 }, "trunc.ogg");
+    EXPECT_TRUE(has_error(issues))
+        << "3-byte blob 'Ogg' (missing final 'S') must produce kError";
+}
+
+// ---- T43: texture blob: max_texture_pixels = 0 => every non-empty blob warns -
+// A zero pixel limit means any non-zero size exceeds it
+// (conservative_pixels = blob.size()/4 > 0 only when blob.size() >= 4,
+// but with limit=0: blob.size()/4 > 0 whenever size >= 4).
+// Specifically, a valid PNG sig (8 bytes) => conservative_pixels=2 > 0 => kWarning.
+
+TEST(Validator, ZeroPixelLimitWarnsOnAnyNonTinyBlob)
+{
+    Validator v;
+    ValidatorPolicy policy;
+    policy.max_texture_pixels = 0ULL;
+    v.configure(policy);
+
+    // 8-byte PNG sig: conservative_pixels = 8/4 = 2 > 0 => kWarning.
+    const auto issues = v.validate_texture_blob(
+        std::span<const std::uint8_t>{ kPngSig }, "any.png");
+    EXPECT_TRUE(has_warning(issues))
+        << "Zero pixel limit must warn on a blob with >= 4 bytes";
+    EXPECT_FALSE(has_error(issues))
+        << "Valid PNG magic must not produce kError";
+}
+
+// ---- T44: required_color_spaces: configure clears previous all-set state ----
+// After configuring all-three slots set (kInfo), a second configure() that
+// clears them must stop emitting kInfo.
+
+TEST(Validator, RequiredColorSpacesClearedByReconfigure)
+{
+    Validator v;
+    ValidatorPolicy full;
+    full.required_color_spaces[0] = "sRGB";
+    full.required_color_spaces[1] = "linear";
+    full.required_color_spaces[2] = "ACEScg";
+    v.configure(full);
+
+    {
+        const auto issues = v.validate_texture_blob(
+            std::span<const std::uint8_t>{ kPngSig }, "a.png");
+        EXPECT_TRUE(has_severity(issues, Severity::kInfo))
+            << "Before clear: must emit kInfo";
+    }
+
+    // Reconfigure with empty slots.
+    ValidatorPolicy cleared;
+    v.configure(cleared);
+
+    {
+        const auto issues = v.validate_texture_blob(
+            std::span<const std::uint8_t>{ kPngSig }, "a.png");
+        EXPECT_FALSE(has_severity(issues, Severity::kInfo))
+            << "After clear: must not emit kInfo";
+    }
+}
+
+// ---- T45: validate_texture_blob returns empty vector for valid HDR minimal ---
+// HDR magic "#?" is only 2 bytes; blobs of exactly 2 bytes must pass the
+// magic check without OOB reads.
+
+TEST(Validator, ValidHdrExactly2BytesNoIssues)
+{
+    const Validator v;
+    constexpr std::array<std::uint8_t, 2> kHdr2{ '#', '?' };
+    const auto issues = v.validate_texture_blob(
+        std::span<const std::uint8_t>{ kHdr2 }, "sky.hdr");
+    EXPECT_TRUE(issues.empty())
+        << "Exactly-2-byte '#?' blob must satisfy the HDR magic check with no issues";
+}
+
+// ---- T46: validate_texture_blob: 1-byte '#' blob => kError (HDR needs 2 bytes)
+
+TEST(Validator, HdrOneByteBlobIsError)
+{
+    const Validator v;
+    constexpr std::array<std::uint8_t, 1> kHash{ '#' };
+    const auto issues = v.validate_texture_blob(
+        std::span<const std::uint8_t>{ kHash }, "partial.hdr");
+    EXPECT_TRUE(has_error(issues))
+        << "1-byte '#' blob must not match HDR magic (needs 2 bytes) — kError expected";
+}
+
+// ---- T47: SEAL — max_mesh_vertices field exists in policy but no mesh -------
+// validate_mesh_blob() is not part of the Sprint-1 surface.  The policy field
+// max_mesh_vertices is reserved for Sprint-2 and is round-tripped through
+// configure()/policy() only — it does not influence any current validate_*()
+// call.  This test pins the sealed contract and guards against an accidental
+// silent wiring.
+
+TEST(Validator, MeshVerticesFieldRoundTrips_NoMeshValidationSurface)
+{
+    Validator v;
+    ValidatorPolicy policy;
+    policy.max_mesh_vertices = 42ULL;
+    v.configure(policy);
+
+    EXPECT_EQ(v.policy().max_mesh_vertices, 42ULL)
+        << "max_mesh_vertices must round-trip through configure()/policy()";
+
+    // There is no validate_mesh_blob() in Sprint-1: the field is reserved.
+    // Calling any existing validate_*() with a valid blob must NOT be
+    // influenced by max_mesh_vertices — the texture validator must still
+    // accept a valid PNG regardless of this field.
+    const auto issues = v.validate_texture_blob(
+        std::span<const std::uint8_t>{ kPngSig }, "mesh_unrelated.png");
+    EXPECT_TRUE(issues.empty())
+        << "max_mesh_vertices must not influence validate_texture_blob() result "
+           "(no mesh validation surface in Sprint-1 — SEALED)";
+}
+
+// ---- T48: glTF JSON: first-non-whitespace == '{', one character blob --------
+// Edge case: a single '{' byte must be accepted as a minimal JSON glTF blob.
+
+TEST(Validator, SingleBraceJsonGltfNoIssues)
+{
+    const Validator v;
+    constexpr std::array<std::uint8_t, 1> kBrace{ '{' };
+    const auto issues = v.validate_gltf_blob(
+        std::span<const std::uint8_t>{ kBrace }, "minimal.gltf");
+    EXPECT_TRUE(issues.empty())
+        << "Single-byte '{' blob must pass the JSON glTF validation";
+}
+
+// ---- T49: glTF JSON: first-non-whitespace == '[' => kError ------------------
+// A JSON array root is not valid glTF JSON (must start with an object '{').
+
+TEST(Validator, JsonArrayRootGltfIsError)
+{
+    const Validator v;
+    constexpr std::array<std::uint8_t, 4> kArray{ '[', ']', ' ', ' ' };
+    const auto issues = v.validate_gltf_blob(
+        std::span<const std::uint8_t>{ kArray }, "array_root.gltf");
+    EXPECT_TRUE(has_error(issues))
+        << "JSON glTF blob starting with '[' (array root) must produce kError";
+}
+
+// ---- T50: kInfo is never emitted by gltf or audio validators ----------------
+// required_color_spaces is a texture-only policy field.  The glTF and audio
+// validate_*() functions must not produce any kInfo issue regardless of the
+// policy's required_color_spaces configuration.
+
+TEST(Validator, GltfAndAudioValidatorsNeverEmitKInfo)
+{
+    Validator v;
+    ValidatorPolicy policy;
+    policy.required_color_spaces[0] = "sRGB";
+    policy.required_color_spaces[1] = "linear";
+    policy.required_color_spaces[2] = "ACEScg";
+    v.configure(policy);
+
+    const auto gltf_issues = v.validate_gltf_blob(
+        std::span<const std::uint8_t>{ kGlbHeader }, "scene.glb");
+    EXPECT_FALSE(has_severity(gltf_issues, Severity::kInfo))
+        << "gltf validator must never emit kInfo for required_color_spaces";
+
+    const auto audio_issues = v.validate_audio_blob(
+        std::span<const std::uint8_t>{ kWavHeader }, "click.wav");
+    EXPECT_FALSE(has_severity(audio_issues, Severity::kInfo))
+        << "audio validator must never emit kInfo for required_color_spaces";
 }
 
 }  // namespace

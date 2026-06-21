@@ -9,6 +9,8 @@
 # OBJCXX language when CMAKE_SYSTEM_NAME=iOS.
 set(_platform_sources
   src/SignalHandler.cpp
+  src/Clipboard.cpp
+  src/Display.cpp
   src/Win32Window.cpp
   src/AndroidWindow.cpp
   src/PlatformStub.cpp
@@ -61,7 +63,8 @@ cd_add_library(platform
 if(WIN32)
   # User32 + GDI are required for CreateWindowEx / DefWindowProc /
   # LoadCursor — Win32Window.cpp pulls them in unconditionally.
-  target_link_libraries(cd_platform PRIVATE user32 gdi32)
+  # Shcore is required for GetDpiForMonitor (Display.cpp).
+  target_link_libraries(cd_platform PRIVATE user32 gdi32 shcore)
 endif()
 if(CD_PLATFORM_XLIB AND UNIX AND NOT APPLE)
   find_package(X11 REQUIRED)

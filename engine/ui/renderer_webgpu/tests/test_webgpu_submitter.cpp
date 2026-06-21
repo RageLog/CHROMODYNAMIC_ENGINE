@@ -18,9 +18,13 @@
 // =============================================================================
 #include <cd/ui/renderer/DrawBatcher.hpp>
 #include <cd/ui/renderer_webgpu/Submitter.hpp>
+#include <cd/ui/renderer_webgpu/WgpuContract.hpp>
 #include <gtest/gtest.h>
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
+#include <string_view>
 #include <utility>
 
 namespace rw = cd::ui::renderer_webgpu;
@@ -864,3 +868,287 @@ TEST(WebGpuSubmitter, RecordEmitsExpectedDrawCallCount)
         << "command_count() must equal batcher draw-command count after record()";
 }
 #endif  // CD_UI_WEBGPU_HAVE_DAWN
+
+// ===========================================================================
+// WgpuContract host-side surface (HONEST floor-raise): the WGSL shader
+// source, the vertex-buffer layout, the colour/format conversion, the
+// scissor-clamp math and the draw-command translation are all Dawn-FREE and
+// GPU-FREE. The cases below pin that surface so the contract a future Dawn
+// pipeline consumes cannot drift from the CPU Vertex / material enums.
+// All run on every CI tier (no GPU, no Dawn). AAA + edge + negative.
+// ===========================================================================
+
+// ---- Texture-format validity ---------------------------------------------
+
+TEST(WgpuContract, SupportedColorFormatsAcceptedAndUndefinedRejected)
+{
+    EXPECT_TRUE(rw::is_supported_color_format(rw::texture_format::kRgba8Unorm));
+    EXPECT_TRUE(rw::is_supported_color_format(rw::texture_format::kRgba8UnormSrgb));
+    EXPECT_TRUE(rw::is_supported_color_format(rw::texture_format::kBgra8Unorm));
+    EXPECT_TRUE(rw::is_supported_color_format(rw::texture_format::kBgra8UnormSrgb));
+
+    // Negative: undefined (0) and an arbitrary unrelated enum are rejected.
+    EXPECT_FALSE(rw::is_supported_color_format(rw::texture_format::kUndefined));
+    EXPECT_FALSE(rw::is_supported_color_format(0xDEADU));
+}
+
+TEST(WgpuContract, DefaultCreateInfoFormatIsSupported)
+{
+    // The SubmitterCreateInfo default (0x12 = BGRA8? — actually RGBA8Unorm)
+    // must be one the host contract accepts so create() and the Dawn pipeline
+    // agree on a valid target.
+    const rw::SubmitterCreateInfo defaults {};
+    EXPECT_TRUE(rw::is_supported_color_format(defaults.color_format));
+}
+
+TEST(WgpuContract, SrgbClassificationIsCorrect)
+{
+    EXPECT_TRUE(rw::is_srgb_color_format(rw::texture_format::kRgba8UnormSrgb));
+    EXPECT_TRUE(rw::is_srgb_color_format(rw::texture_format::kBgra8UnormSrgb));
+    EXPECT_FALSE(rw::is_srgb_color_format(rw::texture_format::kRgba8Unorm));
+    EXPECT_FALSE(rw::is_srgb_color_format(rw::texture_format::kBgra8Unorm));
+    EXPECT_FALSE(rw::is_srgb_color_format(rw::texture_format::kUndefined));
+}
+
+// ---- Vertex layout vs. the real Vertex struct -----------------------------
+
+TEST(WgpuContract, VertexStrideMatchesRealVertexSize)
+{
+    EXPECT_EQ(rw::vertex_stride_bytes(),
+              static_cast<std::uint64_t>(sizeof(ur::Vertex)));
+    EXPECT_EQ(rw::vertex_stride_bytes(), 24U);  // pos8 + uv8 + rgba4 + variant4
+}
+
+TEST(WgpuContract, VertexAttributeOffsetsMatchVertexMembers)
+{
+    const std::array<rw::VertexAttributeDesc, 4U> attrs = rw::vertex_attributes();
+
+    // Offsets must equal the real member byte positions so the GPU reads the
+    // right bytes. offsetof on the real struct is the ground truth.
+    EXPECT_EQ(attrs[0].offset, offsetof(ur::Vertex, pos_x));
+    EXPECT_EQ(attrs[1].offset, offsetof(ur::Vertex, uv_x));
+    EXPECT_EQ(attrs[2].offset, offsetof(ur::Vertex, r));
+    EXPECT_EQ(attrs[3].offset, offsetof(ur::Vertex, variant));
+
+    // Shader @location indices are 0..3 in declaration order.
+    EXPECT_EQ(attrs[0].shader_location, 0U);
+    EXPECT_EQ(attrs[1].shader_location, 1U);
+    EXPECT_EQ(attrs[2].shader_location, 2U);
+    EXPECT_EQ(attrs[3].shader_location, 3U);
+}
+
+TEST(WgpuContract, VertexAttributeFormatsAreCorrect)
+{
+    const std::array<rw::VertexAttributeDesc, 4U> attrs = rw::vertex_attributes();
+    EXPECT_EQ(attrs[0].format, rw::vertex_format::kFloat32x2);  // pos
+    EXPECT_EQ(attrs[1].format, rw::vertex_format::kFloat32x2);  // uv
+    EXPECT_EQ(attrs[2].format, rw::vertex_format::kUnorm8x4);   // rgba
+    EXPECT_EQ(attrs[3].format, rw::vertex_format::kUint8x4);    // variant
+}
+
+TEST(WgpuContract, IndexSizeIsTwoBytesMatchingBatcherU16)
+{
+    EXPECT_EQ(rw::index_size_bytes(), sizeof(std::uint16_t));
+    EXPECT_EQ(rw::index_size_bytes(), 2U);
+}
+
+TEST(WgpuContract, BindGroupAndBindingIndicesAreStable)
+{
+    EXPECT_EQ(rw::bind_group::kGlobals, 0U);
+    EXPECT_EQ(rw::bind_group::kAtlas,   1U);
+    EXPECT_EQ(rw::binding::kGlobalsUbo,   0U);
+    EXPECT_EQ(rw::binding::kAtlasTexture, 0U);
+    EXPECT_EQ(rw::binding::kAtlasSampler, 1U);
+}
+
+// ---- Globals packing ------------------------------------------------------
+
+TEST(WgpuContract, GlobalsIsStd140SizedAndZeroDefault)
+{
+    EXPECT_EQ(sizeof(rw::Globals), 16U);
+    const rw::Globals g {};
+    EXPECT_FLOAT_EQ(g.inv_viewport_x, 0.0F);
+    EXPECT_FLOAT_EQ(g.inv_viewport_y, 0.0F);
+}
+
+TEST(WgpuContract, MakeGlobalsComputesInverseViewport)
+{
+    const rw::Globals g = rw::make_globals(1920U, 1080U);
+    EXPECT_FLOAT_EQ(g.inv_viewport_x, 1.0F / 1920.0F);
+    EXPECT_FLOAT_EQ(g.inv_viewport_y, 1.0F / 1080.0F);
+}
+
+TEST(WgpuContract, MakeGlobalsZeroViewportDoesNotDivideByZero)
+{
+    // Negative/edge: a zero dimension must yield a zero inverse (not inf/nan).
+    const rw::Globals gx = rw::make_globals(0U, 1080U);
+    EXPECT_FLOAT_EQ(gx.inv_viewport_x, 0.0F);
+    EXPECT_FLOAT_EQ(gx.inv_viewport_y, 1.0F / 1080.0F);
+
+    const rw::Globals gboth = rw::make_globals(0U, 0U);
+    EXPECT_FLOAT_EQ(gboth.inv_viewport_x, 0.0F);
+    EXPECT_FLOAT_EQ(gboth.inv_viewport_y, 0.0F);
+}
+
+// ---- Colour conversion ----------------------------------------------------
+
+TEST(WgpuContract, Unorm8ToFloatEndpointsAndMidpoint)
+{
+    EXPECT_FLOAT_EQ(rw::unorm8_to_float(0U),   0.0F);
+    EXPECT_FLOAT_EQ(rw::unorm8_to_float(255U), 1.0F);
+    EXPECT_FLOAT_EQ(rw::unorm8_to_float(128U), 128.0F / 255.0F);
+}
+
+TEST(WgpuContract, ToColorFMapsWhiteBlackTransparentExactly)
+{
+    EXPECT_EQ(rw::to_color_f(ur::Color::white()),
+              (rw::ColorF { 1.0F, 1.0F, 1.0F, 1.0F }));
+    EXPECT_EQ(rw::to_color_f(ur::Color::black()),
+              (rw::ColorF { 0.0F, 0.0F, 0.0F, 1.0F }));
+    EXPECT_EQ(rw::to_color_f(ur::Color::transparent()),
+              (rw::ColorF { 0.0F, 0.0F, 0.0F, 0.0F }));
+}
+
+TEST(WgpuContract, ToColorFPreservesChannelOrder)
+{
+    const ur::Color c { 10U, 20U, 30U, 40U };
+    const rw::ColorF f = rw::to_color_f(c);
+    EXPECT_FLOAT_EQ(f.r, 10.0F / 255.0F);
+    EXPECT_FLOAT_EQ(f.g, 20.0F / 255.0F);
+    EXPECT_FLOAT_EQ(f.b, 30.0F / 255.0F);
+    EXPECT_FLOAT_EQ(f.a, 40.0F / 255.0F);
+}
+
+// ---- Scissor clamp --------------------------------------------------------
+
+TEST(WgpuContract, ClampScissorInsideViewportIsUnchanged)
+{
+    const ur::ScissorRect s { 10, 20, 100U, 80U };
+    EXPECT_EQ(rw::clamp_scissor(s, 1920U, 1080U),
+              (rw::ScissorPx { 10U, 20U, 100U, 80U }));
+}
+
+TEST(WgpuContract, ClampScissorNegativeOriginFlooredAndExtentReduced)
+{
+    // Negative origin: floor to 0, and the far edge (-5 + 50 = 45) is kept,
+    // so width shrinks to 45 (not 50).
+    const ur::ScissorRect s { -5, -10, 50U, 60U };
+    const rw::ScissorPx px = rw::clamp_scissor(s, 1920U, 1080U);
+    EXPECT_EQ(px.x, 0U);
+    EXPECT_EQ(px.y, 0U);
+    EXPECT_EQ(px.width,  45U);   // far edge 45 preserved
+    EXPECT_EQ(px.height, 50U);   // far edge 50 preserved
+}
+
+TEST(WgpuContract, ClampScissorOversizeExtentClampedToViewport)
+{
+    // Far edge past the viewport must clamp to the edge.
+    const ur::ScissorRect s { 100, 50, 5000U, 5000U };
+    EXPECT_EQ(rw::clamp_scissor(s, 800U, 600U),
+              (rw::ScissorPx { 100U, 50U, 700U, 550U }));
+}
+
+TEST(WgpuContract, ClampScissorNoClipSentinelCollapsesToViewport)
+{
+    // Default ScissorRect uses 0xFFFFFFFF "no clip"; clamped to full viewport.
+    const ur::ScissorRect s {};  // x=0,y=0,w=0xFFFFFFFF,h=0xFFFFFFFF
+    EXPECT_EQ(rw::clamp_scissor(s, 1280U, 720U),
+              (rw::ScissorPx { 0U, 0U, 1280U, 720U }));
+}
+
+TEST(WgpuContract, ClampScissorOriginPastViewportYieldsZeroArea)
+{
+    // Origin entirely past the viewport: far edge <= origin -> zero extent.
+    const ur::ScissorRect s { 900, 700, 50U, 50U };
+    const rw::ScissorPx px = rw::clamp_scissor(s, 800U, 600U);
+    EXPECT_EQ(px.x, 800U);   // origin clamped to viewport edge
+    EXPECT_EQ(px.y, 600U);
+    EXPECT_EQ(px.width,  0U);
+    EXPECT_EQ(px.height, 0U);
+}
+
+TEST(WgpuContract, ClampScissorExactlyAtViewportEdge)
+{
+    const ur::ScissorRect s { 0, 0, 800U, 600U };
+    EXPECT_EQ(rw::clamp_scissor(s, 800U, 600U),
+              (rw::ScissorPx { 0U, 0U, 800U, 600U }));
+}
+
+TEST(WgpuContract, ClampScissorZeroViewportYieldsZeroArea)
+{
+    // Negative/edge: a zero viewport collapses any rect to zero area.
+    const ur::ScissorRect s { 0, 0, 100U, 100U };
+    EXPECT_EQ(rw::clamp_scissor(s, 0U, 0U),
+              (rw::ScissorPx { 0U, 0U, 0U, 0U }));
+}
+
+// ---- Draw-slice translation ----------------------------------------------
+
+TEST(WgpuContract, DrawSliceComputesByteOffsetFromIndexUnits)
+{
+    ur::DrawCommand dc {};
+    dc.index_offset = 12U;
+    dc.index_count  = 6U;
+    const rw::DrawSlice slice = rw::draw_slice(dc);
+    EXPECT_EQ(slice.first_index, 12U);
+    EXPECT_EQ(slice.index_count, 6U);
+    EXPECT_EQ(slice.index_byte_offset, 12U * 2U);  // u16 indices
+}
+
+TEST(WgpuContract, DrawSliceZeroOffsetIsZeroBytes)
+{
+    ur::DrawCommand dc {};  // all defaults: offset 0, count 0
+    const rw::DrawSlice slice = rw::draw_slice(dc);
+    EXPECT_EQ(slice.first_index, 0U);
+    EXPECT_EQ(slice.index_count, 0U);
+    EXPECT_EQ(slice.index_byte_offset, 0U);
+}
+
+// ---- WGSL structural contract pins ----------------------------------------
+
+TEST(WgpuContract, WgslSourceIsNonEmptyAndDeclaresBothEntryPoints)
+{
+    const std::string_view wgsl = rw::kUiShaderWgsl;
+    EXPECT_FALSE(wgsl.empty());
+    EXPECT_NE(wgsl.find(rw::kVertexEntryPoint),   std::string_view::npos);
+    EXPECT_NE(wgsl.find(rw::kFragmentEntryPoint), std::string_view::npos);
+    EXPECT_NE(wgsl.find("@vertex"),   std::string_view::npos);
+    EXPECT_NE(wgsl.find("@fragment"), std::string_view::npos);
+}
+
+TEST(WgpuContract, WgslDeclaresAllFourVertexAttributeLocations)
+{
+    const std::string_view wgsl = rw::kUiShaderWgsl;
+    EXPECT_NE(wgsl.find("@location(0)"), std::string_view::npos);
+    EXPECT_NE(wgsl.find("@location(1)"), std::string_view::npos);
+    EXPECT_NE(wgsl.find("@location(2)"), std::string_view::npos);
+    EXPECT_NE(wgsl.find("@location(3)"), std::string_view::npos);
+}
+
+TEST(WgpuContract, WgslBranchesEveryMaterialVariantId)
+{
+    const std::string_view wgsl = rw::kUiShaderWgsl;
+    // The fragment shader must branch on the solid/textured/glyph/ninepatch ids.
+    EXPECT_NE(wgsl.find("in.variant == 0u"), std::string_view::npos);  // kSolid
+    EXPECT_NE(wgsl.find("in.variant == 1u"), std::string_view::npos);  // kTextured
+    EXPECT_NE(wgsl.find("in.variant == 2u"), std::string_view::npos);  // kGlyph
+    EXPECT_NE(wgsl.find("in.variant == 3u"), std::string_view::npos);  // kNinePatch
+}
+
+TEST(WgpuContract, WgslDeclaresGlobalsUboAndAtlasBindings)
+{
+    const std::string_view wgsl = rw::kUiShaderWgsl;
+    EXPECT_NE(wgsl.find("@group(0) @binding(0)"), std::string_view::npos);  // Globals UBO
+    EXPECT_NE(wgsl.find("@group(1) @binding(0)"), std::string_view::npos);  // atlas tex
+    EXPECT_NE(wgsl.find("@group(1) @binding(1)"), std::string_view::npos);  // sampler
+    EXPECT_NE(wgsl.find("texture_2d<f32>"),       std::string_view::npos);
+    EXPECT_NE(wgsl.find("sampler"),               std::string_view::npos);
+}
+
+TEST(WgpuContract, EntryPointConstantsMatchWgslNames)
+{
+    // The advertised entry-point names must be exactly what the WGSL declares,
+    // so the Dawn pipeline's VertexState/FragmentState entryPoint strings agree.
+    EXPECT_EQ(rw::kVertexEntryPoint,   std::string_view { "vs_main" });
+    EXPECT_EQ(rw::kFragmentEntryPoint, std::string_view { "fs_main" });
+}

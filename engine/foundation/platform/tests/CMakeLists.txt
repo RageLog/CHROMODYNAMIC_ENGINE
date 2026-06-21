@@ -25,3 +25,11 @@ cd_add_test(platform_types_and_stubs
   SOURCES test_platform_types_and_stubs.cpp
   DEPS    cd::platform cd::core
 )
+
+# Clipboard + Display tests.  Win32-native paths gated by #if defined(_WIN32).
+# Host-agnostic portion (struct sanity, non-crash, nullopt/empty on headless)
+# runs on every CI host.
+cd_add_test(platform_clipboard_display
+  SOURCES test_platform_clipboard_display.cpp
+  DEPS    cd::platform cd::core
+)

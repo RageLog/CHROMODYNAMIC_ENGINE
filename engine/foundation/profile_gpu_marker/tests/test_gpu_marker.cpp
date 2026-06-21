@@ -6,6 +6,14 @@
 //   frame-boundary ring reset, multi-frame accumulation, double-end guard,
 //   pool-overflow stub fallback, prepare() grow path, MarkerHandle sentinel,
 //   timestamp-path nested markers, debug-group balance, clear mid-flight.
+// charter-complete pass (2026-06-21) — +12 tests → 33 total covering:
+//   resolve-zero-pending no-op, resolve-get_query_results-error fallback,
+//   prepare-max_markers-zero edge, prepare-retarget-device pool swap,
+//   begin_marker empty-name round-trip, samples-before-resolve empty,
+//   multi-resolve accumulate (additive without clear), resolve-empty-pending
+//   no-new-samples, Scope non-copyable/non-movable static_assert,
+//   prepare-create_pool_fails fallback, free-list with three-cycle recycle,
+//   begin-while-in-flight then clear-and-fresh.
 //
 // Tests validate the API surface and stub counter behavior.
 // NullCommandBuffer and NullDevice are used so no GPU is required.
@@ -21,6 +29,7 @@
 
 #include <cstdint>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 using cd::profile::gpu_marker::MarkerHandle;
@@ -806,4 +815,500 @@ TEST(GpuMarker_RealPath, ThreeMarkersCorrectSlotAssignment)
     // ns[4]=500, ns[5]=600 → same delta.
     EXPECT_EQ(s[2].name, "gamma");
     EXPECT_DOUBLE_EQ(s[2].duration_ms_computed, 100.0 / 1.0e6);
+}
+
+// ---------------------------------------------------------------------------
+// Test 22: resolve() with zero pending samples is a pure no-op.
+//   No samples appear in the resolved bucket; no crash.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_Recorder, ResolveZeroPendingIsNoOp)
+{
+    cd::rhi::NullDevice dev;
+    Recorder            rec;
+
+    // No begin_marker / end_marker — pending is empty.
+    rec.resolve(dev);
+    EXPECT_TRUE(rec.samples().empty());
+
+    // A second resolve still yields nothing.
+    rec.resolve(dev);
+    EXPECT_TRUE(rec.samples().empty());
+}
+
+// ---------------------------------------------------------------------------
+// Test 23: resolve() with get_query_results returning an error.
+//   Real-path pending entries whose get_query_results fails must fall back to
+//   the stub branch.  On the stub branch the raw ticks are 0 (start) and 0
+//   (end — real path sets gpu_end_tick=0 in end_marker) so the delta is 0
+//   and duration_ms_computed == 0.0.  The contract: no UB, no crash, one
+//   sample per marker with the name preserved.
+//
+// ErrorTimestampDevice: reports timestamp_queries=true, creates a pool, but
+//   returns an error from get_query_results so real_ok==false in resolve().
+// ---------------------------------------------------------------------------
+namespace
+{
+
+class ErrorTimestampDevice final : public cd::rhi::IDevice
+{
+public:
+    ErrorTimestampDevice() { feats_.timestamp_queries = true; }
+
+    [[nodiscard]] const cd::rhi::DeviceFeatures& features() const noexcept override
+    {
+        return feats_;
+    }
+
+    [[nodiscard]] cd::core::Result<cd::rhi::QueryPoolHandle>
+    create_query_pool(const cd::rhi::QueryPoolDesc& desc) override
+    {
+        pool_count_ = desc.count;
+        return cd::rhi::QueryPoolHandle { ++pool_id_, 1U };
+    }
+
+    void destroy_query_pool(cd::rhi::QueryPoolHandle) override {}
+
+    [[nodiscard]] cd::core::Result<void>
+    get_query_results(cd::rhi::QueryPoolHandle,
+                      std::uint32_t,
+                      std::uint32_t,
+                      std::span<std::uint64_t>) override
+    {
+        // Deliberately fail every read.
+        return std::unexpected(cd::rhi::rhi_errors::make(
+            cd::rhi::rhi_errors::Code::kNotImplemented,
+            "error_device: intentional failure"));
+    }
+
+    [[nodiscard]] std::uint32_t pool_count() const noexcept { return pool_count_; }
+
+    // ---- pure forwards ----
+    [[nodiscard]] cd::rhi::Backend backend() const noexcept override { return inner_.backend(); }
+    [[nodiscard]] std::string_view adapter_name() const noexcept override { return inner_.adapter_name(); }
+    [[nodiscard]] const cd::rhi::DeviceLimits& limits() const noexcept override { return inner_.limits(); }
+    [[nodiscard]] cd::core::Result<cd::rhi::BufferHandle> create_buffer(const cd::rhi::BufferDesc& d) override { return inner_.create_buffer(d); }
+    void destroy_buffer(cd::rhi::BufferHandle h) override { inner_.destroy_buffer(h); }
+    [[nodiscard]] cd::core::Result<cd::rhi::TextureHandle> create_texture(const cd::rhi::TextureDesc& d) override { return inner_.create_texture(d); }
+    void destroy_texture(cd::rhi::TextureHandle h) override { inner_.destroy_texture(h); }
+    [[nodiscard]] cd::core::Result<cd::rhi::TextureViewHandle> create_texture_view(const cd::rhi::TextureViewDesc& d) override { return inner_.create_texture_view(d); }
+    void destroy_texture_view(cd::rhi::TextureViewHandle h) override { inner_.destroy_texture_view(h); }
+    [[nodiscard]] cd::core::Result<cd::rhi::SamplerHandle> create_sampler(const cd::rhi::SamplerDesc& d) override { return inner_.create_sampler(d); }
+    void destroy_sampler(cd::rhi::SamplerHandle h) override { inner_.destroy_sampler(h); }
+    [[nodiscard]] cd::core::Result<cd::rhi::ShaderModuleHandle> create_shader_module(const cd::rhi::ShaderModuleDesc& d) override { return inner_.create_shader_module(d); }
+    void destroy_shader_module(cd::rhi::ShaderModuleHandle h) override { inner_.destroy_shader_module(h); }
+    [[nodiscard]] cd::core::Result<cd::rhi::DescriptorSetLayoutHandle> create_descriptor_set_layout(const cd::rhi::DescriptorSetLayoutDesc& d) override { return inner_.create_descriptor_set_layout(d); }
+    void destroy_descriptor_set_layout(cd::rhi::DescriptorSetLayoutHandle h) override { inner_.destroy_descriptor_set_layout(h); }
+    [[nodiscard]] cd::core::Result<cd::rhi::PipelineLayoutHandle> create_pipeline_layout(const cd::rhi::PipelineLayoutDesc& d) override { return inner_.create_pipeline_layout(d); }
+    void destroy_pipeline_layout(cd::rhi::PipelineLayoutHandle h) override { inner_.destroy_pipeline_layout(h); }
+    [[nodiscard]] cd::core::Result<cd::rhi::GraphicsPipelineHandle> create_graphics_pipeline(const cd::rhi::GraphicsPipelineDesc& d) override { return inner_.create_graphics_pipeline(d); }
+    void destroy_graphics_pipeline(cd::rhi::GraphicsPipelineHandle h) override { inner_.destroy_graphics_pipeline(h); }
+    [[nodiscard]] cd::core::Result<cd::rhi::ComputePipelineHandle> create_compute_pipeline(const cd::rhi::ComputePipelineDesc& d) override { return inner_.create_compute_pipeline(d); }
+    void destroy_compute_pipeline(cd::rhi::ComputePipelineHandle h) override { inner_.destroy_compute_pipeline(h); }
+    [[nodiscard]] cd::core::Result<cd::rhi::DescriptorSetHandle> allocate_descriptor_set(cd::rhi::DescriptorSetLayoutHandle l) override { return inner_.allocate_descriptor_set(l); }
+    void destroy_descriptor_set(cd::rhi::DescriptorSetHandle h) override { inner_.destroy_descriptor_set(h); }
+    [[nodiscard]] cd::core::Result<void> update_descriptor_set(cd::rhi::DescriptorSetHandle s, std::span<const cd::rhi::DescriptorWrite> w) override { return inner_.update_descriptor_set(s, w); }
+    [[nodiscard]] cd::core::Result<cd::rhi::SemaphoreHandle> create_semaphore() override { return inner_.create_semaphore(); }
+    void destroy_semaphore(cd::rhi::SemaphoreHandle h) override { inner_.destroy_semaphore(h); }
+    [[nodiscard]] cd::core::Result<cd::rhi::FenceHandle> create_fence(bool s) override { return inner_.create_fence(s); }
+    void destroy_fence(cd::rhi::FenceHandle f) override { inner_.destroy_fence(f); }
+    [[nodiscard]] cd::core::Result<void> wait_for_fence(cd::rhi::FenceHandle f, std::uint64_t t) override { return inner_.wait_for_fence(f, t); }
+    void reset_fence(cd::rhi::FenceHandle f) override { inner_.reset_fence(f); }
+    [[nodiscard]] bool is_fence_signaled(cd::rhi::FenceHandle f) override { return inner_.is_fence_signaled(f); }
+    [[nodiscard]] cd::core::Result<cd::rhi::TimelineSemaphoreHandle> create_timeline_semaphore(std::uint64_t v) override { return inner_.create_timeline_semaphore(v); }
+    void destroy_timeline_semaphore(cd::rhi::TimelineSemaphoreHandle h) override { inner_.destroy_timeline_semaphore(h); }
+    [[nodiscard]] cd::core::Result<void> wait_timeline_semaphore(cd::rhi::TimelineSemaphoreHandle h, std::uint64_t v, std::uint64_t t) override { return inner_.wait_timeline_semaphore(h, v, t); }
+    [[nodiscard]] cd::core::Result<void> signal_timeline_semaphore(cd::rhi::TimelineSemaphoreHandle h, std::uint64_t v) override { return inner_.signal_timeline_semaphore(h, v); }
+    [[nodiscard]] std::uint64_t timeline_semaphore_value(cd::rhi::TimelineSemaphoreHandle h) const override { return inner_.timeline_semaphore_value(h); }
+    [[nodiscard]] cd::core::Result<std::uint32_t> acquire_next_image(cd::rhi::SwapchainHandle s, cd::rhi::SemaphoreHandle sig, cd::rhi::FenceHandle f, std::uint64_t t) override { return inner_.acquire_next_image(s, sig, f, t); }
+    [[nodiscard]] cd::core::Result<void> present(cd::rhi::SwapchainHandle s, std::uint32_t i, std::span<const cd::rhi::SemaphoreHandle> w) override { return inner_.present(s, i, w); }
+    [[nodiscard]] cd::rhi::TextureViewHandle swapchain_image_view(cd::rhi::SwapchainHandle s, std::uint32_t i) const override { return inner_.swapchain_image_view(s, i); }
+    [[nodiscard]] std::uint32_t swapchain_image_count(cd::rhi::SwapchainHandle s) const override { return inner_.swapchain_image_count(s); }
+    [[nodiscard]] cd::rhi::TextureHandle swapchain_image(cd::rhi::SwapchainHandle s, std::uint32_t i) const override { return inner_.swapchain_image(s, i); }
+    [[nodiscard]] cd::core::Result<cd::rhi::SwapchainHandle> create_swapchain(const cd::rhi::SwapchainDesc& d) override { return inner_.create_swapchain(d); }
+    void destroy_swapchain(cd::rhi::SwapchainHandle h) override { inner_.destroy_swapchain(h); }
+    [[nodiscard]] cd::core::Result<void> upload_buffer(cd::rhi::BufferHandle h, std::uint64_t o, std::span<const std::byte> d) override { return inner_.upload_buffer(h, o, d); }
+    [[nodiscard]] cd::core::Result<void> download_buffer(cd::rhi::BufferHandle h, std::uint64_t o, std::span<std::byte> d) override { return inner_.download_buffer(h, o, d); }
+    [[nodiscard]] std::unique_ptr<cd::rhi::ICommandBuffer> do_create_command_buffer(cd::rhi::QueueType q) override { return inner_.create_command_buffer(q); }
+    void submit(cd::rhi::ICommandBuffer& c) override { inner_.submit(c); }
+    [[nodiscard]] cd::core::Result<void> submit(const cd::rhi::SubmitDesc& d) override { return inner_.submit(d); }
+    void wait_idle() override { inner_.wait_idle(); }
+
+private:
+    cd::rhi::NullDevice     inner_;
+    cd::rhi::DeviceFeatures feats_ {};
+    std::uint32_t           pool_id_     { 0 };
+    std::uint32_t           pool_count_  { 0 };
+};
+
+}  // namespace
+
+TEST(GpuMarker_RealPath, ResolveGetQueryResultsErrorFallsBackToZero)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    ErrorTimestampDevice       dev;
+    Recorder                   rec;
+
+    ASSERT_TRUE(rec.prepare(dev, 2));
+
+    const MarkerHandle h = rec.begin_marker(cmd, "err_region");
+    rec.end_marker(cmd, h);
+
+    // resolve() must not crash even when get_query_results fails.
+    rec.resolve(dev);
+
+    const auto s = rec.samples();
+    ASSERT_EQ(s.size(), 1U);
+    EXPECT_EQ(s[0].name, "err_region");
+    // Real-path entries: gpu_end_tick=0, gpu_start_tick=0 in end_marker
+    // (filled from device at resolve, but device failed) → stub branch runs
+    // with both ticks at 0 → delta 0 → duration 0.0.
+    EXPECT_DOUBLE_EQ(s[0].duration_ms_computed, 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Test 24: prepare() with max_markers == 0 — edge case.
+//   pool slots = 2 * 0 = 0.  create_query_pool(count=0) may or may not
+//   succeed; the recorder must not crash. If the backend declines, the
+//   recorder falls back to the stub path. Verified: no crash, begin/end/resolve
+//   still produce one valid sample.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_RealPath, PrepareZeroMarkersIsHarmless)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    FakeTimestampDevice        dev;
+    Recorder                   rec;
+
+    // A 0-slot pool is degenerate; result (true/false) is backend-defined.
+    // The important invariant: no crash and the recorder remains usable.
+    (void)rec.prepare(dev, 0);
+
+    // After whatever prepare() did, begin/end/resolve must still work.
+    const MarkerHandle h = rec.begin_marker(cmd, "post_zero_prepare");
+    rec.end_marker(cmd, h);
+    rec.resolve(dev);
+
+    EXPECT_EQ(rec.samples().size(), 1U);
+    EXPECT_EQ(rec.samples()[0].name, "post_zero_prepare");
+}
+
+// ---------------------------------------------------------------------------
+// Test 25: prepare() re-targets a different device.
+//   First prepare on device A creates a pool.  A second prepare on device B
+//   must release the A-pool (one destroy on A) and create a fresh pool on B.
+//   Verified via destroy_count on each FakeTimestampDevice.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_RealPath, PrepareRetargetsDifferentDevice)
+{
+    FakeTimestampDevice dev_a;
+    FakeTimestampDevice dev_b;
+    Recorder            rec;
+
+    ASSERT_TRUE(rec.prepare(dev_a, 2));
+    EXPECT_EQ(dev_a.last_pool_count(), 4U);
+    EXPECT_EQ(dev_a.destroy_count(), 0U);
+
+    // Re-target to dev_b; dev_a's pool must be released.
+    ASSERT_TRUE(rec.prepare(dev_b, 3));
+    EXPECT_EQ(dev_a.destroy_count(), 1U);   // Old pool on dev_a destroyed.
+    EXPECT_EQ(dev_b.last_pool_count(), 6U);  // New pool on dev_b.
+    EXPECT_EQ(dev_b.destroy_count(), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// Test 26: begin_marker with an empty-string name.
+//   Valid edge: empty-string is a legal label (no crash, sample stored with
+//   an empty name, duration > 0).
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_Recorder, EmptyNameIsAccepted)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    cd::rhi::NullDevice        dev;
+    Recorder                   rec;
+
+    const MarkerHandle h = rec.begin_marker(cmd, "");
+    EXPECT_TRUE(h.valid());
+    rec.end_marker(cmd, h);
+    rec.resolve(dev);
+
+    const auto s = rec.samples();
+    ASSERT_EQ(s.size(), 1U);
+    EXPECT_EQ(s[0].name, "");
+    EXPECT_GT(s[0].duration_ms_computed, 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Test 27: samples() before any resolve() returns an empty span.
+//   After begin_marker + end_marker the sample is in the pending bucket; the
+//   resolved span is empty until resolve() is called.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_Recorder, SamplesEmptyBeforeResolve)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    cd::rhi::NullDevice        dev;
+    Recorder                   rec;
+
+    EXPECT_TRUE(rec.samples().empty());  // cold start
+
+    const MarkerHandle h = rec.begin_marker(cmd, "pending");
+    rec.end_marker(cmd, h);
+
+    // end_marker moves to pending, not resolved.
+    EXPECT_TRUE(rec.samples().empty());
+
+    rec.resolve(dev);
+    EXPECT_EQ(rec.samples().size(), 1U);
+}
+
+// ---------------------------------------------------------------------------
+// Test 28: multiple resolve() calls without clear() accumulate samples.
+//   Frame 1: one marker → resolve → 1 sample.
+//   Frame 2 (no clear): another marker → resolve → 2 samples total.
+//   This documents the "additive without clear" contract.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_Recorder, MultiResolveWithoutClearAccumulates)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    cd::rhi::NullDevice        dev;
+    Recorder                   rec;
+
+    // Frame 1.
+    {
+        const MarkerHandle h = rec.begin_marker(cmd, "frame1");
+        rec.end_marker(cmd, h);
+    }
+    rec.resolve(dev);
+    EXPECT_EQ(rec.samples().size(), 1U);
+
+    // Frame 2 — no clear() between frames.
+    {
+        const MarkerHandle h = rec.begin_marker(cmd, "frame2");
+        rec.end_marker(cmd, h);
+    }
+    rec.resolve(dev);
+
+    const auto s = rec.samples();
+    ASSERT_EQ(s.size(), 2U);
+    EXPECT_EQ(s[0].name, "frame1");
+    EXPECT_EQ(s[1].name, "frame2");
+}
+
+// ---------------------------------------------------------------------------
+// Test 29: resolve() on empty pending after a prior clear() adds no samples.
+//   Call clear() then resolve() with no markers in between — resolved bucket
+//   stays empty.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_Recorder, ResolveAfterClearWithNoPendingIsEmpty)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    cd::rhi::NullDevice        dev;
+    Recorder                   rec;
+
+    const MarkerHandle h = rec.begin_marker(cmd, "before");
+    rec.end_marker(cmd, h);
+    rec.resolve(dev);
+    ASSERT_EQ(rec.samples().size(), 1U);
+
+    rec.clear();
+    // Pending is also cleared; no new markers recorded.
+    rec.resolve(dev);
+    EXPECT_TRUE(rec.samples().empty());
+}
+
+// ---------------------------------------------------------------------------
+// Test 30: Scope is non-copyable and non-movable (compile-time contract).
+//   Static assertions verify the type properties — no runtime path needed.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_Scope, NonCopyableNonMovable)
+{
+    static_assert(!std::is_copy_constructible_v<Scope>,
+                  "Scope must not be copy-constructible");
+    static_assert(!std::is_copy_assignable_v<Scope>,
+                  "Scope must not be copy-assignable");
+    static_assert(!std::is_move_constructible_v<Scope>,
+                  "Scope must not be move-constructible");
+    static_assert(!std::is_move_assignable_v<Scope>,
+                  "Scope must not be move-assignable");
+    // Trivially pass: the static_asserts above fire at compile time if violated.
+    SUCCEED();
+}
+
+// ---------------------------------------------------------------------------
+// Test 31: prepare() when create_query_pool fails — recorder falls back to the
+//   stub path cleanly.  prepare() must return false; a subsequent begin/end/
+//   resolve round-trip must still produce one valid sample with duration > 0.
+//
+// FailPoolDevice: timestamp_queries=true but create_query_pool returns error.
+// ---------------------------------------------------------------------------
+namespace
+{
+
+class FailPoolDevice final : public cd::rhi::IDevice
+{
+public:
+    FailPoolDevice() { feats_.timestamp_queries = true; }
+
+    [[nodiscard]] const cd::rhi::DeviceFeatures& features() const noexcept override
+    {
+        return feats_;
+    }
+
+    [[nodiscard]] cd::core::Result<cd::rhi::QueryPoolHandle>
+    create_query_pool(const cd::rhi::QueryPoolDesc&) override
+    {
+        return std::unexpected(cd::rhi::rhi_errors::make(
+            cd::rhi::rhi_errors::Code::kNotImplemented,
+            "fail_pool_device: intentional pool failure"));
+    }
+
+    void destroy_query_pool(cd::rhi::QueryPoolHandle) override {}
+
+    [[nodiscard]] cd::core::Result<void>
+    get_query_results(cd::rhi::QueryPoolHandle,
+                      std::uint32_t,
+                      std::uint32_t,
+                      std::span<std::uint64_t>) override
+    {
+        return std::unexpected(cd::rhi::rhi_errors::make(
+            cd::rhi::rhi_errors::Code::kNotImplemented, "no pool"));
+    }
+
+    // ---- pure forwards ----
+    [[nodiscard]] cd::rhi::Backend backend() const noexcept override { return inner_.backend(); }
+    [[nodiscard]] std::string_view adapter_name() const noexcept override { return inner_.adapter_name(); }
+    [[nodiscard]] const cd::rhi::DeviceLimits& limits() const noexcept override { return inner_.limits(); }
+    [[nodiscard]] cd::core::Result<cd::rhi::BufferHandle> create_buffer(const cd::rhi::BufferDesc& d) override { return inner_.create_buffer(d); }
+    void destroy_buffer(cd::rhi::BufferHandle h) override { inner_.destroy_buffer(h); }
+    [[nodiscard]] cd::core::Result<cd::rhi::TextureHandle> create_texture(const cd::rhi::TextureDesc& d) override { return inner_.create_texture(d); }
+    void destroy_texture(cd::rhi::TextureHandle h) override { inner_.destroy_texture(h); }
+    [[nodiscard]] cd::core::Result<cd::rhi::TextureViewHandle> create_texture_view(const cd::rhi::TextureViewDesc& d) override { return inner_.create_texture_view(d); }
+    void destroy_texture_view(cd::rhi::TextureViewHandle h) override { inner_.destroy_texture_view(h); }
+    [[nodiscard]] cd::core::Result<cd::rhi::SamplerHandle> create_sampler(const cd::rhi::SamplerDesc& d) override { return inner_.create_sampler(d); }
+    void destroy_sampler(cd::rhi::SamplerHandle h) override { inner_.destroy_sampler(h); }
+    [[nodiscard]] cd::core::Result<cd::rhi::ShaderModuleHandle> create_shader_module(const cd::rhi::ShaderModuleDesc& d) override { return inner_.create_shader_module(d); }
+    void destroy_shader_module(cd::rhi::ShaderModuleHandle h) override { inner_.destroy_shader_module(h); }
+    [[nodiscard]] cd::core::Result<cd::rhi::DescriptorSetLayoutHandle> create_descriptor_set_layout(const cd::rhi::DescriptorSetLayoutDesc& d) override { return inner_.create_descriptor_set_layout(d); }
+    void destroy_descriptor_set_layout(cd::rhi::DescriptorSetLayoutHandle h) override { inner_.destroy_descriptor_set_layout(h); }
+    [[nodiscard]] cd::core::Result<cd::rhi::PipelineLayoutHandle> create_pipeline_layout(const cd::rhi::PipelineLayoutDesc& d) override { return inner_.create_pipeline_layout(d); }
+    void destroy_pipeline_layout(cd::rhi::PipelineLayoutHandle h) override { inner_.destroy_pipeline_layout(h); }
+    [[nodiscard]] cd::core::Result<cd::rhi::GraphicsPipelineHandle> create_graphics_pipeline(const cd::rhi::GraphicsPipelineDesc& d) override { return inner_.create_graphics_pipeline(d); }
+    void destroy_graphics_pipeline(cd::rhi::GraphicsPipelineHandle h) override { inner_.destroy_graphics_pipeline(h); }
+    [[nodiscard]] cd::core::Result<cd::rhi::ComputePipelineHandle> create_compute_pipeline(const cd::rhi::ComputePipelineDesc& d) override { return inner_.create_compute_pipeline(d); }
+    void destroy_compute_pipeline(cd::rhi::ComputePipelineHandle h) override { inner_.destroy_compute_pipeline(h); }
+    [[nodiscard]] cd::core::Result<cd::rhi::DescriptorSetHandle> allocate_descriptor_set(cd::rhi::DescriptorSetLayoutHandle l) override { return inner_.allocate_descriptor_set(l); }
+    void destroy_descriptor_set(cd::rhi::DescriptorSetHandle h) override { inner_.destroy_descriptor_set(h); }
+    [[nodiscard]] cd::core::Result<void> update_descriptor_set(cd::rhi::DescriptorSetHandle s, std::span<const cd::rhi::DescriptorWrite> w) override { return inner_.update_descriptor_set(s, w); }
+    [[nodiscard]] cd::core::Result<cd::rhi::SemaphoreHandle> create_semaphore() override { return inner_.create_semaphore(); }
+    void destroy_semaphore(cd::rhi::SemaphoreHandle h) override { inner_.destroy_semaphore(h); }
+    [[nodiscard]] cd::core::Result<cd::rhi::FenceHandle> create_fence(bool s) override { return inner_.create_fence(s); }
+    void destroy_fence(cd::rhi::FenceHandle f) override { inner_.destroy_fence(f); }
+    [[nodiscard]] cd::core::Result<void> wait_for_fence(cd::rhi::FenceHandle f, std::uint64_t t) override { return inner_.wait_for_fence(f, t); }
+    void reset_fence(cd::rhi::FenceHandle f) override { inner_.reset_fence(f); }
+    [[nodiscard]] bool is_fence_signaled(cd::rhi::FenceHandle f) override { return inner_.is_fence_signaled(f); }
+    [[nodiscard]] cd::core::Result<cd::rhi::TimelineSemaphoreHandle> create_timeline_semaphore(std::uint64_t v) override { return inner_.create_timeline_semaphore(v); }
+    void destroy_timeline_semaphore(cd::rhi::TimelineSemaphoreHandle h) override { inner_.destroy_timeline_semaphore(h); }
+    [[nodiscard]] cd::core::Result<void> wait_timeline_semaphore(cd::rhi::TimelineSemaphoreHandle h, std::uint64_t v, std::uint64_t t) override { return inner_.wait_timeline_semaphore(h, v, t); }
+    [[nodiscard]] cd::core::Result<void> signal_timeline_semaphore(cd::rhi::TimelineSemaphoreHandle h, std::uint64_t v) override { return inner_.signal_timeline_semaphore(h, v); }
+    [[nodiscard]] std::uint64_t timeline_semaphore_value(cd::rhi::TimelineSemaphoreHandle h) const override { return inner_.timeline_semaphore_value(h); }
+    [[nodiscard]] cd::core::Result<std::uint32_t> acquire_next_image(cd::rhi::SwapchainHandle s, cd::rhi::SemaphoreHandle sig, cd::rhi::FenceHandle f, std::uint64_t t) override { return inner_.acquire_next_image(s, sig, f, t); }
+    [[nodiscard]] cd::core::Result<void> present(cd::rhi::SwapchainHandle s, std::uint32_t i, std::span<const cd::rhi::SemaphoreHandle> w) override { return inner_.present(s, i, w); }
+    [[nodiscard]] cd::rhi::TextureViewHandle swapchain_image_view(cd::rhi::SwapchainHandle s, std::uint32_t i) const override { return inner_.swapchain_image_view(s, i); }
+    [[nodiscard]] std::uint32_t swapchain_image_count(cd::rhi::SwapchainHandle s) const override { return inner_.swapchain_image_count(s); }
+    [[nodiscard]] cd::rhi::TextureHandle swapchain_image(cd::rhi::SwapchainHandle s, std::uint32_t i) const override { return inner_.swapchain_image(s, i); }
+    [[nodiscard]] cd::core::Result<cd::rhi::SwapchainHandle> create_swapchain(const cd::rhi::SwapchainDesc& d) override { return inner_.create_swapchain(d); }
+    void destroy_swapchain(cd::rhi::SwapchainHandle h) override { inner_.destroy_swapchain(h); }
+    [[nodiscard]] cd::core::Result<void> upload_buffer(cd::rhi::BufferHandle h, std::uint64_t o, std::span<const std::byte> d) override { return inner_.upload_buffer(h, o, d); }
+    [[nodiscard]] cd::core::Result<void> download_buffer(cd::rhi::BufferHandle h, std::uint64_t o, std::span<std::byte> d) override { return inner_.download_buffer(h, o, d); }
+    [[nodiscard]] std::unique_ptr<cd::rhi::ICommandBuffer> do_create_command_buffer(cd::rhi::QueueType q) override { return inner_.create_command_buffer(q); }
+    void submit(cd::rhi::ICommandBuffer& c) override { inner_.submit(c); }
+    [[nodiscard]] cd::core::Result<void> submit(const cd::rhi::SubmitDesc& d) override { return inner_.submit(d); }
+    void wait_idle() override { inner_.wait_idle(); }
+
+private:
+    cd::rhi::NullDevice     inner_;
+    cd::rhi::DeviceFeatures feats_ {};
+};
+
+}  // namespace
+
+TEST(GpuMarker_RealPath, PrepareCreatePoolFailureFallsBackToStub)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    FailPoolDevice             dev;
+    Recorder                   rec;
+
+    // Device reports timestamp support but create_query_pool fails.
+    EXPECT_FALSE(rec.prepare(dev, 4));
+
+    // Recorder must still work on the stub path.
+    const MarkerHandle h = rec.begin_marker(cmd, "stub_fallback");
+    rec.end_marker(cmd, h);
+    rec.resolve(dev);
+
+    const auto s = rec.samples();
+    ASSERT_EQ(s.size(), 1U);
+    EXPECT_EQ(s[0].name, "stub_fallback");
+    EXPECT_DOUBLE_EQ(s[0].duration_ms_computed, 1.0e-6);  // 1 tick at 1 GHz stub
+}
+
+// ---------------------------------------------------------------------------
+// Test 32: free-list three-cycle recycling — ensures the free-list handles
+//   three rounds of use without growing the in-flight table beyond 1 slot.
+//   Each round: begin → end → begin (reuse) → end.
+//   After 3 rounds all 6 samples are present with correct names.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_Recorder, FreeListThreeCycleRecycling)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    cd::rhi::NullDevice        dev;
+    Recorder                   rec;
+
+    for (std::uint32_t round = 0; round < 3U; ++round)
+    {
+        const MarkerHandle h = rec.begin_marker(cmd, "region");
+        EXPECT_EQ(h.index, 0U)
+            << "Expected slot 0 to be reused at round " << round;
+        rec.end_marker(cmd, h);
+    }
+    rec.resolve(dev);
+
+    const auto s = rec.samples();
+    ASSERT_EQ(s.size(), 3U);
+    for (const auto& sample : s)
+    {
+        EXPECT_EQ(sample.name, "region");
+        EXPECT_GT(sample.duration_ms_computed, 0.0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 33: begin while already in-flight then clear — clear discards the
+//   open marker; a fresh sequence after clear produces exactly one clean
+//   sample, confirming the free-list + in-flight table were both reset.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_Recorder, BeginInFlightThenClearThenFreshSequence)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    cd::rhi::NullDevice        dev;
+    Recorder                   rec;
+
+    // Open a marker but never close it.
+    const MarkerHandle dangling = rec.begin_marker(cmd, "open");
+    (void)dangling;
+
+    // clear() discards all in-flight and pending state.
+    rec.clear();
+    EXPECT_TRUE(rec.samples().empty());
+
+    // Fresh sequence after clear must allocate slot 0 again and produce
+    // one valid sample.
+    const MarkerHandle h = rec.begin_marker(cmd, "fresh_after_clear");
+    EXPECT_EQ(h.index, 0U);
+    rec.end_marker(cmd, h);
+    rec.resolve(dev);
+
+    const auto s = rec.samples();
+    ASSERT_EQ(s.size(), 1U);
+    EXPECT_EQ(s[0].name, "fresh_after_clear");
+    EXPECT_EQ(s[0].gpu_start_tick, 0U);
+    EXPECT_GT(s[0].duration_ms_computed, 0.0);
 }

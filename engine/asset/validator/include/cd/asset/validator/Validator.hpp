@@ -54,9 +54,10 @@ struct ValidatorPolicy
     std::uint64_t max_texture_pixels { 1024ULL * 1024ULL * 16ULL };
     std::uint64_t max_mesh_vertices  { 1024ULL * 1024ULL };
 
-    /// Texture color-space tokens that MUST be present (Sprint-2 semantic
-    /// check). In Sprint-1 this field is stored but not actively enforced
-    /// beyond a kInfo note when all three slots are non-empty.
+    /// Texture color-space tokens that should be present (Sprint-2 semantic
+    /// verification). In Sprint-1, when all three slots are non-empty,
+    /// validate_texture_blob() emits a kInfo noting the active requirements;
+    /// the actual cross-check against blob-decoded color space is Sprint-2.
     std::array<std::string, 3> required_color_spaces {};
 };
 
@@ -100,6 +101,9 @@ public:
     ///   - Blob byte count as a conservative upper bound on pixel count:
     ///     blob_bytes / 4 (minimum bytes per pixel) > max_texture_pixels
     ///     => kWarning "may exceed pixel limit".
+    ///   - All three required_color_spaces slots non-empty
+    ///     => kInfo noting active color-space requirements (deep cross-check
+    ///     against blob content is Sprint-2).
     ///
     /// Returns empty vector when no issues are found.
     [[nodiscard]] std::vector<ValidationIssue>

@@ -34,7 +34,8 @@
 
 #include <cd/ui/renderer_webgpu/Submitter.hpp>
 
-#include <algorithm>
+#include <cd/ui/renderer_webgpu/WgpuContract.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <utility>
@@ -153,22 +154,30 @@ Submitter::create(WgpuDevice device, const SubmitterCreateInfo& info)
         }
     }
     // -------------------------------------------------------------------------
-    // SEALED: WGSL vertex + fragment pipeline module compilation is intentionally
-    // not authored here.  Authoring a correct WebGPU pipeline requires:
-    //   (a) a real wgpu::Surface + swap-chain texture view (Phase 5.5
-    //       hello_ui_webgpu sample, not yet written),
-    //   (b) WGSL shader source for the UI vertex/fragment shaders,
-    //   (c) a wgpu::RenderPipelineDescriptor wired to the color attachment,
-    //   (d) a bind-group layout for the global uniform buffer + atlas texture.
-    // This is a multi-week effort gated on a real Dawn-capable CI runner.
-    // Until then CD_UI_WEBGPU_HAVE_DAWN == 0 (the default) keeps the build
-    // green and the host-side accounting (vertex/index/command counts) fully
-    // testable without any GPU.  The Dawn=1 path allocates the ring buffers
-    // and wires the upload + draw-indexed loop correctly; it is missing only
-    // the pipeline bind-step (SetPipeline / SetBindGroup) which requires the
-    // WGSL modules above.  Do NOT add a fake/stub PSO here — the real one
-    // must be driven by an actual WebGPU surface or the validation layer will
-    // reject it at runtime.
+    // SEALED (CORE-CHARTER GAP, multi-week): the WGSL vertex+fragment SOURCE,
+    // the vertex-buffer LAYOUT, the bind-group indices, the colour-format
+    // validation and the scissor/draw-slice math are ALL authored + host-tested
+    // in WgpuContract.hpp (kUiShaderWgsl, vertex_attributes(), bind_group::*,
+    // is_supported_color_format, clamp_scissor, draw_slice).  What is NOT done
+    // here — and is a REAL core-charter gap, not out-of-scope — is the live
+    // Dawn pipeline construction that CONSUMES those constants:
+    //   (a) wgpu::ShaderModule from kUiShaderWgsl (needs Tint/Naga compile via
+    //       a real wgpu::Device — null-device stub cannot validate WGSL),
+    //   (b) wgpu::RenderPipeline from a RenderPipelineDescriptor wired to the
+    //       colour attachment + the vertex_attributes() layout,
+    //   (c) a bind-group layout for the Globals UBO + atlas texture/sampler,
+    //   (d) a real wgpu::Surface + swap-chain texture view (hello_ui_webgpu
+    //       Phase 5.5 sample), which the validation layer requires before a
+    //       pipeline can bind.
+    // This is gated on a Dawn-capable CI runner (~800 MB build, Abseil+Python)
+    // and a real surface; it cannot be unit-tested without a GPU.  Until then
+    // CD_UI_WEBGPU_HAVE_DAWN == 0 (default) keeps the build green and the full
+    // host surface (layout/colour/scissor/draw-slice/WGSL contract) testable
+    // without any GPU.  The Dawn=1 path allocates the ring buffers + wires the
+    // upload + draw-indexed loop correctly; it is missing only the pipeline
+    // bind-step (SetPipeline / SetBindGroup).  Do NOT add a fake/stub PSO here
+    // — the real one must be driven by an actual WebGPU surface or the
+    // validation layer will reject it at runtime.
     // -------------------------------------------------------------------------
 #endif  // CD_UI_WEBGPU_HAVE_DAWN
 
@@ -269,22 +278,19 @@ void Submitter::record(WgpuCommandEncoder encoder,
 
         for (const auto& dc : impl_->commands)
         {
-            // Clamp scissor to the viewport so we never pass negative or
-            // out-of-range values to SetScissorRect (WebGPU validation layer
-            // rejects them).
-            const auto sx = static_cast<std::uint32_t>(
-                std::max<std::int32_t>(dc.scissor.x, 0));
-            const auto sy = static_cast<std::uint32_t>(
-                std::max<std::int32_t>(dc.scissor.y, 0));
-            const auto sw = std::min(dc.scissor.width,  viewport_extent.width);
-            const auto sh = std::min(dc.scissor.height, viewport_extent.height);
+            // Clamp scissor to the viewport via the shared (host-tested)
+            // contract so we never pass negative or out-of-range values to
+            // SetScissorRect (WebGPU validation layer rejects them).
+            const ScissorPx sc = clamp_scissor(
+                dc.scissor, viewport_extent.width, viewport_extent.height);
+            const DrawSlice slice = draw_slice(dc);
 
-            rp.SetScissorRect(sx, sy, sw, sh);
-            rp.DrawIndexed(dc.index_count,   // indexCount
-                           1U,               // instanceCount
-                           dc.index_offset,  // firstIndex
-                           0,                // baseVertex
-                           0U);              // firstInstance
+            rp.SetScissorRect(sc.x, sc.y, sc.width, sc.height);
+            rp.DrawIndexed(slice.index_count,  // indexCount
+                           1U,                 // instanceCount
+                           slice.first_index,  // firstIndex
+                           0,                  // baseVertex
+                           0U);                // firstInstance
         }
 
         rp.End();

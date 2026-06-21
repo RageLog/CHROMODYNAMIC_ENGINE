@@ -20,7 +20,11 @@
 // =============================================================================
 #pragma once
 
+#include <cd/asset/AssetRefCount.hpp>
 #include <cd/asset/AssetRegistry.hpp>
+#include <cd/asset/DependencyGraph.hpp>
+#include <cd/asset/HotReloadQueue.hpp>
+#include <cd/asset/SchemaRegistry.hpp>
 #include <cd/concurrency/WorkStealingThreadPool.hpp>
 #include <cd/core/CVar.hpp>
 #include <cd/diag/DeadlineMonitor.hpp>
@@ -89,6 +93,50 @@ public:
         return assets_;
     }
 
+    /// Per-asset reference counter — acquire before use, release when done.
+    [[nodiscard]] cd::asset::AssetRefCount& ref_count() noexcept
+    {
+        return ref_count_;
+    }
+
+    [[nodiscard]] const cd::asset::AssetRefCount& ref_count() const noexcept
+    {
+        return ref_count_;
+    }
+
+    /// Forward + reverse dependency edges across assets.
+    [[nodiscard]] cd::asset::DependencyGraph& dep_graph() noexcept
+    {
+        return dep_graph_;
+    }
+
+    [[nodiscard]] const cd::asset::DependencyGraph& dep_graph() const noexcept
+    {
+        return dep_graph_;
+    }
+
+    /// Coalesced hot-reload notifications (notify → drain per-frame).
+    [[nodiscard]] cd::asset::HotReloadQueue& hot_reload() noexcept
+    {
+        return hot_reload_;
+    }
+
+    [[nodiscard]] const cd::asset::HotReloadQueue& hot_reload() const noexcept
+    {
+        return hot_reload_;
+    }
+
+    /// Typed schema / field-type registry for asset payloads.
+    [[nodiscard]] cd::asset::SchemaRegistry& schemas() noexcept
+    {
+        return schemas_;
+    }
+
+    [[nodiscard]] const cd::asset::SchemaRegistry& schemas() const noexcept
+    {
+        return schemas_;
+    }
+
     [[nodiscard]] cd::diag::DeadlineMonitor& watchdog() noexcept
     {
         return watchdog_;
@@ -119,6 +167,10 @@ private:
     cd::core::CVarRegistry cvars_;
     cd::vfs::VirtualFileSystem vfs_;
     cd::asset::AssetRegistry assets_;
+    cd::asset::AssetRefCount ref_count_;
+    cd::asset::DependencyGraph dep_graph_;
+    cd::asset::HotReloadQueue hot_reload_;
+    cd::asset::SchemaRegistry schemas_;
     cd::diag::DeadlineMonitor watchdog_;
     std::unique_ptr<cd::concurrency::WorkStealingThreadPool> pool_;
     std::shared_ptr<cd::log::ILogger> logger_;

@@ -4,6 +4,9 @@
 // Phase 756 — cd::asset::audio_streamer (Sprint-2: opt-in async path)
 // Band 6   — real WAV PCM decode wired behind the orchestration. OGG SEALED
 //            (no decoder at the asset layer yet — see ADR-20260616-band6).
+// Sprint-3 — AudioRingBuffer: CPU ring-buffer streaming layer (chunk
+//            producer/consumer, read cursor, loop points, underrun detection,
+//            sample-frame bookkeeping, AudioFormatDescriptor).
 //
 // Audio clip streaming coordinator. Accepts enqueue/cancel requests keyed by
 // asset path and drives a decode on each tick() call. Resolved clips are
@@ -23,6 +26,12 @@
 //   asset layer; an .ogg request fails to decode (silently dropped) until a
 //   cd::asset::ogg loader lands (trigger documented in the Band-6 ADR).
 //
+// RING BUFFER: AudioRingBuffer is a single-producer / single-consumer
+//   lock-free-friendly circular buffer operating on PCM byte frames. The
+//   producer writes decoded chunk bytes; the consumer reads them for device
+//   playback. Loop points and underrun detection are part of the read path.
+//   The audio-device callback backend is SEALED (see class docstring below).
+//
 // Sibling to:
 //   cd::asset::scene_streamer   (Phase 586)
 //   cd::asset::texture_streamer (Phase 599 + 714)
@@ -40,6 +49,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -86,6 +96,220 @@ struct CompletedAudio
     std::string  path;
     DecodedAudio decoded;
 };
+
+// ---- AudioFormatDescriptor --------------------------------------------------
+
+/// Fully describes the PCM layout of an audio stream — channels, sample rate,
+/// bit depth and derived byte-level bookkeeping. Matches the fields carried by
+/// DecodedAudio so callers can size ring-buffer capacity from a clip's format.
+///
+/// bytes_per_frame = channels × (bits_per_sample / 8)
+/// Total byte count of N frames = N × bytes_per_frame
+struct AudioFormatDescriptor
+{
+    std::uint16_t channels        { 0U };   ///< 1 = mono, 2 = stereo, etc.
+    std::uint32_t sample_rate     { 0U };   ///< Hz — e.g. 44100, 48000
+    std::uint16_t bits_per_sample { 0U };   ///< Bit depth per single sample (e.g. 16)
+
+    /// Bytes consumed by one frame (channels × bytes-per-sample).
+    /// Returns 0 when channels or bits_per_sample are not initialised.
+    [[nodiscard]] std::uint32_t bytes_per_frame() const noexcept
+    {
+        return static_cast<std::uint32_t>(channels) * (static_cast<std::uint32_t>(bits_per_sample) / 8U);
+    }
+
+    /// True when all fields are non-zero (format is usable).
+    [[nodiscard]] bool is_valid() const noexcept
+    {
+        return channels > 0U && sample_rate > 0U && bits_per_sample > 0U;
+    }
+
+    /// Build from a DecodedAudio's metadata (convenience).
+    [[nodiscard]] static AudioFormatDescriptor from_decoded(const DecodedAudio& d) noexcept
+    {
+        return AudioFormatDescriptor{ d.channels, d.sample_rate, d.bits_per_sample };
+    }
+};
+
+// ---- AudioRingBuffer --------------------------------------------------------
+
+/// Single-producer / single-consumer circular byte buffer for PCM streaming.
+///
+/// Design intent (Sprint-3 CPU charter):
+///   * The producer thread (decode worker or file-read thread) writes decoded
+///     chunk bytes via write_chunk().
+///   * The consumer thread (audio-device callback) reads frames via
+///     read_frames().
+///   * Loop points: when loop_end_frame is set, the read cursor wraps to
+///     loop_start_frame instead of past the last written sample, enabling
+///     seamless clip loops without re-filling the buffer.
+///   * Underrun detection: if the consumer asks for more frames than are
+///     available, the returned span is short (possibly empty), and
+///     underrun_count() increments. The consumer is responsible for filling
+///     with silence.
+///   * Sample-frame bookkeeping: all externally visible positions are in
+///     FRAMES, not bytes, so callers never need to multiply by bytes_per_frame.
+///
+/// AUDIO-DEVICE CALLBACK BACKEND IS SEALED:
+///   Wiring AudioRingBuffer to a real audio-device callback (WASAPI, CoreAudio,
+///   ALSA, XAudio2) requires platform-specific callback APIs that are outside
+///   the scope of the cpu-only asset layer. This is formally sealed; see
+///   docs/PROJECT_COMPLETION_STATUS.md (audio_streamer row) for the trigger.
+///   The ring buffer itself is device-agnostic PCM plumbing; plugging it into
+///   a device is two lines in the device callback:
+///       auto span = ring.read_frames(frames_requested);
+///       copy_or_silence(out_buffer, span, frames_requested);
+///
+/// Thread safety:
+///   write_chunk() and read_frames() may be called concurrently from exactly
+///   ONE producer and ONE consumer thread respectively. All other methods
+///   (reset, set_loop_points, capacity, etc.) must be called from a single
+///   thread when no concurrent producer/consumer is active.
+///
+/// Usage:
+///   AudioRingBuffer ring { fmt, /*capacity_frames=*/4096U };
+///   ring.set_loop_points(0U, total_frames);   // optional: loop whole clip
+///
+///   // Producer side:
+///   ring.write_chunk(pcm_bytes_span);         // returns bytes actually written
+///
+///   // Consumer side:
+///   auto pcm = ring.read_frames(256U);         // span into internal buffer
+///   // pcm.size() == 0 → underrun; fill out with silence
+class AudioRingBuffer
+{
+public:
+    /// Construct a ring buffer for the given PCM format and capacity.
+    ///   `format`          — PCM format descriptor (must be valid).
+    ///   `capacity_frames` — maximum number of PCM frames the buffer can hold
+    ///                       at any one time. Must be >= 2.
+    AudioRingBuffer(AudioFormatDescriptor format, std::uint64_t capacity_frames);
+
+    // Non-copyable, non-movable (owns internal storage + atomic cursors).
+    AudioRingBuffer(const AudioRingBuffer&)            = delete;
+    AudioRingBuffer& operator=(const AudioRingBuffer&) = delete;
+    AudioRingBuffer(AudioRingBuffer&&)                 = delete;
+    AudioRingBuffer& operator=(AudioRingBuffer&&)      = delete;
+
+    ~AudioRingBuffer() = default;
+
+    // ---- Configuration (call before producer/consumer threads start) --------
+
+    /// Set loop playback points. When looping is enabled the read cursor
+    /// wraps from loop_end_frame back to loop_start_frame.
+    ///   `loop_start_frame` — first frame of the loop region (0 = clip start).
+    ///   `loop_end_frame`   — one-past-last frame of the loop region; 0 means
+    ///                        "not set" (looping disabled). Must be >
+    ///                        loop_start_frame when non-zero.
+    ///
+    /// Loop coordinates are in terms of the clip's absolute frame timeline,
+    /// NOT ring-buffer positions. The ring buffer translates them to byte
+    /// offsets internally.
+    void set_loop_points(std::uint64_t loop_start_frame, std::uint64_t loop_end_frame) noexcept;
+
+    /// Clear loop points (disable looping). Equivalent to
+    /// set_loop_points(0, 0).
+    void clear_loop_points() noexcept;
+
+    /// Reset the buffer to empty (zero write/read cursors, clear storage).
+    /// Loop points are preserved. Call from the owner thread only.
+    void reset() noexcept;
+
+    // ---- Producer API -------------------------------------------------------
+
+    /// Write up to `data.size()` bytes of raw PCM into the ring buffer.
+    /// Bytes are silently truncated if the buffer does not have room for all
+    /// of `data`. The truncation is aligned on a frame boundary so a partial
+    /// write never leaves a half-frame.
+    ///
+    /// Returns the number of bytes actually written (0..data.size()).
+    [[nodiscard]] std::size_t write_chunk(std::span<const std::uint8_t> data) noexcept;
+
+    // ---- Consumer API -------------------------------------------------------
+
+    /// Read up to `frame_count` frames from the buffer and advance the read
+    /// cursor. Returns a span (view into the internal storage) covering the
+    /// bytes that were read. The span is valid until the next call to
+    /// write_chunk() or reset().
+    ///
+    /// If fewer than `frame_count` frames are available:
+    ///   * The returned span covers only the available frames.
+    ///   * underrun_count() is incremented by 1.
+    ///   * The caller should treat the gap as silence.
+    ///
+    /// When loop_end_frame is set and the read cursor reaches loop_end_frame,
+    /// the cursor wraps to loop_start_frame. If the wrap point falls inside
+    /// the current read request the returned span ends at the wrap boundary;
+    /// the caller must issue another read_frames() to continue from the start
+    /// of the loop.
+    [[nodiscard]] std::span<const std::uint8_t> read_frames(std::uint64_t frame_count) noexcept;
+
+    // ---- Queries ------------------------------------------------------------
+
+    /// PCM format the buffer was constructed with.
+    [[nodiscard]] const AudioFormatDescriptor& format() const noexcept;
+
+    /// Maximum number of PCM frames the buffer can hold at one time.
+    [[nodiscard]] std::uint64_t capacity_frames() const noexcept;
+
+    /// Number of frames currently available to the consumer.
+    [[nodiscard]] std::uint64_t frames_available() const noexcept;
+
+    /// Number of free frames the producer can write into.
+    [[nodiscard]] std::uint64_t frames_free() const noexcept;
+
+    /// True when no frames are available (frames_available() == 0).
+    [[nodiscard]] bool is_empty() const noexcept;
+
+    /// True when no free space remains (frames_free() == 0).
+    [[nodiscard]] bool is_full() const noexcept;
+
+    /// Absolute read-cursor position, in frames from the start of the stream.
+    /// Incremented by every read_frames() call; wraps at loop_end_frame when
+    /// looping is enabled.
+    [[nodiscard]] std::uint64_t read_cursor_frames() const noexcept;
+
+    /// Absolute write-cursor position, in frames from the start of the stream.
+    [[nodiscard]] std::uint64_t write_cursor_frames() const noexcept;
+
+    /// Number of underrun events since construction or last reset().
+    [[nodiscard]] std::uint64_t underrun_count() const noexcept;
+
+    /// Active loop start frame (0 if looping is disabled).
+    [[nodiscard]] std::uint64_t loop_start_frame() const noexcept;
+
+    /// Active loop end frame (0 if looping is disabled).
+    [[nodiscard]] std::uint64_t loop_end_frame() const noexcept;
+
+    /// True when loop points are active (loop_end_frame > 0).
+    [[nodiscard]] bool is_looping() const noexcept;
+
+private:
+    AudioFormatDescriptor format_;
+    std::uint64_t         capacity_frames_ { 0U };
+
+    // Internal ring storage: capacity_frames_ * bytes_per_frame bytes.
+    std::vector<std::uint8_t> storage_;
+
+    // Write cursor (in frames, monotonically increasing).
+    std::uint64_t write_cursor_ { 0U };
+
+    // Read cursor (in frames, monotonically increasing — wraps on loop).
+    std::uint64_t read_cursor_ { 0U };
+
+    // Underrun event count.
+    std::uint64_t underrun_count_ { 0U };
+
+    // Loop point configuration (0/0 = disabled).
+    std::uint64_t loop_start_frame_ { 0U };
+    std::uint64_t loop_end_frame_   { 0U };
+
+    // Scratch buffer reused by read_frames() for contiguous output when a
+    // read wraps the ring boundary.
+    std::vector<std::uint8_t> read_scratch_;
+};
+
+// ---- decode_audio_file ------------------------------------------------------
 
 /// Decode an audio file from disk into a DecodedAudio. ".wav" → real
 /// cd::asset::wav RIFF/WAVE decoder. ".ogg" (and any other extension) is NOT

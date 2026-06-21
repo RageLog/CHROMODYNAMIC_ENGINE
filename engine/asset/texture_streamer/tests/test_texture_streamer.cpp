@@ -2,6 +2,8 @@
 // CHROMODYNAMIC — engine/asset/texture_streamer/tests/test_texture_streamer.cpp
 // Phase 599 — cd::asset::texture_streamer unit tests (sync path)
 // Band 6   — real cdtex decode wired: tests assert REAL dimensions, not 1x1.
+// Phase 1268 — CPU charter complete: mip residency, LRU/budget eviction,
+//              screen-coverage priority, mip-upgrade, PathGuard move, dedup ext.
 //
 // Tests use cd::rhi::NullDevice (headless GPU backend) so they run without
 // a real Vulkan ICD. Real .cdtex fixtures are written to a temp dir so the
@@ -23,6 +25,26 @@
 //   T13 decode_texture_file sealed paths (PNG/JPG/KTX2/raw/no-ext) return nullopt
 //   T14 live_texture_count tracks GPU handle creation per load
 //   T15 mip_target != 0 propagates to the GPU texture descriptor
+//   T16 screen_coverage biases priority within same priority bucket
+//   T17 screen_coverage = 0 does not change priority relative ordering
+//   T18 is_mip_loaded: base mip always resident for mip_target == 0
+//   T19 is_mip_loaded: levels 0..N-1 resident when mip_target == N
+//   T20 is_mip_loaded: higher levels NOT resident when mip_target < level
+//   T21 is_mip_loaded: returns false for unknown/unloaded path
+//   T22 resident_mip_target: returns the stored mip_target on success
+//   T23 resident_mip_target: returns nullopt for unloaded path
+//   T24 set_texture_budget + eviction on tick: loaded_count stays at budget
+//   T25 evict_lru: least-recently-used record evicted, handle destroyed
+//   T26 touch: promotes a texture to MRU, protecting it from LRU eviction
+//   T27 budget == 0 means unlimited: no eviction occurs regardless of count
+//   T28 loaded_count is 0 after all records evicted
+//   T29 completed_count never decrements after eviction
+//   T30 enqueue_mip_upgrade: no-op when mip_target not strictly higher
+//   T31 enqueue_mip_upgrade: evicts stale record + re-queues at higher mip
+//   T32 enqueue_mip_upgrade: not-loaded path falls through to plain enqueue
+//   T33 PathGuard move ctor: moved-from dtor does not remove the temp file
+//   T34 PathGuard move ctor: moved-into guard still cleans up on dtor
+//   T35 dedup: re-enqueue after cancel with same path updates correctly
 // =============================================================================
 
 #include <cd/asset/texture_streamer/TextureStreamer.hpp>
@@ -31,6 +53,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -45,6 +68,7 @@ namespace
 
 namespace fs = std::filesystem;
 
+using cd::asset::texture_streamer::StreamRequest;
 using cd::asset::texture_streamer::TextureStreamer;
 
 // ---- Fixture: write a synthetic .cdtex (matches cook_texture v1 layout) -----
@@ -480,4 +504,596 @@ TEST(TextureStreamer, MipTargetNonZeroFlowsToDesc)
     EXPECT_EQ(dims->second, 64U);
     // GPU texture was created — exactly one live handle.
     EXPECT_EQ(device.live_texture_count(), 1U);
+}
+
+// ---- Movable PathGuard for tests that need std::vector<PathGuard> -----------
+// (The anonymous-namespace PathGuard above is intentionally non-movable; the
+//  movable variant here is used exclusively in T33/T34 and vector-reserve tests.)
+
+namespace
+{
+
+struct MovablePathGuard
+{
+    fs::path path;
+
+    explicit MovablePathGuard(fs::path p)
+        : path { std::move(p) }
+    {
+    }
+
+    ~MovablePathGuard()
+    {
+        std::error_code ec;
+        fs::remove(path, ec);
+    }
+
+    MovablePathGuard(const MovablePathGuard&)            = delete;
+    MovablePathGuard& operator=(const MovablePathGuard&) = delete;
+
+    // Move ctor: clear source so the moved-from dtor's fs::remove is a no-op.
+    MovablePathGuard(MovablePathGuard&& o) noexcept
+        : path { std::move(o.path) }
+    {
+        o.path.clear();
+    }
+
+    MovablePathGuard& operator=(MovablePathGuard&&) = delete;
+};
+
+}  // namespace
+
+// ---- T16: screen_coverage biases priority within same priority bucket --------
+//
+// Two requests share the same priority byte (100). One has screen_coverage=0.0
+// (small texture) and the other screen_coverage=1.0 (full-screen texture). The
+// full-screen texture must be selected first by tick().
+
+TEST(TextureStreamer, ScreenCoverageBreaksTieInSamePriorityBucket)
+{
+    PathGuard gsmall { tmp_cdtex_path() };
+    PathGuard gbig   { tmp_cdtex_path() };
+    write_cdtex(gsmall.path, 4U, 4U, 0x11);
+    write_cdtex(gbig.path,   64U, 64U, 0x22);
+    const std::string small_path = gsmall.path.string();
+    const std::string big_path   = gbig.path.string();
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+
+    // Same priority byte (100). small has coverage 0.0, big has coverage 1.0.
+    ts.enqueue(StreamRequest{ small_path, 0U, 100U, 0.0F });
+    ts.enqueue(StreamRequest{ big_path,   0U, 100U, 1.0F });
+    EXPECT_EQ(ts.pending_count(), 2U);
+
+    // First tick must pick big_path (higher effective priority via coverage).
+    ts.tick(0.016F, device);
+    EXPECT_TRUE(ts.is_loaded(big_path));
+    EXPECT_FALSE(ts.is_loaded(small_path));
+
+    // Second tick drains the remaining entry.
+    ts.tick(0.016F, device);
+    EXPECT_TRUE(ts.is_loaded(small_path));
+    EXPECT_EQ(ts.completed_count(), 2U);
+}
+
+// ---- T17: screen_coverage = 0 does not disturb existing priority ordering ---
+//
+// When screen_coverage is 0 for all requests, the ordering must be identical
+// to the pure-priority case (priority byte only, as before Phase 1268).
+
+TEST(TextureStreamer, ScreenCoverageZeroPreservesOriginalPriorityOrdering)
+{
+    PathGuard glo  { tmp_cdtex_path() };
+    PathGuard gmid { tmp_cdtex_path() };
+    PathGuard ghi  { tmp_cdtex_path() };
+    write_cdtex(glo.path,  4U,  4U, 0xAA);
+    write_cdtex(gmid.path, 8U,  8U, 0xBB);
+    write_cdtex(ghi.path, 16U, 16U, 0xCC);
+    const std::string lo  = glo.path.string();
+    const std::string mid = gmid.path.string();
+    const std::string hi  = ghi.path.string();
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+
+    // All screen_coverage == 0 → ordering by priority byte only.
+    ts.enqueue(StreamRequest{ lo,   0U,  10U, 0.0F });
+    ts.enqueue(StreamRequest{ mid,  0U, 100U, 0.0F });
+    ts.enqueue(StreamRequest{ hi,   0U, 200U, 0.0F });
+
+    ts.tick(0.016F, device);
+    EXPECT_TRUE(ts.is_loaded(hi));
+    EXPECT_FALSE(ts.is_loaded(mid));
+    EXPECT_FALSE(ts.is_loaded(lo));
+
+    ts.tick(0.016F, device);
+    EXPECT_TRUE(ts.is_loaded(mid));
+
+    ts.tick(0.016F, device);
+    EXPECT_TRUE(ts.is_loaded(lo));
+}
+
+// ---- T18: is_mip_loaded — base mip always resident for mip_target == 0 ------
+
+TEST(TextureStreamer, IsMipLoadedBaseAlwaysResidentForMipTargetZero)
+{
+    PathGuard g { tmp_cdtex_path() };
+    write_cdtex(g.path, 16U, 16U);
+    const std::string path = g.path.string();
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+
+    ts.enqueue(StreamRequest{ path, 0U, 200U });
+    ts.tick(0.016F, device);
+    ASSERT_TRUE(ts.is_loaded(path));
+
+    // mip_target == 0 → only mip level 0 is resident.
+    EXPECT_TRUE(ts.is_mip_loaded(path, 0U));
+    EXPECT_FALSE(ts.is_mip_loaded(path, 1U));
+    EXPECT_FALSE(ts.is_mip_loaded(path, 7U));
+}
+
+// ---- T19: is_mip_loaded — levels 0..N-1 resident when mip_target == N -------
+
+TEST(TextureStreamer, IsMipLoadedLevelsZeroToNMinusOneResidentWhenTargetIsN)
+{
+    PathGuard g { tmp_cdtex_path() };
+    write_cdtex(g.path, 32U, 32U);
+    const std::string path = g.path.string();
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+
+    // mip_target == 4 → levels 0, 1, 2, 3 are resident; level 4 is not.
+    ts.enqueue(StreamRequest{ path, 4U, 200U });
+    ts.tick(0.016F, device);
+    ASSERT_TRUE(ts.is_loaded(path));
+
+    EXPECT_TRUE(ts.is_mip_loaded(path, 0U));
+    EXPECT_TRUE(ts.is_mip_loaded(path, 1U));
+    EXPECT_TRUE(ts.is_mip_loaded(path, 2U));
+    EXPECT_TRUE(ts.is_mip_loaded(path, 3U));
+    EXPECT_FALSE(ts.is_mip_loaded(path, 4U));
+    EXPECT_FALSE(ts.is_mip_loaded(path, 255U));
+}
+
+// ---- T20: is_mip_loaded — higher levels NOT resident when target too small ---
+
+TEST(TextureStreamer, IsMipLoadedHigherLevelsNotResidentWhenTargetSmall)
+{
+    PathGuard g { tmp_cdtex_path() };
+    write_cdtex(g.path, 8U, 8U);
+    const std::string path = g.path.string();
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+
+    // mip_target == 2 → only levels 0 and 1 resident.
+    ts.enqueue(StreamRequest{ path, 2U, 200U });
+    ts.tick(0.016F, device);
+    ASSERT_TRUE(ts.is_loaded(path));
+
+    EXPECT_TRUE(ts.is_mip_loaded(path, 0U));
+    EXPECT_TRUE(ts.is_mip_loaded(path, 1U));
+    EXPECT_FALSE(ts.is_mip_loaded(path, 2U));
+}
+
+// ---- T21: is_mip_loaded — returns false for unknown/unloaded path -----------
+
+TEST(TextureStreamer, IsMipLoadedFalseForUnknownPath)
+{
+    const TextureStreamer ts;
+
+    EXPECT_FALSE(ts.is_mip_loaded("nonexistent.cdtex", 0U));
+    EXPECT_FALSE(ts.is_mip_loaded("nonexistent.cdtex", 1U));
+}
+
+// ---- T22: resident_mip_target returns the stored mip_target on success ------
+
+TEST(TextureStreamer, ResidentMipTargetReturnsStoredValue)
+{
+    PathGuard g { tmp_cdtex_path() };
+    write_cdtex(g.path, 16U, 16U);
+    const std::string path = g.path.string();
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+
+    ts.enqueue(StreamRequest{ path, 3U, 200U });
+    ts.tick(0.016F, device);
+    ASSERT_TRUE(ts.is_loaded(path));
+
+    const auto mt = ts.resident_mip_target(path);
+    ASSERT_TRUE(mt.has_value());
+    EXPECT_EQ(*mt, 3U);
+}
+
+// ---- T23: resident_mip_target returns nullopt for unloaded path -------------
+
+TEST(TextureStreamer, ResidentMipTargetNulloptForUnloaded)
+{
+    const TextureStreamer ts;
+    EXPECT_FALSE(ts.resident_mip_target("missing.cdtex").has_value());
+}
+
+// ---- T24: set_texture_budget + eviction on tick: loaded_count <= budget -----
+//
+// Budget is set to 2. Three textures are loaded one per tick. After the
+// third tick, loaded_count must still be 2 (the oldest was evicted).
+// completed_count must still be 3 (cumulative, never decremented).
+
+TEST(TextureStreamer, BudgetEvictsLRUOnTick)
+{
+    PathGuard g1 { tmp_cdtex_path() };
+    PathGuard g2 { tmp_cdtex_path() };
+    PathGuard g3 { tmp_cdtex_path() };
+    write_cdtex(g1.path, 8U,  8U, 0x11);
+    write_cdtex(g2.path, 16U, 16U, 0x22);
+    write_cdtex(g3.path, 32U, 32U, 0x33);
+    const std::string p1 = g1.path.string();
+    const std::string p2 = g2.path.string();
+    const std::string p3 = g3.path.string();
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+    ts.set_texture_budget(2U);
+
+    EXPECT_EQ(ts.texture_budget(), 2U);
+
+    ts.enqueue(StreamRequest{ p1, 0U, 100U });
+    ts.tick(0.016F, device);
+    EXPECT_EQ(ts.loaded_count(), 1U);
+    EXPECT_EQ(ts.completed_count(), 1U);
+
+    ts.enqueue(StreamRequest{ p2, 0U, 100U });
+    ts.tick(0.016F, device);
+    EXPECT_EQ(ts.loaded_count(), 2U);
+    EXPECT_EQ(ts.completed_count(), 2U);
+
+    // Third load — budget is 2; p1 (LRU) must be evicted before p3 is added.
+    ts.enqueue(StreamRequest{ p3, 0U, 100U });
+    ts.tick(0.016F, device);
+
+    EXPECT_EQ(ts.loaded_count(),   2U);   // budget enforced
+    EXPECT_EQ(ts.completed_count(), 3U);  // cumulative, not decremented
+
+    // p3 must be loaded (just added).
+    EXPECT_TRUE(ts.is_loaded(p3));
+    // p2 must still be loaded (was loaded second — older than p3 but newer than p1).
+    EXPECT_TRUE(ts.is_loaded(p2));
+    // p1 is the LRU — it must have been evicted.
+    EXPECT_FALSE(ts.is_loaded(p1));
+
+    // NullDevice: destroy_texture was called for p1 → live count == 2.
+    EXPECT_EQ(device.live_texture_count(), 2U);
+}
+
+// ---- T25: evict_lru: least-recently-used record evicted, handle destroyed ---
+//
+// Two textures loaded. evict_lru() is called once and must evict the older
+// (LRU) texture, destroying its GPU handle and returning its path.
+
+TEST(TextureStreamer, EvictLruRemovesOldestEntry)
+{
+    PathGuard g1 { tmp_cdtex_path() };
+    PathGuard g2 { tmp_cdtex_path() };
+    write_cdtex(g1.path, 8U, 8U, 0xAA);
+    write_cdtex(g2.path, 16U, 16U, 0xBB);
+    const std::string p1 = g1.path.string();
+    const std::string p2 = g2.path.string();
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+
+    ts.enqueue(StreamRequest{ p1, 0U, 100U });
+    ts.tick(0.016F, device);   // p1 loaded first → LRU after p2 arrives
+
+    ts.enqueue(StreamRequest{ p2, 0U, 100U });
+    ts.tick(0.016F, device);   // p2 loaded second → MRU
+
+    EXPECT_EQ(ts.loaded_count(), 2U);
+    EXPECT_EQ(device.live_texture_count(), 2U);
+
+    // Evict manually — must evict p1 (the LRU).
+    const std::string evicted = ts.evict_lru(device);
+    EXPECT_EQ(evicted, p1);
+
+    EXPECT_EQ(ts.loaded_count(), 1U);
+    EXPECT_FALSE(ts.is_loaded(p1));
+    EXPECT_TRUE(ts.is_loaded(p2));
+    EXPECT_EQ(device.live_texture_count(), 1U);
+
+    // completed_count must NOT have changed (cumulative).
+    EXPECT_EQ(ts.completed_count(), 2U);
+}
+
+// ---- T26: touch promotes a texture to MRU, protecting it from LRU eviction --
+//
+// p1 is loaded first (LRU). After touch(p1), it becomes MRU. A subsequent
+// evict_lru() must evict p2 (the new LRU) instead.
+
+TEST(TextureStreamer, TouchPromotesToMruProtectsFromEviction)
+{
+    PathGuard g1 { tmp_cdtex_path() };
+    PathGuard g2 { tmp_cdtex_path() };
+    write_cdtex(g1.path, 8U, 8U, 0xAA);
+    write_cdtex(g2.path, 16U, 16U, 0xBB);
+    const std::string p1 = g1.path.string();
+    const std::string p2 = g2.path.string();
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+
+    ts.enqueue(StreamRequest{ p1, 0U, 100U });
+    ts.tick(0.016F, device);  // p1 = LRU
+
+    ts.enqueue(StreamRequest{ p2, 0U, 100U });
+    ts.tick(0.016F, device);  // p2 = MRU, p1 = LRU
+
+    // Touch p1 → p1 becomes MRU, p2 becomes LRU.
+    ts.touch(p1);
+
+    // Evict should now remove p2 (the new LRU).
+    const std::string evicted = ts.evict_lru(device);
+    EXPECT_EQ(evicted, p2);
+
+    EXPECT_TRUE(ts.is_loaded(p1));
+    EXPECT_FALSE(ts.is_loaded(p2));
+}
+
+// ---- T27: budget == 0 means unlimited: no eviction regardless of count ------
+
+TEST(TextureStreamer, BudgetZeroIsUnlimitedNoEviction)
+{
+    PathGuard g1 { tmp_cdtex_path() };
+    PathGuard g2 { tmp_cdtex_path() };
+    PathGuard g3 { tmp_cdtex_path() };
+    write_cdtex(g1.path, 4U, 4U);
+    write_cdtex(g2.path, 4U, 4U);
+    write_cdtex(g3.path, 4U, 4U);
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+    ts.set_texture_budget(0U);  // explicitly unlimited
+
+    ts.enqueue(StreamRequest{ g1.path.string(), 0U, 100U });
+    ts.tick(0.016F, device);
+    ts.enqueue(StreamRequest{ g2.path.string(), 0U, 100U });
+    ts.tick(0.016F, device);
+    ts.enqueue(StreamRequest{ g3.path.string(), 0U, 100U });
+    ts.tick(0.016F, device);
+
+    // All three must remain loaded — no eviction at budget == 0.
+    EXPECT_EQ(ts.loaded_count(),   3U);
+    EXPECT_EQ(ts.completed_count(), 3U);
+    EXPECT_EQ(device.live_texture_count(), 3U);
+}
+
+// ---- T28: loaded_count is 0 after all records evicted -----------------------
+
+TEST(TextureStreamer, LoadedCountZeroAfterAllEvicted)
+{
+    PathGuard g { tmp_cdtex_path() };
+    write_cdtex(g.path, 8U, 8U);
+    const std::string path = g.path.string();
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+
+    ts.enqueue(StreamRequest{ path, 0U, 100U });
+    ts.tick(0.016F, device);
+    EXPECT_EQ(ts.loaded_count(), 1U);
+
+    ts.evict_lru(device);
+    EXPECT_EQ(ts.loaded_count(), 0U);
+
+    // Second evict on empty pool — must be a no-op (not crash).
+    const std::string second = ts.evict_lru(device);
+    EXPECT_TRUE(second.empty());
+    EXPECT_EQ(ts.loaded_count(), 0U);
+}
+
+// ---- T29: completed_count never decrements after eviction -------------------
+
+TEST(TextureStreamer, CompletedCountNeverDecrementsAfterEviction)
+{
+    PathGuard g1 { tmp_cdtex_path() };
+    PathGuard g2 { tmp_cdtex_path() };
+    write_cdtex(g1.path, 8U, 8U);
+    write_cdtex(g2.path, 8U, 8U);
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+
+    ts.enqueue(StreamRequest{ g1.path.string(), 0U, 100U });
+    ts.tick(0.016F, device);
+    ts.enqueue(StreamRequest{ g2.path.string(), 0U, 100U });
+    ts.tick(0.016F, device);
+    EXPECT_EQ(ts.completed_count(), 2U);
+
+    // Evict both.
+    ts.evict_lru(device);
+    ts.evict_lru(device);
+
+    // completed_count must still be 2 — eviction never decrements it.
+    EXPECT_EQ(ts.completed_count(), 2U);
+    EXPECT_EQ(ts.loaded_count(), 0U);
+}
+
+// ---- T30: enqueue_mip_upgrade — no-op when mip_target not strictly higher ---
+//
+// A texture is loaded with mip_target == 3. Calling enqueue_mip_upgrade with
+// mip_target == 2 (lower) or mip_target == 3 (equal) must be a no-op: the
+// texture stays loaded, pending_count stays 0.
+
+TEST(TextureStreamer, EnqueueMipUpgradeNoOpWhenNotHigher)
+{
+    PathGuard g { tmp_cdtex_path() };
+    write_cdtex(g.path, 32U, 32U);
+    const std::string path = g.path.string();
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+
+    ts.enqueue(StreamRequest{ path, 3U, 200U });
+    ts.tick(0.016F, device);
+    ASSERT_TRUE(ts.is_loaded(path));
+    EXPECT_EQ(*ts.resident_mip_target(path), 3U);
+
+    // Downgrade attempt — must be no-op.
+    ts.enqueue_mip_upgrade(StreamRequest{ path, 2U, 200U });
+    EXPECT_EQ(ts.pending_count(), 0U);
+    EXPECT_TRUE(ts.is_loaded(path));
+    EXPECT_EQ(*ts.resident_mip_target(path), 3U);
+
+    // Equal attempt — must also be no-op.
+    ts.enqueue_mip_upgrade(StreamRequest{ path, 3U, 200U });
+    EXPECT_EQ(ts.pending_count(), 0U);
+    EXPECT_TRUE(ts.is_loaded(path));
+}
+
+// ---- T31: enqueue_mip_upgrade — evicts stale record + re-queues at higher ---
+//
+// Texture is loaded at mip_target == 1. Upgrade to mip_target == 4 must:
+//   1. Remove the old loaded record.
+//   2. Put path back in pending_map_ at mip_target == 4.
+//   3. After a fresh tick(), the resident_mip_target == 4.
+
+TEST(TextureStreamer, EnqueueMipUpgradeEvictsAndRequeues)
+{
+    PathGuard g { tmp_cdtex_path() };
+    write_cdtex(g.path, 64U, 64U);
+    const std::string path = g.path.string();
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+
+    // Load at mip_target == 1.
+    ts.enqueue(StreamRequest{ path, 1U, 200U });
+    ts.tick(0.016F, device);
+    ASSERT_TRUE(ts.is_loaded(path));
+    EXPECT_EQ(*ts.resident_mip_target(path), 1U);
+    EXPECT_EQ(ts.completed_count(), 1U);
+
+    // Request upgrade to mip_target == 4.
+    ts.enqueue_mip_upgrade(StreamRequest{ path, 4U, 200U });
+
+    // Old record must be gone, new request must be pending.
+    EXPECT_FALSE(ts.is_loaded(path));
+    EXPECT_EQ(ts.pending_count(), 1U);
+
+    // Decode + upload the upgraded texture.
+    ts.tick(0.016F, device);
+
+    ASSERT_TRUE(ts.is_loaded(path));
+    EXPECT_EQ(*ts.resident_mip_target(path), 4U);
+    EXPECT_EQ(ts.completed_count(), 2U);  // cumulative: first + upgraded load
+
+    // is_mip_loaded: levels 0..3 resident, level 4 not.
+    EXPECT_TRUE(ts.is_mip_loaded(path, 0U));
+    EXPECT_TRUE(ts.is_mip_loaded(path, 3U));
+    EXPECT_FALSE(ts.is_mip_loaded(path, 4U));
+}
+
+// ---- T32: enqueue_mip_upgrade — not-loaded path falls through to enqueue ----
+//
+// A path that has never been loaded is passed to enqueue_mip_upgrade. The
+// behaviour must be identical to a plain enqueue: the path enters pending_map_
+// and loads on the next tick.
+
+TEST(TextureStreamer, EnqueueMipUpgradeNotLoadedFallsThroughToEnqueue)
+{
+    PathGuard g { tmp_cdtex_path() };
+    write_cdtex(g.path, 16U, 16U);
+    const std::string path = g.path.string();
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+
+    // Path not yet loaded — enqueue_mip_upgrade must behave like enqueue.
+    ts.enqueue_mip_upgrade(StreamRequest{ path, 2U, 150U });
+    EXPECT_EQ(ts.pending_count(), 1U);
+
+    ts.tick(0.016F, device);
+    ASSERT_TRUE(ts.is_loaded(path));
+    EXPECT_EQ(*ts.resident_mip_target(path), 2U);
+}
+
+// ---- T33: PathGuard move ctor clears source path (no double-remove) ---------
+//
+// After a move, the moved-from PathGuard's path must be empty so its dtor does
+// not attempt fs::remove on a path that the destination now owns.
+// (Tests the movable PathGuard used in async tests / vector::reserve paths.)
+
+TEST(TextureStreamer, MovablePathGuardMovedFromHasEmptyPath)
+{
+    const fs::path p = tmp_cdtex_path();
+    write_cdtex(p, 4U, 4U);
+
+    MovablePathGuard src { p };
+    EXPECT_FALSE(src.path.empty());
+
+    MovablePathGuard dst { std::move(src) };
+
+    // Source must be cleared. Intentionally inspecting the moved-from object:
+    // the whole point of this test is that the move ctor empties the source.
+    // NOLINTNEXTLINE(bugprone-use-after-move,hicpp-invalid-access-moved)
+    EXPECT_TRUE(src.path.empty());
+
+    // Destination must own the original path.
+    EXPECT_EQ(dst.path, p);
+
+    // File must still exist (only dst's dtor will remove it).
+    EXPECT_TRUE(fs::exists(p));
+}  // dst dtor removes the file here.
+
+// ---- T34: MovablePathGuard destination dtor removes the file ----------------
+
+TEST(TextureStreamer, MovablePathGuardDestinationDtorCleansUp)
+{
+    const fs::path p = tmp_cdtex_path();
+    write_cdtex(p, 4U, 4U);
+    ASSERT_TRUE(fs::exists(p));
+
+    {
+        MovablePathGuard src { p };
+        MovablePathGuard dst { std::move(src) };
+        // File exists inside the scope.
+        EXPECT_TRUE(fs::exists(p));
+    }  // dst dtor runs here — file must be removed.
+
+    EXPECT_FALSE(fs::exists(p));
+}
+
+// ---- T35: dedup — re-enqueue after cancel with same path picks up cleanly ---
+//
+// enqueue(path) → cancel(path) → enqueue(path) again must work: the second
+// enqueue must put the path back in pending_map_, and a subsequent tick() must
+// load it successfully.
+
+TEST(TextureStreamer, ReEnqueueAfterCancelLoadsCorrectly)
+{
+    PathGuard g { tmp_cdtex_path() };
+    write_cdtex(g.path, 32U, 32U);
+    const std::string path = g.path.string();
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+
+    ts.enqueue(StreamRequest{ path, 0U, 100U });
+    EXPECT_EQ(ts.pending_count(), 1U);
+
+    ts.cancel(path);
+    EXPECT_EQ(ts.pending_count(), 0U);
+    EXPECT_FALSE(ts.is_loaded(path));
+
+    // Re-enqueue: must succeed (path is neither pending nor loaded now).
+    ts.enqueue(StreamRequest{ path, 0U, 200U });
+    EXPECT_EQ(ts.pending_count(), 1U);
+
+    ts.tick(0.016F, device);
+    EXPECT_TRUE(ts.is_loaded(path));
+    EXPECT_EQ(ts.completed_count(), 1U);
 }

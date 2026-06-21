@@ -1,7 +1,9 @@
 // =============================================================================
 // CHROMODYNAMIC — cd::runtime::EngineContext tests (Sprint S2.10)
 // =============================================================================
+#include <cd/asset/AssetId.hpp>
 #include <cd/asset/IAssetLoader.hpp>
+#include <cd/asset/SchemaRegistry.hpp>
 #include <cd/diag/DeadlineMonitor.hpp>
 #include <cd/log/ConsoleLogger.hpp>
 #include <cd/log/ILogger.hpp>
@@ -431,6 +433,442 @@ TEST(EngineContext, AssetLoadIsIdempotent)
     EXPECT_EQ(*id1, *id2);
     EXPECT_EQ(ctx.assets().find(*id1), ctx.assets().find(*id2));
     EXPECT_EQ(ctx.assets().cached_count(), 1u);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1268 — cd::runtime charter close-out: ref-counting, dependency
+// tracking, hot-reload bookkeeping, schema/type registry wired through
+// EngineContext. AAA + edge + negative coverage.
+// ---------------------------------------------------------------------------
+
+// --- AssetRefCount through context -----------------------------------------
+
+// acquire() increments and returns the new count through the context accessor.
+TEST(EngineContextRefCount, AcquireIncrementsCount)
+{
+    cd::runtime::EngineContext ctx;
+    const auto id = cd::asset::AssetId::from_path("tex/wall.cdtex");
+    EXPECT_EQ(ctx.ref_count().acquire(id), 1);
+    EXPECT_EQ(ctx.ref_count().acquire(id), 2);
+    EXPECT_EQ(ctx.ref_count().count_of(id), 2);
+}
+
+// release() decrements; hitting zero removes the tracking entry.
+TEST(EngineContextRefCount, ReleaseDecrements)
+{
+    cd::runtime::EngineContext ctx;
+    const auto id = cd::asset::AssetId::from_path("mesh/soldier.cdmesh");
+    ctx.ref_count().acquire(id);
+    ctx.ref_count().acquire(id);
+    EXPECT_EQ(ctx.ref_count().release(id), 1);
+    EXPECT_EQ(ctx.ref_count().release(id), 0);
+    EXPECT_FALSE(ctx.ref_count().is_held(id));
+    EXPECT_EQ(ctx.ref_count().tracked_count(), 0u);
+}
+
+// Double-free guard: releasing an asset that was never acquired returns 0
+// and does not underflow.
+TEST(EngineContextRefCount, DoubleFreeGuardNeverUnderflows)
+{
+    cd::runtime::EngineContext ctx;
+    const auto id = cd::asset::AssetId::from_path("audio/ambient.wav");
+    EXPECT_EQ(ctx.ref_count().release(id), 0);  // never acquired
+    ctx.ref_count().acquire(id);
+    EXPECT_EQ(ctx.ref_count().release(id), 0);  // back to zero
+    EXPECT_EQ(ctx.ref_count().release(id), 0);  // extra release — no-op
+    EXPECT_EQ(ctx.ref_count().tracked_count(), 0u);
+}
+
+// Invalid AssetId (null) is silently rejected; tracked_count stays 0.
+TEST(EngineContextRefCount, NullIdRejected)
+{
+    cd::runtime::EngineContext ctx;
+    EXPECT_EQ(ctx.ref_count().acquire(cd::asset::AssetId {}), 0);
+    EXPECT_EQ(ctx.ref_count().tracked_count(), 0u);
+}
+
+// Multiple distinct assets are tracked independently.
+TEST(EngineContextRefCount, MultipleAssetsIndependent)
+{
+    cd::runtime::EngineContext ctx;
+    const auto id_a = cd::asset::AssetId::from_path("a.cdtex");
+    const auto id_b = cd::asset::AssetId::from_path("b.cdmesh");
+    ctx.ref_count().acquire(id_a);
+    ctx.ref_count().acquire(id_a);
+    ctx.ref_count().acquire(id_b);
+    EXPECT_EQ(ctx.ref_count().count_of(id_a), 2);
+    EXPECT_EQ(ctx.ref_count().count_of(id_b), 1);
+    EXPECT_EQ(ctx.ref_count().tracked_count(), 2u);
+}
+
+// clear() resets all counts.
+TEST(EngineContextRefCount, ClearResetsAll)
+{
+    cd::runtime::EngineContext ctx;
+    const auto id = cd::asset::AssetId::from_path("x.wav");
+    ctx.ref_count().acquire(id);
+    ctx.ref_count().clear();
+    EXPECT_EQ(ctx.ref_count().tracked_count(), 0u);
+    EXPECT_FALSE(ctx.ref_count().is_held(id));
+}
+
+// const context accessor returns the same ref_count state.
+TEST(EngineContextRefCount, ConstAccessorReflectsState)
+{
+    cd::runtime::EngineContext ctx;
+    const auto id = cd::asset::AssetId::from_path("const.cdtex");
+    ctx.ref_count().acquire(id);
+
+    const cd::runtime::EngineContext& cctx = ctx;
+    EXPECT_EQ(cctx.ref_count().count_of(id), 1);
+    EXPECT_TRUE(cctx.ref_count().is_held(id));
+}
+
+// --- DependencyGraph through context ----------------------------------------
+
+// depend() registers a parent→child edge; dependents_of(child) returns parent.
+TEST(EngineContextDepGraph, OneHopDependency)
+{
+    cd::runtime::EngineContext ctx;
+    const auto mat = cd::asset::AssetId::from_path("mat/standard.json");
+    const auto tex = cd::asset::AssetId::from_path("tex/albedo.cdtex");
+    ctx.dep_graph().depend(mat, tex);
+    const auto deps = ctx.dep_graph().dependents_of(tex);
+    ASSERT_EQ(deps.size(), 1u);
+    EXPECT_EQ(deps[0], mat);
+}
+
+// transitive_dependents() walks the full reverse closure (BFS).
+TEST(EngineContextDepGraph, TransitiveDependentsClosureBfs)
+{
+    cd::runtime::EngineContext ctx;
+    const auto scene = cd::asset::AssetId::from_path("scene/main.json");
+    const auto mat   = cd::asset::AssetId::from_path("mat/pbr.json");
+    const auto tex   = cd::asset::AssetId::from_path("tex/normal.cdtex");
+    ctx.dep_graph().depend(scene, mat);
+    ctx.dep_graph().depend(mat, tex);
+    const auto closure = ctx.dep_graph().transitive_dependents(tex);
+    EXPECT_EQ(closure.size(), 2u);
+}
+
+// No edges → dependents_of returns empty vector.
+TEST(EngineContextDepGraph, NoDependentsReturnsEmpty)
+{
+    cd::runtime::EngineContext ctx;
+    const auto lone = cd::asset::AssetId::from_path("lone.cdmesh");
+    EXPECT_TRUE(ctx.dep_graph().dependents_of(lone).empty());
+    EXPECT_TRUE(ctx.dep_graph().transitive_dependents(lone).empty());
+}
+
+// Invalid id (null) edges are silently discarded; edge_node_count stays 0.
+TEST(EngineContextDepGraph, NullIdEdgeRejected)
+{
+    cd::runtime::EngineContext ctx;
+    const auto valid = cd::asset::AssetId::from_path("valid.cdtex");
+    ctx.dep_graph().depend(cd::asset::AssetId {}, valid);
+    ctx.dep_graph().depend(valid, cd::asset::AssetId {});
+    EXPECT_EQ(ctx.dep_graph().edge_node_count(), 0u);
+}
+
+// clear() removes all edges.
+TEST(EngineContextDepGraph, ClearDropsAllEdges)
+{
+    cd::runtime::EngineContext ctx;
+    const auto a = cd::asset::AssetId::from_path("a.json");
+    const auto b = cd::asset::AssetId::from_path("b.cdtex");
+    ctx.dep_graph().depend(a, b);
+    ctx.dep_graph().clear();
+    EXPECT_EQ(ctx.dep_graph().edge_node_count(), 0u);
+    EXPECT_TRUE(ctx.dep_graph().dependents_of(b).empty());
+}
+
+// const accessor: read-only dependents_of visible through const context ref.
+TEST(EngineContextDepGraph, ConstAccessorVisible)
+{
+    cd::runtime::EngineContext ctx;
+    const auto p = cd::asset::AssetId::from_path("p.json");
+    const auto c = cd::asset::AssetId::from_path("c.cdtex");
+    ctx.dep_graph().depend(p, c);
+
+    const cd::runtime::EngineContext& cctx = ctx;
+    const auto deps = cctx.dep_graph().dependents_of(c);
+    ASSERT_EQ(deps.size(), 1u);
+    EXPECT_EQ(deps[0], p);
+}
+
+// --- HotReloadQueue through context -----------------------------------------
+
+// notify() marks an asset dirty; is_pending() reflects it.
+TEST(EngineContextHotReload, NotifyMarksPending)
+{
+    cd::runtime::EngineContext ctx;
+    const auto id = cd::asset::AssetId::from_path("shaders/lit.frag.glsl");
+    ctx.hot_reload().notify(id);
+    EXPECT_TRUE(ctx.hot_reload().is_pending(id));
+    EXPECT_EQ(ctx.hot_reload().pending_count(), 1u);
+}
+
+// Duplicate notify() coalesces to a single pending entry.
+TEST(EngineContextHotReload, DuplicateNotifyCoalesces)
+{
+    cd::runtime::EngineContext ctx;
+    const auto id = cd::asset::AssetId::from_path("a.frag.glsl");
+    ctx.hot_reload().notify(id);
+    ctx.hot_reload().notify(id);
+    ctx.hot_reload().notify(id);
+    EXPECT_EQ(ctx.hot_reload().pending_count(), 1u);
+}
+
+// drain() fires the callback once per dirty asset then clears the queue.
+TEST(EngineContextHotReload, DrainFiresEachOnceAndClears)
+{
+    cd::runtime::EngineContext ctx;
+    const auto id_a = cd::asset::AssetId::from_path("a.vert");
+    const auto id_b = cd::asset::AssetId::from_path("b.frag");
+    ctx.hot_reload().notify(id_a);
+    ctx.hot_reload().notify(id_b);
+
+    int fired = 0;
+    ctx.hot_reload().drain([&fired](cd::asset::AssetId) { ++fired; });
+    EXPECT_EQ(fired, 2);
+    EXPECT_EQ(ctx.hot_reload().pending_count(), 0u);
+}
+
+// Notify with null id is ignored.
+TEST(EngineContextHotReload, NullIdIgnored)
+{
+    cd::runtime::EngineContext ctx;
+    ctx.hot_reload().notify(cd::asset::AssetId {});
+    EXPECT_EQ(ctx.hot_reload().pending_count(), 0u);
+}
+
+// clear() drops all pending entries without firing callbacks.
+TEST(EngineContextHotReload, ClearNoDrain)
+{
+    cd::runtime::EngineContext ctx;
+    ctx.hot_reload().notify(cd::asset::AssetId::from_path("x.cdtex"));
+    ctx.hot_reload().clear();
+    EXPECT_EQ(ctx.hot_reload().pending_count(), 0u);
+}
+
+// Integration: notify dependency children → drain collects them all.
+TEST(EngineContextHotReload, NotifyMultipleAssetsDrainedOnce)
+{
+    cd::runtime::EngineContext ctx;
+    const auto tex_a = cd::asset::AssetId::from_path("t/a.cdtex");
+    const auto tex_b = cd::asset::AssetId::from_path("t/b.cdtex");
+    const auto mat   = cd::asset::AssetId::from_path("m/pbr.json");
+    ctx.hot_reload().notify(tex_a);
+    ctx.hot_reload().notify(tex_b);
+    ctx.hot_reload().notify(mat);
+
+    int count = 0;
+    ctx.hot_reload().drain([&count](cd::asset::AssetId) { ++count; });
+    EXPECT_EQ(count, 3);
+}
+
+// const accessor reports pending state correctly.
+TEST(EngineContextHotReload, ConstAccessorIsPending)
+{
+    cd::runtime::EngineContext ctx;
+    const auto id = cd::asset::AssetId::from_path("q.cdtex");
+    ctx.hot_reload().notify(id);
+
+    const cd::runtime::EngineContext& cctx = ctx;
+    EXPECT_TRUE(cctx.hot_reload().is_pending(id));
+}
+
+// --- SchemaRegistry (type registry) through context -------------------------
+
+// register_schema + find round-trip through the context.
+TEST(EngineContextSchemas, RegisterAndFind)
+{
+    cd::runtime::EngineContext ctx;
+    cd::asset::Schema s;
+    s.name    = "material.pbr";
+    s.version = 1;
+    s.fields  = {
+        { "albedo",    cd::asset::FieldType::kVec4f, false },
+        { "roughness", cd::asset::FieldType::kFloat, false },
+        { "normal_map",cd::asset::FieldType::kHandleTexture, true },
+    };
+    ctx.schemas().register_schema(s);
+    EXPECT_EQ(ctx.schemas().size(), 1u);
+    const auto* found = ctx.schemas().find("material.pbr");
+    ASSERT_NE(found, nullptr);
+    EXPECT_EQ(found->fields.size(), 3u);
+    EXPECT_NE(found->find_field("albedo"), nullptr);
+    EXPECT_EQ(found->find_field("missing"), nullptr);
+}
+
+// Negative: find() for an unregistered schema name returns nullptr.
+TEST(EngineContextSchemas, FindUnknownReturnsNull)
+{
+    cd::runtime::EngineContext ctx;
+    EXPECT_EQ(ctx.schemas().find("nope.schema"), nullptr);
+}
+
+// validate_payload: all required fields present → success.
+TEST(EngineContextSchemas, ValidatePayloadAllRequiredPresent)
+{
+    cd::runtime::EngineContext ctx;
+    cd::asset::Schema s;
+    s.name    = "event.spawn";
+    s.version = 1;
+    s.fields  = {
+        { "entity_id", cd::asset::FieldType::kUint64, false },
+        { "position",  cd::asset::FieldType::kVec3f,  false },
+        { "debug_tag", cd::asset::FieldType::kString,  true  },
+    };
+    ctx.schemas().register_schema(std::move(s));
+
+    const std::vector<std::string> present { "entity_id", "position" };
+    EXPECT_TRUE(ctx.schemas().validate_payload("event.spawn", present).has_value());
+}
+
+// Negative: missing a required field → kMissingRequiredField error.
+TEST(EngineContextSchemas, ValidatePayloadMissingRequiredField)
+{
+    cd::runtime::EngineContext ctx;
+    cd::asset::Schema s;
+    s.name    = "event.damage";
+    s.version = 1;
+    s.fields  = {
+        { "amount",    cd::asset::FieldType::kFloat,  false },
+        { "source_id", cd::asset::FieldType::kUint64, false },
+    };
+    ctx.schemas().register_schema(std::move(s));
+
+    const std::vector<std::string> only_one { "amount" };
+    const auto result = ctx.schemas().validate_payload("event.damage", only_one);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code,
+              static_cast<std::uint32_t>(cd::asset::schema_errors::Code::kMissingRequiredField));
+}
+
+// Negative: validate_payload on unknown schema name → kUnknownSchema.
+TEST(EngineContextSchemas, ValidatePayloadUnknownSchema)
+{
+    cd::runtime::EngineContext ctx;
+    const auto r = ctx.schemas().validate_payload("ghost.schema", {});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::asset::schema_errors::Code::kUnknownSchema));
+}
+
+// Overwrite: second register_schema with the same name replaces the first.
+TEST(EngineContextSchemas, OverwriteReplacesSchema)
+{
+    cd::runtime::EngineContext ctx;
+    cd::asset::Schema s1;
+    s1.name    = "mat.simple";
+    s1.version = 1;
+    s1.fields  = { { "color", cd::asset::FieldType::kVec4f, false } };
+    ctx.schemas().register_schema(s1);
+
+    cd::asset::Schema s2;
+    s2.name    = "mat.simple";
+    s2.version = 2;
+    s2.fields  = {
+        { "color",     cd::asset::FieldType::kVec4f, false },
+        { "emissive",  cd::asset::FieldType::kVec3f, true  },
+    };
+    ctx.schemas().register_schema(std::move(s2));
+
+    EXPECT_EQ(ctx.schemas().size(), 1u);  // still one entry
+    const auto* found = ctx.schemas().find("mat.simple");
+    ASSERT_NE(found, nullptr);
+    EXPECT_EQ(found->version, 2u);
+    EXPECT_EQ(found->fields.size(), 2u);
+}
+
+// const accessor: schemas visible through const context ref.
+TEST(EngineContextSchemas, ConstAccessorVisible)
+{
+    cd::runtime::EngineContext ctx;
+    cd::asset::Schema s;
+    s.name    = "cfg.graphics";
+    s.version = 1;
+    s.fields  = { { "msaa", cd::asset::FieldType::kInt32, false } };
+    ctx.schemas().register_schema(std::move(s));
+
+    const cd::runtime::EngineContext& cctx = ctx;
+    EXPECT_EQ(cctx.schemas().size(), 1u);
+    EXPECT_NE(cctx.schemas().find("cfg.graphics"), nullptr);
+}
+
+// --- Cross-service integration -----------------------------------------------
+
+// Load an asset via registry, acquire a ref-count, register dep edge, then
+// notify hot-reload.  All four new services interact through one context.
+TEST(EngineContextIntegration, RefCountDepGraphHotReloadSchema)
+{
+    cd::runtime::EngineContext ctx;
+
+    // VFS + loader setup.
+    auto mem = std::make_shared<cd::vfs::MemorySource>("mem");
+    mem->put_text("mat/pbr.json", "{}");
+    mem->put_text("tex/albedo.cdtex", "data");
+    ctx.vfs().mount_back(mem);
+    ctx.assets().register_loader(std::make_unique<cd::asset::TextAssetLoader>());
+
+    // Load two assets.
+    const auto mat_id = ctx.assets().load("text", "mat/pbr.json");
+    const auto tex_id = ctx.assets().load("text", "tex/albedo.cdtex");
+    ASSERT_TRUE(mat_id.has_value());
+    ASSERT_TRUE(tex_id.has_value());
+
+    // Ref-count: hold both.
+    ctx.ref_count().acquire(*mat_id);
+    ctx.ref_count().acquire(*tex_id);
+    EXPECT_EQ(ctx.ref_count().count_of(*mat_id), 1);
+    EXPECT_EQ(ctx.ref_count().count_of(*tex_id), 1);
+
+    // Dependency: mat depends on tex.
+    ctx.dep_graph().depend(*mat_id, *tex_id);
+    ASSERT_EQ(ctx.dep_graph().dependents_of(*tex_id).size(), 1u);
+
+    // Hot-reload: tex changes; notify, verify mat is a dependent.
+    ctx.hot_reload().notify(*tex_id);
+    const auto affected = ctx.dep_graph().dependents_of(*tex_id);
+    EXPECT_EQ(affected[0], *mat_id);
+
+    // Drain the queue.
+    int drained = 0;
+    ctx.hot_reload().drain([&drained](cd::asset::AssetId) { ++drained; });
+    EXPECT_EQ(drained, 1);
+
+    // Release refs.
+    ctx.ref_count().release(*mat_id);
+    ctx.ref_count().release(*tex_id);
+    EXPECT_EQ(ctx.ref_count().tracked_count(), 0u);
+
+    // Schema: register and validate a payload.
+    cd::asset::Schema s;
+    s.name    = "mat.pbr";
+    s.version = 1;
+    s.fields  = { { "albedo", cd::asset::FieldType::kVec4f, false } };
+    ctx.schemas().register_schema(std::move(s));
+    const std::vector<std::string> fields { "albedo" };
+    EXPECT_TRUE(ctx.schemas().validate_payload("mat.pbr", fields).has_value());
+}
+
+// Shutdown clears no user data in new services (they are value members, not
+// owned pointers; shutdown touches only the thread pool and logger).
+TEST(EngineContextIntegration, ShutdownDoesNotCorruptNewServices)
+{
+    cd::runtime::EngineContext ctx;
+    const auto id = cd::asset::AssetId::from_path("post/shutdown.cdtex");
+    ctx.ref_count().acquire(id);
+    ctx.dep_graph().depend(id, cd::asset::AssetId::from_path("dep.cdtex"));
+    ctx.hot_reload().notify(id);
+
+    ctx.shutdown();
+
+    // Services remain usable after shutdown (they are plain value members).
+    EXPECT_EQ(ctx.ref_count().count_of(id), 1);
+    EXPECT_EQ(ctx.dep_graph().edge_node_count(), 1u);
+    EXPECT_TRUE(ctx.hot_reload().is_pending(id));
 }
 
 }  // namespace

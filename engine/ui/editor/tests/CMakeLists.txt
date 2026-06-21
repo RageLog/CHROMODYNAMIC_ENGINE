@@ -12,3 +12,8 @@ cd_add_test(axis_gizmo_v2
   SOURCES test_axis_gizmo_v2.cpp
   DEPS    cd::editor cd::math cd::core
 )
+
+cd_add_test(editor_charter_complete
+  SOURCES test_editor_charter_complete.cpp
+  DEPS    cd::editor cd::scene cd::ecs cd::math cd::core
+)

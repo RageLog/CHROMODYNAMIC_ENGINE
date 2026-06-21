@@ -1,6 +1,6 @@
 // =============================================================================
 // CHROMODYNAMIC — engine/asset/streamer_pool/tests/test_streamer_pool.cpp
-// Phase 705 — cd::asset::streamer_pool unit tests (Sprint-1)
+// Phase 705 — cd::asset::streamer_pool unit tests (Sprint-1 + charter-complete)
 //
 // All tests use cd::rhi::NullDevice for the texture path so they run without a
 // real Vulkan ICD.  SceneStreamer and AudioStreamer use their own Sprint-1
@@ -46,6 +46,26 @@
 //       integer formula with zero residual deficit.
 //   T21 Three active streamers share budget proportionally (scene+texture+audio).
 //   T22 configure() on already-clean pool resets deficit and pool stays stable.
+//
+//   — Charter-complete additions —
+//   T23 is_idle() true when all attached streamers have zero pending.
+//   T24 is_idle() true when no streamers attached.
+//   T25 total_pending() aggregates across all attached async streamers.
+//   T26 total_pending() zero with no attached streamers.
+//   T27 pause() suppresses dispatch; resume() restores it.
+//   T28 pause() / resume() are idempotent.
+//   T29 enqueue_audio facade forwards requests to attached audio streamer.
+//   T30 enqueue_scene facade forwards requests to attached scene streamer.
+//   T31 enqueue_texture facade forwards requests to attached texture streamer.
+//   T32 enqueue_* are no-ops when no streamer is attached.
+//   T33 cancel_all() cancels all pool-enqueued paths on all streamers.
+//   T34 cancel_all() is idempotent (second call on cleared list safe).
+//   T35 cancel_all clears tracked paths; subsequent enqueue+tick still works.
+//   T36 set_completion_callback fired exactly once per completed item; domain Audio.
+//   T37 completion callback silent for failed scene load (non-existent path).
+//   T38 paused pool does not fire completion callbacks.
+//   T39 clearing callback (empty function) stops future notifications.
+//   T40 is_idle() correctly reflects multi-streamer aggregate state.
 // =============================================================================
 
 #include <cd/asset/streamer_pool/StreamerPool.hpp>
@@ -64,6 +84,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <numeric>
 #include <string>
@@ -76,6 +97,7 @@ namespace fs = std::filesystem;
 
 using cd::asset::streamer_pool::PoolConfig;
 using cd::asset::streamer_pool::PoolStats;
+using cd::asset::streamer_pool::StreamerDomain;
 using cd::asset::streamer_pool::StreamerPool;
 
 // ---- fixtures ----------------------------------------------------------------
@@ -1096,6 +1118,481 @@ TEST(StreamerPool, ReconfigureOnCleanPoolIsStable)
     // still consumed from the pending queue).
     EXPECT_EQ(pool.stats().audio_pending, 0U)
         << "pool must drain normally after configure() on a clean pool";
+}
+
+// ---- T23: is_idle() — true when all attached streamers have zero pending -----
+
+TEST(StreamerPool, IsIdleTrueWhenNoPending)
+{
+    cd::asset::audio_streamer::AudioStreamer audio;
+
+    StreamerPool pool;
+    pool.attach_audio(&audio);
+
+    EXPECT_TRUE(pool.is_idle()) << "pool with no enqueued items must report idle";
+
+    audio.enqueue({ "audio/idle.wav", 0U, 100U });
+
+    EXPECT_FALSE(pool.is_idle()) << "pool with a pending item must not report idle";
+
+    // Drain the item.
+    drain(pool, 32U);
+
+    EXPECT_TRUE(pool.is_idle()) << "pool must report idle after draining";
+}
+
+// ---- T24: is_idle() with no streamers attached — always true ----------------
+
+TEST(StreamerPool, IsIdleTrueWhenNoStreamersAttached)
+{
+    StreamerPool pool;
+    EXPECT_TRUE(pool.is_idle())
+        << "pool with no attached streamers must always report idle";
+}
+
+// ---- T25: total_pending() — aggregate across all attached async streamers ---
+
+TEST(StreamerPool, TotalPendingAggregatesAcrossStreamers)
+{
+    cd::asset::scene_streamer::SceneStreamer scene;
+    cd::asset::audio_streamer::AudioStreamer audio;
+
+    scene.enqueue({ "scene/tp0.glb", 100U });
+    scene.enqueue({ "scene/tp1.glb", 100U });
+    audio.enqueue({ "audio/tp0.wav", 0U, 100U });
+
+    StreamerPool pool;
+    pool.attach_scene(&scene);
+    pool.attach_audio(&audio);
+
+    EXPECT_EQ(pool.total_pending(), 3U)
+        << "total_pending must sum scene + audio pending counts";
+}
+
+// ---- T26: total_pending() with no attached streamers is zero -----------------
+
+TEST(StreamerPool, TotalPendingZeroWithNoStreamers)
+{
+    StreamerPool pool;
+    EXPECT_EQ(pool.total_pending(), 0U);
+}
+
+// ---- T27: pause() suppresses dispatch; resume() restores it -----------------
+
+TEST(StreamerPool, PauseSuppressesTickResumeRestores)
+{
+    PathGuard g0 { tmp_path(".wav") };
+    PathGuard g1 { tmp_path(".wav") };
+    write_wav(g0.path);
+    write_wav(g1.path);
+
+    cd::asset::audio_streamer::AudioStreamer audio;
+    audio.enqueue({ g0.path.string(), 0U, 100U });
+    audio.enqueue({ g1.path.string(), 0U, 100U });
+
+    StreamerPool pool;
+    pool.configure(PoolConfig{ .max_concurrent_loads = 4U, .audio_priority = 4U });
+    pool.attach_audio(&audio);
+
+    EXPECT_FALSE(pool.is_paused());
+
+    pool.pause();
+    EXPECT_TRUE(pool.is_paused());
+
+    // Ticks while paused must not dispatch any tokens.
+    pool.tick(0.016F);
+    pool.tick(0.016F);
+
+    EXPECT_EQ(pool.stats().audio_pending, 2U)
+        << "paused pool must not dispatch — pending must remain 2";
+    EXPECT_EQ(pool.stats().audio_completed, 0U);
+
+    // Resume and drain.
+    pool.resume();
+    EXPECT_FALSE(pool.is_paused());
+
+    drain(pool, 32U);
+
+    EXPECT_EQ(pool.stats().audio_pending,   0U);
+    EXPECT_EQ(pool.stats().audio_completed, 2U);
+}
+
+// ---- T28: pause() is idempotent; resume() is idempotent --------------------
+
+TEST(StreamerPool, PauseResumeIdempotent)
+{
+    StreamerPool pool;
+
+    EXPECT_FALSE(pool.is_paused());
+
+    pool.pause();
+    pool.pause();  // double-pause
+    EXPECT_TRUE(pool.is_paused());
+
+    pool.resume();
+    pool.resume();  // double-resume
+    EXPECT_FALSE(pool.is_paused());
+}
+
+// ---- T29: enqueue_audio facade forwards to attached audio streamer ----------
+
+TEST(StreamerPool, EnqueueAudioFacadeForwardsToStreamer)
+{
+    PathGuard g0 { tmp_path(".wav") };
+    PathGuard g1 { tmp_path(".wav") };
+    write_wav(g0.path);
+    write_wav(g1.path);
+
+    cd::asset::audio_streamer::AudioStreamer audio;
+
+    StreamerPool pool;
+    pool.attach_audio(&audio);
+
+    pool.enqueue_audio({ g0.path.string(), 0U, 100U });
+    pool.enqueue_audio({ g1.path.string(), 0U, 100U });
+
+    EXPECT_EQ(pool.stats().audio_pending, 2U)
+        << "enqueue_audio facade must forward requests to the attached streamer";
+
+    drain(pool, 32U);
+
+    EXPECT_EQ(pool.stats().audio_pending,   0U);
+    EXPECT_EQ(pool.stats().audio_completed, 2U);
+}
+
+// ---- T30: enqueue_scene facade forwards to attached scene streamer -----------
+
+TEST(StreamerPool, EnqueueSceneFacadeForwardsToStreamer)
+{
+    cd::asset::scene_streamer::SceneStreamer scene;
+
+    StreamerPool pool;
+    pool.attach_scene(&scene);
+
+    pool.enqueue_scene({ "scene/facade0.glb", 100U });
+    pool.enqueue_scene({ "scene/facade1.glb", 100U });
+
+    EXPECT_EQ(pool.stats().scene_pending, 2U)
+        << "enqueue_scene facade must forward requests to the attached streamer";
+}
+
+// ---- T31: enqueue_texture facade forwards to attached texture streamer -------
+
+TEST(StreamerPool, EnqueueTextureFacadeForwardsToStreamer)
+{
+    PathGuard g0 { tmp_path(".cdtex") };
+    write_cdtex(g0.path);
+
+    cd::rhi::NullDevice                          device;
+    cd::asset::texture_streamer::TextureStreamer texture;
+
+    StreamerPool pool;
+    pool.attach_texture(&texture, &device);
+
+    pool.enqueue_texture({ g0.path.string(), 0U, 100U });
+
+    EXPECT_EQ(pool.stats().texture_pending, 1U)
+        << "enqueue_texture facade must forward the request to the attached streamer";
+
+    drain(pool, 32U);
+
+    EXPECT_EQ(pool.stats().texture_pending,   0U);
+    EXPECT_EQ(pool.stats().texture_completed, 1U);
+}
+
+// ---- T32: enqueue_* no-op when no streamer is attached ----------------------
+
+TEST(StreamerPool, EnqueueFacadesNoopWhenNotAttached)
+{
+    StreamerPool pool;
+    // No streamer attached — must not crash.
+    pool.enqueue_scene(   { "scene/x.glb",  100U });
+    pool.enqueue_texture( { "tex/x.cdtex",  0U, 100U });
+    pool.enqueue_audio(   { "audio/x.wav",  0U, 100U });
+
+    EXPECT_EQ(pool.total_pending(), 0U)
+        << "enqueue facades on an unattached pool must be no-ops";
+}
+
+// ---- T33: cancel_all() cancels pool-enqueued paths on all streamers ---------
+
+TEST(StreamerPool, CancelAllCancelsPoolEnqueuedPaths)
+{
+    cd::asset::scene_streamer::SceneStreamer scene;
+    cd::asset::audio_streamer::AudioStreamer audio;
+
+    StreamerPool pool;
+    pool.configure(PoolConfig{ .max_concurrent_loads = 4U });
+    pool.attach_scene(&scene);
+    pool.attach_audio(&audio);
+
+    // Enqueue via pool facades so the pool tracks the paths.
+    pool.enqueue_scene({ "scene/ca0.glb", 100U });
+    pool.enqueue_scene({ "scene/ca1.glb", 100U });
+    pool.enqueue_audio({ "audio/ca0.wav", 0U, 100U });
+    pool.enqueue_audio({ "audio/ca1.wav", 0U, 100U });
+
+    EXPECT_EQ(pool.total_pending(), 4U);
+
+    // Cancel all before any tick.
+    pool.cancel_all();
+
+    EXPECT_EQ(pool.total_pending(), 0U)
+        << "cancel_all must remove all pool-enqueued pending items";
+
+    // Tick should be a no-op since nothing is pending.
+    pool.tick(0.016F);
+    EXPECT_EQ(pool.stats().scene_completed, 0U);
+    EXPECT_EQ(pool.stats().audio_completed, 0U);
+}
+
+// ---- T34: cancel_all() is idempotent ----------------------------------------
+
+TEST(StreamerPool, CancelAllIdempotent)
+{
+    cd::asset::audio_streamer::AudioStreamer audio;
+
+    StreamerPool pool;
+    pool.attach_audio(&audio);
+
+    pool.enqueue_audio({ "audio/idem0.wav", 0U, 100U });
+    pool.cancel_all();
+
+    EXPECT_EQ(pool.total_pending(), 0U);
+
+    // Second cancel_all on empty tracked lists must not crash.
+    pool.cancel_all();
+    pool.cancel_all();
+
+    EXPECT_EQ(pool.total_pending(), 0U);
+}
+
+// ---- T35: cancel_all clears tracked paths; post-cancel enqueue works --------
+
+TEST(StreamerPool, CancelAllThenReenqueue)
+{
+    PathGuard g0 { tmp_path(".wav") };
+    write_wav(g0.path);
+
+    cd::asset::audio_streamer::AudioStreamer audio;
+
+    StreamerPool pool;
+    pool.configure(PoolConfig{ .max_concurrent_loads = 4U, .audio_priority = 4U });
+    pool.attach_audio(&audio);
+
+    pool.enqueue_audio({ "audio/gone.wav", 0U, 100U });
+    pool.cancel_all();
+
+    EXPECT_EQ(pool.total_pending(), 0U);
+
+    // Re-enqueue a real file after cancel; must drain normally.
+    pool.enqueue_audio({ g0.path.string(), 0U, 100U });
+
+    EXPECT_EQ(pool.total_pending(), 1U);
+
+    drain(pool, 32U);
+
+    EXPECT_EQ(pool.stats().audio_pending,   0U);
+    EXPECT_EQ(pool.stats().audio_completed, 1U);
+}
+
+// ---- T36: set_completion_callback — fired once per completed item -----------
+//
+// Audio streamer processes one item per tick() in sync mode.
+// We enqueue 3 real .wav items and count callback invocations.
+
+TEST(StreamerPool, CompletionCallbackFiredPerItem)
+{
+    PathGuard g0 { tmp_path(".wav") };
+    PathGuard g1 { tmp_path(".wav") };
+    PathGuard g2 { tmp_path(".wav") };
+    write_wav(g0.path);
+    write_wav(g1.path);
+    write_wav(g2.path);
+
+    cd::asset::audio_streamer::AudioStreamer audio;
+    audio.enqueue({ g0.path.string(), 0U, 100U });
+    audio.enqueue({ g1.path.string(), 0U, 100U });
+    audio.enqueue({ g2.path.string(), 0U, 100U });
+
+    StreamerPool pool;
+    pool.configure(PoolConfig{
+        .max_concurrent_loads = 4U,
+        .audio_priority       = 4U,
+    });
+    pool.attach_audio(&audio);
+
+    std::uint32_t               fire_count = 0U;
+    std::vector<StreamerDomain> domains;
+    std::vector<std::uint32_t>  completed_snapshots;
+
+    pool.set_completion_callback(
+        [&](StreamerDomain domain, const std::string& /*path*/, std::uint32_t completed)
+        {
+            ++fire_count;
+            domains.push_back(domain);
+            completed_snapshots.push_back(completed);
+        });
+
+    drain(pool, 64U);
+
+    EXPECT_EQ(fire_count, 3U)
+        << "callback must fire exactly once per completed item";
+
+    // All completions must be reported as Audio domain.
+    for (const auto d : domains)
+    {
+        EXPECT_EQ(d, StreamerDomain::Audio);
+    }
+
+    // completed snapshots must be strictly increasing (1, 2, 3).
+    for (std::size_t i = 0U; i < completed_snapshots.size(); ++i)
+    {
+        EXPECT_EQ(completed_snapshots[i], static_cast<std::uint32_t>(i + 1U));
+    }
+}
+
+// ---- T37: completion callback silent for failed scene load (negative) -------
+//
+// Scene streamer with non-existent path: tick() dequeues the item but the
+// parse fails, so completed_count() does NOT increment and the callback must
+// NOT fire.
+
+TEST(StreamerPool, CompletionCallbackSilentForFailedSceneLoad)
+{
+    cd::asset::scene_streamer::SceneStreamer scene;
+    scene.enqueue({ "scene/does_not_exist.glb", 100U });
+
+    StreamerPool pool;
+    pool.configure(PoolConfig{
+        .max_concurrent_loads = 4U,
+        .scene_priority       = 10U,
+    });
+    pool.attach_scene(&scene);
+
+    std::uint32_t fire_count = 0U;
+    pool.set_completion_callback(
+        [&](StreamerDomain /*d*/, const std::string& /*p*/, std::uint32_t /*c*/)
+        {
+            ++fire_count;
+        });
+
+    // Tick until the item is dequeued (pending → 0).
+    drain(pool, 32U);
+
+    EXPECT_EQ(fire_count, 0U)
+        << "callback must NOT fire for a failed load (non-existent path)";
+    EXPECT_EQ(pool.stats().scene_completed, 0U);
+}
+
+// ---- T38: paused pool does not fire completion callbacks --------------------
+
+TEST(StreamerPool, PausedPoolDoesNotFireCallbacks)
+{
+    PathGuard g0 { tmp_path(".wav") };
+    write_wav(g0.path);
+
+    cd::asset::audio_streamer::AudioStreamer audio;
+    audio.enqueue({ g0.path.string(), 0U, 100U });
+
+    StreamerPool pool;
+    pool.configure(PoolConfig{ .max_concurrent_loads = 4U, .audio_priority = 4U });
+    pool.attach_audio(&audio);
+
+    std::uint32_t fire_count = 0U;
+    pool.set_completion_callback(
+        [&](StreamerDomain /*d*/, const std::string& /*p*/, std::uint32_t /*c*/)
+        {
+            ++fire_count;
+        });
+
+    pool.pause();
+    pool.tick(0.016F);
+    pool.tick(0.016F);
+
+    EXPECT_EQ(fire_count, 0U) << "paused tick must not dispatch and must not fire callbacks";
+    EXPECT_EQ(pool.stats().audio_pending, 1U);
+
+    pool.resume();
+    drain(pool, 32U);
+
+    EXPECT_EQ(fire_count, 1U) << "callback fires after resume, not during pause";
+}
+
+// ---- T39: clear callback (empty function) stops future notifications --------
+
+TEST(StreamerPool, ClearCallbackStopsNotifications)
+{
+    PathGuard g0 { tmp_path(".wav") };
+    PathGuard g1 { tmp_path(".wav") };
+    write_wav(g0.path);
+    write_wav(g1.path);
+
+    cd::asset::audio_streamer::AudioStreamer audio;
+    audio.enqueue({ g0.path.string(), 0U, 100U });
+    audio.enqueue({ g1.path.string(), 0U, 100U });
+
+    StreamerPool pool;
+    pool.configure(PoolConfig{ .max_concurrent_loads = 1U, .audio_priority = 4U });
+    pool.attach_audio(&audio);
+
+    std::uint32_t fire_count = 0U;
+    pool.set_completion_callback(
+        [&](StreamerDomain /*d*/, const std::string& /*p*/, std::uint32_t /*c*/)
+        {
+            ++fire_count;
+        });
+
+    // One tick — completes the first item, callback fires once.
+    pool.tick(0.016F);
+    EXPECT_EQ(fire_count, 1U);
+
+    // Clear the callback.
+    pool.set_completion_callback({});
+
+    // Drain the second item — callback must NOT fire again.
+    drain(pool, 32U);
+
+    EXPECT_EQ(fire_count, 1U) << "cleared callback must not fire for subsequent completions";
+    EXPECT_EQ(pool.stats().audio_completed, 2U);
+}
+
+// ---- T40: is_idle() reflects multi-streamer aggregate correctly -------------
+
+TEST(StreamerPool, IsIdleReflectsMultiStreamerState)
+{
+    PathGuard g0 { tmp_path(".wav") };
+    write_wav(g0.path);
+
+    cd::asset::scene_streamer::SceneStreamer scene;
+    cd::asset::audio_streamer::AudioStreamer audio;
+
+    scene.enqueue({ "scene/multi.glb", 100U });
+
+    StreamerPool pool;
+    pool.configure(PoolConfig{
+        .max_concurrent_loads = 4U,
+        .scene_priority       = 8U,
+        .audio_priority       = 4U,
+    });
+    pool.attach_scene(&scene);
+    pool.attach_audio(&audio);
+
+    // Scene has 1 pending; audio has 0 pending — not idle.
+    EXPECT_FALSE(pool.is_idle());
+
+    // Drain scene (bad path: dequeued but not completed).
+    drain(pool, 32U);
+
+    EXPECT_TRUE(pool.is_idle())
+        << "both streamers at zero pending must report idle";
+
+    // Enqueue audio item.
+    audio.enqueue({ g0.path.string(), 0U, 100U });
+    EXPECT_FALSE(pool.is_idle());
+
+    drain(pool, 32U);
+    EXPECT_TRUE(pool.is_idle());
 }
 
 }  // namespace

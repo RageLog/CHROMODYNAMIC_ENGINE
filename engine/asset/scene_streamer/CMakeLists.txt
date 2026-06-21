@@ -10,6 +10,7 @@ cd_add_library(asset_scene_streamer
   SOURCES
     src/SceneStreamer.cpp
     src/AsyncScenePool.cpp
+    src/SpatialStreamingPolicy.cpp
   PUBLIC_DEPS
     cd::core
     cd::asset

@@ -28,8 +28,15 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <memory_resource>
 #include <string>
 #include <vector>
 
@@ -595,7 +602,772 @@ TEST(FoundationUtilsMem, TrackingAllocatorNullDeallocNoOp)
 }
 
 // ---------------------------------------------------------------------------
-// SUITE 10 — ODR / multiple-inclusion safety
+// SUITE 10 — cd::mem extended: PageAllocator, PoolAllocator, PmrAdapter
+// ---------------------------------------------------------------------------
+
+// --- PageAllocator ----------------------------------------------------------
+
+TEST(FoundationUtilsMemPage, PageSizePositiveAndPowerOfTwo)
+{
+    const std::size_t ps = cd::mem::PageAllocator::page_size();
+    EXPECT_GE(ps, 4096u);
+    EXPECT_EQ(ps & (ps - 1u), 0u);  // power of two
+}
+
+TEST(FoundationUtilsMemPage, PageSizeStable)
+{
+    const std::size_t ps1 = cd::mem::PageAllocator::page_size();
+    const std::size_t ps2 = cd::mem::PageAllocator::page_size();
+    EXPECT_EQ(ps1, ps2);
+}
+
+TEST(FoundationUtilsMemPage, BasicAllocateDeallocate)
+{
+    cd::mem::PageAllocator alloc;
+    void* p = alloc.allocate(8192u);
+    ASSERT_NE(p, nullptr);
+    auto* bytes = static_cast<std::byte*>(p);
+    bytes[0]    = std::byte { 0xAB };
+    bytes[8191] = std::byte { 0xCD };
+    EXPECT_EQ(bytes[0],    std::byte { 0xAB });
+    EXPECT_EQ(bytes[8191], std::byte { 0xCD });
+    alloc.deallocate(p);
+    EXPECT_EQ(alloc.live_mapping_count(), 0u);
+}
+
+TEST(FoundationUtilsMemPage, ZeroSizeReturnsNull)
+{
+    cd::mem::PageAllocator alloc;
+    EXPECT_EQ(alloc.allocate(0u), nullptr);
+    EXPECT_EQ(alloc.live_mapping_count(), 0u);
+}
+
+TEST(FoundationUtilsMemPage, MappingLengthRoundsUpToWholePages)
+{
+    cd::mem::PageAllocator alloc;
+    const std::size_t ps = cd::mem::PageAllocator::page_size();
+    void* p = alloc.allocate(ps + 1u);
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(alloc.mapping_length(p), 2u * ps);
+    EXPECT_EQ(alloc.live_mapping_count(), 1u);
+    alloc.deallocate(p);
+    EXPECT_EQ(alloc.mapping_length(p), 0u);
+    EXPECT_EQ(alloc.live_mapping_count(), 0u);
+}
+
+TEST(FoundationUtilsMemPage, MappingLengthNullIsZero)
+{
+    cd::mem::PageAllocator alloc;
+    EXPECT_EQ(alloc.mapping_length(nullptr), 0u);
+}
+
+TEST(FoundationUtilsMemPage, AlignmentWithinPageAccepted)
+{
+    cd::mem::PageAllocator alloc;
+    const std::size_t ps = cd::mem::PageAllocator::page_size();
+    void* p = alloc.allocate(64u, ps);
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(p) % ps, 0u);
+    alloc.deallocate(p);
+}
+
+TEST(FoundationUtilsMemPage, OverPageAlignmentRejected)
+{
+    cd::mem::PageAllocator alloc;
+    const std::size_t ps = cd::mem::PageAllocator::page_size();
+    EXPECT_EQ(alloc.allocate(64u, ps * 2u), nullptr);
+    EXPECT_EQ(alloc.live_mapping_count(), 0u);
+}
+
+TEST(FoundationUtilsMemPage, DoubleFreeIsNoOp)
+{
+    cd::mem::PageAllocator alloc;
+    void* p = alloc.allocate(4096u);
+    ASSERT_NE(p, nullptr);
+    alloc.deallocate(p);
+    EXPECT_EQ(alloc.live_mapping_count(), 0u);
+    alloc.deallocate(p);  // second free: unknown ptr, must not crash
+    EXPECT_EQ(alloc.live_mapping_count(), 0u);
+}
+
+TEST(FoundationUtilsMemPage, ForeignPointerRejected)
+{
+    cd::mem::PageAllocator alloc;
+    int local = 0;
+    EXPECT_EQ(alloc.mapping_length(&local), 0u);
+    alloc.deallocate(&local);  // not our allocation
+    EXPECT_EQ(alloc.live_mapping_count(), 0u);
+}
+
+TEST(FoundationUtilsMemPage, SubPageRoundsUpToOnePage)
+{
+    cd::mem::PageAllocator alloc;
+    const std::size_t ps = cd::mem::PageAllocator::page_size();
+    void* p = alloc.allocate(1u);
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(alloc.mapping_length(p), ps);
+    alloc.deallocate(p);
+}
+
+TEST(FoundationUtilsMemPage, ManyPagesLiveMappingCountBalances)
+{
+    cd::mem::PageAllocator alloc;
+    constexpr std::size_t kCount = 16u;
+    std::vector<void*> pages;
+    pages.reserve(kCount);
+    for (std::size_t i = 0u; i < kCount; ++i)
+    {
+        void* p = alloc.allocate(4096u);
+        ASSERT_NE(p, nullptr) << "page " << i;
+        pages.push_back(p);
+    }
+    EXPECT_EQ(alloc.live_mapping_count(), kCount);
+    for (void* p : pages)
+    {
+        alloc.deallocate(p);
+    }
+    EXPECT_EQ(alloc.live_mapping_count(), 0u);
+}
+
+// --- PoolAllocator ----------------------------------------------------------
+
+TEST(FoundationUtilsMemPool, FixedBlockRoundTrip)
+{
+    cd::mem::PoolAllocator pool { 64u, 8u };
+    EXPECT_EQ(pool.block_count(), 8u);
+    EXPECT_GE(pool.block_size(), 64u);
+    EXPECT_EQ(pool.blocks_in_use(), 0u);
+
+    void* p = pool.allocate(64u);
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(pool.blocks_in_use(), 1u);
+    EXPECT_EQ(pool.blocks_free(), 7u);
+    pool.deallocate(p);
+    EXPECT_EQ(pool.blocks_in_use(), 0u);
+}
+
+TEST(FoundationUtilsMemPool, ExhaustReturnsNullThenRefills)
+{
+    cd::mem::PoolAllocator pool { 32u, 4u };
+    std::array<void*, 4> blks {};
+    for (std::size_t i = 0u; i < blks.size(); ++i)
+    {
+        blks.at(i) = pool.allocate(32u);
+        ASSERT_NE(blks.at(i), nullptr) << "block " << i;
+    }
+    EXPECT_EQ(pool.allocate(32u), nullptr);  // exhausted
+    for (void* p : blks)
+    {
+        pool.deallocate(p);
+    }
+    EXPECT_EQ(pool.blocks_in_use(), 0u);
+    EXPECT_NE(pool.allocate(32u), nullptr);
+}
+
+TEST(FoundationUtilsMemPool, FreeListIsLifo)
+{
+    cd::mem::PoolAllocator pool { 64u, 4u };
+    void* a = pool.allocate(64u);
+    void* b = pool.allocate(64u);
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    pool.deallocate(a);
+    pool.deallocate(b);
+    void* x = pool.allocate(64u);
+    void* y = pool.allocate(64u);
+    EXPECT_EQ(x, b);  // LIFO: last freed comes back first
+    EXPECT_EQ(y, a);
+    pool.deallocate(x);
+    pool.deallocate(y);
+}
+
+TEST(FoundationUtilsMemPool, OversizeRequestReturnsNull)
+{
+    cd::mem::PoolAllocator pool { 64u, 4u };
+    EXPECT_EQ(pool.allocate(128u), nullptr);
+}
+
+TEST(FoundationUtilsMemPool, OveralignedRequestReturnsNull)
+{
+    cd::mem::PoolAllocator pool { 64u, 4u, 16u };
+    EXPECT_EQ(pool.allocate(64u, 64u), nullptr);  // alignment > block_align
+}
+
+TEST(FoundationUtilsMemPool, ZeroCountIsInert)
+{
+    cd::mem::PoolAllocator pool { 64u, 0u };
+    EXPECT_EQ(pool.block_count(), 0u);
+    EXPECT_EQ(pool.capacity(), 0u);
+    EXPECT_EQ(pool.allocate(64u), nullptr);
+    EXPECT_EQ(pool.blocks_in_use(), 0u);
+}
+
+TEST(FoundationUtilsMemPool, NonPow2AlignmentIsInert)
+{
+    cd::mem::PoolAllocator pool { 64u, 4u, 48u };  // 48 not power-of-2
+    EXPECT_EQ(pool.allocate(64u), nullptr);
+}
+
+TEST(FoundationUtilsMemPool, DeallocateNullIsNoOp)
+{
+    cd::mem::PoolAllocator pool { 64u, 4u };
+    void* a = pool.allocate(64u);
+    ASSERT_NE(a, nullptr);
+    pool.deallocate(nullptr);
+    EXPECT_EQ(pool.blocks_in_use(), 1u);
+    pool.deallocate(a);
+    EXPECT_EQ(pool.blocks_in_use(), 0u);
+}
+
+TEST(FoundationUtilsMemPool, BytesAccounting)
+{
+    cd::mem::PoolAllocator pool { 64u, 4u };
+    const std::size_t bs = pool.block_size();
+    EXPECT_EQ(pool.capacity(), bs * 4u);
+    EXPECT_EQ(pool.bytes_in_use(), 0u);
+    void* a = pool.allocate(64u);
+    ASSERT_NE(a, nullptr);
+    EXPECT_EQ(pool.bytes_in_use(), bs);
+    pool.deallocate(a);
+    EXPECT_EQ(pool.bytes_in_use(), 0u);
+}
+
+TEST(FoundationUtilsMemPool, BlocksAreAligned)
+{
+    constexpr std::size_t kAlign = 64u;
+    cd::mem::PoolAllocator pool { 48u, 8u, kAlign };
+    EXPECT_EQ(pool.block_size() % kAlign, 0u);
+    for (int i = 0; i < 8; ++i)
+    {
+        void* p = pool.allocate(48u, kAlign);
+        ASSERT_NE(p, nullptr) << "block " << i;
+        EXPECT_EQ(reinterpret_cast<std::uintptr_t>(p) % kAlign, 0u) << "block " << i;
+    }
+}
+
+TEST(FoundationUtilsMemPool, TinyBlockSizeBumpedToFitFreeNode)
+{
+    cd::mem::PoolAllocator pool { 1u, 4u };  // 1-byte blocks
+    EXPECT_GE(pool.block_size(), sizeof(void*));
+    void* p = pool.allocate(1u);
+    ASSERT_NE(p, nullptr);
+    pool.deallocate(p);
+    EXPECT_EQ(pool.blocks_in_use(), 0u);
+}
+
+// --- TypedPoolAllocator -----------------------------------------------------
+
+TEST(FoundationUtilsMemTypedPool, CreateDestroyRoundTrip)
+{
+    cd::mem::TypedPoolAllocator<std::int32_t> pool { 4u };
+    auto* a = pool.create(10);
+    auto* b = pool.create(20);
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    EXPECT_EQ(*a, 10);
+    EXPECT_EQ(*b, 20);
+    EXPECT_EQ(pool.in_use(), 2u);
+    pool.destroy(a);
+    pool.destroy(b);
+    EXPECT_EQ(pool.in_use(), 0u);
+}
+
+TEST(FoundationUtilsMemTypedPool, ExhaustReturnsNullThenRefills)
+{
+    cd::mem::TypedPoolAllocator<int> pool { 2u };
+    auto* a = pool.create(1);
+    auto* b = pool.create(2);
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    EXPECT_EQ(pool.create(3), nullptr);  // exhausted
+    EXPECT_EQ(pool.in_use(), 2u);
+    pool.destroy(a);
+    auto* c = pool.create(4);
+    ASSERT_NE(c, nullptr);
+    EXPECT_EQ(*c, 4);
+    pool.destroy(b);
+    pool.destroy(c);
+    EXPECT_EQ(pool.in_use(), 0u);
+}
+
+TEST(FoundationUtilsMemTypedPool, DestroyRunsDtor)
+{
+    struct Counter
+    {
+        int* count;
+        explicit Counter(int* c) noexcept : count { c } {}
+        ~Counter() { ++(*count); }
+    };
+    int dtor_calls = 0;
+    cd::mem::TypedPoolAllocator<Counter> pool { 4u };
+    auto* obj = pool.create(&dtor_calls);
+    ASSERT_NE(obj, nullptr);
+    pool.destroy(obj);
+    EXPECT_EQ(dtor_calls, 1);
+    pool.destroy(nullptr);  // null no-op
+    EXPECT_EQ(dtor_calls, 1);
+}
+
+TEST(FoundationUtilsMemTypedPool, CapacityObjectsMatchesCount)
+{
+    cd::mem::TypedPoolAllocator<double> pool { 7u };
+    EXPECT_EQ(pool.capacity_objects(), 7u);
+}
+
+// --- PmrAdapter -------------------------------------------------------------
+
+TEST(FoundationUtilsMemPmr, FeedsStdPmrVector)
+{
+    cd::mem::LinearAllocator arena { static_cast<std::size_t>(16) * 1024u };
+    cd::mem::PmrAdapter pmr { arena };
+    std::pmr::vector<int> v { &pmr };
+    for (int i = 0; i < 50; ++i)
+    {
+        v.push_back(i);
+    }
+    EXPECT_EQ(v.size(), 50u);
+    EXPECT_EQ(v[42], 42);
+    EXPECT_GT(arena.bytes_in_use(), 0u);
+}
+
+TEST(FoundationUtilsMemPmr, ThrowsBadAllocOnExhaustion)
+{
+    cd::mem::LinearAllocator tiny { 32u };
+    cd::mem::PmrAdapter pmr { tiny };
+    EXPECT_THROW(static_cast<void>(pmr.allocate(64u, 8u)), std::bad_alloc);
+}
+
+TEST(FoundationUtilsMemPmr, IsEqualSameInner)
+{
+    cd::mem::LinearAllocator arena { 512u };
+    cd::mem::PmrAdapter pa1 { arena };
+    cd::mem::PmrAdapter pa2 { arena };
+    EXPECT_TRUE(pa1.is_equal(pa2));
+}
+
+TEST(FoundationUtilsMemPmr, IsEqualDifferentInner)
+{
+    cd::mem::LinearAllocator arena_a { 512u };
+    cd::mem::LinearAllocator arena_b { 512u };
+    cd::mem::PmrAdapter pa { arena_a };
+    cd::mem::PmrAdapter pb { arena_b };
+    EXPECT_FALSE(pa.is_equal(pb));
+}
+
+TEST(FoundationUtilsMemPmr, IsEqualForeignResourceFalse)
+{
+    cd::mem::LinearAllocator arena { 512u };
+    cd::mem::PmrAdapter pmr { arena };
+    std::pmr::monotonic_buffer_resource other;
+    EXPECT_FALSE(pmr.is_equal(other));
+}
+
+TEST(FoundationUtilsMemPmr, DeallocateForwardsToInner)
+{
+    cd::mem::PoolAllocator pool { 256u, 8u };
+    cd::mem::PmrAdapter pmr { pool };
+    {
+        std::pmr::vector<std::byte> v { &pmr };
+        v.resize(200u);
+        EXPECT_GT(pool.blocks_in_use(), 0u);
+    }  // destructor returns memory to pool
+    EXPECT_EQ(pool.blocks_in_use(), 0u);
+}
+
+// ---------------------------------------------------------------------------
+// SUITE 11 — cd::plugin extended: Loader error paths + HotReloader + FileWatcher
+// ---------------------------------------------------------------------------
+
+// Minimal concrete IPlugin for injection tests.
+class UmbrellaFakePlugin final : public cd::plugin::IPlugin
+{
+public:
+    explicit UmbrellaFakePlugin(std::uint32_t id) noexcept : id_ { id } {}
+    [[nodiscard]] cd::plugin::PluginInfo info() const noexcept override
+    {
+        return { "umbrella_fake", "1.0", "", cd::plugin::kAbiVersion };
+    }
+    [[nodiscard]] bool initialize() noexcept override { return true; }
+    void shutdown() noexcept override {}
+    [[nodiscard]] std::uint32_t id() const noexcept { return id_; }
+
+private:
+    std::uint32_t id_;
+};
+
+cd::plugin::LoadedPlugin make_umbrella_loaded(std::uint32_t id, std::string path)
+{
+    cd::plugin::LoadedPlugin lp;
+    lp.instance      = std::make_unique<UmbrellaFakePlugin>(id);
+    lp.native_handle = nullptr;
+    lp.path          = std::move(path);
+    return lp;
+}
+
+// --- Loader error paths -----------------------------------------------------
+
+TEST(FoundationUtilsPlugin, LoaderRejectsNonexistentPath)
+{
+    cd::plugin::Loader loader;
+    auto r = loader.load("no_such_plugin_zyxq.dll");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::plugin::loader_errors::Code::kLoadFailed));
+}
+
+TEST(FoundationUtilsPlugin, LoadedPathsNotUpdatedOnFailure)
+{
+    cd::plugin::Loader loader;
+    EXPECT_TRUE(loader.loaded_paths().empty());
+    static_cast<void>(loader.load("ghost.so"));
+    EXPECT_TRUE(loader.loaded_paths().empty());
+}
+
+// --- HotReloader: mount / poll / unmount ------------------------------------
+
+TEST(FoundationUtilsPlugin, HotReloaderMountPollNoChange)
+{
+    std::uint64_t ver = 7u;
+    std::uint32_t id  = 0u;
+    cd::plugin::HotReloader hr {
+        [&](std::string_view p) -> cd::core::Result<cd::plugin::LoadedPlugin> {
+            return make_umbrella_loaded(++id, std::string { p });
+        },
+        [&](std::string_view) { return ver; }
+    };
+    ASSERT_TRUE(hr.mount("p.dll").has_value());
+    EXPECT_TRUE(hr.is_mounted());
+    EXPECT_EQ(hr.current_version(), 7u);
+    auto r = hr.poll();
+    ASSERT_TRUE(r.has_value());
+    EXPECT_FALSE(*r);
+    EXPECT_EQ(hr.reload_count(), 0u);
+}
+
+TEST(FoundationUtilsPlugin, HotReloaderVersionChangeTriggersReload)
+{
+    std::uint64_t ver = 1u;
+    std::uint32_t id  = 0u;
+    cd::plugin::HotReloader hr {
+        [&](std::string_view p) -> cd::core::Result<cd::plugin::LoadedPlugin> {
+            return make_umbrella_loaded(++id, std::string { p });
+        },
+        [&](std::string_view) { return ver; }
+    };
+    ASSERT_TRUE(hr.mount("p.dll").has_value());
+    const auto first_id = dynamic_cast<UmbrellaFakePlugin*>(hr.current())->id();
+    ver = 2u;
+    auto r = hr.poll();
+    ASSERT_TRUE(r.has_value());
+    EXPECT_TRUE(*r);
+    EXPECT_EQ(hr.reload_count(), 1u);
+    const auto* second = dynamic_cast<UmbrellaFakePlugin*>(hr.current());
+    ASSERT_NE(second, nullptr);
+    EXPECT_NE(second->id(), first_id);
+    EXPECT_EQ(hr.current_version(), 2u);
+}
+
+TEST(FoundationUtilsPlugin, HotReloaderBeforeUnloadAfterLoadFire)
+{
+    std::uint64_t ver = 100u;
+    std::uint32_t id  = 0u;
+    cd::plugin::HotReloader hr {
+        [&](std::string_view p) -> cd::core::Result<cd::plugin::LoadedPlugin> {
+            return make_umbrella_loaded(++id, std::string { p });
+        },
+        [&](std::string_view) { return ver; }
+    };
+    int unloads = 0;
+    int loads   = 0;
+    hr.set_before_unload([&](cd::plugin::IPlugin&) { ++unloads; });
+    hr.set_after_load([&](cd::plugin::IPlugin&)    { ++loads;   });
+    ASSERT_TRUE(hr.mount("p.dll").has_value());
+    EXPECT_EQ(loads, 1);   // mount fires after_load
+    EXPECT_EQ(unloads, 0);
+    ver = 200u;
+    ASSERT_TRUE(hr.poll().has_value());
+    EXPECT_EQ(unloads, 1);
+    EXPECT_EQ(loads, 2);
+}
+
+TEST(FoundationUtilsPlugin, HotReloaderFailedReloadKeepsPrevious)
+{
+    std::uint64_t ver = 1u;
+    bool fail_next    = false;
+    std::uint32_t id  = 0u;
+    int unloads       = 0;
+    cd::plugin::HotReloader hr {
+        [&](std::string_view p) -> cd::core::Result<cd::plugin::LoadedPlugin> {
+            if (fail_next)
+                return std::unexpected(
+                    cd::plugin::loader_errors::make(cd::plugin::loader_errors::Code::kFactoryFailed));
+            return make_umbrella_loaded(++id, std::string { p });
+        },
+        [&](std::string_view) { return ver; }
+    };
+    hr.set_before_unload([&](cd::plugin::IPlugin&) { ++unloads; });
+    ASSERT_TRUE(hr.mount("p.dll").has_value());
+    const auto first_id = dynamic_cast<UmbrellaFakePlugin*>(hr.current())->id();
+    ver       = 2u;
+    fail_next = true;
+    auto r = hr.poll();
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(unloads, 0);              // teardown never ran
+    EXPECT_EQ(hr.reload_count(), 0u);   // count not incremented
+    ASSERT_TRUE(hr.is_mounted());
+    EXPECT_EQ(dynamic_cast<UmbrellaFakePlugin*>(hr.current())->id(), first_id);
+}
+
+TEST(FoundationUtilsPlugin, HotReloaderPollBeforeMountErrors)
+{
+    cd::plugin::HotReloader hr {
+        [](std::string_view p) -> cd::core::Result<cd::plugin::LoadedPlugin> {
+            return make_umbrella_loaded(1u, std::string { p });
+        },
+        [](std::string_view) { return std::uint64_t { 1 }; }
+    };
+    auto r = hr.poll();
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::plugin::hot_reload_errors::Code::kNotMounted));
+}
+
+TEST(FoundationUtilsPlugin, HotReloaderMountTwiceErrors)
+{
+    cd::plugin::HotReloader hr {
+        [](std::string_view p) -> cd::core::Result<cd::plugin::LoadedPlugin> {
+            return make_umbrella_loaded(1u, std::string { p });
+        },
+        [](std::string_view) { return std::uint64_t { 1 }; }
+    };
+    ASSERT_TRUE(hr.mount("p.dll").has_value());
+    auto r = hr.mount("p.dll");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::plugin::hot_reload_errors::Code::kAlreadyMounted));
+}
+
+TEST(FoundationUtilsPlugin, HotReloaderUnmountFiresAndClearsState)
+{
+    std::uint64_t ver = 5u;
+    int unloads = 0;
+    cd::plugin::HotReloader hr {
+        [](std::string_view p) -> cd::core::Result<cd::plugin::LoadedPlugin> {
+            return make_umbrella_loaded(1u, std::string { p });
+        },
+        [&](std::string_view) { return ver; }
+    };
+    hr.set_before_unload([&](cd::plugin::IPlugin&) { ++unloads; });
+    ASSERT_TRUE(hr.mount("p.dll").has_value());
+    hr.unmount();
+    EXPECT_EQ(unloads, 1);
+    EXPECT_FALSE(hr.is_mounted());
+    EXPECT_EQ(hr.current_version(), 0u);
+    EXPECT_TRUE(hr.current_path().empty());
+}
+
+TEST(FoundationUtilsPlugin, HotReloaderUnmountWhenNotMountedIsNoOp)
+{
+    int unloads = 0;
+    cd::plugin::HotReloader hr {
+        [](std::string_view p) -> cd::core::Result<cd::plugin::LoadedPlugin> {
+            return make_umbrella_loaded(1u, std::string { p });
+        },
+        [](std::string_view) { return std::uint64_t { 1 }; }
+    };
+    hr.set_before_unload([&](cd::plugin::IPlugin&) { ++unloads; });
+    hr.unmount();
+    EXPECT_EQ(unloads, 0);
+    EXPECT_FALSE(hr.is_mounted());
+}
+
+TEST(FoundationUtilsPlugin, HotReloaderRemountAfterUnmountLoadsFresh)
+{
+    std::uint32_t id = 0u;
+    cd::plugin::HotReloader hr {
+        [&](std::string_view p) -> cd::core::Result<cd::plugin::LoadedPlugin> {
+            return make_umbrella_loaded(++id, std::string { p });
+        },
+        [](std::string_view) { return std::uint64_t { 1 }; }
+    };
+    ASSERT_TRUE(hr.mount("p.dll").has_value());
+    const auto first_id = dynamic_cast<UmbrellaFakePlugin*>(hr.current())->id();
+    hr.unmount();
+    ASSERT_TRUE(hr.mount("p.dll").has_value());
+    auto* second = dynamic_cast<UmbrellaFakePlugin*>(hr.current());
+    ASSERT_NE(second, nullptr);
+    EXPECT_NE(second->id(), first_id);
+}
+
+TEST(FoundationUtilsPlugin, DefaultPluginVersionMissingFileReturnsZero)
+{
+    EXPECT_EQ(cd::plugin::default_plugin_version("no_such_file_zyxq.dll"), 0u);
+}
+
+// --- FileWatcher (deterministic, interval=0) --------------------------------
+
+// RAII temp file — mtime bump forces next stat to differ.
+class UmbrellaTempFile
+{
+public:
+    UmbrellaTempFile()
+    {
+        path_ = std::filesystem::temp_directory_path()
+              / ("cd_fu_watch_"
+                 + std::to_string(reinterpret_cast<std::uintptr_t>(this))
+                 + ".bin");
+        write_file("v0");
+    }
+
+    ~UmbrellaTempFile()
+    {
+        std::error_code ec;
+        std::filesystem::remove(path_, ec);
+    }
+
+    UmbrellaTempFile(const UmbrellaTempFile&)            = delete;
+    UmbrellaTempFile& operator=(const UmbrellaTempFile&) = delete;
+
+    void write_file(std::string_view contents)
+    {
+        {
+            std::ofstream out { path_, std::ios::binary | std::ios::trunc };
+            out.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+        }
+        std::error_code ec;
+        std::filesystem::last_write_time(
+            path_,
+            std::filesystem::file_time_type::clock::now() + std::chrono::seconds { 1 },
+            ec);
+    }
+
+    [[nodiscard]] std::string path_str() const { return path_.string(); }
+
+private:
+    std::filesystem::path path_;
+};
+
+TEST(FoundationUtilsPlugin, FileWatcherNativeFactoryNonNull)
+{
+    auto w = cd::plugin::make_native_file_watcher();
+    ASSERT_NE(w, nullptr);
+    EXPECT_FALSE(w->is_watching());
+}
+
+TEST(FoundationUtilsPlugin, FileWatcherPollOnceFiresOnMtimeChange)
+{
+    UmbrellaTempFile f;
+    auto w = cd::plugin::make_polling_file_watcher(std::chrono::milliseconds { 0 });
+    std::atomic<int> fires { 0 };
+    ASSERT_TRUE(w->watch(f.path_str(), [&] { fires.fetch_add(1, std::memory_order_relaxed); }).has_value());
+    EXPECT_TRUE(w->is_watching());
+    EXPECT_EQ(w->change_count(), 0u);
+
+    w->poll_once();  // no change yet
+    EXPECT_EQ(fires.load(), 0);
+
+    f.write_file("v1");
+    w->poll_once();
+    EXPECT_EQ(fires.load(), 1);
+    EXPECT_EQ(w->change_count(), 1u);
+
+    w->poll_once();  // idempotent
+    EXPECT_EQ(fires.load(), 1);
+    w->stop();
+    EXPECT_FALSE(w->is_watching());
+}
+
+TEST(FoundationUtilsPlugin, FileWatcherMissingFileReturnsError)
+{
+    auto w = cd::plugin::make_polling_file_watcher(std::chrono::milliseconds { 0 });
+    auto r = w->watch("ghost_file_zyxq.txt", [] {});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::plugin::watcher_errors::Code::kFileNotFound));
+}
+
+TEST(FoundationUtilsPlugin, FileWatcherAlreadyWatchingReturnsError)
+{
+    UmbrellaTempFile f;
+    auto w = cd::plugin::make_polling_file_watcher(std::chrono::milliseconds { 0 });
+    ASSERT_TRUE(w->watch(f.path_str(), [] {}).has_value());
+    auto second = w->watch(f.path_str(), [] {});
+    ASSERT_FALSE(second.has_value());
+    EXPECT_EQ(second.error().code,
+              static_cast<std::uint32_t>(cd::plugin::watcher_errors::Code::kAlreadyWatching));
+    w->stop();
+}
+
+TEST(FoundationUtilsPlugin, FileWatcherStopIsIdempotent)
+{
+    UmbrellaTempFile f;
+    auto w = cd::plugin::make_polling_file_watcher(std::chrono::milliseconds { 0 });
+    ASSERT_TRUE(w->watch(f.path_str(), [] {}).has_value());
+    w->stop();
+    w->stop();  // safe no-op
+    EXPECT_FALSE(w->is_watching());
+}
+
+TEST(FoundationUtilsPlugin, FileWatcherRewatchAfterStopSucceeds)
+{
+    UmbrellaTempFile f;
+    auto w = cd::plugin::make_polling_file_watcher(std::chrono::milliseconds { 0 });
+    ASSERT_TRUE(w->watch(f.path_str(), [] {}).has_value());
+    w->stop();
+    ASSERT_TRUE(w->watch(f.path_str(), [] {}).has_value());
+    EXPECT_TRUE(w->is_watching());
+    EXPECT_EQ(w->change_count(), 0u);
+    w->stop();
+}
+
+TEST(FoundationUtilsPlugin, FileWatcherPollAfterStopIsNoOp)
+{
+    UmbrellaTempFile f;
+    auto w = cd::plugin::make_polling_file_watcher(std::chrono::milliseconds { 0 });
+    std::atomic<int> fires { 0 };
+    ASSERT_TRUE(w->watch(f.path_str(), [&] { fires.fetch_add(1, std::memory_order_relaxed); }).has_value());
+    w->stop();
+    f.write_file("after-stop");
+    w->poll_once();  // not watching -> no-op
+    EXPECT_EQ(fires.load(), 0);
+}
+
+TEST(FoundationUtilsPlugin, FileWatcherMultipleModificationsAccumulate)
+{
+    UmbrellaTempFile f;
+    auto w = cd::plugin::make_polling_file_watcher(std::chrono::milliseconds { 0 });
+    std::atomic<int> fires { 0 };
+    ASSERT_TRUE(w->watch(f.path_str(), [&] { fires.fetch_add(1, std::memory_order_relaxed); }).has_value());
+    f.write_file("a");
+    w->poll_once();
+    f.write_file("b");
+    w->poll_once();
+    f.write_file("c");
+    w->poll_once();
+    EXPECT_EQ(fires.load(), 3);
+    EXPECT_EQ(w->change_count(), 3u);
+    w->stop();
+}
+
+TEST(FoundationUtilsPlugin, FileWatcherManyPollsOnNoChangeFiredOnce)
+{
+    UmbrellaTempFile f;
+    auto w = cd::plugin::make_polling_file_watcher(std::chrono::milliseconds { 0 });
+    std::atomic<int> fires { 0 };
+    ASSERT_TRUE(w->watch(f.path_str(), [&] { fires.fetch_add(1, std::memory_order_relaxed); }).has_value());
+    for (int i = 0; i < 5; ++i)
+        w->poll_once();
+    EXPECT_EQ(fires.load(), 0);
+    f.write_file("changed");
+    for (int i = 0; i < 5; ++i)
+        w->poll_once();
+    EXPECT_EQ(fires.load(), 1);
+    EXPECT_EQ(w->change_count(), 1u);
+    w->stop();
+}
+
+// ---------------------------------------------------------------------------
+// SUITE 12 — ODR / multiple-inclusion safety
 // ---------------------------------------------------------------------------
 // Including the umbrella twice within the same TU must compile cleanly
 // (all headers must have #pragma once or equivalent include-guards).
@@ -609,7 +1381,7 @@ TEST(FoundationUtilsOdr, DoubleIncludeProducesNoConflict)
 }
 
 // ---------------------------------------------------------------------------
-// SUITE 11 — umbrella completeness sentinel
+// SUITE 13 — umbrella completeness sentinel (all 8 member libs, all sub-headers)
 // ---------------------------------------------------------------------------
 // This test deliberately exercises a symbol from each aggregated member
 // to lock the current set of re-exports at a specific set. If a future
@@ -632,15 +1404,42 @@ TEST(FoundationUtilsAggregation, UmbrellaCompleteness_AllEightMemberLibsPresent)
     { [[maybe_unused]] cd::events::ScopedConnection sc; }
     // 5. frame_timing
     { [[maybe_unused]] cd::frame_timing::FrameTimeRing<4> ring; }
-    // 6. plugin (kAbiVersion lives in IPlugin.hpp)
+    // 6. plugin (all four sub-headers: IPlugin + Loader + HotReload + FileWatcher)
     { EXPECT_GT(cd::plugin::kAbiVersion, 0u); }
+    {
+        cd::plugin::Loader ldr;
+        EXPECT_TRUE(ldr.loaded_paths().empty());
+    }
+    {
+        cd::plugin::HotReloader hr {
+            [](std::string_view p) -> cd::core::Result<cd::plugin::LoadedPlugin> {
+                cd::plugin::LoadedPlugin lp;
+                lp.instance      = std::make_unique<UmbrellaFakePlugin>(1u);
+                lp.native_handle = nullptr;
+                lp.path          = std::string { p };
+                return lp;
+            },
+            [](std::string_view) { return std::uint64_t { 1 }; }
+        };
+        [[maybe_unused]] const bool ok = hr.mount("x").has_value();
+    }
+    {
+        auto w = cd::plugin::make_native_file_watcher();
+        EXPECT_NE(w, nullptr);
+    }
     // 7. profile (five sub-headers — touch one from each)
     { [[maybe_unused]] cd::profile::BufferSink bs { 1 }; }
     { [[maybe_unused]] cd::profile::StatsAggregator sa; }
     { [[maybe_unused]] cd::profile::Sample smp; }
-    // 8. mem (six sub-headers)
-    { [[maybe_unused]] cd::mem::LinearAllocator la { 64 }; }
+    // 8. mem (all six sub-headers)
+    { [[maybe_unused]] cd::mem::LinearAllocator   la { 64u }; }
     { [[maybe_unused]] cd::mem::TrackingAllocator ta { cd::mem::system_allocator(), "sentinel" }; }
+    { [[maybe_unused]] cd::mem::PageAllocator     page_alloc; }
+    { [[maybe_unused]] cd::mem::PoolAllocator     pool_alloc { 64u, 4u }; }
+    {
+        cd::mem::LinearAllocator pmr_inner { 128u };
+        [[maybe_unused]] cd::mem::PmrAdapter pmr { pmr_inner };
+    }
 
     SUCCEED();
 }

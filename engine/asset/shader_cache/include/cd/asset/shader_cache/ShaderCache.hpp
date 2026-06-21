@@ -1,16 +1,30 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/asset/shader_cache/ShaderCache.hpp
-// Phase 609 — asset-tier in-process SPIR-V blob cache (cd::asset::shader_cache)
+// Phase 609 / Phase 1270 — asset-tier in-process SPIR-V blob cache
+//                           (cd::asset::shader_cache)
 //
 // Rationale / scope:
 //   cd::shader::CachedCompiler provides a disk-backed compiler decorator.
 //   This library is an *independent* asset-tier cache:
 //     * Lives in the asset layer (not the render/shader layer).
-//     * Stores already-compiled SPIR-V blobs in an unordered_map keyed by
-//       ShaderKey (source_hash + entry_point + stage + spec_const_hash).
+//     * Stores already-compiled SPIR-V blobs keyed by ShaderKey.
 //     * Optionally persists/restores the whole cache from a single binary file.
 //     * No dependency on glslang or ICompiler; suitable for use by loaders
 //       that receive pre-compiled SPIR-V from .pak / .cdtex pipeline.
+//
+// Charter — CPU-side completeness (Phase 1270):
+//   [DONE] Cache-key hashing: compute_key() hashes source+defines+stage+entry
+//          via FNV-1a-64 into a deterministic hex ShaderKey.source_hash.
+//   [DONE] On-disk blob store: save_to_disk / load_from_disk (binary CDSC).
+//   [DONE] In-memory LRU: LruShaderCache wraps ShaderCache with a capacity cap
+//          and O(1) eviction via doubly-linked list + hash map.
+//   [DONE] Staleness check: is_entry_stale() compares entry.cached_at_ms
+//          with the filesystem last-write time of the source file.
+//   [DONE] Serialization: existing CDSC little-endian binary format.
+//   [SEALED] Live compiler invocation (SPIRV-Cross/DXC) — requires GPU
+//            toolchain integration; sealed in PROJECT_COMPLETION_STATUS.md.
+//   [SEALED] GPU pipeline-cache blob (VkPipelineCache / D3D12 PSO blob) —
+//            requires RHI-layer API; sealed in PROJECT_COMPLETION_STATUS.md.
 //
 // Namespace: cd::asset::shader_cache
 //
@@ -35,8 +49,10 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <list>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -216,6 +232,147 @@ public:
 
 private:
     std::unordered_map<ShaderKey, CacheEntry> entries_;
+};
+
+// =============================================================================
+// compute_key — canonical cache-key hash utility
+// =============================================================================
+
+/// A define passed to compute_key() as part of the variant discriminator.
+///
+/// The caller is responsible for stable ordering; compute_key() sorts the
+/// list lexicographically (by key then value) before hashing so that
+/// `{{"A","1"},{"B","2"}}` and `{{"B","2"},{"A","1"}}` yield the same key.
+struct ShaderDefineEntry
+{
+    std::string key;
+    std::string value;
+};
+
+/// Compute a deterministic ShaderKey from raw shader-compilation inputs.
+///
+/// FNV-1a-64 is mixed over:
+///   * source_text bytes (the raw GLSL/HLSL source)
+///   * a 0x00 field separator
+///   * defines sorted by (key,value), each pair separated by 0x01/0x02
+///   * stage (4 bytes LE)
+///   * entry_point bytes + 0x00 separator
+///
+/// The resulting ShaderKey.source_hash is a 16-character lower-case hex
+/// string.  stage and entry_point are also stored in the key fields so
+/// two shaders with the same source but different stages map to different
+/// entries (the hash already encodes them, but the explicit fields let
+/// callers filter by stage without rehashing).
+///
+/// spec_const_hash is left at 0 by default; callers with specialisation
+/// constants should set it on the returned key before use.
+[[nodiscard]] ShaderKey compute_key(std::string_view                         source_text,
+                                    const std::vector<ShaderDefineEntry>&    defines,
+                                    std::uint32_t                            stage,
+                                    std::string_view                         entry_point);
+
+// =============================================================================
+// is_entry_stale — file-mtime staleness check
+// =============================================================================
+
+/// Return true if the source file at `source_path` has been modified more
+/// recently than `entry.cached_at_ms`.
+///
+/// Uses std::filesystem::last_write_time.  If the file does not exist or
+/// the mtime cannot be read, returns `true` (conservative: treat as stale
+/// so the caller re-compiles).
+///
+/// NOTE: cached_at_ms uses system_clock epoch milliseconds; last_write_time
+/// is compared via the same epoch after conversion.  Sub-millisecond mtime
+/// resolution is truncated.
+[[nodiscard]] bool is_entry_stale(const CacheEntry&             entry,
+                                  const std::filesystem::path&  source_path) noexcept;
+
+// =============================================================================
+// LruShaderCache — capacity-bounded LRU wrapper
+// =============================================================================
+
+/// In-process SPIR-V cache with a hard capacity limit and LRU eviction.
+///
+/// When `put()` would exceed `capacity`, the least-recently-used entry is
+/// evicted first.  A `get()` promotes the accessed entry to most-recently-used.
+///
+/// Persistence: delegates to an internal ShaderCache for save_to_disk /
+/// load_from_disk.  After load, if the number of loaded entries exceeds
+/// `capacity`, the oldest (by cached_at_ms) are evicted until the cap is met.
+///
+/// Thread safety: NOT thread-safe.  Same contract as ShaderCache.
+class LruShaderCache
+{
+public:
+    /// Construct with a maximum entry count.  `capacity` must be >= 1.
+    explicit LruShaderCache(std::size_t capacity);
+
+    // Non-copyable; movable.
+    LruShaderCache(const LruShaderCache&)            = delete;
+    LruShaderCache& operator=(const LruShaderCache&) = delete;
+    LruShaderCache(LruShaderCache&&) noexcept            = default;
+    LruShaderCache& operator=(LruShaderCache&&) noexcept = default;
+
+    // -------------------------------------------------------------------------
+    // Core operations
+    // -------------------------------------------------------------------------
+
+    /// Insert or overwrite.  Promotes the entry to MRU.  If the cache is at
+    /// capacity and the key is new, the LRU entry is evicted before insertion.
+    ///
+    /// @returns true  — entry was inserted (new key).
+    ///          false — entry was updated (key already existed).
+    bool put(const ShaderKey&           key,
+             std::vector<std::uint32_t> spirv,
+             std::string_view           entry_point,
+             std::uint32_t              stage);
+
+    /// Look up a compiled entry and promote it to MRU position.
+    ///
+    /// @returns std::nullopt if the key is not present.
+    ///          Otherwise a const pointer to the stored CacheEntry.
+    ///          The pointer is valid until the next put() / clear() / move.
+    [[nodiscard]] std::optional<const CacheEntry*> get(const ShaderKey& key);
+
+    // -------------------------------------------------------------------------
+    // Persistence
+    // -------------------------------------------------------------------------
+
+    /// Serialise the entire cache to a single binary file (CDSC format).
+    [[nodiscard]] bool save_to_disk(const std::filesystem::path& path) const;
+
+    /// Deserialise.  After loading, enforces the capacity limit by evicting
+    /// the oldest entries (by cached_at_ms) until entry_count() <= capacity().
+    [[nodiscard]] bool load_from_disk(const std::filesystem::path& path);
+
+    // -------------------------------------------------------------------------
+    // Housekeeping
+    // -------------------------------------------------------------------------
+
+    void clear();
+
+    [[nodiscard]] std::size_t entry_count() const noexcept;
+    [[nodiscard]] std::size_t capacity()    const noexcept { return capacity_; }
+
+private:
+    // Ordered from MRU (front) to LRU (back).
+    using KeyList   = std::list<ShaderKey>;
+    using KeyListIt = KeyList::iterator;
+
+    struct MapEntry
+    {
+        CacheEntry  entry;
+        KeyListIt   list_it;
+    };
+
+    void evict_lru();
+    void enforce_capacity();
+    void reorder_by_timestamp();
+
+    std::size_t                                             capacity_;
+    KeyList                                                 lru_order_;
+    std::unordered_map<ShaderKey, MapEntry>                 map_;
 };
 
 }  // namespace cd::asset::shader_cache

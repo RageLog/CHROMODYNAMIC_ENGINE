@@ -32,6 +32,14 @@ void push_warning(std::vector<ValidationIssue>& issues,
     issues.push_back({ Severity::kWarning, std::string{ path }, std::move(message) });
 }
 
+/// Append a kInfo issue to `issues`.
+void push_info(std::vector<ValidationIssue>& issues,
+               std::string_view              path,
+               std::string                   message)
+{
+    issues.push_back({ Severity::kInfo, std::string{ path }, std::move(message) });
+}
+
 /// Return true if `blob` starts with `magic` bytes.
 bool starts_with_magic(std::span<const std::uint8_t> blob,
                        std::span<const std::uint8_t> magic) noexcept
@@ -131,6 +139,25 @@ Validator::validate_texture_blob(std::span<const std::uint8_t> blob,
         push_warning(issues, path,
                      "texture blob may exceed max_texture_pixels policy limit "
                      "(conservative estimate based on blob byte size)");
+    }
+
+    // ---- T4: required_color_spaces note (kInfo) -----------------------------
+    // When all three required_color_spaces slots are non-empty, emit a kInfo
+    // noting the active color-space requirements so callers can correlate them
+    // with the validated blob.  Deep color-space verification against the blob
+    // content is Sprint-2 (the format decoders are not available here).
+    const bool all_color_spaces_set =
+        !policy_.required_color_spaces[0].empty() &&
+        !policy_.required_color_spaces[1].empty() &&
+        !policy_.required_color_spaces[2].empty();
+    if (all_color_spaces_set)
+    {
+        push_info(issues, path,
+                  "color-space requirements active ("
+                  + policy_.required_color_spaces[0] + ", "
+                  + policy_.required_color_spaces[1] + ", "
+                  + policy_.required_color_spaces[2]
+                  + "); deep color-space verification is Sprint-2");
     }
 
     return issues;

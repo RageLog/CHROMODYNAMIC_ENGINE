@@ -14,6 +14,7 @@ cd_add_library(asset_audio_streamer
   SOURCES
     src/AudioStreamer.cpp
     src/AsyncAudioPool.cpp
+    src/AudioRingBuffer.cpp
   PUBLIC_DEPS
     cd::core
     cd::asset

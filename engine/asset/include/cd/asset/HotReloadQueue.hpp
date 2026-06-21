@@ -37,7 +37,7 @@ public:
 
     [[nodiscard]] bool is_pending(AssetId id) const noexcept
     {
-        return dirty_.find(id.value()) != dirty_.end();
+        return dirty_.contains(id.value());
     }
 
     template <class F>

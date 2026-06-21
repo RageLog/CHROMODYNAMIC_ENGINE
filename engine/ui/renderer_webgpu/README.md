@@ -123,17 +123,44 @@ ctest --preset ninja-debug -R cd_test_webgpu_submitter --output-on-failure
 ctest --preset ninja-debug -R cd_test_webgpu_submitter --output-on-failure
 ```
 
-Covers 4 cases: `CreateReturnsValidHandle`, `UploadSignatureCompiles`, `RecordSignatureCompiles`, `DestroyIsIdempotent`.
+Covers the full stub-path lifecycle (`WebGpuSubmitter.*`: create / upload / record / destroy + overflow + scissor + move + merge) **and** the Dawn-free host contract (`WgpuContract.*`: colour-format validity, vertex layout vs. `offsetof`, colour conversion, scissor clamp, draw-slice byte math, WGSL structural pins). No GPU required.
 
 ---
 
-## Out of Phase 5.0 scope (Phase 5.5 `hello_ui_webgpu` owns these)
+## Host-side contract (Dawn-free, fully tested — `WgpuContract.hpp`)
 
-- WGSL vertex + fragment shader modules compilation.
-- Render-pass descriptor creation (colour attachment, load/store ops).
-- Pipeline layout + bind group for the atlas texture.
-- Push-constant (or uniform buffer) projection matrix upload.
-- End-to-end correctness on a real WebGPU surface.
+These are authored + unit-tested on every CI tier (no GPU, no Dawn). A real
+Dawn pipeline consumes them verbatim:
+
+- **`kUiShaderWgsl`** — the UI vertex + fragment WGSL source (entry points
+  `vs_main` / `fs_main`), authored against the 24-byte `Vertex` and the 6
+  material variant ids. Its *structural* contract (attribute `@location`s,
+  variant branch ids, bind-group decls) is pinned by tests — but it is **not
+  compiled here** (no host WGSL validator is a dependency yet).
+- **`vertex_attributes()` / `vertex_stride_bytes()`** — the vertex-buffer
+  layout, offsets asserted against `offsetof(Vertex, …)` so the GPU layout
+  can never drift from the CPU struct.
+- **`is_supported_color_format` / `is_srgb_color_format`** — colour-target
+  format validation + sRGB classification.
+- **`to_color_f` / `unorm8_to_float`** — RGBA8 → normalized-float conversion
+  matching the GPU's `Unorm8x4` attribute path.
+- **`clamp_scissor`** — the host-tested scissor-clamp the Dawn `record()` path
+  calls (negative origin floored, far edge clamped, no-clip sentinel collapsed).
+- **`draw_slice` / `make_globals` / `Globals`** — draw-command byte-offset
+  translation + the per-frame inverse-viewport uniform packing.
+
+## CORE-CHARTER GAP — SEALED (multi-week, real Dawn CI runner required)
+
+The following is a **real core-charter gap** (not out-of-scope): the live Dawn
+pipeline that *consumes* the contract above. It cannot be unit-tested without a
+GPU and is gated on a Dawn-capable CI runner (~800 MB build) + a real surface
+(`hello_ui_webgpu` Phase 5.5):
+
+- `wgpu::ShaderModule` compile of `kUiShaderWgsl` (needs Tint/Naga via a real device).
+- `wgpu::RenderPipeline` from a descriptor wired to `vertex_attributes()` + colour attachment.
+- Bind-group layout for the `Globals` UBO + atlas texture/sampler.
+- Render-pass descriptor with a real swap-chain texture view (load/store ops).
+- `SetPipeline` / `SetBindGroup` in `record()` + end-to-end pixel correctness.
 
 ---
 
