@@ -312,7 +312,7 @@ namespace cd::platform::web
 cd::core::Result<std::unique_ptr<WebWindow>>
 WebWindow::create(const WebWindowDesc& /*desc*/) noexcept
 {
-    return cd::core::make_error<std::unique_ptr<WebWindow>>(
+    return std::unexpected(
         platform_errors::make(platform_errors::Code::kNotImplemented,
                               "WebWindow: not an Emscripten build"));
 }

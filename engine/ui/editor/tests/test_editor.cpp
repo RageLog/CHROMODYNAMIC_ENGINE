@@ -586,3 +586,256 @@ TEST(CompositeCommand, EmptyAndNullChildrenAreSafe)
 }
 
 }  // namespace
+
+// ---- phase-editor-70pct — gap-close: EditHistory, SelectionSet, CommandPalette, HierarchyView ----
+
+namespace
+{
+
+/// Minimal ICommand that increments/decrements a counter.
+/// Local re-declaration (CounterCommand above lives in a separate anon namespace).
+class GapCounterCmd final : public cd::editor::ICommand
+{
+public:
+    explicit GapCounterCmd(int* sink) noexcept : sink_(sink) {}
+    void apply()  override { ++(*sink_); }
+    void revert() override { --(*sink_); }
+    [[nodiscard]] std::string_view label() const noexcept override { return "GapCounter"; }
+    [[nodiscard]] std::size_t byte_size() const noexcept override { return sizeof(*this); }
+private:
+    int* sink_;
+};
+
+// ---------------------------------------------------------------------------
+// EditHistory — edge / negative
+// ---------------------------------------------------------------------------
+
+TEST(EditHistory, UndoOnEmptyReturnsFalse)
+{
+    cd::editor::EditHistory hist;
+    EXPECT_FALSE(hist.undo());
+    EXPECT_EQ(hist.undo_depth(), 0U);
+}
+
+TEST(EditHistory, RedoOnEmptyReturnsFalse)
+{
+    cd::editor::EditHistory hist;
+    int counter = 0;
+    hist.push(std::make_unique<GapCounterCmd>(&counter));
+    EXPECT_TRUE(hist.undo());
+    EXPECT_TRUE(hist.redo());
+    EXPECT_FALSE(hist.redo());  // nothing left on redo stack
+}
+
+TEST(EditHistory, ByteBudgetEvictsOldest)
+{
+    // Set the budget to exactly the size of one GapCounterCmd so the second
+    // push triggers an eviction of the oldest entry.
+    cd::editor::EditHistory::Config cfg;
+    cfg.max_entries = 128;
+    cfg.max_bytes   = sizeof(GapCounterCmd);
+    cd::editor::EditHistory hist { cfg };
+
+    int counter = 0;
+    hist.push(std::make_unique<GapCounterCmd>(&counter));  // fills budget
+    hist.push(std::make_unique<GapCounterCmd>(&counter));  // evicts oldest
+
+    // Only 1 entry must survive on the undo stack.
+    EXPECT_EQ(hist.undo_depth(), 1U);
+}
+
+TEST(EditHistory, NullPushIsNoOp)
+{
+    cd::editor::EditHistory hist;
+    hist.push(nullptr);  // must not crash
+    EXPECT_FALSE(hist.can_undo());
+    EXPECT_EQ(hist.bytes_in_use(), 0U);
+}
+
+TEST(EditHistory, NextLabelEmptyWhenStacksEmpty)
+{
+    const cd::editor::EditHistory hist;
+    EXPECT_TRUE(hist.next_undo_label().empty());
+    EXPECT_TRUE(hist.next_redo_label().empty());
+}
+
+TEST(EditHistory, NextRedoLabelPopulatedAfterUndo)
+{
+    cd::editor::EditHistory hist;
+    int counter = 0;
+    hist.push(std::make_unique<GapCounterCmd>(&counter));
+    hist.undo();
+    EXPECT_EQ(hist.next_redo_label(), "GapCounter");
+}
+
+// ---------------------------------------------------------------------------
+// SelectionSet — edge / negative
+// ---------------------------------------------------------------------------
+
+TEST(SelectionSet, SortedOrderGuaranteed)
+{
+    // entries() must remain sorted by entity id ascending regardless of add order.
+    cd::editor::SelectionSet s;
+    const cd::ecs::Entity a { 10, 1 };
+    const cd::ecs::Entity b { 2,  1 };
+    const cd::ecs::Entity c { 7,  1 };
+    s.add(a);
+    s.add(b);
+    s.add(c);
+
+    const auto& ents = s.entries();
+    ASSERT_EQ(ents.size(), 3U);
+    EXPECT_LT(ents[0].id, ents[1].id);
+    EXPECT_LT(ents[1].id, ents[2].id);
+}
+
+TEST(SelectionSet, RemoveAbsentEntityIsNoOp)
+{
+    cd::editor::SelectionSet s;
+    const cd::ecs::Entity a { 1, 1 };
+    s.add(a);
+    s.remove(cd::ecs::Entity { 99, 1 });  // not in set — must not crash
+    EXPECT_EQ(s.size(), 1U);
+    EXPECT_TRUE(s.contains(a));
+}
+
+TEST(SelectionSet, RemoveLastEntityClearsPrimary)
+{
+    cd::editor::SelectionSet s;
+    const cd::ecs::Entity a { 5, 1 };
+    s.add(a);
+    s.remove(a);
+    EXPECT_TRUE(s.empty());
+    EXPECT_FALSE(s.primary().is_valid());
+}
+
+TEST(SelectionSet, ReAddAfterRemoveRestoresMembership)
+{
+    cd::editor::SelectionSet s;
+    const cd::ecs::Entity a { 3, 1 };
+    s.add(a);
+    s.remove(a);
+    ASSERT_FALSE(s.contains(a));
+    s.add(a);
+    EXPECT_TRUE(s.contains(a));
+    EXPECT_EQ(s.primary(), a);
+}
+
+// ---------------------------------------------------------------------------
+// CommandPalette — edge / negative
+// ---------------------------------------------------------------------------
+
+TEST(CommandPalette, InvokeOutOfBoundsReturnsFalse)
+{
+    cd::editor::CommandPalette p;
+    EXPECT_FALSE(p.invoke(0));   // empty palette — index 0 is OOB
+    p.register_command(1, "Open", [] {});
+    EXPECT_FALSE(p.invoke(1));   // only index 0 is valid after one registration
+}
+
+TEST(CommandPalette, InvokeNullActionReturnsFalse)
+{
+    cd::editor::CommandPalette p;
+    p.register_command(42, "NoOp", std::function<void()> {});
+    // Null / empty action — invoke must not crash and must return false.
+    EXPECT_FALSE(p.invoke(0));
+}
+
+TEST(CommandPalette, ScoreRanksWordBoundaryHigher)
+{
+    // "of" in "Open File": 'O' is at word start (boundary boost) + 'f' starts "File"
+    // (another boundary boost).  "o_xxx_f" has no word-boundary matches.
+    cd::editor::CommandPalette p;
+    p.register_command(1, "Open File", [] {});  // word-boundary double-boost
+    p.register_command(2, "o_xxx_f",   [] {});  // subsequence match, no boundary
+
+    const auto hits = p.filter("of");
+    ASSERT_EQ(hits.size(), 2U);
+    // "Open File" must rank first (hits[0] == index 0 in the registry).
+    EXPECT_EQ(hits[0], 0U);
+}
+
+TEST(CommandPalette, EmptyPaletteFilterReturnsEmpty)
+{
+    const cd::editor::CommandPalette p;
+    EXPECT_TRUE(p.filter("").empty());
+    EXPECT_TRUE(p.filter("x").empty());
+}
+
+// ---------------------------------------------------------------------------
+// HierarchyView — edge / negative
+// ---------------------------------------------------------------------------
+
+TEST(HierarchyView, MultipleRootsAllVisibleAtDepthZero)
+{
+    cd::ecs::World world;
+    cd::scene::Scene scene { world };
+    const auto r1 = scene.create_node();
+    const auto r2 = scene.create_node();
+    const auto r3 = scene.create_node();
+    static_cast<void>(r1);
+    static_cast<void>(r2);
+    static_cast<void>(r3);
+
+    cd::editor::HierarchyView hv;
+    const auto rows = hv.visible_order(scene);
+    // 3 independent roots, none expanded → 3 rows all at depth 0.
+    EXPECT_EQ(rows.size(), 3U);
+    for (const auto& [e, d] : rows) EXPECT_EQ(d, 0U);
+}
+
+TEST(HierarchyView, CollapseHidesChildren)
+{
+    cd::ecs::World world;
+    cd::scene::Scene scene { world };
+    const auto root  = scene.create_node();
+    const auto child = scene.create_node();
+    scene.attach(child, root);
+
+    cd::editor::HierarchyView hv;
+    hv.expand(root);
+    ASSERT_EQ(hv.visible_order(scene).size(), 2U);
+
+    hv.collapse(root);
+    EXPECT_EQ(hv.visible_order(scene).size(), 1U);
+}
+
+TEST(HierarchyView, ClearCollapsesAll)
+{
+    cd::ecs::World world;
+    cd::scene::Scene scene { world };
+    const auto root  = scene.create_node();
+    const auto child = scene.create_node();
+    scene.attach(child, root);
+
+    cd::editor::HierarchyView hv;
+    hv.expand(root);
+    ASSERT_EQ(hv.expanded_count(), 1U);
+
+    hv.clear();
+    EXPECT_EQ(hv.expanded_count(), 0U);
+    EXPECT_EQ(hv.visible_order(scene).size(), 1U);  // root only after clear
+}
+
+TEST(HierarchyView, DepthThreeNestedStructure)
+{
+    cd::ecs::World world;
+    cd::scene::Scene scene { world };
+    const auto root = scene.create_node();
+    const auto mid  = scene.create_node();
+    const auto leaf = scene.create_node();
+    scene.attach(mid,  root);
+    scene.attach(leaf, mid);
+
+    cd::editor::HierarchyView hv;
+    hv.expand(root);
+    hv.expand(mid);
+
+    const auto rows = hv.visible_order(scene);
+    ASSERT_EQ(rows.size(), 3U);
+    EXPECT_EQ(rows[0].second, 0U);  // root at depth 0
+    EXPECT_EQ(rows[1].second, 1U);  // mid  at depth 1
+    EXPECT_EQ(rows[2].second, 2U);  // leaf at depth 2
+}
+
+}  // namespace

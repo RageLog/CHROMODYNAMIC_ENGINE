@@ -32,7 +32,7 @@ public:
 
     [[nodiscard]] bool has(const std::string& key) const noexcept
     {
-        return values_.find(key) != values_.end();
+        return values_.contains(key);
     }
 
     [[nodiscard]] std::optional<bool> get_bool(const std::string& key) const

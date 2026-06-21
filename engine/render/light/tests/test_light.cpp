@@ -356,3 +356,172 @@ TEST(CascadedShadow, PureUniformVsPureLogBracketBlend)
     EXPECT_FLOAT_EQ(uni[0], logd[0]);
     EXPECT_FLOAT_EQ(uni[4], logd[4]);
 }
+
+// ---- Attenuation — depth tests (ADD-ONLY, no formula change) ---------------
+
+TEST(Attenuation, DistanceZeroReturnsFiniteValue)
+{
+    // d == 0: the epsilon guard (d^2 + epsilon) prevents division by zero;
+    // result must be finite and large (inverse-square singularity guarded).
+    const float val = cd::light::distance_attenuation(0.0F, 10.0F);
+    EXPECT_TRUE(std::isfinite(val));
+    EXPECT_GT(val, 0.0F);
+    // Window at d=0 is 1; result = 1 / epsilon ≈ 1/0.01 = 100.
+    constexpr float kEpsilon = 0.01F;
+    EXPECT_NEAR(val, 1.0F / kEpsilon, 1.0F);  // tolerance 1.0 to allow small floating drift
+}
+
+TEST(Attenuation, DistanceIsMonotonicallyDecreasing)
+{
+    // Closer distances yield more attenuation (higher value) — the
+    // inverse-square kernel must decrease as d grows inside [0, range).
+    const float range = 20.0F;
+    const float a1 = cd::light::distance_attenuation(1.0F, range);
+    const float a5 = cd::light::distance_attenuation(5.0F, range);
+    const float a10 = cd::light::distance_attenuation(10.0F, range);
+    EXPECT_GT(a1, a5);
+    EXPECT_GT(a5, a10);
+}
+
+TEST(Attenuation, ConeAttenuation_MidpointIsBetweenZeroAndOne)
+{
+    // A cos_theta exactly halfway between inner and outer must give
+    // a result in (0, 1) — the smooth ramp branch.
+    const float ci = std::cos(0.2F);   // inner (smaller angle → higher cos)
+    const float co = std::cos(0.6F);   // outer (larger angle → lower cos)
+    const float mid_theta = 0.4F;      // between 0.2 and 0.6
+    const float ct = std::cos(mid_theta);
+    const float att = cd::light::cone_attenuation(ct, ci, co);
+    EXPECT_GT(att, 0.0F);
+    EXPECT_LT(att, 1.0F);
+}
+
+// ---- Planckian — depth tests (ADD-ONLY, no formula change) -----------------
+
+TEST(ColorTemperature, TungstenIsRedDominantWithGreenAboveBlue)
+{
+    // ~2700 K tungsten: R > G > B is the expected chromaticity ordering for
+    // incandescent light (first y-branch of the Krystek polynomial, T<=2222K
+    // is NOT exercised here because 2700 > 2222; exercises the 2222<T<=4000 branch).
+    const auto c = cd::light::cct_to_linear_rgb(2700.0F);
+    EXPECT_GT(c.x, c.y);  // R > G
+    EXPECT_GT(c.y, c.z);  // G > B
+}
+
+TEST(ColorTemperature, BranchBoundary4001KIsValid)
+{
+    // 4001 K crosses the x/y polynomial branch boundary (T > 4000 branch).
+    // Result must be all non-negative and G should be the dominant channel
+    // (neutral daylight approaching white).
+    const auto c = cd::light::cct_to_linear_rgb(4001.0F);
+    EXPECT_GE(c.x, 0.0F);
+    EXPECT_GE(c.y, 0.0F);
+    EXPECT_GE(c.z, 0.0F);
+    // Near-neutral: no channel dominates dramatically.
+    EXPECT_LT(c.x, 2.0F);
+    EXPECT_LT(c.z, 2.0F);
+}
+
+TEST(ColorTemperature, WarmTooCoolRatioDeclinesMonotonically)
+{
+    // R/B ratio must decrease as temperature rises: warmer = more red,
+    // cooler = more blue. Spot-check a few well-separated temperatures.
+    const auto k2000 = cd::light::cct_to_linear_rgb(2000.0F);
+    const auto k5500 = cd::light::cct_to_linear_rgb(5500.0F);
+    const auto k10000 = cd::light::cct_to_linear_rgb(10000.0F);
+    // R/B strictly decreasing; guard against zero B with max(b, 1e-6).
+    const float rb2000  = k2000.x  / std::max(k2000.z,  1e-6F);
+    const float rb5500  = k5500.x  / std::max(k5500.z,  1e-6F);
+    const float rb10000 = k10000.x / std::max(k10000.z, 1e-6F);
+    EXPECT_GT(rb2000, rb5500);
+    EXPECT_GT(rb5500, rb10000);
+}
+
+// ---- CascadedShadow — depth tests (ADD-ONLY, no formula change) ------------
+
+TEST(CascadedShadow, SingleCascadeYieldsTwoSplits)
+{
+    // cascade_count = 1 → splits[0] = near, splits[1] = far.
+    const auto splits = cd::light::practical_split_distances(0.5F, 50.0F, 1, 0.75F);
+    EXPECT_FLOAT_EQ(splits[0], 0.5F);
+    EXPECT_FLOAT_EQ(splits[1], 50.0F);
+}
+
+TEST(CascadedShadow, BuildCascadesDistancesAreMonotone)
+{
+    // Each cascade's far_distance must equal the next cascade's near_distance,
+    // and all distances must be positive and ascending.
+    const auto ivp = cd::math::Mat4f::identity();
+    auto cascades = cd::light::build_cascades(ivp, 1.0F, 200.0F,
+                                              { 0.0F, -1.0F, 0.0F }, 4);
+    ASSERT_EQ(cascades.size(), 4u);
+    for (std::size_t i = 0; i < cascades.size(); ++i)
+    {
+        EXPECT_GT(cascades[i].far_distance, cascades[i].near_distance) << "i=" << i;
+        EXPECT_GT(cascades[i].near_distance, 0.0F) << "i=" << i;
+    }
+    for (std::size_t i = 1; i < cascades.size(); ++i)
+        EXPECT_FLOAT_EQ(cascades[i].near_distance, cascades[i - 1].far_distance) << "i=" << i;
+}
+
+// ---- ClusterGrid — depth tests (ADD-ONLY, no formula change) ---------------
+
+TEST(ClusterGrid, SliceOfNearZIsZero)
+{
+    // A view_z exactly at near_z maps to slice 0 (the std::max + log(1) == 0 path).
+    cd::light::ClusterGrid g;
+    cd::light::ClusterGridDesc d;
+    d.near_z = 1.0F; d.far_z = 100.0F; d.slices_z = 8;
+    g.configure(d);
+    EXPECT_EQ(g.slice_of(1.0F), 0u);
+}
+
+TEST(ClusterGrid, ClearResetsOverflow)
+{
+    // After filling a single cell past its capacity, clear() must reset
+    // both light_count and overflow to 0.
+    cd::light::ClusterGrid g;
+    cd::light::ClusterGridDesc d;
+    d.tiles_x = 1; d.tiles_y = 1; d.slices_z = 1;
+    g.configure(d);
+    g.clear();
+    const auto dir = cd::light::directional({ 0, -1, 0 });
+    for (std::uint32_t i = 0; i <= cd::light::kMaxLightsPerCluster; ++i)
+        g.assign(i, dir, { 0, 0, 0 });
+    // confirm overflow registered before clear
+    EXPECT_GT(g.cells()[0].overflow, 0u);
+    g.clear();
+    EXPECT_EQ(g.cells()[0].light_count, 0u);
+    EXPECT_EQ(g.cells()[0].overflow,    0u);
+}
+
+TEST(ClusterGrid, IndexFormulaIsDeterministic)
+{
+    // index_(x, y, z) = (z * tiles_y + y) * tiles_x + x.
+    // Verify specific known triples for a 4×3×2 grid.
+    cd::light::ClusterGrid g;
+    cd::light::ClusterGridDesc d;
+    d.tiles_x = 4; d.tiles_y = 3; d.slices_z = 2;
+    g.configure(d);
+    EXPECT_EQ(g.index_(0, 0, 0), 0u);
+    EXPECT_EQ(g.index_(1, 0, 0), 1u);
+    EXPECT_EQ(g.index_(0, 1, 0), 4u);   // y=1 → +tiles_x
+    EXPECT_EQ(g.index_(0, 0, 1), 12u);  // z=1 → +tiles_x*tiles_y = 4*3
+}
+
+TEST(ClusterGrid, SliceZRangeLowerBoundIsMonotone)
+{
+    // For consecutive slices, the near bound of slice s+1 equals the far
+    // bound of slice s — no gaps or overlaps in the log partition.
+    cd::light::ClusterGrid g;
+    cd::light::ClusterGridDesc d;
+    d.near_z = 0.5F; d.far_z = 200.0F; d.slices_z = 6;
+    g.configure(d);
+    for (std::uint32_t s = 0; s + 1 < d.slices_z; ++s)
+    {
+        const auto [z0_curr, z1_curr] = g.slice_z_range(s);
+        const auto [z0_next, z1_next] = g.slice_z_range(s + 1);
+        EXPECT_NEAR(z1_curr, z0_next, 1e-4F) << "slice boundary gap at s=" << s;
+        (void)z1_next;
+    }
+}

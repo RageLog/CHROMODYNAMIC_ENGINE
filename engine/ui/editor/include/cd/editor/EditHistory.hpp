@@ -32,6 +32,7 @@
 // =============================================================================
 #pragma once
 
+#include <ranges>
 #include <cd/core/Defines.hpp>
 
 #include <cstddef>
@@ -108,8 +109,8 @@ public:
 
     void revert() override
     {
-        for (auto it = children_.rbegin(); it != children_.rend(); ++it)
-            (*it)->revert();
+        for (const auto& child : children_ | std::views::reverse)
+            child->revert();
     }
 
     [[nodiscard]] std::string_view label() const noexcept override { return label_; }

@@ -338,4 +338,357 @@ TEST(ShaderCache, CorruptAndTruncatedHeaderRejected)
     }
 }
 
+// ---------------------------------------------------------------------------
+// T10 — Serialized stream bytes are bit-identical after round-trip.
+//        save → raw bytes → load → save again → bytes must match.
+// ---------------------------------------------------------------------------
+
+TEST(ShaderCache, SerializedStreamBitIdentical)
+{
+    ShaderCache src;
+    src.put(make_key("bit_id_src", "main", 1, 0xCAFEBABEU),
+            make_spirv(0xFACE, 5), "main", 1);
+
+    const auto tmp1 = std::filesystem::temp_directory_path()
+                    / "cd_sc_bitid1.bin";
+    const auto tmp2 = std::filesystem::temp_directory_path()
+                    / "cd_sc_bitid2.bin";
+    ASSERT_TRUE(src.save_to_disk(tmp1));
+
+    ShaderCache dst;
+    ASSERT_TRUE(dst.load_from_disk(tmp1));
+    ASSERT_TRUE(dst.save_to_disk(tmp2));
+
+    // Read both files and compare raw bytes.
+    auto read_bytes = [](const std::filesystem::path& p) -> std::vector<char> {
+        std::ifstream f(p, std::ios::binary);
+        return { std::istreambuf_iterator<char>(f),
+                 std::istreambuf_iterator<char>() };
+    };
+    const auto bytes1 = read_bytes(tmp1);
+    const auto bytes2 = read_bytes(tmp2);
+
+    // Both files must be non-empty and identical.
+    ASSERT_FALSE(bytes1.empty());
+    EXPECT_EQ(bytes1, bytes2) << "re-serialized bytes must be bit-identical";
+
+    std::filesystem::remove(tmp1);
+    std::filesystem::remove(tmp2);
+}
+
+// ---------------------------------------------------------------------------
+// T11 — Timestamp (cached_at_ms) is preserved across save/load.
+// ---------------------------------------------------------------------------
+
+TEST(ShaderCache, TimestampPreservedAcrossDisk)
+{
+    ShaderCache src;
+    const ShaderKey key = make_key("ts_src", "main", 1, 0);
+    src.put(key, make_spirv(0xABCD, 4), "main", 1);
+
+    const auto* entry_before_save = *src.get(key);
+    const std::uint64_t ts = entry_before_save->cached_at_ms;
+    ASSERT_GT(ts, 0U);
+
+    const auto tmp = std::filesystem::temp_directory_path()
+                   / "cd_sc_timestamp.bin";
+    ASSERT_TRUE(src.save_to_disk(tmp));
+
+    ShaderCache dst;
+    ASSERT_TRUE(dst.load_from_disk(tmp));
+
+    const auto r = dst.get(key);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ((*r)->cached_at_ms, ts)
+        << "cached_at_ms must survive serialization round-trip";
+
+    std::filesystem::remove(tmp);
+}
+
+// ---------------------------------------------------------------------------
+// T12 — Empty cache (0 entries) serializes and deserializes cleanly.
+// ---------------------------------------------------------------------------
+
+TEST(ShaderCache, EmptyCacheSaveLoad)
+{
+    ShaderCache src;
+    ASSERT_EQ(src.entry_count(), 0U);
+
+    const auto tmp = std::filesystem::temp_directory_path()
+                   / "cd_sc_empty.bin";
+    ASSERT_TRUE(src.save_to_disk(tmp));
+
+    ShaderCache dst;
+    ASSERT_TRUE(dst.load_from_disk(tmp));
+    EXPECT_EQ(dst.entry_count(), 0U);
+
+    // get() on anything must still return nullopt.
+    EXPECT_FALSE(dst.get(make_key("x", "main", 1)).has_value());
+
+    std::filesystem::remove(tmp);
+}
+
+// ---------------------------------------------------------------------------
+// T13 — Explicit lookup hit vs miss on a populated cache.
+// ---------------------------------------------------------------------------
+
+TEST(ShaderCache, LookupHitAndMiss)
+{
+    ShaderCache cache;
+    const ShaderKey present = make_key("hit_key",  "vs_main", 1, 0);
+    const ShaderKey absent  = make_key("miss_key", "vs_main", 1, 0);
+
+    cache.put(present, make_spirv(0x1234, 4), "vs_main", 1);
+
+    EXPECT_TRUE(cache.get(present).has_value())  << "present key must hit";
+    EXPECT_FALSE(cache.get(absent).has_value())  << "absent key must miss";
+}
+
+// ---------------------------------------------------------------------------
+// T14 — Entry with empty SPIR-V (word_count == 0) round-trips correctly.
+// ---------------------------------------------------------------------------
+
+TEST(ShaderCache, EmptySpirVRoundTrip)
+{
+    ShaderCache src;
+    const ShaderKey key = make_key("empty_spirv", "main", 1, 0);
+    src.put(key, {}, "main", 1);  // empty SPIR-V
+
+    ASSERT_EQ(src.entry_count(), 1U);
+
+    const auto tmp = std::filesystem::temp_directory_path()
+                   / "cd_sc_empty_spirv.bin";
+    ASSERT_TRUE(src.save_to_disk(tmp));
+
+    ShaderCache dst;
+    ASSERT_TRUE(dst.load_from_disk(tmp));
+
+    const auto r = dst.get(key);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_TRUE((*r)->spirv.empty())
+        << "empty SPIR-V must survive disk round-trip";
+
+    std::filesystem::remove(tmp);
+}
+
+// ---------------------------------------------------------------------------
+// T15 — Duplicate key: overwrite then save+load still yields the final blob.
+// ---------------------------------------------------------------------------
+
+TEST(ShaderCache, DuplicateKeyOverwriteThenDiskRoundTrip)
+{
+    ShaderCache src;
+    const ShaderKey key = make_key("dup_key", "main", 1, 0);
+    const auto first  = make_spirv(0xAAAA, 4);
+    const auto second = make_spirv(0xBBBB, 8);
+
+    src.put(key, first,  "main", 1);
+    src.put(key, second, "main", 1);  // overwrite
+    ASSERT_EQ(src.entry_count(), 1U);
+
+    const auto tmp = std::filesystem::temp_directory_path()
+                   / "cd_sc_dup_key.bin";
+    ASSERT_TRUE(src.save_to_disk(tmp));
+
+    ShaderCache dst;
+    ASSERT_TRUE(dst.load_from_disk(tmp));
+
+    const auto r = dst.get(key);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ((*r)->spirv, second)
+        << "only the last overwrite must persist";
+    EXPECT_NE((*r)->spirv, first);
+
+    std::filesystem::remove(tmp);
+}
+
+// ---------------------------------------------------------------------------
+// T16 — Large cache (100 entries) serializes and deserializes intact.
+// ---------------------------------------------------------------------------
+
+TEST(ShaderCache, LargeCacheSaveLoad)
+{
+    constexpr std::size_t kCount = 100;
+    ShaderCache src;
+
+    for (std::size_t i = 0; i < kCount; ++i)
+    {
+        const auto key = make_key("src_" + std::to_string(i), "main",
+                                  static_cast<std::uint32_t>(i % 6),
+                                  static_cast<std::uint32_t>(i * 7));
+        src.put(key, make_spirv(static_cast<std::uint32_t>(i * 1000), 4),
+                "main", static_cast<std::uint32_t>(i % 6));
+    }
+    ASSERT_EQ(src.entry_count(), kCount);
+
+    const auto tmp = std::filesystem::temp_directory_path()
+                   / "cd_sc_large.bin";
+    ASSERT_TRUE(src.save_to_disk(tmp));
+
+    ShaderCache dst;
+    ASSERT_TRUE(dst.load_from_disk(tmp));
+    EXPECT_EQ(dst.entry_count(), kCount);
+
+    // Spot-check a few entries.
+    for (std::size_t i : { std::size_t{0}, std::size_t{49}, std::size_t{99} })
+    {
+        const auto key = make_key("src_" + std::to_string(i), "main",
+                                  static_cast<std::uint32_t>(i % 6),
+                                  static_cast<std::uint32_t>(i * 7));
+        const auto expected = make_spirv(static_cast<std::uint32_t>(i * 1000), 4);
+        const auto r = dst.get(key);
+        ASSERT_TRUE(r.has_value()) << "entry " << i << " missing after large-cache load";
+        EXPECT_EQ((*r)->spirv, expected) << "entry " << i << " SPIR-V mismatch";
+    }
+
+    std::filesystem::remove(tmp);
+}
+
+// ---------------------------------------------------------------------------
+// T17 — Truncation mid-entry: file claims N entries but data ends partway
+//        through the first entry's source_hash length field.
+// ---------------------------------------------------------------------------
+
+TEST(ShaderCache, TruncatedMidEntryRejected)
+{
+    // Build a valid 1-entry cache file, then truncate to the header + 2 bytes
+    // of the source_hash length field (need 4 bytes → truncated).
+    ShaderCache src;
+    src.put(make_key("trunc_me", "main", 1, 0), make_spirv(0x1234, 4), "main", 1);
+
+    const auto tmp = std::filesystem::temp_directory_path()
+                   / "cd_sc_trunc_entry.bin";
+    ASSERT_TRUE(src.save_to_disk(tmp));
+
+    // Header is 8 (magic) + 4 (count) = 12 bytes.
+    // Truncate to 14 bytes → only 2 of the 4 source_hash-length bytes present.
+    {
+        const auto full_size = std::filesystem::file_size(tmp);
+        ASSERT_GT(full_size, std::uintmax_t{14});
+        std::filesystem::resize_file(tmp, 14);
+    }
+
+    ShaderCache dst;
+    EXPECT_FALSE(dst.load_from_disk(tmp))
+        << "truncated mid-entry must be rejected";
+    EXPECT_EQ(dst.entry_count(), 0U)
+        << "no partial entries must be loaded from truncated stream";
+
+    std::filesystem::remove(tmp);
+}
+
+// ---------------------------------------------------------------------------
+// T18 — Merge semantics: load_from_disk adds new keys but does NOT overwrite
+//        keys that already exist in the in-memory cache when the on-disk entry
+//        was recorded earlier.
+//
+//        Note: the current implementation uses insert_or_assign (disk always
+//        wins on collision).  This test documents the ACTUAL behaviour so a
+//        future change cannot silently regress it.
+// ---------------------------------------------------------------------------
+
+TEST(ShaderCache, MergeSemanticsDiskOverwritesOnCollision)
+{
+    // 1. Write a file with key K → spirv_disk.
+    const ShaderKey key = make_key("merge_key", "main", 1, 0);
+    const auto spirv_disk   = make_spirv(0xDDDD, 4);
+    const auto spirv_memory = make_spirv(0xEEEE, 4);
+
+    const auto tmp = std::filesystem::temp_directory_path()
+                   / "cd_sc_merge.bin";
+    {
+        ShaderCache src;
+        src.put(key, spirv_disk, "main", 1);
+        ASSERT_TRUE(src.save_to_disk(tmp));
+    }
+
+    // 2. Populate dst with the same key → spirv_memory (different content).
+    ShaderCache dst;
+    dst.put(key, spirv_memory, "main", 1);
+
+    // 3. Load the disk file — insert_or_assign means disk value wins.
+    ASSERT_TRUE(dst.load_from_disk(tmp));
+    EXPECT_EQ(dst.entry_count(), 1U);
+
+    // The disk value overwrites the in-memory value (document current contract).
+    const auto r = dst.get(key);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ((*r)->spirv, spirv_disk)
+        << "insert_or_assign: disk entry overwrites in-memory entry on collision";
+
+    std::filesystem::remove(tmp);
+}
+
+// ---------------------------------------------------------------------------
+// T19 — entry_count() is noexcept.
+// ---------------------------------------------------------------------------
+
+TEST(ShaderCache, EntryCountIsNoexcept)
+{
+    const ShaderCache cache;
+    // If entry_count() is not noexcept this will fail to compile.
+    static_assert(noexcept(cache.entry_count()),
+                  "entry_count() must be noexcept per its declaration");
+    EXPECT_EQ(cache.entry_count(), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// T20 — spec_const_hash non-zero survives save+load (field-level coverage).
+// ---------------------------------------------------------------------------
+
+TEST(ShaderCache, SpecConstHashNonZeroRoundTrip)
+{
+    constexpr std::uint32_t kSpecHash = 0xDEADC0DEU;
+    const ShaderKey key = make_key("spec_src", "cs_main", 3, kSpecHash);
+
+    ShaderCache src;
+    src.put(key, make_spirv(0x5678, 6), "cs_main", 3);
+
+    const auto tmp = std::filesystem::temp_directory_path()
+                   / "cd_sc_spechash.bin";
+    ASSERT_TRUE(src.save_to_disk(tmp));
+
+    ShaderCache dst;
+    ASSERT_TRUE(dst.load_from_disk(tmp));
+
+    const auto r = dst.get(key);
+    ASSERT_TRUE(r.has_value())
+        << "entry with non-zero spec_const_hash must survive disk round-trip";
+
+    // The key used in get() already encodes spec_const_hash; a hit proves it
+    // was stored and read back correctly. Also verify SPIR-V is intact.
+    EXPECT_EQ((*r)->spirv, make_spirv(0x5678, 6));
+
+    std::filesystem::remove(tmp);
+}
+
+// ---------------------------------------------------------------------------
+// T21 — Zero-length source_hash and entry_point strings are valid keys and
+//        round-trip through disk correctly.
+// ---------------------------------------------------------------------------
+
+TEST(ShaderCache, EmptyStringFieldsInKeyRoundTrip)
+{
+    const ShaderKey key = make_key("", "", 0, 0);  // all minimally-valued fields
+
+    ShaderCache src;
+    src.put(key, make_spirv(0x0101, 2), "", 0);
+    ASSERT_EQ(src.entry_count(), 1U);
+
+    const auto tmp = std::filesystem::temp_directory_path()
+                   / "cd_sc_empty_strings.bin";
+    ASSERT_TRUE(src.save_to_disk(tmp));
+
+    ShaderCache dst;
+    ASSERT_TRUE(dst.load_from_disk(tmp));
+
+    const auto r = dst.get(key);
+    ASSERT_TRUE(r.has_value())
+        << "entry with empty string fields must survive disk round-trip";
+    EXPECT_EQ((*r)->spirv, make_spirv(0x0101, 2));
+    EXPECT_EQ((*r)->entry_point, "");
+
+    std::filesystem::remove(tmp);
+}
+
 }  // namespace

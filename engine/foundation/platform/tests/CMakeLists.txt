@@ -15,3 +15,13 @@ cd_add_test(platform_window_iface
   SOURCES test_platform_window_iface.cpp
   DEPS    cd::platform cd::core
 )
+
+# Type-level + stub + WebInputBridge tests.  No display, no GPU.
+# Covers: enums, OSEvent/WindowDesc defaults, error-code round-trips,
+# pump_all_windows null-span, FakeWindow accumulation, WebWindow kNotImpl
+# stub on non-Emscripten hosts, WebInputBridge headless simulation helpers,
+# StableTime non-negative, SignalCategory distinctness.
+cd_add_test(platform_types_and_stubs
+  SOURCES test_platform_types_and_stubs.cpp
+  DEPS    cd::platform cd::core
+)

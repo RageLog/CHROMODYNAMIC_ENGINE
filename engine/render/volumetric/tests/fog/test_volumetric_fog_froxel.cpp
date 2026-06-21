@@ -362,6 +362,223 @@ TEST(VolFogFroxel, IntegrateInScatterStopsAccumulatingPastFullExtinction)
     EXPECT_LT(tail_step, first_step);
 }
 
+// ---- Floor-raise ADD-ONLY regression locks (Run: 66->70) -------------------
+//
+// These pin the EXACT behaviour of the EXISTING froxel-fog math so any future
+// edit to VolumetricFog.hpp that perturbs the rendered frame trips a unit test
+// before it reaches the golden image. No math/GLSL is changed here.
+
+// (1) Slice quadratic warp endpoint exactness: slice 0 -> near, slice 1 -> far.
+TEST(VolFogFroxel, SliceToViewZEndpointsAreNearAndFar)
+{
+    FroxelGridDesc d {};
+    d.near_z = 0.25F;
+    d.far_z  = 80.0F;
+    EXPECT_NEAR(slice_to_view_z(0.0F, d), d.near_z, 1e-6F);
+    EXPECT_NEAR(slice_to_view_z(1.0F, d), d.far_z,  1e-5F);
+    // Midpoint sits at near + (far-near)*0.25 by the quadratic t = s*s.
+    const float mid = d.near_z + (d.far_z - d.near_z) * 0.25F;
+    EXPECT_NEAR(slice_to_view_z(0.5F, d), mid, 1e-4F);
+}
+
+// (2) Slice warp is strictly monotonic increasing across the depth axis —
+//     the exp-like depth distribution must never fold back.
+TEST(VolFogFroxel, SliceToViewZStrictlyIncreasing)
+{
+    FroxelGridDesc d {};
+    d.depth = 32;
+    d.near_z = 0.1F;
+    d.far_z  = 64.0F;
+    float prev = -1.0F;
+    for (std::uint32_t i = 0; i <= d.depth; ++i)
+    {
+        const float s = static_cast<float>(i) / static_cast<float>(d.depth);
+        const float vz = slice_to_view_z(s, d);
+        EXPECT_GT(vz, prev) << "i=" << i;
+        prev = vz;
+    }
+}
+
+// (3) view_z_to_slice clamps below-near and beyond-far into [0,1].
+TEST(VolFogFroxel, ViewZToSliceClampsOutOfRange)
+{
+    FroxelGridDesc d {};
+    d.near_z = 1.0F;
+    d.far_z  = 50.0F;
+    EXPECT_NEAR(view_z_to_slice(-5.0F, d), 0.0F, 1e-6F);   // before near
+    EXPECT_NEAR(view_z_to_slice(0.5F,  d), 0.0F, 1e-6F);   // still < near
+    EXPECT_NEAR(view_z_to_slice(999.0F, d), 1.0F, 1e-6F);  // past far
+    EXPECT_GE(view_z_to_slice(25.0F, d), 0.0F);
+    EXPECT_LE(view_z_to_slice(25.0F, d), 1.0F);
+}
+
+// (4) inject_cell RGB is the in-scatter premultiplied by dt — doubling dt
+//     exactly doubles the stored RGB while leaving the A (sigma_t) channel
+//     unchanged. Pins the "RGB premultiplied at inject" contract.
+TEST(VolFogFroxel, InjectCellRgbScalesLinearlyWithDt)
+{
+    VolumetricFogSettings s {};
+    s.density = 0.2F;
+    s.absorption = 0.05F;
+    const Vec3f sun_col { 1.0F, 0.8F, 0.6F };
+    const Vec3f view_dir { 0.0F, 0.0F, -1.0F };
+    const Vec3f sun_dir  { 0.0F, 0.0F, -1.0F };
+    const auto c1 = inject_cell(s, 2.0F, sun_col, view_dir, sun_dir, 0.5F);
+    const auto c2 = inject_cell(s, 2.0F, sun_col, view_dir, sun_dir, 1.0F);
+    EXPECT_NEAR(c2.x, c1.x * 2.0F, 1e-6F);
+    EXPECT_NEAR(c2.y, c1.y * 2.0F, 1e-6F);
+    EXPECT_NEAR(c2.z, c1.z * 2.0F, 1e-6F);
+    EXPECT_NEAR(c1.w, c2.w, 1e-6F);  // sigma_t independent of dt
+}
+
+// (5) inject_cell with zero scattering (density 0) emits no in-scatter even
+//     when a positive absorption keeps extinction non-zero. Edge: σ_s = 0.
+TEST(VolFogFroxel, InjectCellZeroScatteringEmitsNoRadiance)
+{
+    VolumetricFogSettings s {};
+    s.density = 0.0F;      // σ_s = 0
+    s.absorption = 0.4F;   // σ_t = 0.4
+    const auto c = inject_cell(s, 5.0F, Vec3f { 1, 1, 1 },
+                               Vec3f { 0, 0, -1 }, Vec3f { 0, 0, -1 }, 1.0F);
+    EXPECT_NEAR(c.x, 0.0F, 1e-6F);
+    EXPECT_NEAR(c.y, 0.0F, 1e-6F);
+    EXPECT_NEAR(c.z, 0.0F, 1e-6F);
+    EXPECT_NEAR(c.w, 0.4F, 1e-6F);  // extinction still present
+}
+
+// (6) inject_cell respects the ambient ground-bounce term: with zero sun
+//     intensity the RGB equals ambient * sigma_s * dt (no phase factor).
+TEST(VolFogFroxel, InjectCellAmbientRidesWithoutSun)
+{
+    VolumetricFogSettings s {};
+    s.density = 0.5F;            // σ_s = 0.5
+    s.ambient = { 0.1F, 0.2F, 0.3F };
+    const float dt = 2.0F;
+    const auto c = inject_cell(s, 0.0F, Vec3f { 1, 1, 1 },
+                               Vec3f { 0, 0, -1 }, Vec3f { 0, 0, -1 }, dt);
+    EXPECT_NEAR(c.x, s.ambient.x * 0.5F * dt, 1e-6F);
+    EXPECT_NEAR(c.y, s.ambient.y * 0.5F * dt, 1e-6F);
+    EXPECT_NEAR(c.z, s.ambient.z * 0.5F * dt, 1e-6F);
+}
+
+// (7) Integrator scattering accumulation is monotonically NON-DECREASING in
+//     each RGB channel (front-to-back additive, no negative contributions).
+TEST(VolFogFroxel, IntegrateInScatterRgbNonDecreasing)
+{
+    FroxelGrid g;
+    g.desc = { 2, 2, 8, 0.1F, 16.0F };
+    g.resize();
+    VolumetricFogSettings s {};
+    s.density = 0.25F;
+    for (std::uint32_t z = 0; z < g.desc.depth; ++z)
+        g.at(1, 1, z) = inject_cell(s, 1.0F, Vec3f { 1, 1, 1 },
+                                    Vec3f { 0, 0, -1 }, Vec3f { 0, 0, -1 },
+                                    slice_thickness(z, g.desc));
+    std::vector<Vec4f> out;
+    integrate_view_ray(g, 1, 1, out);
+    ASSERT_EQ(out.size(), g.desc.depth);
+    Vec3f prev { -kEps, -kEps, -kEps };
+    for (const auto& a : out)
+    {
+        EXPECT_GE(a.x, prev.x - kEps);
+        EXPECT_GE(a.y, prev.y - kEps);
+        EXPECT_GE(a.z, prev.z - kEps);
+        prev = { a.x, a.y, a.z };
+    }
+}
+
+// (8) Integrator empty grid (no inject) yields zero in-scatter and unit
+//     transmittance for every slice. Edge: empty froxel.
+TEST(VolFogFroxel, IntegrateEmptyGridIsZeroScatterUnitTransmittance)
+{
+    FroxelGrid g;
+    g.desc = { 3, 3, 6, 0.1F, 12.0F };
+    g.resize();  // all cells {0,0,0,0}
+    std::vector<Vec4f> out;
+    integrate_view_ray(g, 2, 2, out);
+    ASSERT_EQ(out.size(), g.desc.depth);
+    for (const auto& a : out)
+    {
+        EXPECT_NEAR(a.x, 0.0F, 1e-6F);
+        EXPECT_NEAR(a.y, 0.0F, 1e-6F);
+        EXPECT_NEAR(a.z, 0.0F, 1e-6F);
+        EXPECT_NEAR(a.w, 1.0F, 1e-6F);  // no extinction -> full transmittance
+    }
+}
+
+// (9) Integrator first-slice transmittance equals Beer-Lambert over slice 0's
+//     thickness — pins the exact per-slice extinction conversion.
+TEST(VolFogFroxel, IntegrateFirstSliceTransmittanceMatchesBeerLambert)
+{
+    FroxelGrid g;
+    g.desc = { 1, 1, 4, 0.1F, 8.0F };
+    g.resize();
+    constexpr float kSigmaT = 0.7F;
+    for (std::uint32_t z = 0; z < g.desc.depth; ++z)
+        g.at(0, 0, z) = { 0.0F, 0.0F, 0.0F, kSigmaT };  // A = sigma_t only
+    std::vector<Vec4f> out;
+    integrate_view_ray(g, 0, 0, out);
+    ASSERT_EQ(out.size(), g.desc.depth);
+    const float dt0 = slice_thickness(0, g.desc);
+    EXPECT_NEAR(out[0].w, beer_lambert(kSigmaT, dt0), 1e-6F);
+}
+
+// (10) froxel_to_uvw bounds: the centre of every cell lands strictly inside
+//      (0,1)^3 — never on or past a face. Edge: corner cells.
+TEST(VolFogFroxel, FroxelToUvwAlwaysInsideUnitCube)
+{
+    FroxelGridDesc d {};
+    d.width = 5; d.height = 7; d.depth = 3;
+    for (std::uint32_t z = 0; z < d.depth; ++z)
+        for (std::uint32_t y = 0; y < d.height; ++y)
+            for (std::uint32_t x = 0; x < d.width; ++x)
+            {
+                const auto uvw = froxel_to_uvw(x, y, z, d);
+                EXPECT_GT(uvw.x, 0.0F);
+                EXPECT_LT(uvw.x, 1.0F);
+                EXPECT_GT(uvw.y, 0.0F);
+                EXPECT_LT(uvw.y, 1.0F);
+                EXPECT_GT(uvw.z, 0.0F);
+                EXPECT_LT(uvw.z, 1.0F);
+            }
+}
+
+// (11) slice_thickness for a single-slice grid equals the whole near->far
+//      span. Edge: depth == 1 (degenerate one-slab grid).
+TEST(VolFogFroxel, SliceThicknessSingleSliceSpansFullRange)
+{
+    FroxelGridDesc d {};
+    d.depth = 1;
+    d.near_z = 2.0F;
+    d.far_z  = 50.0F;
+    EXPECT_NEAR(slice_thickness(0, d), d.far_z - d.near_z, 1e-4F);
+}
+
+// (12) Composite blend GLSL contract: the kernel must apply scene*T + fog and
+//      preserve scene alpha. Pins the exact composite formula string so a
+//      refactor that flips the blend order is caught.
+TEST(VolFogFroxel, CompositeKernelPreservesSceneAlphaContract)
+{
+    EXPECT_NE(kVolFogCompositeCS.find("scene.rgb * fog.a + fog.rgb"),
+              std::string_view::npos);
+    EXPECT_NE(kVolFogCompositeCS.find("vec4(outRgb, scene.a)"),
+              std::string_view::npos);
+    EXPECT_NE(kVolFogCompositeCS.find("view_z_to_slice"),
+              std::string_view::npos);
+}
+
+// (13) Inject GLSL pre-multiplies in-scatter by dt exactly like the CPU path —
+//      both compute dt as slice_to_z(s1) - slice_to_z(s0). Pins CPU/GPU parity.
+TEST(VolFogFroxel, InjectKernelPremultipliesByDtLikeCpu)
+{
+    EXPECT_NE(kVolFogInjectCS.find("inscatter * dt"), std::string_view::npos);
+    EXPECT_NE(kVolFogInjectCS.find("slice_to_z(s1) - slice_to_z(s0)"),
+              std::string_view::npos);
+    // Integrate kernel must NOT re-multiply by dt (RGB already premultiplied).
+    EXPECT_NE(kVolFogIntegrateCS.find("cell.rgb * accum.a"),
+              std::string_view::npos);
+}
+
 // ---- GLSL kernel sanity -----------------------------------------------------
 
 TEST(VolFogFroxel, GlslKernelsContainExpectedDirectives)

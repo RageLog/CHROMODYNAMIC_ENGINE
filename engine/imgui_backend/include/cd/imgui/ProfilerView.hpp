@@ -66,9 +66,9 @@ inline void profiler_flamegraph(std::span<const cd::profile::Sample> samples,
     std::uint64_t t_max = 0;
     for (const auto& s : samples)
     {
-        if (s.start_ns < t_min) t_min = s.start_ns;
+        t_min = std::min(t_min, s.start_ns);
         const std::uint64_t end_ns = s.start_ns + s.duration_ns;
-        if (end_ns > t_max) t_max = end_ns;
+        t_max = std::max(t_max, end_ns);
     }
     if (t_min >= t_max)
     {

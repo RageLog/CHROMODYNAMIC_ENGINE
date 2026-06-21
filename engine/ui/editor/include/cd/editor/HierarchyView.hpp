@@ -45,7 +45,7 @@ public:
 
     [[nodiscard]] bool is_expanded(cd::ecs::Entity e) const noexcept
     {
-        return expanded_.find(e.id) != expanded_.end();
+        return expanded_.contains(e.id);
     }
 
     [[nodiscard]] std::size_t expanded_count() const noexcept { return expanded_.size(); }
