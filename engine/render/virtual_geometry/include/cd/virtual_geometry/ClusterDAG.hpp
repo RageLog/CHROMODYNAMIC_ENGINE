@@ -15,7 +15,6 @@
 // =============================================================================
 #pragma once
 
-#include <algorithm>
 #include <cd/math/Vector.hpp>
 
 #include <algorithm>

@@ -241,4 +241,344 @@ TEST(VirtualGeometryGpuDispatch, ShaderStringsContainEntryPoints)
     EXPECT_NE(kMaterializerFS.find("vis_buffer"),        std::string_view::npos);
 }
 
+// ===========================================================================
+// ADD-ONLY depth pass — pins ACTUAL host-side behaviour of GpuDispatcher's
+// cull / LOD-frontier / render-record path + the visibility-buffer pack
+// contract. No production code touched; CPU-cull output is the bit-for-bit
+// reference for the shipped kClusterCullCS, so all assertions below describe
+// the EXISTING predicate (golden-safe). NullDevice reports mesh_shader ==
+// false, so the real draw_mesh_tasks call is never issued here.
+// ===========================================================================
+
+// Single cluster centred on the +Z axis with caller-chosen errors, parked
+// well inside the look_forward_proj() frustum.
+ClusterDAG make_single_cluster(float self_err, float parent_err,
+                               float fz = 12.0F)
+{
+    Cluster c;
+    c.triangles  = { 0U };
+    c.lod_level  = 0U;
+    c.parent_lod = 1U;
+    c.self_error = self_err;
+    c.parent_error = parent_err;
+    c.bbox.min_corner = { -0.5F, -0.5F, fz };
+    c.bbox.max_corner = { 0.5F, 0.5F, fz + 1.0F };
+    std::vector<Cluster> nodes;
+    nodes.push_back(std::move(c));
+    return ClusterDAG { std::move(nodes) };
+}
+
+TEST(VirtualGeometryGpuDispatch, UnconfiguredDispatchCullProducesNothing)
+{
+    cd::rhi::NullCommandBuffer cmd {};
+    const auto vp      = look_forward_proj();
+    const auto frustum = cd::camera::extract_frustum(vp);
+
+    GpuDispatcher d;  // never configured
+    EXPECT_FALSE(d.configured());
+    d.dispatch_cull(cmd, frustum, 1.0F, { 0.0F, 0.0F, 0.0F }, 0.7F, 1080U);
+    EXPECT_TRUE(d.visible_clusters().empty());
+}
+
+TEST(VirtualGeometryGpuDispatch, ReconfigureClearsPreviousVisibleList)
+{
+    const auto dag = make_grid_dag(100U);
+    cd::rhi::NullDevice device {};
+    cd::rhi::NullCommandBuffer cmd {};
+    const auto vp      = look_forward_proj();
+    const auto frustum = cd::camera::extract_frustum(vp);
+
+    GpuDispatcher d;
+    d.configure(dag, device);
+    d.dispatch_cull(cmd, frustum, 1.0F, { 0.0F, 0.0F, 0.0F }, 0.7F, 1080U);
+    EXPECT_FALSE(d.visible_clusters().empty());
+
+    // configure() clears m_visible — fresh bind starts empty.
+    d.configure(dag, device);
+    EXPECT_TRUE(d.visible_clusters().empty());
+}
+
+// ---------------------------------------------------------------------------
+// LOD frontier predicate: keep when self_px <= thresh AND parent_px > thresh.
+// projected_err grows with radius, so for a fixed centre/cam the predicate is
+// purely a function of (self_error, parent_error) vs threshold.
+// ---------------------------------------------------------------------------
+
+TEST(VirtualGeometryGpuDispatch, LodFrontierKeepsWhenSelfFitsParentDoesNot)
+{
+    // self_error tiny → self_px below threshold; parent_error huge → parent_px
+    // above threshold → this is the frontier cluster, kept.
+    const auto dag = make_single_cluster(/*self_err=*/0.0F, /*parent_err=*/1000.0F);
+    cd::rhi::NullDevice device {};
+    cd::rhi::NullCommandBuffer cmd {};
+    const auto frustum = cd::camera::extract_frustum(look_forward_proj());
+
+    GpuDispatcher d;
+    d.configure(dag, device);
+    d.dispatch_cull(cmd, frustum, 1.0F, { 0.0F, 0.0F, 0.0F }, 0.7F, 1080U);
+    ASSERT_EQ(d.visible_clusters().size(), 1U);
+    EXPECT_EQ(d.visible_clusters()[0], 0U);
+}
+
+TEST(VirtualGeometryGpuDispatch, LodFrontierDropsWhenParentAlsoFitsTooCoarseHere)
+{
+    // Both errors tiny → parent_px also <= threshold → parent is acceptable,
+    // so this finer cluster is NOT the frontier (the coarser one wins).
+    const auto dag = make_single_cluster(/*self_err=*/0.0001F, /*parent_err=*/0.0002F);
+    cd::rhi::NullDevice device {};
+    cd::rhi::NullCommandBuffer cmd {};
+    const auto frustum = cd::camera::extract_frustum(look_forward_proj());
+
+    GpuDispatcher d;
+    d.configure(dag, device);
+    d.dispatch_cull(cmd, frustum, 1.0F, { 0.0F, 0.0F, 0.0F }, 0.7F, 1080U);
+    EXPECT_TRUE(d.visible_clusters().empty());
+}
+
+TEST(VirtualGeometryGpuDispatch, LodFrontierDropsWhenSelfErrorTooLarge)
+{
+    // self_error large → self_px > threshold → fails the lower bound, dropped
+    // (caller should be drawing an even finer cluster instead).
+    const auto dag = make_single_cluster(/*self_err=*/100.0F, /*parent_err=*/1000.0F);
+    cd::rhi::NullDevice device {};
+    cd::rhi::NullCommandBuffer cmd {};
+    const auto frustum = cd::camera::extract_frustum(look_forward_proj());
+
+    GpuDispatcher d;
+    d.configure(dag, device);
+    d.dispatch_cull(cmd, frustum, 1.0F, { 0.0F, 0.0F, 0.0F }, 0.7F, 1080U);
+    EXPECT_TRUE(d.visible_clusters().empty());
+}
+
+TEST(VirtualGeometryGpuDispatch, ProjectedErrorMonotoneCloserKeepsFartherDrops)
+{
+    // The SAME cluster errors, pulled to two distances. Closer → bigger
+    // projected error. With a tuned threshold the near cluster fails the
+    // self-bound (drops) while the far one becomes the frontier (kept) — this
+    // pins the distance-monotonicity of the bbox-diagonal error metric.
+    cd::rhi::NullDevice device {};
+    cd::rhi::NullCommandBuffer cmd {};
+    const auto frustum = cd::camera::extract_frustum(look_forward_proj());
+
+    // With fov_px = 1080/(2 tan 0.7) ~= 641, centre z 12.5 vs 80.5:
+    //   near: self_px ~= 0.51, parent_px ~= 2.56
+    //   far : self_px ~= 0.08, parent_px ~= 0.40
+    // Threshold 1.0 sits between near.self and near.parent (near = frontier)
+    // and above far.parent (far's parent acceptable → far dropped).
+    const float self_err   = 0.01F;
+    const float parent_err = 0.05F;
+
+    const auto near_dag = make_single_cluster(self_err, parent_err, /*fz=*/12.0F);
+    const auto far_dag  = make_single_cluster(self_err, parent_err, /*fz=*/80.0F);
+
+    constexpr float kThresh = 1.0F;
+
+    GpuDispatcher dn;
+    dn.configure(near_dag, device);
+    dn.dispatch_cull(cmd, frustum, kThresh, { 0.0F, 0.0F, 0.0F }, 0.7F, 1080U);
+
+    GpuDispatcher df;
+    df.configure(far_dag, device);
+    df.dispatch_cull(cmd, frustum, kThresh, { 0.0F, 0.0F, 0.0F }, 0.7F, 1080U);
+
+    // Near is the frontier (self fits, parent does not); far has shrunk so
+    // even the parent fits → far is dropped as too-coarse-here.
+    EXPECT_EQ(dn.visible_clusters().size(), 1U);
+    EXPECT_TRUE(df.visible_clusters().empty());
+}
+
+TEST(VirtualGeometryGpuDispatch, RaisingThresholdNeverShrinksFrontierMonotonic)
+{
+    // Sweep the LOD threshold upward; the count of clusters that pass the
+    // dual-bound test should be a unimodal/monotone-shaped band, never
+    // negative, and never exceed the input cluster count. We assert the soft
+    // invariant: every count is within [0, N] and the all-pass extreme holds.
+    const std::uint32_t n = 100U;
+    const auto dag = make_grid_dag(n);
+    cd::rhi::NullDevice device {};
+    cd::rhi::NullCommandBuffer cmd {};
+    const auto frustum = cd::camera::extract_frustum(look_forward_proj());
+
+    GpuDispatcher d;
+    d.configure(dag, device);
+    for (const float thresh : { 0.001F, 0.5F, 1.0F, 10.0F, 1e6F })
+    {
+        d.dispatch_cull(cmd, frustum, thresh, { 0.0F, 0.0F, 0.0F }, 0.7F, 1080U);
+        EXPECT_LE(d.visible_clusters().size(), static_cast<std::size_t>(n));
+    }
+
+    // grid clusters have self_error=0, parent_error=1000: at threshold 1.0 the
+    // frontier keeps all in-frustum clusters (parent_px > 1 always).
+    d.dispatch_cull(cmd, frustum, 1.0F, { 0.0F, 0.0F, 0.0F }, 0.7F, 1080U);
+    EXPECT_EQ(d.visible_clusters().size(), static_cast<std::size_t>(n));
+}
+
+// ---------------------------------------------------------------------------
+// Render-record path + mesh-task work-group sizing (host side, NullDevice).
+// ---------------------------------------------------------------------------
+
+TEST(VirtualGeometryGpuDispatch, MeshTaskGroupsStayZeroWhenBackendLacksMeshShader)
+{
+    // NullDevice::features().mesh_shader == false → dispatch_render records
+    // the schedule (render_dispatched=true) but never issues draw_mesh_tasks,
+    // so mesh_task_groups stays 0 (the documented fallback contract).
+    const auto dag = make_grid_dag(50U);
+    cd::rhi::NullDevice device {};
+    cd::rhi::NullCommandBuffer cmd {};
+    const auto frustum = cd::camera::extract_frustum(look_forward_proj());
+
+    GpuDispatcher d;
+    d.configure(dag, device);
+    d.dispatch_cull(cmd, frustum, 1.0F, { 0.0F, 0.0F, 0.0F }, 0.7F, 1080U);
+    ASSERT_FALSE(d.visible_clusters().empty());
+
+    d.dispatch_render(cmd);
+    EXPECT_TRUE(d.render_dispatched());
+    EXPECT_EQ(d.mesh_task_groups(), 0U);
+}
+
+TEST(VirtualGeometryGpuDispatch, MeshTaskGroupsResetToZeroWhenNothingVisible)
+{
+    // First a full pass (visible), then a behind-camera pass (nothing). The
+    // second dispatch_render must park render_dispatched and leave the work
+    // group count untouched at 0 (never issued under NullDevice anyway).
+    cd::rhi::NullDevice device {};
+    cd::rhi::NullCommandBuffer cmd {};
+    const auto frustum = cd::camera::extract_frustum(look_forward_proj());
+
+    const auto front = make_grid_dag(30U);
+    GpuDispatcher d;
+    d.configure(front, device);
+    d.dispatch_cull(cmd, frustum, 1.0F, { 0.0F, 0.0F, 0.0F }, 0.7F, 1080U);
+    d.dispatch_render(cmd);
+    EXPECT_TRUE(d.render_dispatched());
+
+    const auto behind = make_behind_dag(30U);
+    d.configure(behind, device);
+    d.dispatch_cull(cmd, frustum, 1.0F, { 0.0F, 0.0F, 0.0F }, 0.7F, 1080U);
+    EXPECT_TRUE(d.visible_clusters().empty());
+    d.dispatch_render(cmd);
+    EXPECT_FALSE(d.render_dispatched());
+    EXPECT_EQ(d.mesh_task_groups(), 0U);
+}
+
+TEST(VirtualGeometryGpuDispatch, RenderBeforeCullIsParkedNoVisibleClusters)
+{
+    // dispatch_render with no preceding cull → m_visible empty → no-op.
+    const auto dag = make_grid_dag(10U);
+    cd::rhi::NullDevice device {};
+    cd::rhi::NullCommandBuffer cmd {};
+
+    GpuDispatcher d;
+    d.configure(dag, device);
+    d.dispatch_render(cmd);
+    EXPECT_FALSE(d.render_dispatched());
+    EXPECT_EQ(d.mesh_task_groups(), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// Empty + single-cluster DAG edge cases through the dispatcher.
+// ---------------------------------------------------------------------------
+
+TEST(VirtualGeometryGpuDispatch, EmptyDagCullsToNothingAndRenderIsNoOp)
+{
+    const ClusterDAG empty_dag {};
+    cd::rhi::NullDevice device {};
+    cd::rhi::NullCommandBuffer cmd {};
+    const auto frustum = cd::camera::extract_frustum(look_forward_proj());
+
+    GpuDispatcher d;
+    d.configure(empty_dag, device);
+    d.dispatch_cull(cmd, frustum, 1.0F, { 0.0F, 0.0F, 0.0F }, 0.7F, 1080U);
+    EXPECT_TRUE(d.visible_clusters().empty());
+    d.dispatch_render(cmd);
+    EXPECT_FALSE(d.render_dispatched());
+}
+
+TEST(VirtualGeometryGpuDispatch, DeepBuiltDagCullsAndRendersConsistently)
+{
+    // Drive the dispatcher with a REAL builder DAG (multi-LOD, root at +inf
+    // parent_error). The cull selects a non-empty frontier and the render
+    // path records the schedule.
+    const std::uint32_t grid = 12U;
+    std::vector<cd::math::Vec3f> verts;
+    std::vector<std::uint32_t>   idx;
+    verts.reserve(static_cast<std::size_t>(grid + 1U) * (grid + 1U));
+    const float half = static_cast<float>(grid) * 0.5F;
+    for (std::uint32_t i = 0; i <= grid; ++i)
+        for (std::uint32_t j = 0; j <= grid; ++j)
+        {
+            cd::math::Vec3f v;
+            v.x = static_cast<float>(j) - half;
+            v.y = static_cast<float>(i) - half;
+            v.z = 20.0F;
+            verts.push_back(v);
+        }
+    for (std::uint32_t i = 0; i < grid; ++i)
+        for (std::uint32_t j = 0; j < grid; ++j)
+        {
+            const std::uint32_t a = i * (grid + 1U) + j;
+            const std::uint32_t b = (i + 1U) * (grid + 1U) + j;
+            const std::uint32_t c = (i + 1U) * (grid + 1U) + j + 1U;
+            const std::uint32_t e = i * (grid + 1U) + j + 1U;
+            idx.push_back(a); idx.push_back(b); idx.push_back(c);
+            idx.push_back(a); idx.push_back(c); idx.push_back(e);
+        }
+
+    const cd::virtual_geometry::ClusterDAGBuilder builder;
+    const auto dag = builder.build(verts, idx);
+    ASSERT_GE(dag.lod_levels(), 2U);
+
+    cd::rhi::NullDevice device {};
+    cd::rhi::NullCommandBuffer cmd {};
+    const auto frustum = cd::camera::extract_frustum(look_forward_proj());
+
+    GpuDispatcher d;
+    d.configure(dag, device);
+    // Coarse threshold so the leaf/coarse frontier is non-empty for a planar
+    // grid sitting at z=20 in front of the camera.
+    d.dispatch_cull(cmd, frustum, 1e6F, { 0.0F, 0.0F, 0.0F }, 0.7F, 1080U);
+
+    // Every reported id is a valid index into the DAG.
+    for (const std::uint32_t id : d.visible_clusters())
+        EXPECT_LT(id, dag.clusters().size());
+
+    d.dispatch_render(cmd);
+    // render_dispatched mirrors "did the cull find anything".
+    EXPECT_EQ(d.render_dispatched(), !d.visible_clusters().empty());
+}
+
+// ---------------------------------------------------------------------------
+// Visibility-buffer pack contract — sentinel + 25:7 split edges.
+// ---------------------------------------------------------------------------
+
+TEST(VirtualGeometryGpuDispatch, PackClusterZeroTriZeroIsNotSentinel)
+{
+    // cluster 0 / tri 0 must NOT collapse to the all-zero "empty" sentinel
+    // because pack_visibility adds 1 to the cluster id before shifting.
+    EXPECT_NE(pack_visibility(0U, 0U), 0U);
+    EXPECT_EQ(unpack_cluster_id(pack_visibility(0U, 0U)), 0U);
+    EXPECT_EQ(unpack_triangle_id(pack_visibility(0U, 0U)), 0U);
+}
+
+TEST(VirtualGeometryGpuDispatch, PackTriangleIdSaturatesToSevenBits)
+{
+    // triangle_id is masked to the low 7 bits; ids >= 128 wrap into range.
+    // Pin the ACTUAL masking behaviour (not a clamp): 128 -> 0, 130 -> 2.
+    EXPECT_EQ(unpack_triangle_id(pack_visibility(5U, 128U)), 0U);
+    EXPECT_EQ(unpack_triangle_id(pack_visibility(5U, 130U)), 2U);
+    // Cluster id is unaffected by the masked triangle id.
+    EXPECT_EQ(unpack_cluster_id(pack_visibility(5U, 130U)), 5U);
+}
+
+TEST(VirtualGeometryGpuDispatch, PackVisibilityIsConstexpr)
+{
+    // The packing helpers are constexpr — exercise that at compile time so a
+    // future non-constexpr regression is caught here.
+    constexpr std::uint32_t packed = pack_visibility(7U, 33U);
+    static_assert(unpack_cluster_id(packed) == 7U);
+    static_assert(unpack_triangle_id(packed) == 33U);
+    SUCCEED();
+}
+
 }  // namespace

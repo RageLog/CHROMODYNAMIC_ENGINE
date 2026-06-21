@@ -15,10 +15,21 @@
 //
 // This header ships the **public API** and a **CPU reference MLP**
 // (tiny, single hidden layer, SGD, single-threaded) so consumer code can
-// compile + smoke-test the contract today. The production backends — Tiny
-// CUDA NN, OneAPI MLP, custom SPIR-V compute — live behind a
-// `CD_NRC_BACKEND` selector (CMake option) and are wired by separate
-// translation units (promote-on-need; trigger in the ADR).
+// compile + smoke-test the contract today. The CPU MLP IS the verified
+// contract: its forward pass (W_in·x+b_in → ReLU → W_out·h+b_out) and SGD
+// backward pass (half-squared-error gradient, ReLU passthrough) are pinned
+// exactly by tests/test_nrc.cpp against an independent reference forward and a
+// single-sample overfit-to-~0-loss convergence proof.
+//
+// SEALED BACKENDS — the production accelerators (Tiny CUDA NN, OneAPI MLP,
+// custom SPIR-V compute) are *documented stubs only*: there is intentionally
+// NO type, function, or `CD_NRC_BACKEND` translation unit in this library for
+// them. A usable GPU NRC (16-wide fully-fused tensor-core layers, Adam,
+// frequency encoding, per-frame online training co-scheduled with the path
+// tracer) is a multi-month subsystem requiring a CUDA/SPIR-V toolchain and
+// render-loop integration that this header cannot host. They are gated in
+// docs/ADR/ADR-20260616-band6-render-misc-scope.md §4 (promote-on-need); do
+// not stub partial GPU NN code here — it would be untestable on CI hardware.
 //
 // References:
 //   * Müller, Rousselle, Novák, Keller — "Real-time Neural Radiance

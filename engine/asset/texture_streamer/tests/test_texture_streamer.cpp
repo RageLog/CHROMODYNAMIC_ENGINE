@@ -16,6 +16,13 @@
 //   T6  enqueue is idempotent (duplicate enqueue does not double-count)
 //   T7  get_loaded returns nullopt for unknown path
 //   T8  decode_texture_file: cdtex fixture yields real BC7 blocks + dims
+//   T9  cancel of already-loaded path is a no-op
+//   T10 cancel of unknown path is a no-op (no crash)
+//   T11 get_dimensions returns nullopt for a still-pending path
+//   T12 three-item priority queue drains in strict priority order
+//   T13 decode_texture_file sealed paths (PNG/JPG/KTX2/raw/no-ext) return nullopt
+//   T14 live_texture_count tracks GPU handle creation per load
+//   T15 mip_target != 0 propagates to the GPU texture descriptor
 // =============================================================================
 
 #include <cd/asset/texture_streamer/TextureStreamer.hpp>
@@ -294,4 +301,183 @@ TEST(TextureStreamer, DecodeTextureFileReturnsRealCdtex)
     EXPECT_TRUE(decoded->has_pixels());
     // 256/4 × 128/4 × 16 bytes per BC7 block.
     EXPECT_EQ(decoded->blocks.size(), 64U * 32U * 16U);
+}
+
+// ---- T9: cancel of already-loaded path is a no-op ---------------------------
+//
+// cancel() must not remove a loaded record.  After a successful tick() the
+// entry lives in completed_, not pending_map_.  A subsequent cancel() call
+// with the same path must leave is_loaded() returning true.
+
+TEST(TextureStreamer, CancelLoadedPathIsNoOp)
+{
+    PathGuard g { tmp_cdtex_path() };
+    write_cdtex(g.path, 8U, 8U);
+    const std::string path = g.path.string();
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+
+    ts.enqueue({ path, 0U, 200U });
+    ts.tick(0.016F, device);
+    ASSERT_TRUE(ts.is_loaded(path));
+
+    // cancel() on an already-loaded path must be a no-op.
+    ts.cancel(path);
+    EXPECT_TRUE(ts.is_loaded(path));
+    EXPECT_EQ(ts.completed_count(), 1U);
+}
+
+// ---- T10: cancel of unknown path is a no-op (no crash) ----------------------
+
+TEST(TextureStreamer, CancelUnknownPathIsNoOp)
+{
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+
+    // Cancelling a path that was never enqueued must not crash or corrupt state.
+    ts.cancel("nonexistent.cdtex");
+    EXPECT_EQ(ts.pending_count(),   0U);
+    EXPECT_EQ(ts.completed_count(), 0U);
+}
+
+// ---- T11: get_dimensions returns nullopt for a still-pending path ------------
+//
+// A path is enqueued but tick() has not yet been called.  get_dimensions()
+// must return nullopt — only a fully loaded (post-tick) record has dimensions.
+
+TEST(TextureStreamer, GetDimensionsNulloptForPendingPath)
+{
+    PathGuard g { tmp_cdtex_path() };
+    write_cdtex(g.path, 32U, 32U);
+    const std::string path = g.path.string();
+
+    TextureStreamer ts;
+    ts.enqueue({ path, 0U, 100U });
+
+    // Still pending — must not have dimensions yet.
+    EXPECT_FALSE(ts.get_dimensions(path).has_value());
+    EXPECT_EQ(ts.pending_count(), 1U);
+}
+
+// ---- T12: three-item priority queue drains in strict priority order ----------
+//
+// Three requests with distinct priorities (low=10, mid=100, high=200) are
+// enqueued simultaneously.  One tick() drains exactly one — the highest.
+// A second tick() drains the middle.  A third drains the lowest.
+
+TEST(TextureStreamer, ThreeItemPriorityDrainOrder)
+{
+    PathGuard glo  { tmp_cdtex_path() };
+    PathGuard gmid { tmp_cdtex_path() };
+    PathGuard ghi  { tmp_cdtex_path() };
+    write_cdtex(glo.path,   4U,  4U, 0x11);
+    write_cdtex(gmid.path,  8U,  8U, 0x22);
+    write_cdtex(ghi.path,  16U, 16U, 0x33);
+    const std::string lo  = glo.path.string();
+    const std::string mid = gmid.path.string();
+    const std::string hi  = ghi.path.string();
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+
+    ts.enqueue({ lo,  0U,  10U });
+    ts.enqueue({ mid, 0U, 100U });
+    ts.enqueue({ hi,  0U, 200U });
+    EXPECT_EQ(ts.pending_count(), 3U);
+
+    // Tick 1: highest priority (hi, 200) must be selected.
+    ts.tick(0.016F, device);
+    EXPECT_EQ(ts.pending_count(), 2U);
+    EXPECT_TRUE(ts.is_loaded(hi));
+    EXPECT_FALSE(ts.is_loaded(mid));
+    EXPECT_FALSE(ts.is_loaded(lo));
+
+    // Tick 2: next highest (mid, 100) must be selected.
+    ts.tick(0.016F, device);
+    EXPECT_EQ(ts.pending_count(), 1U);
+    EXPECT_TRUE(ts.is_loaded(mid));
+    EXPECT_FALSE(ts.is_loaded(lo));
+
+    // Tick 3: last remaining (lo, 10) must be selected.
+    ts.tick(0.016F, device);
+    EXPECT_EQ(ts.pending_count(), 0U);
+    EXPECT_TRUE(ts.is_loaded(lo));
+    EXPECT_EQ(ts.completed_count(), 3U);
+}
+
+// ---- T13: decode_texture_file sealed paths return nullopt -------------------
+//
+// PNG/JPG (and any non-.cdtex extension) are SEALED per ADR-20260616-band6.
+// decode_texture_file must return nullopt for these extensions — not crash.
+
+TEST(TextureStreamer, DecodeTextureFileNonCdtexExtensionSealed)
+{
+    // .png — SEALED, should return nullopt without crash.
+    EXPECT_FALSE(cd::asset::texture_streamer::decode_texture_file("texture.png").has_value());
+    // .jpg — SEALED.
+    EXPECT_FALSE(cd::asset::texture_streamer::decode_texture_file("texture.jpg").has_value());
+    // .ktx2 — SEALED.
+    EXPECT_FALSE(cd::asset::texture_streamer::decode_texture_file("texture.ktx2").has_value());
+    // Completely unknown extension — SEALED.
+    EXPECT_FALSE(cd::asset::texture_streamer::decode_texture_file("texture.raw").has_value());
+    // No extension at all.
+    EXPECT_FALSE(cd::asset::texture_streamer::decode_texture_file("texture").has_value());
+}
+
+// ---- T14: live_texture_count tracks GPU handle creation per load ------------
+//
+// NullDevice::live_texture_count() increments exactly once per successful
+// tick().  This proves create_texture is actually called with a valid desc.
+
+TEST(TextureStreamer, LiveTextureCountTracksGpuHandles)
+{
+    PathGuard g1 { tmp_cdtex_path() };
+    PathGuard g2 { tmp_cdtex_path() };
+    write_cdtex(g1.path, 16U, 16U);
+    write_cdtex(g2.path, 32U, 32U);
+    const std::string p1 = g1.path.string();
+    const std::string p2 = g2.path.string();
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+
+    EXPECT_EQ(device.live_texture_count(), 0U);
+
+    ts.enqueue({ p1, 0U, 100U });
+    ts.tick(0.016F, device);
+    EXPECT_EQ(device.live_texture_count(), 1U);
+
+    ts.enqueue({ p2, 0U, 100U });
+    ts.tick(0.016F, device);
+    EXPECT_EQ(device.live_texture_count(), 2U);
+}
+
+// ---- T15: mip_target != 0 propagates to the GPU texture descriptor ----------
+//
+// When mip_target == 3, the streamer must create a GPU texture with
+// mip_levels == 3 (not 1 which is the mip_target == 0 default).
+// NullDevice stores TextureDesc so we verify the mip chain requested.
+
+TEST(TextureStreamer, MipTargetNonZeroFlowsToDesc)
+{
+    PathGuard g { tmp_cdtex_path() };
+    write_cdtex(g.path, 64U, 64U);
+    const std::string path = g.path.string();
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+
+    // mip_target == 3 → mip_levels must be 3 in the TextureDesc.
+    ts.enqueue({ path, 3U, 200U });
+    ts.tick(0.016F, device);
+
+    ASSERT_TRUE(ts.is_loaded(path));
+    // REAL dimensions must still be correct.
+    const auto dims = ts.get_dimensions(path);
+    ASSERT_TRUE(dims.has_value());
+    EXPECT_EQ(dims->first,  64U);
+    EXPECT_EQ(dims->second, 64U);
+    // GPU texture was created — exactly one live handle.
+    EXPECT_EQ(device.live_texture_count(), 1U);
 }

@@ -1,6 +1,11 @@
 // =============================================================================
 // CHROMODYNAMIC — cd::profile::gpu_marker tests
-// Phase 606
+// Phase 606  (initial — 5 tests)
+// Floor-raise marathon (2026-06-21) — +13 tests → 21 total covering:
+//   stub-path exact ms math, nested scope depth, free-list recycling,
+//   frame-boundary ring reset, multi-frame accumulation, double-end guard,
+//   pool-overflow stub fallback, prepare() grow path, MarkerHandle sentinel,
+//   timestamp-path nested markers, debug-group balance, clear mid-flight.
 //
 // Tests validate the API surface and stub counter behavior.
 // NullCommandBuffer and NullDevice are used so no GPU is required.
@@ -397,4 +402,408 @@ TEST(GpuMarker_RealPath, PrepareIdempotentAndReleasesPool)
     }
     // Destructor released the pool exactly once.
     EXPECT_EQ(dev.destroy_count(), 1U);
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: stub-path exact ms math.
+//   begin_marker advances the counter once (start_tick = N), end_marker
+//   advances it again (end_tick = N+1).  With the 1 GHz contract:
+//     duration_ms = (1 / 1e9) * 1000 = 1e-6 ms  (exactly 1e-6 ms per tick).
+//   The test pins the exact double value so regressions in the constant are
+//   caught immediately.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_Stub, ExactMillisecondConversion)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    cd::rhi::NullDevice        dev;
+    Recorder                   rec;
+
+    const MarkerHandle h = rec.begin_marker(cmd, "exact_ms");
+    rec.end_marker(cmd, h);
+    rec.resolve(dev);
+
+    const auto s = rec.samples();
+    ASSERT_EQ(s.size(), 1U);
+    // Counter: begin=0, end=1 → delta=1 tick.
+    EXPECT_EQ(s[0].gpu_start_tick, 0U);
+    EXPECT_EQ(s[0].gpu_end_tick, 1U);
+    // 1 GHz ↔ (1 / 1e9) s = 1e-6 ms per tick.
+    EXPECT_DOUBLE_EQ(s[0].duration_ms_computed, 1.0e-6);
+}
+
+// ---------------------------------------------------------------------------
+// Test 10: nested scopes — Scope B is opened inside Scope A.
+//   After both scopes close and resolve:
+//   * two samples are present (A and B).
+//   * A's duration encloses B's (A_start < B_start < B_end < A_end on the
+//     monotonic counter, so A_duration >= B_duration + 2).
+//   * debug_groups contains both names (push_debug_group called for each).
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_Scope, NestedScopesDurationOrdering)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    cd::rhi::NullDevice        dev;
+    Recorder                   rec;
+
+    {
+        Scope outer(rec, cmd, "outer_pass");
+        {
+            Scope inner(rec, cmd, "inner_pass");
+        }
+    }
+    rec.resolve(dev);
+
+    const auto s = rec.samples();
+    ASSERT_EQ(s.size(), 2U);
+
+    // Samples land in end_marker order: inner scope destructs first (LIFO),
+    // so s[0] == inner_pass, s[1] == outer_pass.
+    EXPECT_EQ(s[0].name, "inner_pass");
+    EXPECT_EQ(s[1].name, "outer_pass");
+
+    // Outer has a larger tick range than inner.
+    // Counter sequence: outer_begin=0, inner_begin=1, inner_end=2, outer_end=3.
+    // inner_delta = 2-1 = 1 tick; outer_delta = 3-0 = 3 ticks.
+    const auto outer_delta =
+        static_cast<std::int64_t>(s[1].gpu_end_tick) -
+        static_cast<std::int64_t>(s[1].gpu_start_tick);
+    const auto inner_delta =
+        static_cast<std::int64_t>(s[0].gpu_end_tick) -
+        static_cast<std::int64_t>(s[0].gpu_start_tick);
+    EXPECT_GT(outer_delta, inner_delta);
+
+    // Both debug groups pushed in begin_marker order (outer first, then inner).
+    EXPECT_EQ(cmd.log().debug_groups.size(), 2U);
+    EXPECT_EQ(cmd.log().debug_groups[0], "outer_pass");
+    EXPECT_EQ(cmd.log().debug_groups[1], "inner_pass");
+}
+
+// ---------------------------------------------------------------------------
+// Test 11: free-list recycling — after end_marker the slot is returned to the
+//   free-list.  A second begin_marker should reuse the same slot index (== 0)
+//   rather than growing the in-flight table.
+//   Verified indirectly: both markers are named differently and both produce
+//   valid samples after resolve, and the second begin returns handle.index == 0.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_Recorder, FreeListRecyclesSlot)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    cd::rhi::NullDevice        dev;
+    Recorder                   rec;
+
+    const MarkerHandle h0 = rec.begin_marker(cmd, "first");
+    EXPECT_EQ(h0.index, 0U);
+    rec.end_marker(cmd, h0);
+
+    // Slot 0 is now on the free-list; the next begin must reuse it.
+    const MarkerHandle h1 = rec.begin_marker(cmd, "second");
+    EXPECT_EQ(h1.index, 0U);
+    rec.end_marker(cmd, h1);
+
+    rec.resolve(dev);
+
+    const auto s = rec.samples();
+    ASSERT_EQ(s.size(), 2U);
+    EXPECT_EQ(s[0].name, "first");
+    EXPECT_EQ(s[1].name, "second");
+}
+
+// ---------------------------------------------------------------------------
+// Test 12: frame-boundary ring reset — after resolve() the timestamp-slot
+//   cursor is rewound to 0 so the next frame reuses the pool from the start.
+//   Two frames are recorded with the same marker name; both resolve correctly.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_RealPath, FrameBoundarySlotCursorReset)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    FakeTimestampDevice        dev;
+    Recorder                   rec;
+
+    ASSERT_TRUE(rec.prepare(dev, 2));  // 4-slot pool.
+
+    // Frame 1.
+    const MarkerHandle h0 = rec.begin_marker(cmd, "gbuffer");
+    rec.end_marker(cmd, h0);
+    rec.resolve(dev);
+    EXPECT_EQ(rec.samples().size(), 1U);
+
+    // Frame 2 — cursor must have rewound; should resolve without issues.
+    rec.clear();
+    const MarkerHandle h1 = rec.begin_marker(cmd, "gbuffer");
+    rec.end_marker(cmd, h1);
+    rec.resolve(dev);
+
+    const auto s = rec.samples();
+    ASSERT_EQ(s.size(), 1U);
+    EXPECT_EQ(s[0].name, "gbuffer");
+    EXPECT_GT(s[0].duration_ms_computed, 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Test 13: double-end guard — calling end_marker() a second time with the
+//   same handle (after active flag cleared) must be a no-op.
+//   No extra sample is produced; no crash.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_Recorder, DoubleEndIsNoOp)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    cd::rhi::NullDevice        dev;
+    Recorder                   rec;
+
+    const MarkerHandle h = rec.begin_marker(cmd, "double_end");
+    rec.end_marker(cmd, h);
+    rec.end_marker(cmd, h);  // Second call: should be a no-op.
+
+    rec.resolve(dev);
+    EXPECT_EQ(rec.samples().size(), 1U);  // Only one sample despite two end calls.
+}
+
+// ---------------------------------------------------------------------------
+// Test 14: pool-overflow stub fallback — record max_markers+1 markers when
+//   only max_markers worth of slots are available.  The extra marker falls
+//   back to the stub path (begin_slot == ~0U internally) and still produces
+//   a valid sample with duration_ms_computed > 0 after resolve.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_RealPath, PoolOverflowFallsBackToStub)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    FakeTimestampDevice        dev;
+    Recorder                   rec;
+
+    // Prepare for exactly 2 markers (4 slots).
+    ASSERT_TRUE(rec.prepare(dev, 2));
+
+    // Record 3 markers — the 3rd must overflow to the stub path.
+    const MarkerHandle h0 = rec.begin_marker(cmd, "m0");
+    const MarkerHandle h1 = rec.begin_marker(cmd, "m1");
+    const MarkerHandle h2 = rec.begin_marker(cmd, "m2");  // overflow
+    rec.end_marker(cmd, h0);
+    rec.end_marker(cmd, h1);
+    rec.end_marker(cmd, h2);
+
+    rec.resolve(dev);
+
+    const auto s = rec.samples();
+    ASSERT_EQ(s.size(), 3U);
+    // All three samples must report a positive duration regardless of path.
+    for (const auto& sample : s)
+    {
+        EXPECT_GT(sample.duration_ms_computed, 0.0)
+            << "Zero duration for: " << sample.name;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 15: prepare() grow path — a second prepare() with larger max_markers
+//   releases the smaller pool (one destroy_count increment) and creates a
+//   new, bigger pool.  The recorder returns true and the new slot count is
+//   2 * larger_max.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_RealPath, PrepareGrowReplacesPool)
+{
+    FakeTimestampDevice dev;
+    {
+        Recorder rec;
+        ASSERT_TRUE(rec.prepare(dev, 2));
+        EXPECT_EQ(dev.last_pool_count(), 4U);
+
+        // Larger request: the old pool is released, a new bigger one created.
+        ASSERT_TRUE(rec.prepare(dev, 8));
+        EXPECT_EQ(dev.destroy_count(), 1U);  // Old pool destroyed.
+        EXPECT_EQ(dev.last_pool_count(), 16U);
+    }
+    // Destructor releases the new (bigger) pool.
+    EXPECT_EQ(dev.destroy_count(), 2U);
+}
+
+// ---------------------------------------------------------------------------
+// Test 16: MarkerHandle sentinel — default-constructed handle is invalid;
+//   begin_marker always returns a valid handle; MarkerHandle{~0U} is invalid.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_MarkerHandle, SentinelValues)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    cd::rhi::NullDevice        dev;
+    Recorder                   rec;
+
+    // Default-constructed: invalid.
+    const MarkerHandle def {};
+    EXPECT_FALSE(def.valid());
+
+    // Explicitly set to ~0U: invalid.
+    const MarkerHandle bad { ~0U };
+    EXPECT_FALSE(bad.valid());
+
+    // begin_marker returns a valid handle.
+    const MarkerHandle good = rec.begin_marker(cmd, "valid");
+    EXPECT_TRUE(good.valid());
+    rec.end_marker(cmd, good);
+}
+
+// ---------------------------------------------------------------------------
+// Test 17: multi-frame accumulation — record markers in two consecutive
+//   frames, clearing between them.  Each frame independently yields the
+//   correct sample count; counter resets between frames.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_Recorder, MultiFrameAccumulation)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    cd::rhi::NullDevice        dev;
+    Recorder                   rec;
+
+    // Frame 1: two markers.
+    const MarkerHandle f1a = rec.begin_marker(cmd, "f1_a");
+    const MarkerHandle f1b = rec.begin_marker(cmd, "f1_b");
+    rec.end_marker(cmd, f1a);
+    rec.end_marker(cmd, f1b);
+    rec.resolve(dev);
+    ASSERT_EQ(rec.samples().size(), 2U);
+
+    // Frame 2: clear then one marker.
+    rec.clear();
+    EXPECT_TRUE(rec.samples().empty());
+
+    const MarkerHandle f2a = rec.begin_marker(cmd, "f2_a");
+    rec.end_marker(cmd, f2a);
+    rec.resolve(dev);
+
+    const auto s2 = rec.samples();
+    ASSERT_EQ(s2.size(), 1U);
+    EXPECT_EQ(s2[0].name, "f2_a");
+    // Counter reset at clear: start_tick is 0 again.
+    EXPECT_EQ(s2[0].gpu_start_tick, 0U);
+}
+
+// ---------------------------------------------------------------------------
+// Test 18: stub duration with known tick delta.
+//   Record N markers sequentially.  Each begin/end pair advances the counter
+//   by exactly 1 tick.  With the 1 GHz contract, duration_ms = 1e-6 for
+//   every sample.  Verify all N samples have the identical exact value.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_Stub, AllSamplesHaveIdenticalOneTick)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    cd::rhi::NullDevice        dev;
+    Recorder                   rec;
+
+    constexpr std::size_t kCount = 5;
+    for (std::size_t i = 0; i < kCount; ++i)
+    {
+        const MarkerHandle h = rec.begin_marker(cmd, "region");
+        rec.end_marker(cmd, h);
+    }
+    rec.resolve(dev);
+
+    const auto s = rec.samples();
+    ASSERT_EQ(s.size(), kCount);
+    for (const auto& sample : s)
+    {
+        EXPECT_DOUBLE_EQ(sample.duration_ms_computed, 1.0e-6)
+            << "Non-uniform duration for sample: " << sample.name;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 19: debug-group balance — each begin_marker pushes one group, each
+//   end_marker pops one.  For N markers the NullCommandBuffer log must record
+//   exactly N debug-group pushes and the written names match insertion order.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_Recorder, DebugGroupNamesMatchInsertionOrder)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    cd::rhi::NullDevice        dev;
+    Recorder                   rec;
+
+    const std::vector<std::string> names = { "shadow", "gbuffer", "lighting",
+                                              "postfx", "tonemap" };
+    std::vector<MarkerHandle> handles;
+    handles.reserve(names.size());
+    for (const auto& n : names)
+    {
+        handles.emplace_back(rec.begin_marker(cmd, n));
+    }
+    for (auto& h : handles)
+    {
+        rec.end_marker(cmd, h);
+    }
+    rec.resolve(dev);
+
+    const auto& groups = cmd.log().debug_groups;
+    ASSERT_EQ(groups.size(), names.size());
+    for (std::size_t i = 0; i < names.size(); ++i)
+    {
+        EXPECT_EQ(groups[i], names[i]) << "Mismatch at index " << i;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 20: clear() with in-flight markers — if clear() is called while a
+//   marker is still in-flight (begin but no end), the in-flight entry is
+//   discarded; no sample appears afterward.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_Recorder, ClearDiscardsInFlightMarker)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    cd::rhi::NullDevice        dev;
+    Recorder                   rec;
+
+    {
+        const MarkerHandle dangling = rec.begin_marker(cmd, "dangling");
+        // Suppress unused-variable warning: handle intentionally not ended.
+        (void)dangling;
+    }
+    // Do NOT call end_marker — clear while in-flight.
+    rec.clear();
+
+    rec.resolve(dev);
+    EXPECT_TRUE(rec.samples().empty());
+
+    // After clear the recorder must still accept new well-formed markers.
+    const MarkerHandle h2 = rec.begin_marker(cmd, "fresh");
+    rec.end_marker(cmd, h2);
+    rec.resolve(dev);
+    EXPECT_EQ(rec.samples().size(), 1U);
+}
+
+// ---------------------------------------------------------------------------
+// Test 21: timestamp path with 3 nested begin/end pairs — all slots are
+//   allocated in order and the canned ns values produce correct per-marker
+//   durations for each pair.
+//   Pool has 8 slots (max_markers=4).  Three markers use slots 0-5.
+//   Slot values: ns[i] = 100*(i+1).  Deltas = 100ns = 1e-4 ms each.
+// ---------------------------------------------------------------------------
+TEST(GpuMarker_RealPath, ThreeMarkersCorrectSlotAssignment)
+{
+    cd::rhi::NullCommandBuffer cmd;
+    FakeTimestampDevice        dev;
+    Recorder                   rec;
+
+    ASSERT_TRUE(rec.prepare(dev, 4));  // 8-slot pool
+
+    const MarkerHandle h0 = rec.begin_marker(cmd, "alpha");   // slots 0,1
+    const MarkerHandle h1 = rec.begin_marker(cmd, "beta");    // slots 2,3
+    const MarkerHandle h2 = rec.begin_marker(cmd, "gamma");   // slots 4,5
+    rec.end_marker(cmd, h0);
+    rec.end_marker(cmd, h1);
+    rec.end_marker(cmd, h2);
+
+    // 3 begin + 3 end = 6 write_timestamp calls.
+    EXPECT_EQ(cmd.log().query_writes, 6U);
+
+    rec.resolve(dev);
+
+    const auto s = rec.samples();
+    ASSERT_EQ(s.size(), 3U);
+
+    // ns[0]=100, ns[1]=200 → delta 100ns = 1e-4 ms.
+    EXPECT_EQ(s[0].name, "alpha");
+    EXPECT_DOUBLE_EQ(s[0].duration_ms_computed, 100.0 / 1.0e6);
+
+    // ns[2]=300, ns[3]=400 → same delta.
+    EXPECT_EQ(s[1].name, "beta");
+    EXPECT_DOUBLE_EQ(s[1].duration_ms_computed, 100.0 / 1.0e6);
+
+    // ns[4]=500, ns[5]=600 → same delta.
+    EXPECT_EQ(s[2].name, "gamma");
+    EXPECT_DOUBLE_EQ(s[2].duration_ms_computed, 100.0 / 1.0e6);
 }

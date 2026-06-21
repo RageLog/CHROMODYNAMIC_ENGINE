@@ -11,13 +11,20 @@
 // via join_all() or join_pending() which block on a predicate.
 //
 // Tests:
-//   A1  AsyncScenePool: parse 5 real fixtures; completed_count + poll match.
-//   A2  AsyncScenePool: completed_count accumulates; second poll empty.
-//   A3  AsyncScenePool: poll_completed non-blocking on un-configured pool.
-//   A4  SceneStreamer async: tick + join_pending → completed_count == N.
-//   A5  SceneStreamer async: is_loaded true + REAL node/mesh tree for each path.
-//   A6  AsyncScenePool: a path that fails to parse is NOT completed.
-//   A7  SceneStreamer async: pending_count reaches 0 after first tick().
+//   A1   AsyncScenePool: parse 5 real fixtures; completed_count + poll match.
+//   A2   AsyncScenePool: completed_count accumulates; second poll empty.
+//   A3   AsyncScenePool: poll_completed non-blocking on un-configured pool.
+//   A4   SceneStreamer async: tick + join_pending → completed_count == N.
+//   A5   SceneStreamer async: is_loaded true + REAL node/mesh tree for each path.
+//   A6   AsyncScenePool: a path that fails to parse is NOT completed.
+//   A7   SceneStreamer async: pending_count reaches 0 after first tick().
+//   A8   AsyncScenePool: single-worker serialises requests (1-worker variant).
+//   A9   AsyncScenePool: join_all on empty pool is a no-op (no deadlock).
+//   A10  SceneStreamer async: cancel-before-tick removes path from pending.
+//   A11  SceneStreamer async: SceneId uniqueness across N async loads.
+//   A12  SceneStreamer async: completed_count matches get_loaded for all paths.
+//   A13  SceneStreamer async: multiple tick() calls until join drain completely.
+//   A14  AsyncScenePool: mixed success+failure — only successes complete.
 // =============================================================================
 
 #include <cd/asset/scene_streamer/SceneStreamer.hpp>
@@ -327,4 +334,185 @@ TEST(SceneStreamerAsync, PendingCountZeroAfterFirstAsyncTick)
     EXPECT_EQ(s.pending_count(), 0U);
 
     s.join_pending();
+}
+
+// ---- A8: single-worker pool serialises requests correctly -------------------
+
+TEST(SceneStreamerAsync, SingleWorkerParsesAllItems)
+{
+    PathGuard g0 { tmp_gltf_path() };
+    PathGuard g1 { tmp_gltf_path() };
+    PathGuard g2 { tmp_gltf_path() };
+    write_triangle_gltf(g0.path);
+    write_triangle_gltf(g1.path);
+    write_triangle_gltf(g2.path);
+
+    AsyncScenePool pool;
+    pool.configure(1U);  // single worker — forces serialisation
+    pool.submit_async(StreamRequest{ g0.path.string(), 100U });
+    pool.submit_async(StreamRequest{ g1.path.string(), 200U });
+    pool.submit_async(StreamRequest{ g2.path.string(),  50U });
+    pool.join_all();
+
+    EXPECT_EQ(pool.completed_count(), 3U);
+    const auto done = pool.poll_completed();
+    EXPECT_EQ(done.size(), 3U);
+    for (const auto& item : done)
+    {
+        EXPECT_FALSE(item.path.empty());
+        EXPECT_EQ(item.scene.nodes.size(), 1U);
+    }
+}
+
+// ---- A9: join_all on empty (no submissions) pool does not deadlock ----------
+
+TEST(SceneStreamerAsync, JoinAllOnEmptyPoolIsNoOp)
+{
+    AsyncScenePool pool;
+    pool.configure(2U);
+    pool.join_all();  // Nothing submitted — must complete immediately.
+    EXPECT_EQ(pool.completed_count(), 0U);
+}
+
+// ---- A10: cancel before tick removes the path from SceneStreamer pending ----
+
+TEST(SceneStreamerAsync, CancelBeforeAsyncTickRemovesPath)
+{
+    PathGuard g0 { tmp_gltf_path() };
+    PathGuard g1 { tmp_gltf_path() };
+    write_triangle_gltf(g0.path);
+    write_triangle_gltf(g1.path);
+
+    SceneStreamer s { SceneStreamerConfig{ .use_async = true, .worker_count = 2U } };
+    s.enqueue(StreamRequest{ g0.path.string(), 200U });
+    s.enqueue(StreamRequest{ g1.path.string(), 100U });
+    EXPECT_EQ(s.pending_count(), 2U);
+
+    // Cancel g1 before tick() dispatches it.
+    s.cancel(g1.path.string());
+    EXPECT_EQ(s.pending_count(), 1U);
+
+    s.tick(0.016F);
+    // Only g0 was dispatched.
+    EXPECT_EQ(s.pending_count(), 0U);
+
+    s.join_pending();
+
+    // g0 completed; g1 was cancelled before dispatch.
+    EXPECT_TRUE(s.is_loaded(g0.path.string()));
+    EXPECT_EQ(s.completed_count(), 1U);
+}
+
+// ---- A11: SceneId uniqueness across N async loads ---------------------------
+
+TEST(SceneStreamerAsync, AsyncSceneIdUniquePerPath)
+{
+    PathGuard g0 { tmp_gltf_path() };
+    PathGuard g1 { tmp_gltf_path() };
+    PathGuard g2 { tmp_gltf_path() };
+    write_triangle_gltf(g0.path);
+    write_triangle_gltf(g1.path);
+    write_triangle_gltf(g2.path);
+
+    SceneStreamer s { SceneStreamerConfig{ .use_async = true, .worker_count = 2U } };
+    s.enqueue(StreamRequest{ g0.path.string(), 100U });
+    s.enqueue(StreamRequest{ g1.path.string(), 150U });
+    s.enqueue(StreamRequest{ g2.path.string(), 200U });
+
+    s.tick(0.016F);
+    s.join_pending();
+
+    const auto id0 = s.get_loaded(g0.path.string());
+    const auto id1 = s.get_loaded(g1.path.string());
+    const auto id2 = s.get_loaded(g2.path.string());
+    ASSERT_TRUE(id0.has_value());
+    ASSERT_TRUE(id1.has_value());
+    ASSERT_TRUE(id2.has_value());
+
+    // All three IDs must be distinct.
+    EXPECT_NE(*id0, *id1);
+    EXPECT_NE(*id1, *id2);
+    EXPECT_NE(*id0, *id2);
+}
+
+// ---- A12: completed_count matches successful get_loaded for all paths -------
+
+TEST(SceneStreamerAsync, CompletedCountMatchesGetLoadedCount)
+{
+    PathGuard g0 { tmp_gltf_path() };
+    PathGuard g1 { tmp_gltf_path() };
+    PathGuard g2 { tmp_gltf_path() };
+    write_triangle_gltf(g0.path);
+    write_triangle_gltf(g1.path);
+    write_triangle_gltf(g2.path);
+
+    const std::vector<std::string> paths = {
+        g0.path.string(), g1.path.string(), g2.path.string()
+    };
+
+    SceneStreamer s { SceneStreamerConfig{ .use_async = true, .worker_count = 2U } };
+    for (const auto& p : paths)
+    {
+        s.enqueue(StreamRequest{ p, 128U });
+    }
+    s.tick(0.016F);
+    s.join_pending();
+
+    EXPECT_EQ(s.completed_count(), paths.size());
+
+    // Every enqueued path must now have a valid get_loaded entry.
+    for (const auto& p : paths)
+    {
+        EXPECT_TRUE(s.get_loaded(p).has_value()) << "Missing: " << p;
+    }
+}
+
+// ---- A13: repeated tick() calls before join_pending drain the pool ----------
+
+TEST(SceneStreamerAsync, MultiplePollTicksEventuallyDrainPool)
+{
+    PathGuard g0 { tmp_gltf_path() };
+    PathGuard g1 { tmp_gltf_path() };
+    write_triangle_gltf(g0.path);
+    write_triangle_gltf(g1.path);
+
+    SceneStreamer s { SceneStreamerConfig{ .use_async = true, .worker_count = 1U } };
+    s.enqueue(StreamRequest{ g0.path.string(), 200U });
+    s.enqueue(StreamRequest{ g1.path.string(), 100U });
+
+    s.tick(0.016F);   // Dispatches all; may or may not drain completions yet.
+    s.tick(0.016F);   // Extra poll pass.
+    s.tick(0.016F);   // Extra poll pass.
+    s.join_pending(); // Blocks until all done, then drains residual.
+
+    EXPECT_EQ(s.completed_count(), 2U);
+    EXPECT_TRUE(s.is_loaded(g0.path.string()));
+    EXPECT_TRUE(s.is_loaded(g1.path.string()));
+}
+
+// ---- A14: pool with mixed success + failure — only successes complete --------
+
+TEST(SceneStreamerAsync, MixedSuccessAndFailureOnlySuccessesComplete)
+{
+    PathGuard g0 { tmp_gltf_path() };
+    PathGuard g1 { tmp_gltf_path() };
+    write_triangle_gltf(g0.path);
+    write_triangle_gltf(g1.path);
+
+    AsyncScenePool pool;
+    pool.configure(2U);
+    pool.submit_async(StreamRequest{ g0.path.string(), 200U });
+    pool.submit_async(StreamRequest{ "__missing_1__.glb", 100U });
+    pool.submit_async(StreamRequest{ g1.path.string(), 150U });
+    pool.submit_async(StreamRequest{ "__missing_2__.glb",  50U });
+    pool.join_all();
+
+    // Only 2 real fixtures → 2 completions.
+    EXPECT_EQ(pool.completed_count(), 2U);
+    const auto done = pool.poll_completed();
+    EXPECT_EQ(done.size(), 2U);
+    for (const auto& item : done)
+    {
+        EXPECT_EQ(item.scene.nodes.size(), 1U);
+    }
 }

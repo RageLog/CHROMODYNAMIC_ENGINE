@@ -16,6 +16,11 @@
 //   T7  get_loaded returns nullopt for unknown path
 //   T8  decode_audio_file: WAV fixture yields real PCM + format
 //   T9  decode_audio_file: .ogg input is sealed (returns nullopt)
+//   T10 enqueue on already-loaded path is no-op (idempotent post-load)
+//   T11 cancel of un-enqueued path is a no-op (negative — no crash)
+//   T12 cancel between ticks does not affect already-loaded entries
+//   T13 equal-priority entries both eventually load (tie-breaking stable)
+//   T14 get_format unchanged on re-enqueue after load
 // =============================================================================
 
 #include <cd/asset/audio_streamer/AudioStreamer.hpp>
@@ -319,4 +324,149 @@ TEST(AudioStreamer, DecodeAudioFileOggIsSealed)
     // yet, so the dispatch returns nullopt (sealed — see Band-6 ADR).
     const auto decoded = cd::asset::audio_streamer::decode_audio_file("music/track.ogg");
     EXPECT_FALSE(decoded.has_value());
+}
+
+// ---- T10: enqueue on already-loaded path is no-op (idempotent post-load) ----
+
+TEST(AudioStreamer, EnqueueOnLoadedPathIsNoOp)
+{
+    PathGuard g { tmp_audio_path(".wav") };
+    write_wav(g.path, 1U, 44100U, 16U, 64U);
+    const std::string path = g.path.string();
+
+    AudioStreamer as;
+    as.enqueue({ path, 0U, 200U });
+    as.tick(0.016F);
+    ASSERT_TRUE(as.is_loaded(path));
+    EXPECT_EQ(as.completed_count(), 1U);
+
+    // Second enqueue on the same already-loaded path must be a no-op.
+    as.enqueue({ path, 1U, 255U });
+    EXPECT_EQ(as.pending_count(),   0U);  // not re-queued
+    EXPECT_EQ(as.completed_count(), 1U);  // count unchanged
+
+    // Format and id remain stable.
+    const auto fmt = as.get_format(path);
+    ASSERT_TRUE(fmt.has_value());
+    EXPECT_EQ(fmt->channels,    1U);
+    EXPECT_EQ(fmt->sample_rate, 44100U);
+    EXPECT_EQ(fmt->frame_count, 64U);
+}
+
+// ---- T11: cancel of un-enqueued path is a no-op (negative) ------------------
+
+TEST(AudioStreamer, CancelUnknownPathIsNoOp)
+{
+    PathGuard g { tmp_audio_path(".wav") };
+    write_wav(g.path, 1U, 44100U, 16U, 32U);
+    const std::string path = g.path.string();
+
+    AudioStreamer as;
+    as.enqueue({ path, 0U, 100U });
+    EXPECT_EQ(as.pending_count(), 1U);
+
+    // Cancel a path that was never enqueued: must not crash or alter state.
+    as.cancel("audio/nonexistent.wav");
+    EXPECT_EQ(as.pending_count(), 1U);
+
+    as.tick(0.016F);
+    EXPECT_TRUE(as.is_loaded(path));
+    EXPECT_EQ(as.completed_count(), 1U);
+}
+
+// ---- T12: cancel between ticks does not affect already-loaded entries --------
+
+TEST(AudioStreamer, CancelBetweenTicksDoesNotAffectLoaded)
+{
+    PathGuard g1 { tmp_audio_path(".wav") };
+    PathGuard g2 { tmp_audio_path(".wav") };
+    write_wav(g1.path, 1U, 44100U, 16U, 16U);
+    write_wav(g2.path, 1U, 22050U, 16U, 32U);
+    const std::string p1 = g1.path.string();
+    const std::string p2 = g2.path.string();
+
+    AudioStreamer as;
+    as.enqueue({ p1, 0U, 200U });  // higher priority — loaded first
+    as.enqueue({ p2, 0U,  50U });
+
+    as.tick(0.016F);  // loads p1 (higher priority)
+    EXPECT_TRUE(as.is_loaded(p1));
+    EXPECT_EQ(as.pending_count(), 1U);
+
+    // Cancelling p1 after it is loaded must be a no-op.
+    as.cancel(p1);
+    EXPECT_TRUE(as.is_loaded(p1));  // still loaded
+    EXPECT_EQ(as.completed_count(), 1U);
+
+    as.tick(0.016F);  // loads p2
+    EXPECT_TRUE(as.is_loaded(p2));
+    EXPECT_EQ(as.completed_count(), 2U);
+}
+
+// ---- T13: equal-priority entries both eventually load -----------------------
+
+TEST(AudioStreamer, EqualPriorityBothEventuallyLoad)
+{
+    PathGuard g1 { tmp_audio_path(".wav") };
+    PathGuard g2 { tmp_audio_path(".wav") };
+    PathGuard g3 { tmp_audio_path(".wav") };
+    write_wav(g1.path, 1U, 44100U, 16U, 10U);
+    write_wav(g2.path, 1U, 44100U, 16U, 20U);
+    write_wav(g3.path, 1U, 44100U, 16U, 30U);
+    const std::string p1 = g1.path.string();
+    const std::string p2 = g2.path.string();
+    const std::string p3 = g3.path.string();
+
+    AudioStreamer as;
+    // All three have the same priority: 128.
+    as.enqueue({ p1, 0U, 128U });
+    as.enqueue({ p2, 0U, 128U });
+    as.enqueue({ p3, 0U, 128U });
+    EXPECT_EQ(as.pending_count(), 3U);
+
+    // One tick loads one entry at a time.
+    as.tick(0.016F);
+    EXPECT_EQ(as.pending_count(), 2U);
+    EXPECT_EQ(as.completed_count(), 1U);
+
+    as.tick(0.016F);
+    EXPECT_EQ(as.pending_count(), 1U);
+    EXPECT_EQ(as.completed_count(), 2U);
+
+    as.tick(0.016F);
+    EXPECT_EQ(as.pending_count(), 0U);
+    EXPECT_EQ(as.completed_count(), 3U);
+
+    // All three must be loaded after three ticks.
+    EXPECT_TRUE(as.is_loaded(p1));
+    EXPECT_TRUE(as.is_loaded(p2));
+    EXPECT_TRUE(as.is_loaded(p3));
+}
+
+// ---- T14: get_format unchanged after re-enqueue on loaded path ---------------
+
+TEST(AudioStreamer, GetFormatUnchangedAfterReEnqueue)
+{
+    PathGuard g { tmp_audio_path(".wav") };
+    write_wav(g.path, 2U, 48000U, 16U, 256U);
+    const std::string path = g.path.string();
+
+    AudioStreamer as;
+    as.enqueue({ path, 0U, 100U });
+    as.tick(0.016F);
+    ASSERT_TRUE(as.is_loaded(path));
+
+    const auto fmt_before = as.get_format(path);
+    ASSERT_TRUE(fmt_before.has_value());
+
+    // Re-enqueue (idempotent) must not mutate the loaded record.
+    as.enqueue({ path, 1U, 255U });
+    as.tick(0.016F);  // no new decode — pending_map_ was not changed
+
+    const auto fmt_after = as.get_format(path);
+    ASSERT_TRUE(fmt_after.has_value());
+    EXPECT_EQ(fmt_after->channels,    fmt_before->channels);
+    EXPECT_EQ(fmt_after->sample_rate, fmt_before->sample_rate);
+    EXPECT_EQ(fmt_after->frame_count, fmt_before->frame_count);
+    EXPECT_EQ(as.completed_count(), 1U);  // still only one entry
 }

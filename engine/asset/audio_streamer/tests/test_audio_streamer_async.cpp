@@ -17,6 +17,16 @@
 //   A5  AudioStreamer async: is_loaded true + REAL format for every path.
 //   A6  AudioStreamer async: get_loaded valid AssetId after join_pending.
 //   A7  AsyncAudioPool: a path that fails to decode is NOT completed.
+//   A8  AudioStreamer async: dedup — same path enqueued twice → one job.
+//   A9  AudioStreamer async: cancel before tick removes path from dispatch.
+//   A10 AsyncAudioPool: destructor drains gracefully (no join_all call).
+//   A11 AudioStreamer async: join_pending after partial tick drains remainder.
+//   A12 AudioStreamer sync: join_pending is a no-op in sync mode.
+//   A13 AsyncAudioPool: mixed valid+invalid batch — only valid paths complete.
+//   A14 AsyncAudioPool: inflight reaches zero after join_all (verified by
+//       poll_completed being exhaustive post-join).
+//   A15 AudioStreamer async: multiple tick() cycles drain progressively, no
+//       double-count after join_pending.
 // =============================================================================
 
 #include <cd/asset/audio_streamer/AudioStreamer.hpp>
@@ -325,4 +335,233 @@ TEST(AudioStreamerAsync, FailedDecodeNotCompleted)
 
     EXPECT_EQ(pool.completed_count(), 0U);
     EXPECT_TRUE(pool.poll_completed().empty());
+}
+
+// ---- A8: dedup — same path enqueued twice into AudioStreamer → one job -------
+
+TEST(AudioStreamerAsync, DedupSamePathEnqueuedTwiceOneJob)
+{
+    PathGuard g { tmp_wav_path() };
+    write_wav(g.path, 1U, 44100U, 16U, 128U);
+    const std::string path = g.path.string();
+
+    AudioStreamer as { AudioStreamerConfig{ .use_async = true, .worker_count = 2U } };
+
+    // Enqueue the same path twice before any tick.
+    as.enqueue(StreamRequest{ path, 0U, 200U });
+    as.enqueue(StreamRequest{ path, 1U, 255U });  // duplicate — ignored
+    EXPECT_EQ(as.pending_count(), 1U);  // dedup: only one entry in pending_map_
+
+    as.tick(0.016F);
+    EXPECT_EQ(as.pending_count(), 0U);  // one submit dispatched to pool
+
+    as.join_pending();
+    EXPECT_EQ(as.completed_count(), 1U);  // only one completion accepted
+    EXPECT_TRUE(as.is_loaded(path));
+}
+
+// ---- A9: cancel before tick removes path from async dispatch -----------------
+
+TEST(AudioStreamerAsync, CancelBeforeTickPreventsDispatch)
+{
+    PathGuard g1 { tmp_wav_path() };
+    PathGuard g2 { tmp_wav_path() };
+    write_wav(g1.path, 1U, 44100U, 16U, 64U);
+    write_wav(g2.path, 1U, 22050U, 16U, 64U);
+    const std::string p1 = g1.path.string();
+    const std::string p2 = g2.path.string();
+
+    AudioStreamer as { AudioStreamerConfig{ .use_async = true, .worker_count = 2U } };
+    as.enqueue(StreamRequest{ p1, 0U, 200U });
+    as.enqueue(StreamRequest{ p2, 0U, 100U });
+    EXPECT_EQ(as.pending_count(), 2U);
+
+    // Cancel p1 before tick() — it must never be submitted to the pool.
+    as.cancel(p1);
+    EXPECT_EQ(as.pending_count(), 1U);
+
+    as.tick(0.016F);
+    as.join_pending();
+
+    // Only p2 should be loaded.
+    EXPECT_FALSE(as.is_loaded(p1));
+    EXPECT_TRUE(as.is_loaded(p2));
+    EXPECT_EQ(as.completed_count(), 1U);
+}
+
+// ---- A10: destructor drains gracefully (no explicit join_all call) -----------
+//
+// AsyncAudioPool's dtor must set stop_ and join workers even when the caller
+// never calls join_all(). This test verifies no crash / hang.
+
+TEST(AudioStreamerAsync, DestructorDrainsGracefully)
+{
+    PathGuard g0 { tmp_wav_path() };
+    PathGuard g1 { tmp_wav_path() };
+    PathGuard g2 { tmp_wav_path() };
+    write_wav(g0.path, 1U, 44100U, 16U, 32U);
+    write_wav(g1.path, 1U, 44100U, 16U, 32U);
+    write_wav(g2.path, 1U, 44100U, 16U, 32U);
+
+    {
+        AsyncAudioPool pool;
+        pool.configure(2U);
+        pool.submit_async(StreamRequest{ g0.path.string(), 0U, 200U });
+        pool.submit_async(StreamRequest{ g1.path.string(), 0U, 180U });
+        pool.submit_async(StreamRequest{ g2.path.string(), 0U, 160U });
+        // pool goes out of scope here — dtor must join all workers without crash.
+    }
+    // If we reach here, the destructor succeeded.
+    SUCCEED();
+}
+
+// ---- A11: join_pending after partial tick() drains all remaining ------------
+
+TEST(AudioStreamerAsync, JoinPendingAfterPartialTickDrainsAll)
+{
+    PathGuard g0 { tmp_wav_path() };
+    PathGuard g1 { tmp_wav_path() };
+    PathGuard g2 { tmp_wav_path() };
+    write_wav(g0.path, 2U, 48000U, 16U, 100U);
+    write_wav(g1.path, 2U, 48000U, 16U, 200U);
+    write_wav(g2.path, 2U, 48000U, 16U, 300U);
+    const std::string p0 = g0.path.string();
+    const std::string p1 = g1.path.string();
+    const std::string p2 = g2.path.string();
+
+    AudioStreamer as { AudioStreamerConfig{ .use_async = true, .worker_count = 2U } };
+    as.enqueue(StreamRequest{ p0, 0U, 200U });
+    as.enqueue(StreamRequest{ p1, 0U, 150U });
+    as.enqueue(StreamRequest{ p2, 0U, 100U });
+
+    // Single tick dispatches all three; workers may or may not finish yet.
+    as.tick(0.016F);
+    EXPECT_EQ(as.pending_count(), 0U);
+
+    // join_pending must block until all three have completed.
+    as.join_pending();
+    EXPECT_EQ(as.completed_count(), 3U);
+
+    for (const auto& p : { p0, p1, p2 })
+    {
+        EXPECT_TRUE(as.is_loaded(p)) << "path not loaded: " << p;
+        const auto fmt = as.get_format(p);
+        ASSERT_TRUE(fmt.has_value()) << "no format for: " << p;
+        EXPECT_EQ(fmt->channels, 2U);
+        EXPECT_EQ(fmt->sample_rate, 48000U);
+    }
+}
+
+// ---- A12: join_pending is a no-op in sync mode ------------------------------
+
+TEST(AudioStreamerAsync, JoinPendingNoOpInSyncMode)
+{
+    PathGuard g { tmp_wav_path() };
+    write_wav(g.path, 1U, 44100U, 16U, 16U);
+    const std::string path = g.path.string();
+
+    AudioStreamer as;  // default = sync mode
+    as.enqueue(StreamRequest{ path, 0U, 200U });
+
+    // join_pending in sync mode must not block, crash, or load anything.
+    as.join_pending();
+    EXPECT_EQ(as.completed_count(), 0U);
+    EXPECT_EQ(as.pending_count(), 1U);  // still pending (tick not called)
+
+    as.tick(0.016F);
+    EXPECT_TRUE(as.is_loaded(path));
+    EXPECT_EQ(as.completed_count(), 1U);
+}
+
+// ---- A13: mixed valid+invalid batch — only valid paths complete --------------
+
+TEST(AudioStreamerAsync, MixedBatchOnlyValidPathsComplete)
+{
+    PathGuard g0 { tmp_wav_path() };
+    PathGuard g1 { tmp_wav_path() };
+    write_wav(g0.path, 1U, 44100U, 16U, 50U);
+    write_wav(g1.path, 2U, 48000U, 16U, 75U);
+    const std::string p0 = g0.path.string();
+    const std::string p1 = g1.path.string();
+
+    AsyncAudioPool pool;
+    pool.configure(2U);
+    pool.submit_async(StreamRequest{ p0,                    0U, 200U });
+    pool.submit_async(StreamRequest{ "__nonexistent__.wav", 0U, 150U });  // IO fail
+    pool.submit_async(StreamRequest{ "audio/clip.ogg",      0U, 130U });  // sealed
+    pool.submit_async(StreamRequest{ p1,                    0U, 100U });
+    pool.join_all();
+
+    // Only the two valid .wav paths must appear as completed.
+    EXPECT_EQ(pool.completed_count(), 2U);
+
+    const auto done = pool.poll_completed();
+    EXPECT_EQ(done.size(), 2U);
+
+    for (const auto& item : done)
+    {
+        EXPECT_TRUE(item.decoded.has_samples());
+        EXPECT_TRUE(item.decoded.sample_rate == 44100U || item.decoded.sample_rate == 48000U);
+    }
+}
+
+// ---- A14: inflight reaches zero after join_all (poll is exhaustive) ---------
+
+TEST(AudioStreamerAsync, InflightZeroAfterJoinAllPollExhaustive)
+{
+    PathGuard g0 { tmp_wav_path() };
+    PathGuard g1 { tmp_wav_path() };
+    write_wav(g0.path, 1U, 44100U, 16U, 64U);
+    write_wav(g1.path, 1U, 44100U, 16U, 64U);
+
+    AsyncAudioPool pool;
+    pool.configure(2U);
+    pool.submit_async(StreamRequest{ g0.path.string(), 0U, 200U });
+    pool.submit_async(StreamRequest{ g1.path.string(), 0U, 100U });
+    pool.join_all();
+
+    // After join_all, the completed_count must equal the number of submitted
+    // valid paths (both decode successfully here).
+    EXPECT_EQ(pool.completed_count(), 2U);
+
+    // First poll drains everything.
+    const auto first = pool.poll_completed();
+    EXPECT_EQ(first.size(), 2U);
+
+    // Second poll: nothing left — inflight was drained.
+    const auto second = pool.poll_completed();
+    EXPECT_TRUE(second.empty());
+
+    // completed_count is cumulative and must not decrease.
+    EXPECT_EQ(pool.completed_count(), 2U);
+}
+
+// ---- A15: multiple tick() cycles: no double-count after join_pending ---------
+
+TEST(AudioStreamerAsync, MultipleTickCyclesNoDoubleCount)
+{
+    PathGuard g0 { tmp_wav_path() };
+    PathGuard g1 { tmp_wav_path() };
+    write_wav(g0.path, 1U, 44100U, 16U, 32U);
+    write_wav(g1.path, 1U, 44100U, 16U, 32U);
+    const std::string p0 = g0.path.string();
+    const std::string p1 = g1.path.string();
+
+    AudioStreamer as { AudioStreamerConfig{ .use_async = true, .worker_count = 2U } };
+    as.enqueue(StreamRequest{ p0, 0U, 200U });
+    as.enqueue(StreamRequest{ p1, 0U, 150U });
+
+    // Dispatch on first tick.
+    as.tick(0.016F);
+    EXPECT_EQ(as.pending_count(), 0U);
+
+    // Extra tick() calls after dispatch must not re-submit or double-count.
+    as.tick(0.016F);
+    as.tick(0.016F);
+
+    as.join_pending();
+    EXPECT_EQ(as.completed_count(), 2U);  // exactly 2, not 4 or 6
+
+    EXPECT_TRUE(as.is_loaded(p0));
+    EXPECT_TRUE(as.is_loaded(p1));
 }

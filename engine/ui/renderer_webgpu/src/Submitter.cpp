@@ -152,8 +152,24 @@ Submitter::create(WgpuDevice device, const SubmitterCreateInfo& info)
                 0x0010, 3U, "Submitter::create: CreateBuffer(ib) failed" });
         }
     }
-    // Pipeline/shader module creation deferred to Phase 5.5 hello_ui_webgpu
-    // sample which has a real swapchain surface to drive create-validation.
+    // -------------------------------------------------------------------------
+    // SEALED: WGSL vertex + fragment pipeline module compilation is intentionally
+    // not authored here.  Authoring a correct WebGPU pipeline requires:
+    //   (a) a real wgpu::Surface + swap-chain texture view (Phase 5.5
+    //       hello_ui_webgpu sample, not yet written),
+    //   (b) WGSL shader source for the UI vertex/fragment shaders,
+    //   (c) a wgpu::RenderPipelineDescriptor wired to the color attachment,
+    //   (d) a bind-group layout for the global uniform buffer + atlas texture.
+    // This is a multi-week effort gated on a real Dawn-capable CI runner.
+    // Until then CD_UI_WEBGPU_HAVE_DAWN == 0 (the default) keeps the build
+    // green and the host-side accounting (vertex/index/command counts) fully
+    // testable without any GPU.  The Dawn=1 path allocates the ring buffers
+    // and wires the upload + draw-indexed loop correctly; it is missing only
+    // the pipeline bind-step (SetPipeline / SetBindGroup) which requires the
+    // WGSL modules above.  Do NOT add a fake/stub PSO here — the real one
+    // must be driven by an actual WebGPU surface or the validation layer will
+    // reject it at runtime.
+    // -------------------------------------------------------------------------
 #endif  // CD_UI_WEBGPU_HAVE_DAWN
 
     // Stub and real paths both land here.
@@ -234,14 +250,14 @@ void Submitter::record(WgpuCommandEncoder encoder,
         // API surface (WgpuCommandEncoder) we derive a transient pass handle
         // here with a minimal descriptor so the skeleton is self-contained.
         //
-        // Phase 5.5 will replace this block with a proper
-        //   wgpu::RenderPassDescriptor rpd { … };
-        //   auto rp = encoder.BeginRenderPass(&rpd);
-        // driven by the swapchain texture view.
+        // SEALED: the proper descriptor below should set colorAttachmentCount
+        // and colorAttachments from the real swapchain texture view provided
+        // by hello_ui_webgpu (Phase 5.5).  Left default-initialised (null view)
+        // so the draw-indexed loop can be unit-tested with a null/mock encoder
+        // without a physical GPU.  SetPipeline + SetBindGroup calls are also
+        // missing here — they require the WGSL pipeline modules (see SEALED
+        // block in create() above).  Do NOT fill them with stubs.
         wgpu::RenderPassDescriptor rpd {};
-        // colour attachment left default-initialised (null view) — acceptable
-        // for recording draw commands on a null/mock encoder in unit tests;
-        // Phase 5.5 will fill attachmentCount + colorAttachments.
         rpd.colorAttachmentCount = 0U;
         rpd.colorAttachments     = nullptr;
 
