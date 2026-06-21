@@ -183,7 +183,8 @@ void AsyncTexturePool::worker_loop()
             const std::scoped_lock lk { mutex_ };
             if (decoded.has_value())
             {
-                completed_queue_.push_back(CompletedTexture{ std::move(entry.path), std::move(*decoded) });
+                completed_queue_.push_back(
+                    CompletedTexture{ std::move(entry.path), std::move(*decoded), entry.mip_target });
             }
             inflight_.fetch_sub(1U, std::memory_order_relaxed);
         }

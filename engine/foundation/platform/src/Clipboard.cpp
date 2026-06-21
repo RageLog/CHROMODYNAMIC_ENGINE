@@ -43,11 +43,17 @@ namespace
 {
     if (sv.empty())
         return {};
-    const int needed = MultiByteToWideChar(CP_UTF8, 0, sv.data(), static_cast<int>(sv.size()), nullptr, 0);
+    // MB_ERR_INVALID_CHARS: without it MultiByteToWideChar is lenient and
+    // substitutes U+FFFD for malformed UTF-8 (never failing), which would let
+    // set_clipboard_text's empty-result guard never fire on bad input. With the
+    // flag, invalid byte sequences make the call return 0 -> empty wstring.
+    const int needed = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                           sv.data(), static_cast<int>(sv.size()), nullptr, 0);
     if (needed <= 0)
         return {};
     std::wstring out(static_cast<std::size_t>(needed), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, sv.data(), static_cast<int>(sv.size()), out.data(), needed);
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                        sv.data(), static_cast<int>(sv.size()), out.data(), needed);
     return out;
 }
 
@@ -78,9 +84,18 @@ bool set_clipboard_text(std::string_view text) noexcept
 {
     if (!OpenClipboard(nullptr))
         return false;
+    const std::wstring wide = utf8_to_utf16(text);
+    // Guard: non-empty input that failed UTF-8 → UTF-16 conversion (e.g. invalid
+    // byte sequences) must not silently wipe the clipboard and return true.
+    // Empty input is the legitimate "clear clipboard" path and is allowed through.
+    if (wide.empty() && !text.empty())
+    {
+        CloseClipboard();
+        return false;
+    }
+
     EmptyClipboard();
 
-    const std::wstring wide = utf8_to_utf16(text);
     // Allocate GMEM_MOVEABLE block (CF_UNICODETEXT requirement): size includes
     // the null terminator.
     const std::size_t byte_count = (wide.size() + 1U) * sizeof(wchar_t);

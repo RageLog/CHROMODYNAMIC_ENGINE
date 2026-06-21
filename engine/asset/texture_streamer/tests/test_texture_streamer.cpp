@@ -45,6 +45,7 @@
 //   T33 PathGuard move ctor: moved-from dtor does not remove the temp file
 //   T34 PathGuard move ctor: moved-into guard still cleans up on dtor
 //   T35 dedup: re-enqueue after cancel with same path updates correctly
+//   T36 enqueue_mip_upgrade does NOT leak old GPU handle (live == loaded)
 // =============================================================================
 
 #include <cd/asset/texture_streamer/TextureStreamer.hpp>
@@ -1096,4 +1097,47 @@ TEST(TextureStreamer, ReEnqueueAfterCancelLoadsCorrectly)
     ts.tick(0.016F, device);
     EXPECT_TRUE(ts.is_loaded(path));
     EXPECT_EQ(ts.completed_count(), 1U);
+}
+
+// ---- T36: enqueue_mip_upgrade does NOT leak the old GPU handle ---------------
+//
+// Regression for the deferred-destroy fix: enqueue_mip_upgrade() has no device
+// parameter, so the orphaned old handle is queued and destroyed on the next
+// tick(). After an upgrade round-trip live_texture_count() (GPU handles still
+// alive on the device) must equal loaded_count() — exactly one resident
+// texture, not the old leaked handle + the new one.
+
+TEST(TextureStreamer, EnqueueMipUpgradeDoesNotLeakGpuHandle)
+{
+    PathGuard g { tmp_cdtex_path() };
+    write_cdtex(g.path, 64U, 64U);
+    const std::string path = g.path.string();
+
+    cd::rhi::NullDevice device;
+    TextureStreamer      ts;
+
+    // Load at mip_target == 1 → one live GPU handle.
+    ts.enqueue(StreamRequest{ path, 1U, 200U });
+    ts.tick(0.016F, device);
+    ASSERT_TRUE(ts.is_loaded(path));
+    EXPECT_EQ(device.live_texture_count(), 1U);
+    EXPECT_EQ(ts.loaded_count(), 1U);
+
+    // Upgrade to mip_target == 4. The old handle is orphaned (device-less path)
+    // but must be destroyed on the next tick(), not leaked.
+    ts.enqueue_mip_upgrade(StreamRequest{ path, 4U, 200U });
+    EXPECT_FALSE(ts.is_loaded(path));
+    EXPECT_EQ(ts.pending_count(), 1U);
+
+    // Re-decode + upload the upgraded texture. tick() drains the deferred-destroy
+    // queue first, then creates the new handle.
+    ts.tick(0.016F, device);
+
+    ASSERT_TRUE(ts.is_loaded(path));
+    EXPECT_EQ(*ts.resident_mip_target(path), 4U);
+
+    // The load-bearing assertion: no leak. live (device) == loaded (streamer).
+    EXPECT_EQ(ts.loaded_count(), 1U);
+    EXPECT_EQ(device.live_texture_count(), 1U);
+    EXPECT_EQ(device.live_texture_count(), ts.loaded_count());
 }

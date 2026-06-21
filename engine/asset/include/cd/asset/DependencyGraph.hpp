@@ -34,6 +34,9 @@ public:
     void depend(AssetId parent, AssetId child)
     {
         if (!parent.is_valid() || !child.is_valid()) return;
+        // Self-dependency would make `parent` its own transitive dependent,
+        // so reloading it would re-trigger itself (a self-reload loop). Reject.
+        if (parent == child) return;
         reverse_[child.value()].insert(parent.value());
     }
 

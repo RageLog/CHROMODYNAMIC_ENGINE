@@ -60,7 +60,10 @@ BOOL CALLBACK monitor_enum_proc(HMONITOR hmon, HDC /*hdc*/, LPRECT /*rect*/, LPA
     {
         di.width_px    = dm.dmPelsWidth;
         di.height_px   = dm.dmPelsHeight;
-        di.refresh_hz  = dm.dmDisplayFrequency;
+        // MSDN: dmDisplayFrequency == 0 or 1 means "hardware default" (not a real
+        // Hz value).  Normalise both to 0 ("unknown") so callers and plausibility
+        // tests (refresh_hz >= 24) are never confused by the sentinel.
+        di.refresh_hz  = (dm.dmDisplayFrequency <= 1U) ? 0U : dm.dmDisplayFrequency;
     }
     else
     {

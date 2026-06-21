@@ -7,11 +7,28 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 
 namespace cd::asset::scene_streamer
 {
+
+namespace
+{
+
+// Add a signed cell-axis offset without overflow: when floor_div has clamped an
+// axis to INT32_MAX/MIN, `base + delta` in int32 would be signed-overflow UB.
+// Perform the add in int64 and clamp back into the int32 range.
+[[nodiscard]] std::int32_t add_axis_clamped(const std::int32_t base, const std::int32_t delta) noexcept
+{
+    const std::int64_t sum = static_cast<std::int64_t>(base) + static_cast<std::int64_t>(delta);
+    constexpr auto kLo = static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::min());
+    constexpr auto kHi = static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::max());
+    return static_cast<std::int32_t>(std::clamp(sum, kLo, kHi));
+}
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // CellGrid
@@ -27,6 +44,11 @@ CellGrid::CellGrid(const float cell_size) noexcept
 // Example: floor_div(-0.5, 1.0) = -1  (NOT 0 as truncation would give).
 std::int32_t CellGrid::floor_div(const float pos, const float size) noexcept
 {
+    // Degenerate inputs: a NaN camera transform (or size==0 from a misconfigured
+    // grid) would make `floored` NaN, and NaN fails BOTH clamp guards below,
+    // reaching static_cast<int32>(NaN) which is undefined behaviour. Map any
+    // non-finite position (NaN / ±inf) or zero divisor to cell 0.
+    if (!std::isfinite(pos) || size == 0.0F) { return 0; }
     const float ratio = pos / size;
     // Use std::floor then clamp to int32 range.
     const float floored = std::floor(ratio);
@@ -134,9 +156,9 @@ void SpatialStreamingPolicy::update(
             for (std::int32_t dx = -lr; dx <= lr; ++dx)
             {
                 last_prefetch_order_.push_back(CellCoord {
-                    camera_cell.x + dx,
-                    camera_cell.y + dy,
-                    camera_cell.z + dz });
+                    add_axis_clamped(camera_cell.x, dx),
+                    add_axis_clamped(camera_cell.y, dy),
+                    add_axis_clamped(camera_cell.z, dz) });
             }
         }
     }

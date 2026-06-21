@@ -149,11 +149,11 @@ void TextureStreamer::enqueue_mip_upgrade(StreamRequest request)
     }
 
     // Evict the stale record so the path re-enters the pending queue.
-    // We do NOT call device.destroy_texture here because we don't have a device
-    // reference in this method — the GPU handle is leaked at the RHI layer
-    // (NullDevice tracks it; a real backend would need a deferred-destroy queue).
-    // This is acceptable for the CPU charter: the REAL multi-frame deferred
-    // destroy is part of the GPU upload backend (SEALED, see STATUS doc).
+    // This method has no device reference (to keep its public signature), so we
+    // cannot destroy the old GPU handle inline. Instead we hand it to the
+    // deferred-destroy queue, which the next tick() drains with a real device —
+    // the handle is therefore NOT leaked at the RHI layer.
+    pending_destroy_.push_back(it->second.handle);
     lru_iter_.erase(request.asset_path);
     lru_order_.remove(request.asset_path);  // O(n) acceptable for upgrade path
     loaded_map_.erase(it);
@@ -291,7 +291,7 @@ void TextureStreamer::accept_async_completions(std::vector<CompletedTexture> don
         {
             continue;  // async pool may complete a path that was already loaded
         }
-        create_gpu_record(item.path, 0U, item.decoded, device);
+        create_gpu_record(item.path, item.mip_target, item.decoded, device);
     }
 }
 
@@ -301,6 +301,10 @@ void TextureStreamer::accept_async_completions(std::vector<CompletedTexture> don
 
 void TextureStreamer::tick(float /*dt*/, cd::rhi::IDevice& device)
 {
+    // Destroy any handles orphaned by enqueue_mip_upgrade() before any new
+    // work — keeps the upgrade path leak-free without a device parameter.
+    drain_pending_destroy(device);
+
     if (config_.use_async)
     {
         last_device_ = &device;
@@ -389,6 +393,15 @@ void TextureStreamer::enforce_budget(cd::rhi::IDevice& device)
             break;  // nothing to evict
         }
     }
+}
+
+void TextureStreamer::drain_pending_destroy(cd::rhi::IDevice& device)
+{
+    for (const auto handle : pending_destroy_)
+    {
+        device.destroy_texture(handle);
+    }
+    pending_destroy_.clear();
 }
 
 // ---------------------------------------------------------------------------

@@ -66,6 +66,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <span>
 #include <string>
 #include <unordered_set>
@@ -824,6 +825,94 @@ TEST(SpatialStreamingPolicy, RequestedBecomesUnloadedWhenCancelled)
     EXPECT_EQ(policy.cell_state(CellCoord { 0, 0, 0 }), CellState::kUnloaded);
     // New radius-1 box around {5,0,0} → 27 cells.
     EXPECT_EQ(policy.tracked_count(), 27U);
+}
+
+// =============================================================================
+// Degenerate / extreme-input regression tests (D1 – D4)
+//   D1  CellGrid::floor_div NaN input → cell 0 (no UB cast of NaN to int32)
+//   D2  CellGrid::floor_div +/-inf and zero divisor → finite cell (no UB)
+//   D3  SpatialStreamingPolicy::update with NaN camera → sane cells, no crash
+//   D4  SpatialStreamingPolicy::update with extreme world coord near
+//       INT32_MAX*cell_size → no signed-overflow UB in the prefetch loop;
+//       camera cell clamped, all prefetch cells in valid int32 range.
+// =============================================================================
+
+// D1: NaN camera component → floor_div returns cell 0 (no NaN→int32 UB).
+TEST(CellGrid, NaNPositionMapsToZeroCell)
+{
+    const CellGrid grid { 100.0F };
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+
+    const auto cx = grid.world_to_cell(nan, 0.0F, 0.0F);
+    EXPECT_EQ(cx.x, 0);
+    EXPECT_EQ(cx.y, 0);
+    EXPECT_EQ(cx.z, 0);
+
+    const auto call = grid.world_to_cell(nan, nan, nan);
+    EXPECT_EQ(call, (CellCoord { 0, 0, 0 }));
+}
+
+// D2: +/-inf positions are clamped to the int32 extremes (no UB), and a
+//     normal grid never divides by zero so this only exercises non-finite pos.
+TEST(CellGrid, NonFinitePositionsAreClamped)
+{
+    const CellGrid grid { 100.0F };
+    const float inf = std::numeric_limits<float>::infinity();
+
+    // +inf and -inf are non-finite → mapped to cell 0 by the finite guard.
+    EXPECT_EQ(grid.world_to_cell(inf, 0.0F, 0.0F).x, 0);
+    EXPECT_EQ(grid.world_to_cell(-inf, 0.0F, 0.0F).x, 0);
+}
+
+// D3: NaN camera position fed to update() must not crash and must yield a
+//     well-formed (sane) prefetch set centred on cell 0.
+TEST(SpatialStreamingPolicy, NaNCameraPositionDoesNotCrash)
+{
+    SceneStreamer streamer;
+    SpatialStreamingPolicy policy {
+        SpatialStreamingConfig { .cell_size = 100.0F, .load_radius_cells = 1U, .unload_radius_cells = 2U },
+        default_path_fn
+    };
+
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_NO_THROW(policy.update(nan, nan, nan, streamer));
+
+    // Camera resolves to cell 0; radius-1 cube → 27 cells, all in valid range.
+    EXPECT_EQ(policy.last_camera_cell(), (CellCoord { 0, 0, 0 }));
+    EXPECT_EQ(policy.last_prefetch_order().size(), 27U);
+    EXPECT_EQ(policy.tracked_count(), 27U);
+}
+
+// D4: extreme camera world coordinate near INT32_MAX*cell_size — camera cell is
+//     clamped to INT32_MAX and the prefetch loop must not signed-overflow when
+//     forming camera_cell.x + dx. All resulting cell coords stay in int32 range.
+TEST(SpatialStreamingPolicy, ExtremeCameraCoordNoOverflow)
+{
+    SceneStreamer streamer;
+    SpatialStreamingPolicy policy {
+        SpatialStreamingConfig { .cell_size = 100.0F, .load_radius_cells = 2U, .unload_radius_cells = 3U },
+        default_path_fn
+    };
+
+    // 3.0e11 / 100 = 3.0e9 > 2^31 → camera cell axis clamps to INT32_MAX.
+    constexpr float kHuge = 3.0e11F;
+    EXPECT_NO_THROW(policy.update(kHuge, kHuge, kHuge, streamer));
+
+    const CellCoord cam = policy.last_camera_cell();
+    EXPECT_EQ(cam.x, std::numeric_limits<std::int32_t>::max());
+    EXPECT_EQ(cam.y, std::numeric_limits<std::int32_t>::max());
+    EXPECT_EQ(cam.z, std::numeric_limits<std::int32_t>::max());
+
+    // (2*2+1)^3 = 125 prefetch cells; each axis must remain a valid int32 with
+    // the positive-offset cells saturated at INT32_MAX (clamped, not wrapped).
+    const auto& order = policy.last_prefetch_order();
+    EXPECT_EQ(order.size(), 125U);
+    for (const CellCoord& c : order)
+    {
+        EXPECT_GE(c.x, std::numeric_limits<std::int32_t>::max() - 2);
+        EXPECT_GE(c.y, std::numeric_limits<std::int32_t>::max() - 2);
+        EXPECT_GE(c.z, std::numeric_limits<std::int32_t>::max() - 2);
+    }
 }
 
 }  // namespace

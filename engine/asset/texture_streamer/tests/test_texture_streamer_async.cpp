@@ -23,6 +23,7 @@
 //   B10 async pool completed_count matches streamer completed_count after join.
 //   B11 TextureStreamer dedup — same path enqueued twice yields one load.
 //   B12 cancel before tick in async mode prevents pending submission.
+//   B13 async path preserves mip_target through the worker round-trip.
 // =============================================================================
 
 #include <cd/asset/texture_streamer/TextureStreamer.hpp>
@@ -487,6 +488,44 @@ TEST(TextureStreamerAsync, AsyncCancelBeforeTickPreventsSubmission)
     // pb was submitted and should have decoded.
     EXPECT_TRUE(ts.is_loaded(pb));
     EXPECT_EQ(ts.completed_count(), 1U);
+#else
+    GTEST_SKIP() << "NullDevice not available";
+#endif
+}
+
+// ---- B13: async path preserves mip_target through the worker round-trip ------
+//
+// Regression: CompletedTexture previously dropped mip_target, so async-loaded
+// textures always recorded mip_target == 0. A request enqueued at mip_target==4
+// must, after tick()+join_pending(), report resident_mip_target == 4 and the
+// matching is_mip_loaded() residency (levels 0..3 resident, level 4 not).
+
+TEST(TextureStreamerAsync, AsyncPreservesMipTargetThroughWorker)
+{
+#if __has_include(<cd/rhi/NullDevice.hpp>)
+    PathGuard g { tmp_cdtex_path() };
+    write_cdtex(g.path, 64U, 64U);
+    const std::string path = g.path.string();
+
+    TextureStreamer ts { TextureStreamerConfig{ .use_async = true, .worker_count = 2U } };
+    ts.enqueue(StreamRequest{ path, 4U, 200U });
+
+    cd::rhi::NullDevice device;
+    ts.tick(0.016F, device);
+    ts.join_pending();
+
+    ASSERT_TRUE(ts.is_loaded(path));
+
+    // The load-bearing assertion: the async worker round-trip preserved the
+    // request's mip_target (was silently forced to 0 before the fix).
+    const auto mt = ts.resident_mip_target(path);
+    ASSERT_TRUE(mt.has_value());
+    EXPECT_EQ(*mt, 4U);
+
+    // Residency derived from mip_target must be correct for the async path too.
+    EXPECT_TRUE(ts.is_mip_loaded(path, 0U));
+    EXPECT_TRUE(ts.is_mip_loaded(path, 3U));
+    EXPECT_FALSE(ts.is_mip_loaded(path, 4U));
 #else
     GTEST_SKIP() << "NullDevice not available";
 #endif

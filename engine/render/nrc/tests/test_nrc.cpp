@@ -626,6 +626,40 @@ TEST(Nrc, TrainBatchSingleElementEqualsTrainStep)
     EXPECT_NEAR(a.z, b.z, 1e-4F);
 }
 
+// Pins the MEAN (lr/N) divisor for N>1 — the one thing the loss-decreases tests
+// cannot catch. A batch of N IDENTICAL samples has a mean gradient equal to the
+// single-sample gradient, so train_batch({s,s,s}) must equal train_step(s). If
+// train_batch summed instead of averaging (missing /N), it would apply 3x the
+// update and diverge far past 1e-4. Also pins frozen-weights: all three folds
+// use the same pre-update weights, so the accumulated gradient is exactly 3x
+// the single gradient (not a sequential 1+slightly-different+...).
+TEST(Nrc, TrainBatchOfIdenticalSamplesEqualsSingleStep)
+{
+    Config c {};
+    c.learning_rate = 1e-2F;
+    CpuReferenceMlp m_step(c);
+    CpuReferenceMlp m_batch(c);  // same seed → identical start
+
+    std::array<float, kInputDim> feat {};
+    for (std::size_t i = 0; i < feat.size(); ++i)
+        feat[i] = 0.2F + 0.013F * static_cast<float>(i);
+    const Vec3f target { -0.4F, 0.6F, 0.1F };
+    const std::span<const float, kInputDim> fs(feat);
+
+    m_step.train_step(fs, target);
+
+    const std::array<BatchPair, 3> three {
+        BatchPair { feat, target }, BatchPair { feat, target },
+        BatchPair { feat, target } };
+    m_batch.train_batch(std::span<const BatchPair>(three));
+
+    const auto a = m_step.query(fs);
+    const auto b = m_batch.query(fs);
+    EXPECT_NEAR(a.x, b.x, 1e-4F);
+    EXPECT_NEAR(a.y, b.y, 1e-4F);
+    EXPECT_NEAR(a.z, b.z, 1e-4F);
+}
+
 // An empty batch is a no-op: the queried output before == after (no NaN from a
 // divide-by-zero mean, no spurious drift).
 TEST(Nrc, TrainBatchEmptyIsNoOp)

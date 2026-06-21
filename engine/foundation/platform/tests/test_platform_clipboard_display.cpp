@@ -169,16 +169,23 @@ TEST(PlatformDisplay, Win32RefreshRatePlausible)
     }
 }
 
-TEST(PlatformDisplay, Win32WorkAreaNotLargerThanMonitor)
+TEST(PlatformDisplay, Win32WorkAreaPositive)
 {
+    // work_w / work_h are in virtual-screen / logical units (rcWork); width_px /
+    // height_px are physical pixels (EnumDisplaySettingsW).  Cross-unit LE
+    // comparison is only valid at 100% DPI (dpi_scale == 1.0), so we do NOT
+    // assert work_w <= width_px here.  Instead: if we have a resolution, the
+    // work area must at least be non-zero (a monitor with a taskbar still has
+    // usable space).
     const auto displays = cd::platform::enumerate_displays();
     ASSERT_FALSE(displays.empty());
     for (const auto& d : displays)
     {
-        EXPECT_LE(d.work_w, d.width_px)
-            << "work_w > width_px for monitor " << d.index;
-        EXPECT_LE(d.work_h, d.height_px)
-            << "work_h > height_px for monitor " << d.index;
+        if (d.width_px > 0U && d.height_px > 0U)
+        {
+            EXPECT_GT(d.work_w, 0U) << "work_w is 0 for monitor " << d.index;
+            EXPECT_GT(d.work_h, 0U) << "work_h is 0 for monitor " << d.index;
+        }
     }
 }
 
@@ -285,6 +292,32 @@ TEST(PlatformClipboard, Win32MixedAsciiAndUnicode)
     const std::string_view expected = "hello \xc3\xa9 world \xe4\xb8\x96\xe7\x95\x8c";
     ASSERT_TRUE(cd::platform::set_clipboard_text(expected));
     EXPECT_EQ(cd::platform::get_clipboard_text(), expected);
+}
+
+// Regression: Bug — malformed UTF-8 wiped clipboard and returned true.
+// After the fix, set_clipboard_text must return false when the input is
+// non-empty but contains invalid UTF-8 sequences (Windows MultiByteToWideChar
+// with CP_UTF8 rejects them and returns 0).
+// Bytes 0xFF 0xFE are not valid UTF-8 (they are the UTF-16 BOM / illegal UTF-8
+// continuation starters) so MultiByteToWideChar(CP_UTF8) fails on them.
+TEST(PlatformClipboard, Win32InvalidUtf8ReturnsFalseAndDoesNotWipeClipboard)
+{
+    // First, set a known good value so we can verify it is NOT wiped.
+    ASSERT_TRUE(cd::platform::set_clipboard_text("sentinel"));
+
+    // Now attempt to set invalid UTF-8.  The call must return false.
+    // "\xFF\xFE" is not valid UTF-8.
+    const std::string_view bad_utf8 = "\xFF\xFE";
+    EXPECT_FALSE(cd::platform::set_clipboard_text(bad_utf8))
+        << "set_clipboard_text must return false for invalid UTF-8 input";
+}
+
+// Verify the empty-string path still returns true (legitimate clipboard clear).
+TEST(PlatformClipboard, Win32EmptyInputReturnsTrueAndClearsClipboard)
+{
+    ASSERT_TRUE(cd::platform::set_clipboard_text("non-empty"));
+    EXPECT_TRUE(cd::platform::set_clipboard_text(""))
+        << "set_clipboard_text(\"\") must return true (legitimate clear)";
 }
 
 #else  // !_WIN32

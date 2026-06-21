@@ -108,10 +108,13 @@ struct DecodedTexture
 };
 
 /// Worker → owner completion record: the asset path plus its decoded payload.
+/// `mip_target` carries the request's target mip level count through so the
+/// owner thread records the correct residency (async mode otherwise loses it).
 struct CompletedTexture
 {
     std::string    path;
     DecodedTexture decoded;
+    std::uint8_t   mip_target { 0U };
 };
 
 /// Decode a texture file from disk into a DecodedTexture. Dispatches on the
@@ -394,6 +397,12 @@ private:
     // after the final tick(). Non-owning observer; never called off-thread.
     cd::rhi::IDevice* last_device_ { nullptr };
 
+    // GPU handles orphaned by enqueue_mip_upgrade() (which has no device
+    // parameter, to keep its public signature). Drained + destroyed on the
+    // next tick()/evict path that does have a device, so a mip upgrade never
+    // leaks the old texture at the RHI layer.
+    std::vector<cd::rhi::TextureHandle> pending_destroy_;
+
     // ---- Helpers ------------------------------------------------------------
 
     /// Accept a batch of decoded textures from the async pool. Creates the GPU
@@ -419,6 +428,10 @@ private:
     /// Enforce budget: evict LRU entries until loaded_map_.size() <= budget.
     /// No-op if budget == 0 (unlimited).
     void enforce_budget(cd::rhi::IDevice& device);
+
+    /// Destroy any GPU handles orphaned by enqueue_mip_upgrade(). Runs at the
+    /// top of tick() so the device-less upgrade path never leaks a texture.
+    void drain_pending_destroy(cd::rhi::IDevice& device);
 
     /// Sprint-1 sync tick: process the single highest-priority pending entry.
     void tick_sync_impl(cd::rhi::IDevice& device);

@@ -10,6 +10,12 @@
 //
 // Storage: `unordered_map<AssetId::value(), int32>`. Negative counts
 // are treated as zero (defensive); over-release does not underflow.
+//
+// Threading contract: NOT internally synchronised — caller synchronises.
+// Like its sibling single-thread services (DependencyGraph, HotReloadQueue),
+// this is driven by the asset hot-reload pipeline on one thread; acquire /
+// release / count_of / clear must not be called concurrently. (Only
+// SchemaRegistry in this family is internally thread-safe, by its own mutex.)
 // =============================================================================
 #pragma once
 

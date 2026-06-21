@@ -256,7 +256,12 @@ std::uint64_t AudioRingBuffer::capacity_frames() const noexcept
 
 std::uint64_t AudioRingBuffer::frames_available() const noexcept
 {
-    return write_cursor_ - read_cursor_;
+    // Guard the unsigned subtraction: a loop rewind can move read_cursor_ ahead
+    // of write_cursor_ (e.g. a loop_start the producer has not reached yet). An
+    // unguarded write_cursor_ - read_cursor_ would underflow to ~2^64, which
+    // then reads stale ring bytes as valid audio AND wedges the producer (via
+    // frames_free()/is_full() reporting permanently full). Clamp to 0.
+    return write_cursor_ >= read_cursor_ ? write_cursor_ - read_cursor_ : 0U;
 }
 
 std::uint64_t AudioRingBuffer::frames_free() const noexcept

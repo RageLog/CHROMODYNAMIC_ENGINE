@@ -106,12 +106,19 @@ public:
     [[nodiscard]] cd::core::Result<void>
     validate_payload(std::string_view schema_name, const std::vector<std::string>& present_fields) const
     {
-        auto* s = find(schema_name);
-        if (s == nullptr)
+        // Hold the shared lock for the WHOLE body and do the lookup inline.
+        // Calling the lock-releasing find() and then dereferencing its raw
+        // Schema* outside the lock would race a concurrent register_schema()
+        // (insert_or_assign) on the same name — the rehash/reassign could
+        // invalidate the pointer mid-iteration. (See SchemaRegistry, ValidatePayload*.)
+        std::shared_lock guard { mutex_ };
+        auto it = schemas_.find(std::string { schema_name });
+        if (it == schemas_.end())
         {
             return std::unexpected(schema_errors::make(schema_errors::Code::kUnknownSchema, "schema not registered"));
         }
-        for (const auto& f : s->fields)
+        const Schema& s = it->second;
+        for (const auto& f : s.fields)
         {
             if (f.optional)
                 continue;

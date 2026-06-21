@@ -37,6 +37,9 @@ public:
 
     [[nodiscard]] bool is_pending(AssetId id) const noexcept
     {
+        // Invalid ids are never inserted by notify(); reject defensively so the
+        // raw-value lookup can't alias a future valid id with value 0.
+        if (!id.is_valid()) return false;
         return dirty_.contains(id.value());
     }
 

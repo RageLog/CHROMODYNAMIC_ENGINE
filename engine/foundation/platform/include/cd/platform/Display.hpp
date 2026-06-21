@@ -18,7 +18,9 @@
 //     * `work_x`,
 //       `work_y`        — top-left of the work area in virtual-screen coords.
 //     * `work_w`,
-//       `work_h`        — size of the work area in physical pixels.
+//       `work_h`        — size of the work area in virtual-screen / logical
+//                         units (Win32: rcWork uses logical coords at the OS
+//                         DPI scale, NOT raw physical pixels).
 //
 //   enumerate_displays() — returns a snapshot vector; empty on headless hosts.
 //   primary_display()    — returns the primary DisplayInfo, or the first one
@@ -52,8 +54,8 @@ struct DisplayInfo
     bool          is_primary { false };    ///< True for the primary monitor.
     std::int32_t  work_x { 0 };           ///< Work-area top-left X (virtual screen).
     std::int32_t  work_y { 0 };           ///< Work-area top-left Y (virtual screen).
-    std::uint32_t work_w { 0 };           ///< Work-area width (pixels).
-    std::uint32_t work_h { 0 };           ///< Work-area height (pixels).
+    std::uint32_t work_w { 0 };           ///< Work-area width (virtual-screen/logical units, not physical px).
+    std::uint32_t work_h { 0 };           ///< Work-area height (virtual-screen/logical units, not physical px).
 };
 
 /// Enumerate all connected monitors.

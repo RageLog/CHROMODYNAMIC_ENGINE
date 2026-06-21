@@ -180,6 +180,40 @@ TEST(SchemaRegistry, UnknownSchemaRejected)
     EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset::schema_errors::Code::kUnknownSchema));
 }
 
+TEST(SchemaRegistry, ValidatePayloadHonoursReregisteredSchema)
+{
+    // validate_payload now takes its own shared_lock and looks the schema up
+    // inline (instead of dereferencing find()'s lock-released raw pointer), so
+    // it must observe the latest insert_or_assign for a re-registered name and
+    // validate against the NEW field set, not a stale one.
+    cd::asset::SchemaRegistry reg;
+
+    cd::asset::Schema v1;
+    v1.name = "material.x";
+    v1.version = 1;
+    v1.fields = { { "albedo", cd::asset::FieldType::kVec4f, false } };
+    reg.register_schema(std::move(v1));
+    EXPECT_TRUE(reg.validate_payload("material.x", { "albedo" }).has_value());
+
+    // Re-register the same name with an additional required field.
+    cd::asset::Schema v2;
+    v2.name = "material.x";
+    v2.version = 2;
+    v2.fields = {
+        { "albedo",    cd::asset::FieldType::kVec4f, false },
+        { "roughness", cd::asset::FieldType::kFloat, false },
+    };
+    reg.register_schema(std::move(v2));
+    EXPECT_EQ(reg.size(), 1u);
+
+    // The old payload now misses a required field of the new schema.
+    auto stale = reg.validate_payload("material.x", { "albedo" });
+    ASSERT_FALSE(stale.has_value());
+    EXPECT_EQ(stale.error().code,
+              static_cast<std::uint32_t>(cd::asset::schema_errors::Code::kMissingRequiredField));
+    EXPECT_TRUE(reg.validate_payload("material.x", { "albedo", "roughness" }).has_value());
+}
+
 }  // namespace
 
 // --- AssetRegistry::tag_from_extension (backlog) ---------------------------
@@ -214,7 +248,7 @@ std::filesystem::path fw_tmp_path(const char* suffix)
 {
     return std::filesystem::temp_directory_path() /
            (std::string { "cd_filewatcher_" } + suffix + "_" +
-            std::to_string(static_cast<unsigned long long>(
+            std::to_string(static_cast<std::uint64_t>(
                 std::chrono::steady_clock::now().time_since_epoch().count())));
 }
 } // namespace
@@ -403,7 +437,6 @@ TEST(AssetRegistryEvict, ZeroBytesIsNoOp)
 #include <cd/asset/AsyncStreamer.hpp>
 
 #include <atomic>
-#include <chrono>
 #include <thread>
 
 TEST(AsyncStreamer, EnqueueAndComplete)
@@ -582,6 +615,17 @@ TEST(HotReloadQueue, InvalidAssetIdIgnored)
     EXPECT_EQ(q.pending_count(), 0u);
 }
 
+TEST(HotReloadQueue, IsPendingRejectsInvalidId)
+{
+    // is_pending() guards invalid ids defensively (they are never inserted by
+    // notify()), so an invalid id reports not-pending even with valid entries
+    // queued — it can't alias the raw value-0 lookup.
+    cd::asset::HotReloadQueue q;
+    q.notify(cd::asset::AssetId::from_path("real.png"));
+    EXPECT_TRUE(q.is_pending(cd::asset::AssetId::from_path("real.png")));
+    EXPECT_FALSE(q.is_pending(cd::asset::AssetId {}));
+}
+
 TEST(HotReloadQueue, ClearWithoutDrain)
 {
     cd::asset::HotReloadQueue q;
@@ -702,6 +746,24 @@ TEST(DependencyGraph, InvalidIdRejected)
     g.depend(cd::asset::AssetId {}, cd::asset::AssetId::from_path("x"));
     g.depend(cd::asset::AssetId::from_path("y"), cd::asset::AssetId {});
     EXPECT_EQ(g.edge_node_count(), 0u);
+}
+
+TEST(DependencyGraph, SelfDependencyDoesNotMakeAssetItsOwnDependent)
+{
+    // A self-edge would put A into its own transitive closure, so a hot-reload
+    // of A would re-trigger A (a self-reload loop). depend() must reject it.
+    cd::asset::DependencyGraph g;
+    auto a = cd::asset::AssetId::from_path("self.json");
+    g.depend(a, a);
+    EXPECT_EQ(g.edge_node_count(), 0u);
+    EXPECT_TRUE(g.dependents_of(a).empty());
+    const auto closure = g.transitive_dependents(a);
+    bool contains_self = false;
+    for (const auto& dep : closure)
+        if (dep == a)
+            contains_self = true;
+    EXPECT_FALSE(contains_self);
+    EXPECT_TRUE(closure.empty());
 }
 
 #include <cd/asset/AssetRefCount.hpp>
