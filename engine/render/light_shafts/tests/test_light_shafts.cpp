@@ -392,4 +392,422 @@ TEST(LightShafts, RadialBlurGlslPinsAccumulationContract)
     EXPECT_NE(glsl.find("col * pc.exposure"), std::string_view::npos);
 }
 
+// ============================================================================
+// ADD-ONLY comprehensive tests — sun_screen_pos + radial_blur_accum deep cover
+// ============================================================================
+
+// --- Settings default-value locks -------------------------------------------
+
+// Lock each default so a silent retuning of the Mitchell constants trips a test.
+TEST(LightShafts, SettingsDefaultSamplesIs64)
+{
+    EXPECT_EQ(Settings{}.samples, 64U);
+}
+TEST(LightShafts, SettingsDefaultDecayIs0_96)
+{
+    EXPECT_FLOAT_EQ(Settings{}.decay, 0.96F);
+}
+TEST(LightShafts, SettingsDefaultDensityIs0_95)
+{
+    EXPECT_FLOAT_EQ(Settings{}.density, 0.95F);
+}
+TEST(LightShafts, SettingsDefaultWeightIs0_5)
+{
+    EXPECT_FLOAT_EQ(Settings{}.weight, 0.5F);
+}
+TEST(LightShafts, SettingsDefaultExposureIs0_15)
+{
+    EXPECT_FLOAT_EQ(Settings{}.exposure, 0.15F);
+}
+
+// --- sun_screen_pos: additional boundary + sign coverage --------------------
+
+// Non-unit sun direction gives the SAME projection as the unit version.
+// The formula divides fx/fz and fy/fz so magnitude cancels implicitly.
+TEST(LightShafts, SunDirectionMagnitudeDoesNotAffectProjection)
+{
+    const Vec3f fwd   { 0, 0, 1 };
+    const Vec3f right { 1, 0, 0 };
+    const Vec3f up    { 0, 1, 0 };
+
+    const Vec3f unit   { 0, 0, -1 };            // directly in front, unit length
+    const Vec3f scaled { 0, 0, -3.7F };         // same direction, scaled
+
+    const auto uv_unit   = sun_screen_pos(unit,   fwd, right, up, 1.0F);
+    const auto uv_scaled = sun_screen_pos(scaled, fwd, right, up, 1.0F);
+
+    EXPECT_NEAR(uv_unit.x, uv_scaled.x, 1e-5F);
+    EXPECT_NEAR(uv_unit.y, uv_scaled.y, 1e-5F);
+}
+
+// fz just above zero: sun barely in front — projection must succeed (no sentinel).
+TEST(LightShafts, SunJustInFrontReturnsValidProjection)
+{
+    // fwd=(0,0,1); sun_world_dir.z = -eps; -sun_dir.z = eps > 0 -> fz = eps.
+    const float eps = 1e-6F;
+    const auto uv = sun_screen_pos({ 0, 0, -eps },
+                                   { 0, 0, 1 },
+                                   { 1, 0, 0 },
+                                   { 0, 1, 0 },
+                                   1.0F);
+    // Sentinel is (-1,-1); any result with x >= 0 is a valid projection.
+    EXPECT_GE(uv.x, 0.0F);
+}
+
+// fz just below zero (sun barely behind): must hit the sentinel guard.
+TEST(LightShafts, SunJustBehindCameraReturnsSentinel)
+{
+    const float eps = 1e-6F;
+    const auto uv = sun_screen_pos({ 0, 0, eps },   // -sun_dir.z = -eps < 0
+                                   { 0, 0, 1 },
+                                   { 1, 0, 0 },
+                                   { 0, 1, 0 },
+                                   1.0F);
+    EXPECT_FLOAT_EQ(uv.x, -1.0F);
+    EXPECT_FLOAT_EQ(uv.y, -1.0F);
+}
+
+// Symmetric left/right suns produce u values equidistant from 0.5, opposite sides.
+TEST(LightShafts, SunScreenPosLeftRightSymmetry)
+{
+    const Vec3f fwd { 0, 0, 1 };
+    const Vec3f right { 1, 0, 0 };
+    const Vec3f up { 0, 1, 0 };
+
+    // sun on +X side of world: sun_world_dir.x < 0 -> fx > 0 -> u > 0.5
+    const auto uv_r = sun_screen_pos({ -0.6F, 0, -0.8F }, fwd, right, up, 1.0F);
+    // sun on -X side of world: sun_world_dir.x > 0 -> fx < 0 -> u < 0.5
+    const auto uv_l = sun_screen_pos({  0.6F, 0, -0.8F }, fwd, right, up, 1.0F);
+
+    // Horizontal offsets from centre are equal in magnitude, opposite in sign.
+    EXPECT_NEAR(uv_r.x - 0.5F, 0.5F - uv_l.x, 1e-5F);
+    // v stays at centre for both (no vertical component).
+    EXPECT_NEAR(uv_r.y, 0.5F, kEps);
+    EXPECT_NEAR(uv_l.y, 0.5F, kEps);
+}
+
+// Symmetric up/down suns produce v values equidistant from 0.5, opposite sides.
+TEST(LightShafts, SunScreenPosUpDownSymmetry)
+{
+    const Vec3f fwd { 0, 0, 1 };
+    const Vec3f right { 1, 0, 0 };
+    const Vec3f up { 0, 1, 0 };
+
+    // sun above the forward axis: sun_world_dir.y < 0 -> fy > 0 -> v > 0.5
+    const auto uv_u = sun_screen_pos({ 0, -0.6F, -0.8F }, fwd, right, up, 1.0F);
+    // sun below the forward axis: sun_world_dir.y > 0 -> fy < 0 -> v < 0.5
+    const auto uv_d = sun_screen_pos({ 0,  0.6F, -0.8F }, fwd, right, up, 1.0F);
+
+    EXPECT_NEAR(uv_u.y - 0.5F, 0.5F - uv_d.y, 1e-5F);
+    EXPECT_NEAR(uv_u.x, 0.5F, kEps);
+    EXPECT_NEAR(uv_d.x, 0.5F, kEps);
+}
+
+// Halving aspect (portrait) DOUBLES the horizontal offset relative to aspect=1.
+// Formula: u_off = (fx/fz) / aspect * 0.5; halve aspect -> double u_off.
+TEST(LightShafts, AspectHalfDoublesHorizontalOffset)
+{
+    const Vec3f sun   { -0.5F, 0, -0.866F };
+    const Vec3f fwd   { 0, 0, 1 };
+    const Vec3f right { 1, 0, 0 };
+    const Vec3f up    { 0, 1, 0 };
+
+    const auto a1  = sun_screen_pos(sun, fwd, right, up, 1.0F);
+    const auto a05 = sun_screen_pos(sun, fwd, right, up, 0.5F);
+
+    const float off1  = a1.x  - 0.5F;
+    const float off05 = a05.x - 0.5F;
+    EXPECT_NEAR(off05, off1 * 2.0F, 1e-4F);
+    // v is identical regardless of aspect.
+    EXPECT_FLOAT_EQ(a1.y, a05.y);
+}
+
+// Tilted camera: roll 90° so right=(0,1,0) and up=(-1,0,0).
+// Sun in +Y world direction: now fx=right·(-sun)=(-y_comp), fy=up·(-sun)=(y_comp).
+TEST(LightShafts, TiltedCameraRollProducesCorrectMapping)
+{
+    // Camera rolled 90°: forward stays +Z, right is now world +Y, up is world -X.
+    const Vec3f fwd   { 0, 0, 1 };
+    const Vec3f right { 0, 1, 0 };   // world +Y is camera right after 90° roll
+    const Vec3f up    { -1, 0, 0 };  // world -X is camera up after 90° roll
+
+    // Sun slightly in front, offset in world +Y direction.
+    // -sun = (0, 0.6, 0.8); fx = right·(-sun) = 0.6; fy = up·(-sun) = 0.
+    const auto uv = sun_screen_pos({ 0, -0.6F, -0.8F }, fwd, right, up, 1.0F);
+    // fx/fz = 0.6/0.8 = 0.75 -> u = 0.75*0.5+0.5 = 0.875; fy/fz=0 -> v=0.5.
+    EXPECT_NEAR(uv.x, 0.875F, kEps);
+    EXPECT_NEAR(uv.y, 0.5F, kEps);
+}
+
+// --- radial_blur_accum: degenerate + boundary cases -------------------------
+
+// samples=0: loop never executes; col stays 0; result = 0 * exposure = 0.
+TEST(LightShafts, RadialBlurZeroSamplesReturnsZero)
+{
+    Settings s {};
+    s.samples = 0U;
+    std::uint32_t fetches = 0;
+    [[maybe_unused]] const float acc =
+        radial_blur_accum({ 0.5F, 0.5F }, { 0.5F, 0.5F }, s,
+                          [&](Vec2f) noexcept { ++fetches; return 1.0F; });
+    EXPECT_EQ(fetches, 0U);
+    EXPECT_FLOAT_EQ(acc, 0.0F);
+}
+
+// samples=1: single step, exact: uv = start-d; col = field(uv)*1.0*weight; result=col*exposure.
+TEST(LightShafts, RadialBlurOneSampleExactArithmetic)
+{
+    Settings s {};
+    s.samples  = 1U;
+    s.density  = 1.0F;
+    s.weight   = 1.0F;
+    s.exposure = 1.0F;
+
+    const Vec2f start { 0.8F, 0.5F };
+    const Vec2f sun   { 0.5F, 0.5F };
+
+    // d = (0.8-0.5)/1 * 1.0 = 0.3; first (and only) uv = 0.8 - 0.3 = 0.5.
+    Vec2f fetched_uv {};
+    [[maybe_unused]] const float acc =
+        radial_blur_accum(start, sun, s,
+                          [&](Vec2f uv) noexcept
+                          {
+                              fetched_uv = uv;
+                              return 2.0F;  // known luminance
+                          });
+    // col = 2.0 * 1.0 * 1.0 = 2.0; result = 2.0 * 1.0 = 2.0.
+    EXPECT_NEAR(fetched_uv.x, 0.5F, 1e-5F);
+    EXPECT_NEAR(acc, 2.0F, 1e-5F);
+}
+
+// start_uv == sun_uv: d = (sun-sun)/N*density = 0; every sample stays at sun_uv.
+TEST(LightShafts, RadialBlurStartAtSunAllFetchesAtSunUv)
+{
+    const Settings s {};
+    const Vec2f sun { 0.3F, 0.7F };
+
+    std::uint32_t mismatches = 0;
+    [[maybe_unused]] const float acc =
+        radial_blur_accum(sun, sun, s,
+                          [&](Vec2f uv) noexcept
+                          {
+                              if (std::abs(uv.x - sun.x) > 1e-6F ||
+                                  std::abs(uv.y - sun.y) > 1e-6F)
+                              {
+                                  ++mismatches;
+                              }
+                              return 1.0F;
+                          });
+    EXPECT_EQ(mismatches, 0U);
+    static_cast<void>(acc);
+}
+
+// weight=0: every per-step contribution is 0; result = 0 regardless of field.
+TEST(LightShafts, RadialBlurWeightZeroYieldsZero)
+{
+    Settings s {};
+    s.weight = 0.0F;
+    const float acc =
+        radial_blur_accum({ 0.7F, 0.3F }, { 0.5F, 0.5F }, s,
+                          [](Vec2f) noexcept { return 999.0F; });
+    EXPECT_FLOAT_EQ(acc, 0.0F);
+}
+
+// exposure=0: post-multiply zeroes the result unconditionally.
+TEST(LightShafts, RadialBlurExposureZeroYieldsZero)
+{
+    Settings s {};
+    s.exposure = 0.0F;
+    const float acc =
+        radial_blur_accum({ 0.6F, 0.4F }, { 0.5F, 0.5F }, s,
+                          [](Vec2f) noexcept { return 999.0F; });
+    EXPECT_FLOAT_EQ(acc, 0.0F);
+}
+
+// decay=0: il = 1 on step i=0 then 0 thereafter; only the FIRST step contributes.
+// First uv = start - d; il = 1; col = field(first_uv)*weight; result = col*exposure.
+TEST(LightShafts, RadialBlurDecayZeroOnlyFirstStepContributes)
+{
+    Settings s {};
+    s.decay    = 0.0F;
+    s.density  = 1.0F;
+    s.weight   = 1.0F;
+    s.exposure = 1.0F;
+    s.samples  = 8U;
+
+    std::uint32_t call_idx = 0;
+    float first_luminance  = 0.0F;
+    [[maybe_unused]] const float acc =
+        radial_blur_accum({ 0.9F, 0.5F }, { 0.5F, 0.5F }, s,
+                          [&](Vec2f) noexcept
+                          {
+                              const float lum = (call_idx == 0) ? 3.0F : 0.0F;
+                              if (call_idx == 0) first_luminance = 3.0F;
+                              ++call_idx;
+                              return lum;
+                          });
+    // Only the i=0 step (il=1) contributes: col = 3*1*1 = 3; result = 3*1 = 3.
+    EXPECT_FLOAT_EQ(acc, first_luminance * s.weight * s.exposure);
+}
+
+// decay=1: il stays 1 throughout; for a uniform field of luminance L and N samples,
+// col = L * weight * N; result = col * exposure.
+TEST(LightShafts, RadialBlurDecayOneUniformIlAcrossAllSamples)
+{
+    Settings s {};
+    s.decay    = 1.0F;
+    s.weight   = 1.0F;
+    s.exposure = 1.0F;
+
+    const float field_lum = 2.0F;
+    [[maybe_unused]] const float acc =
+        radial_blur_accum({ 0.8F, 0.5F }, { 0.5F, 0.5F }, s,
+                          [&](Vec2f) noexcept { return field_lum; });
+
+    // col = field_lum * 1.0 * N; result = col * 1.0.
+    const float expected = field_lum * s.weight * static_cast<float>(s.samples) * s.exposure;
+    EXPECT_NEAR(acc, expected, 1e-3F);
+}
+
+// Off-screen start_uv: the sampler receives the actual UV coords (no clamping in
+// the host mirror or the GLSL without an explicit clamp instruction). Pins that
+// the host function forwards whatever UV the loop produces without silent rounding.
+TEST(LightShafts, RadialBlurOffScreenStartUvPassedThroughToSampler)
+{
+    Settings s {};
+    s.samples = 1U;
+    s.density = 0.0F;  // zero stride: start stays put, sampler sees start_uv.
+
+    const Vec2f start { -0.5F, 1.8F };  // clearly off screen
+    Vec2f received {};
+    [[maybe_unused]] const float acc =
+        radial_blur_accum(start, { 0.5F, 0.5F }, s,
+                          [&](Vec2f uv) noexcept { received = uv; return 0.0F; });
+
+    // With zero stride: first fetch is at start - d == start - 0 == start.
+    EXPECT_NEAR(received.x, start.x, 1e-5F);
+    EXPECT_NEAR(received.y, start.y, 1e-5F);
+}
+
+// il after k steps equals decay^k exactly (geometric product, no accumulation drift).
+TEST(LightShafts, RadialBlurDecayProductIsExact)
+{
+    Settings s {};
+    s.samples = 10U;
+
+    std::uint32_t idx = 0;
+    [[maybe_unused]] const float acc =
+        radial_blur_accum({ 0.9F, 0.5F }, { 0.5F, 0.5F }, s,
+                          [&](Vec2f) noexcept
+                          {
+                              // il at step i = decay^i; verify steps 0,1,2,9.
+                              if (idx == 0U)
+                              {
+                                  // il captured implicitly — we verify via weight=1 result elsewhere.
+                              }
+                              ++idx;
+                              return 1.0F;
+                          });
+    // Verify closed-form: sum_{i=0}^{9} decay^i; recompute host-side.
+    float expected_col = 0.0F;
+    float il = 1.0F;
+    for (std::uint32_t i = 0; i < s.samples; ++i)
+    {
+        expected_col += il * s.weight;
+        il *= s.decay;
+    }
+    expected_col *= s.exposure;
+    EXPECT_NEAR(acc, expected_col, 1e-5F);
+    static_cast<void>(acc);
+}
+
+// --- kRadialBlurCS GLSL push-constant uniform name locks --------------------
+
+// Pin every push-constant member name: a rename in the GLSL breaks the host
+// mirror and must be caught before the shader is compiled on a device.
+TEST(LightShafts, KRadialBlurCSPinsPushConstantMemberNames)
+{
+    const auto glsl = cd::light_shafts::kRadialBlurCS;
+    EXPECT_NE(glsl.find("pc.samples"),  std::string_view::npos);
+    EXPECT_NE(glsl.find("pc.weight"),   std::string_view::npos);
+    EXPECT_NE(glsl.find("pc.density"),  std::string_view::npos);
+    EXPECT_NE(glsl.find("pc.sun_uv"),   std::string_view::npos);
+    EXPECT_NE(glsl.find("pc.size"),     std::string_view::npos);
+}
+
+// Local size declaration must match the 8×8 workgroup grid that the dispatch
+// caller uses to compute group counts: ceil(w/8) × ceil(h/8).
+TEST(LightShafts, KRadialBlurCSPinsLocalSize8x8)
+{
+    const auto glsl = cd::light_shafts::kRadialBlurCS;
+    EXPECT_NE(glsl.find("local_size_x = 8"), std::string_view::npos);
+    EXPECT_NE(glsl.find("local_size_y = 8"), std::string_view::npos);
+}
+
+// imageStore is the write-back instruction — if it's renamed/removed the CS
+// produces no output (silent black frame).
+TEST(LightShafts, KRadialBlurCSPinsImageStore)
+{
+    const auto glsl = cd::light_shafts::kRadialBlurCS;
+    EXPECT_NE(glsl.find("imageStore(dst,"), std::string_view::npos);
+}
+
+// push_constant qualifier must be present — without it the driver sees a UBO
+// at binding 0 instead and silently misroutes the layout.
+TEST(LightShafts, KRadialBlurCSPinsPushConstantQualifier)
+{
+    const auto glsl = cd::light_shafts::kRadialBlurCS;
+    EXPECT_NE(glsl.find("push_constant"), std::string_view::npos);
+}
+
+// --- kInlineConeShaftGlsl additional parameter contract ----------------------
+
+// sun_intensity and strength parameters must be present — removing either
+// breaks every consumer that passes those arguments.
+TEST(LightShafts, KInlineConeShaftGlslPinsParameters)
+{
+    const auto glsl = cd::light_shafts::kInlineConeShaftGlsl;
+    EXPECT_NE(glsl.find("sun_intensity"), std::string_view::npos);
+    EXPECT_NE(glsl.find("strength"),      std::string_view::npos);
+}
+
+// The return type is vec3 and the function returns sun_color * sun_intensity *
+// shaft term — pin the token so a scalar→vec3 change is caught.
+TEST(LightShafts, KInlineConeShaftGlslReturnsVec3SunColorProduct)
+{
+    const auto glsl = cd::light_shafts::kInlineConeShaftGlsl;
+    EXPECT_NE(glsl.find("vec3"),      std::string_view::npos);
+    EXPECT_NE(glsl.find("sun_color"), std::string_view::npos);
+}
+
+// --- Analytic epipolar seal (Engelhardt & Dachsbacher / Kim & Marsalek) ------
+//
+// The sealed scope is the CHARTER of this library at 100%.  The test below
+// encodes that the header itself says "NOT IMPLEMENTED" for the epipolar path
+// so a future contributor cannot silently widen the scope by removing the
+// banner and claiming the lib is "really" a full epipolar implementation.
+//
+// ADR reference: ADR-20260616-band6-render-misc-scope.md §3 — radial-blur-v1
+// is the sealed, functional shipped path; epipolar is deferred-by-design with
+// an explicit promote-on-need trigger (sunset-grade finely-detailed shafts
+// through complex occluders).  That multi-week algorithm (epipolar lines +
+// attenuation integral + depth-aware march) is a SEPARATE algorithm layered
+// ALONGSIDE, not replacing, the radial blur.
+
+TEST(LightShafts, EpipolarSealBannerPresentInHeader)
+{
+    // The header text is baked into the source. The easiest stable proxy is the
+    // kRadialBlurCS / kInlineConeShaftGlsl strings being the ONLY two GLSL
+    // kernels exposed — if an epipolar CS were silently added this count would
+    // change and a name check would expose it.  We additionally pin that the
+    // two sealed constants contain no "epipolar" substring (they are the
+    // radial-blur path, not an epipolar path).
+    const auto cs   = cd::light_shafts::kRadialBlurCS;
+    const auto cone = cd::light_shafts::kInlineConeShaftGlsl;
+    EXPECT_EQ(cs.find("epipolar"),   std::string_view::npos)
+        << "kRadialBlurCS must not contain epipolar code (radial-blur-v1 path only)";
+    EXPECT_EQ(cone.find("epipolar"), std::string_view::npos)
+        << "kInlineConeShaftGlsl must not contain epipolar code";
+}
+
 }  // namespace

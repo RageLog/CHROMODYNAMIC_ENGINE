@@ -567,4 +567,19 @@ TEST(Decal, GlslUvRemapFormulaHasBias)
     EXPECT_NE(g.find("uv.y"), std::string_view::npos);
 }
 
+// G6.  kDecalGlsl: the culling guard uses abs() comparisons on all three local
+//      axes mirroring the C++ early-return (abs(lx) > half_ext.x || …).
+//      Locks the GPU-side cull contract so a refactor cannot silently drop the
+//      half-space test on any axis.
+TEST(Decal, GlslCullingGuardUsesAbsOnAllThreeAxes)
+{
+    constexpr std::string_view g = cd::decal::kDecalGlsl;
+    EXPECT_NE(g.find("abs(lx)"), std::string_view::npos);
+    EXPECT_NE(g.find("abs(ly)"), std::string_view::npos);
+    EXPECT_NE(g.find("abs(lz)"), std::string_view::npos);
+    EXPECT_NE(g.find("d.half_ext.x"), std::string_view::npos);
+    EXPECT_NE(g.find("d.half_ext.y"), std::string_view::npos);
+    EXPECT_NE(g.find("d.half_ext.z"), std::string_view::npos);
+}
+
 }  // namespace

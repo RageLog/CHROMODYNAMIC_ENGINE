@@ -10,8 +10,13 @@
 // matching reference forward pass is reproduced here from the public init
 // contract (mt19937 seed 0xC1DDF1, uniform[-0.1,0.1) drawn in the order
 // w_in, b_in, w_out, b_out) so that exact numeric outputs can be asserted
-// without exposing the private weights. Backends (Tiny CUDA NN / SPIR-V) are
-// documented stubs — no API exists to exercise, so no test targets them.
+// without exposing the private weights. The additive CPU-charter helpers are
+// also pinned here: query_into (byte-identical scratch-reusing inference),
+// encode_input (Müller §3.2 frequency encoding — determinism, lowest-octave
+// sin/cos contract, zero-pad, large-bank clamp), and train_batch (mini-batch
+// SGD — single-element==train_step, empty no-op, mean-error descent,
+// determinism). Backends (Tiny CUDA NN / SPIR-V) are documented stubs — no API
+// exists to exercise, so no test targets them.
 //
 // AAA throughout; deterministic (seeded RNG only); edge + negative coverage.
 // =============================================================================
@@ -23,8 +28,10 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <numbers>
 #include <random>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace
@@ -456,6 +463,256 @@ TEST(Nrc, ZeroErrorTrainStepIsANoOp)
     EXPECT_FLOAT_EQ(after.x, before.x);
     EXPECT_FLOAT_EQ(after.y, before.y);
     EXPECT_FLOAT_EQ(after.z, before.z);
+}
+
+// =============================================================================
+// query_into — scratch-reusing inference overload (additive, zero-heap loop).
+// =============================================================================
+
+// query_into must be BYTE-IDENTICAL to query for the same input — it is the
+// same arithmetic with a caller-supplied hidden-activation buffer.
+TEST(Nrc, QueryIntoIsByteIdenticalToQuery)
+{
+    const Config c {};
+    const CpuReferenceMlp mlp(c);
+
+    std::array<float, kInputDim> feat {};
+    for (std::size_t i = 0; i < feat.size(); ++i)
+        feat[i] = 0.07F * static_cast<float>(i) - 0.4F;
+    const std::span<const float, kInputDim> fs(feat);
+
+    std::vector<float> scratch;  // intentionally empty → must be resized
+    const auto a = mlp.query(fs);
+    const auto b = mlp.query_into(fs, scratch);
+
+    EXPECT_FLOAT_EQ(a.x, b.x);
+    EXPECT_FLOAT_EQ(a.y, b.y);
+    EXPECT_FLOAT_EQ(a.z, b.z);
+    // The scratch buffer is sized to the hidden width after the call.
+    EXPECT_EQ(scratch.size(), static_cast<std::size_t>(c.hidden_width));
+}
+
+// Reusing the SAME scratch buffer across heterogeneous queries must yield the
+// same results as fresh query() calls — prior contents are overwritten, never
+// leaked into a later query (the whole point of the hot-loop overload).
+TEST(Nrc, QueryIntoReusedScratchMatchesFreshQueries)
+{
+    const Config c {};
+    const CpuReferenceMlp mlp(c);
+
+    const std::array<std::array<float, kInputDim>, 3> inputs {
+        filled_feat(-0.3F), filled_feat(0.6F), filled_feat(0.0F) };
+
+    std::vector<float> scratch;
+    for (const auto& in : inputs)
+    {
+        const std::span<const float, kInputDim> fs(in);
+        const auto fresh  = mlp.query(fs);
+        const auto reused = mlp.query_into(fs, scratch);
+        EXPECT_FLOAT_EQ(reused.x, fresh.x);
+        EXPECT_FLOAT_EQ(reused.y, fresh.y);
+        EXPECT_FLOAT_EQ(reused.z, fresh.z);
+    }
+}
+
+// =============================================================================
+// encode_input — stateless frequency (positional) encoding, Müller 2021 §3.2.
+// =============================================================================
+using cd::nrc::encode_input;
+using cd::nrc::kRawSampleDim;
+
+// The encoding is a pure function of (raw, frequencies): deterministic, every
+// produced slot is finite, and the trailing pad slots (beyond the 5×3×2=30
+// produced pairs with the default frequencies=3) are exactly zero.
+TEST(Nrc, EncodeInputIsDeterministicFiniteAndZeroPadded)
+{
+    const std::array<float, kRawSampleDim> raw { 0.1F, -0.2F, 0.3F, 0.5F, -0.7F };
+    const std::span<const float, kRawSampleDim> rs(raw);
+
+    const auto a = encode_input(rs);
+    const auto b = encode_input(rs);
+    for (std::size_t i = 0; i < a.size(); ++i)
+    {
+        EXPECT_FLOAT_EQ(a[i], b[i]) << "non-deterministic at slot " << i;
+        EXPECT_TRUE(std::isfinite(a[i]));
+    }
+    // Default frequencies=3 → 5 scalars × 3 octaves × 2 phases = 30 slots used;
+    // kInputDim=32, so the last two slots are zero-padding.
+    EXPECT_FLOAT_EQ(a[30], 0.0F);
+    EXPECT_FLOAT_EQ(a[31], 0.0F);
+}
+
+// The leading slots are the lowest octave: [sin(π·x0), cos(π·x0)] for the first
+// raw scalar — pin the exact sinusoidal contract (raw-scalar-major, octave 0).
+TEST(Nrc, EncodeInputLeadingSlotsAreLowestOctaveSinCos)
+{
+    std::array<float, kRawSampleDim> raw {};
+    std::ranges::fill(raw, 0.0F);
+    raw[0] = 0.25F;
+    const std::span<const float, kRawSampleDim> rs(raw);
+
+    const auto feat = encode_input(rs);
+    const float phase = std::numbers::pi_v<float> * raw[0];  // octave 0: 2^0·π
+    EXPECT_FLOAT_EQ(feat[0], std::sin(phase));
+    EXPECT_FLOAT_EQ(feat[1], std::cos(phase));
+    // x0 octave-1 pair lives at slots 2,3 (raw-scalar-major): 2^1·π·x0.
+    const float phase1 = 2.0F * std::numbers::pi_v<float> * raw[0];
+    EXPECT_FLOAT_EQ(feat[2], std::sin(phase1));
+    EXPECT_FLOAT_EQ(feat[3], std::cos(phase1));
+}
+
+// A larger frequencies count must never overflow the kInputDim buffer — the
+// encoder stops cleanly at the bank boundary (defensive bound check).
+TEST(Nrc, EncodeInputClampsToInputDimForLargeFrequencyBank)
+{
+    const std::array<float, kRawSampleDim> raw { 1.0F, 1.0F, 1.0F, 1.0F, 1.0F };
+    const std::span<const float, kRawSampleDim> rs(raw);
+
+    const auto feat = encode_input(rs, 100U);  // would need 1000 slots
+    for (std::size_t i = 0; i < feat.size(); ++i)
+        EXPECT_TRUE(std::isfinite(feat[i])) << "overflow/garbage at slot " << i;
+}
+
+// The encoded feature vector is consumable directly by the network (it is a
+// fully-defined kInputDim vector) and produces a finite radiance.
+TEST(Nrc, EncodedFeatureFeedsTheNetwork)
+{
+    const Config c {};
+    const CpuReferenceMlp mlp(c);
+    const std::array<float, kRawSampleDim> raw { 0.2F, 0.4F, -0.1F, 0.0F, 0.3F };
+    const auto feat = encode_input(std::span<const float, kRawSampleDim>(raw));
+    const auto out  = mlp.query(std::span<const float, kInputDim>(feat));
+    EXPECT_TRUE(std::isfinite(out.x));
+    EXPECT_TRUE(std::isfinite(out.y));
+    EXPECT_TRUE(std::isfinite(out.z));
+}
+
+// =============================================================================
+// train_batch — mini-batch SGD (mean per-sample gradient), the GPU-mirror shape.
+// =============================================================================
+using BatchPair = std::pair<std::array<float, kInputDim>, Vec3f>;
+
+// A single-element batch must EQUAL one train_step on that element — same
+// forward, same gradient, mean over N=1 is the identity update (matched here
+// to float tolerance; the only difference is the harmless (lr·err)·h vs
+// lr·(err·h) reassociation). The strongest pin that train_batch's
+// accumulate-then-apply path matches the per-sample train_step path.
+TEST(Nrc, TrainBatchSingleElementEqualsTrainStep)
+{
+    Config c {};
+    c.learning_rate = 1e-2F;
+    CpuReferenceMlp m_step(c);
+    CpuReferenceMlp m_batch(c);  // same seed → identical start
+
+    std::array<float, kInputDim> feat {};
+    for (std::size_t i = 0; i < feat.size(); ++i)
+        feat[i] = 0.3F + 0.01F * static_cast<float>(i);
+    const Vec3f target { 0.7F, -0.2F, 0.4F };
+    const std::span<const float, kInputDim> fs(feat);
+
+    m_step.train_step(fs, target);
+
+    const std::array<BatchPair, 1> one { BatchPair { feat, target } };
+    m_batch.train_batch(std::span<const BatchPair>(one));
+
+    const auto a = m_step.query(fs);
+    const auto b = m_batch.query(fs);
+    // NEAR not FLOAT_EQ: train_batch divides by N=1 and accumulates
+    // (lr*err)*h vs train_step's lr*(err*h) — a benign float reassociation in
+    // the weight update that, propagated through the forward pass, drifts the
+    // queried output by ~4e-5. 1e-4 still pins batch-of-1 == single step.
+    EXPECT_NEAR(a.x, b.x, 1e-4F);
+    EXPECT_NEAR(a.y, b.y, 1e-4F);
+    EXPECT_NEAR(a.z, b.z, 1e-4F);
+}
+
+// An empty batch is a no-op: the queried output before == after (no NaN from a
+// divide-by-zero mean, no spurious drift).
+TEST(Nrc, TrainBatchEmptyIsNoOp)
+{
+    const Config c {};
+    CpuReferenceMlp mlp(c);
+    const auto feat = filled_feat(0.2F);
+    const std::span<const float, kInputDim> fs(feat);
+
+    const auto before = mlp.query(fs);
+    const std::array<BatchPair, 0> empty {};
+    mlp.train_batch(std::span<const BatchPair>(empty));
+    const auto after = mlp.query(fs);
+
+    EXPECT_FLOAT_EQ(after.x, before.x);
+    EXPECT_FLOAT_EQ(after.y, before.y);
+    EXPECT_FLOAT_EQ(after.z, before.z);
+}
+
+// Mini-batch training on a set of distinct (feature → target) pairs reduces the
+// mean L1 error across the batch — the optimiser genuinely fits the dataset.
+TEST(Nrc, TrainBatchReducesMeanErrorOverDataset)
+{
+    Config c {};
+    c.learning_rate = 1e-2F;
+    CpuReferenceMlp mlp(c);
+
+    std::array<BatchPair, 4> data {};
+    for (std::size_t s = 0; s < data.size(); ++s)
+    {
+        for (std::size_t i = 0; i < kInputDim; ++i)
+            data[s].first[i] =
+                0.1F * static_cast<float>(s) + 0.01F * static_cast<float>(i);
+        data[s].second =
+            Vec3f { 0.2F * static_cast<float>(s + 1), 0.3F, -0.1F };
+    }
+    const std::span<const BatchPair> batch(data);
+
+    const auto mean_l1 = [&]() {
+        float acc = 0.0F;
+        for (const auto& [feat, target] : data)
+        {
+            const std::span<const float, kInputDim> fs(feat);
+            acc += l1_error(mlp, fs, target);
+        }
+        return acc / static_cast<float>(data.size());
+    };
+
+    const float e0 = mean_l1();
+    for (int it = 0; it < 600; ++it)
+        mlp.train_batch(batch);
+    const float e1 = mean_l1();
+
+    EXPECT_LT(e1, e0)        << "batch training did not reduce mean error";
+    EXPECT_LT(e1, e0 * 0.5F) << "mean error reduced < 50% — batch backward weak";
+}
+
+// Determinism: two MLPs from the same Config trained on the same batch for the
+// same number of steps must be bit-identical (no RNG, no order dependence).
+TEST(Nrc, TrainBatchIsDeterministic)
+{
+    Config c {};
+    c.learning_rate = 5e-3F;
+    CpuReferenceMlp a(c);
+    CpuReferenceMlp b(c);
+
+    std::array<BatchPair, 3> data {};
+    for (std::size_t s = 0; s < data.size(); ++s)
+    {
+        std::ranges::fill(data[s].first, 0.2F * static_cast<float>(s) - 0.2F);
+        data[s].second = Vec3f { 0.4F, -0.3F, 0.1F * static_cast<float>(s) };
+    }
+    const std::span<const BatchPair> batch(data);
+
+    for (int it = 0; it < 50; ++it)
+    {
+        a.train_batch(batch);
+        b.train_batch(batch);
+    }
+
+    const auto feat = filled_feat(0.33F);
+    const std::span<const float, kInputDim> fs(feat);
+    const auto oa = a.query(fs);
+    const auto ob = b.query(fs);
+    EXPECT_FLOAT_EQ(oa.x, ob.x);
+    EXPECT_FLOAT_EQ(oa.y, ob.y);
+    EXPECT_FLOAT_EQ(oa.z, ob.z);
 }
 
 }  // namespace

@@ -2,20 +2,32 @@
 // CHROMODYNAMIC - cd/particle/system/ParticleSystem.cpp
 // Phase 564 (M3 W5C) - System implementation.
 // Phase 583 (M5 W1) - Renamed from system_v2; no v1 ever existed.
+// Phase 1268 (Band-70) - drag coefficient + max_particles cap.
 //
 // Implementation notes:
 //
 //   * SoA layout: all particle state lives in parallel std::vector<float>
-//     channels (px/py/pz, vx/vy/vz, age, life, size_start, size_end, and
-//     4x color_start + 4x color_end channels).  A parallel emitter_id vector
-//     tracks which emitter spawned each particle.
+//     channels (px/py/pz, vx/vy/vz, drag, age, life, size_start, size_end,
+//     and 4x color_start + 4x color_end channels).  A parallel emitter_id
+//     vector tracks which emitter spawned each particle.
 //
 //   * Deletion: swap-and-pop (O(1)).  The last particle is moved into the
 //     erased slot; no order preservation is guaranteed between ticks.
+//     When a particle dies the alive_count of its emitter is decremented.
 //
 //   * Integration: semi-implicit Euler.  Sprint-1 has no external acceleration
-//     so velocity is constant between spawns; the v-first / x-second ordering
-//     is structurally correct for future V3 force fields.
+//     so velocity is updated only by drag (if nonzero) then position is updated
+//     from new velocity.  The v-first / x-second ordering is structurally
+//     correct for future V3 force fields.
+//
+//   * Drag: v *= std::exp(-drag * dt) applied to all three velocity components
+//     each tick.  Exact exponential decay — no discretisation error; stable for
+//     any dt > 0.  drag_ stored per-particle so mixed drag populations work.
+//
+//   * max_particles cap: spawn is skipped if the emitter's alive_count has
+//     reached max_particles (when max_particles > 0).  alive_count is
+//     decremented in erase_particle_() by looking up the dying particle's
+//     emitter in the emitters_ registry.
 //
 //   * Spawn accumulator: each emitter carries a float accumulator that
 //     accumulates `emit_rate_per_sec * dt` each tick.  Whole integers are
@@ -70,10 +82,10 @@ EmitterId System::add_emitter(EmitterSpec spec)
     const EmitterId id = next_id_++;
     EmitterEntry entry {};
     entry.id    = id;
-    entry.spec  = std::move(spec);
+    entry.spec  = spec;
     entry.accum = 0.0F;
     entry.alive = true;
-    emitters_.emplace_back(std::move(entry));
+    emitters_.push_back(entry);
     return id;
 }
 
@@ -118,9 +130,15 @@ void System::tick(float dt)
         }
     }
 
-    // Compact dead emitters lazily after spawning so indices stay stable.
+    // Compact dead emitters lazily after spawning: remove entries that are both
+    // no longer alive AND have no surviving particles (alive_count == 0).
+    // Entries with alive == false but alive_count > 0 must stay in the registry
+    // so erase_particle_() can decrement their counter when those particles die.
     const auto dead = std::ranges::remove_if(emitters_,
-                       [](const EmitterEntry& e) noexcept { return !e.alive; });
+        [](const EmitterEntry& e) noexcept
+        {
+            return !e.alive && e.alive_count == 0U;
+        });
     emitters_.erase(dead.begin(), dead.end());
 
     // ------------------------------------------------------------------
@@ -140,10 +158,19 @@ void System::tick(float dt)
             continue;
         }
 
-        // Semi-implicit Euler: velocity updated first (no force in Sprint-1),
-        // then position updated from new velocity.
-        // v_new = v_old   (no acceleration this sprint)
-        // p_new = p_old + v_new * dt
+        // Semi-implicit Euler:
+        //   1. Apply drag (exponential decay, exact for constant drag).
+        //      v *= exp(-drag * dt). drag_[i] == 0 -> factor == 1 (no-op).
+        //   2. velocity is constant otherwise (no external force in Sprint-1);
+        //      v-first ordering is correct for future V3 force fields.
+        //   3. Update position from new velocity.
+        if (drag_[i] > 0.0F)
+        {
+            const float factor = std::exp(-drag_[i] * dt);
+            vx_[i] *= factor;
+            vy_[i] *= factor;
+            vz_[i] *= factor;
+        }
         px_[i] += vx_[i] * dt;
         py_[i] += vy_[i] * dt;
         pz_[i] += vz_[i] * dt;
@@ -191,8 +218,15 @@ std::size_t System::snapshot(std::span<ParticleSnapshot> out) const
 
 void System::spawn_particle_(std::size_t ei)
 {
-    const EmitterSpec& spec = emitters_[ei].spec;
+    EmitterEntry& entry    = emitters_[ei];
+    const EmitterSpec& spec = entry.spec;
     const ParticleSpec& ps  = spec.particle;
+
+    // Enforce max_particles cap: skip spawn when cap is active and reached.
+    if (spec.max_particles > 0U && entry.alive_count >= spec.max_particles)
+    {
+        return;
+    }
 
     // Position = emitter origin.
     px_.push_back(spec.position[0]);
@@ -203,6 +237,9 @@ void System::spawn_particle_(std::size_t ei)
     vx_.push_back(random_range(spec.velocity_min[0], spec.velocity_max[0]));
     vy_.push_back(random_range(spec.velocity_min[1], spec.velocity_max[1]));
     vz_.push_back(random_range(spec.velocity_min[2], spec.velocity_max[2]));
+
+    // Drag coefficient: clamped to [0, inf) so negative authored values are safe.
+    drag_.push_back(spec.drag > 0.0F ? spec.drag : 0.0F);
 
     age_.push_back(0.0F);
     life_.push_back(std::max(ps.life_seconds, std::numeric_limits<float>::epsilon()));
@@ -220,12 +257,26 @@ void System::spawn_particle_(std::size_t ei)
     cb1_.push_back(ps.color_end[2]);
     ca1_.push_back(ps.color_end[3]);
 
-    spawner_.push_back(emitters_[ei].id);
+    spawner_.push_back(entry.id);
+    ++entry.alive_count;
 }
 
 void System::erase_particle_(std::size_t i) noexcept
 {
     const std::size_t last = px_.size() - 1U;
+
+    // Decrement alive_count for the dying particle's emitter.
+    // The emitter may already have been removed (alive == false) but
+    // alive_count still tracks the live particles it spawned while active.
+    const EmitterId dying_spawner = spawner_[i];
+    for (auto& e : emitters_)
+    {
+        if (e.id == dying_spawner && e.alive_count > 0U)
+        {
+            --e.alive_count;
+            break;
+        }
+    }
 
     auto swap_pop = [last, i](std::vector<float>& v) noexcept {
         v[i] = v[last];
@@ -238,6 +289,7 @@ void System::erase_particle_(std::size_t i) noexcept
     swap_pop(vx_);
     swap_pop(vy_);
     swap_pop(vz_);
+    swap_pop(drag_);
     swap_pop(age_);
     swap_pop(life_);
     swap_pop(size_start_);

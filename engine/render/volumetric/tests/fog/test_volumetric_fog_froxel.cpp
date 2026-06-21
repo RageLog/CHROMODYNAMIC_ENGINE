@@ -598,4 +598,233 @@ TEST(VolFogFroxel, GlslKernelsContainExpectedDirectives)
                                                         std::string_view::npos);
 }
 
+// ---- ADD-ONLY host regression locks (Run: 70->100) -------------------------
+//
+// Deepen coverage of the EXISTING froxel-fog code to charter-complete the
+// cd::post / cd::cluster pattern: every coordinate helper, inject branch,
+// integrator contract, NaN guard, and GLSL-string parity token is pinned so a
+// future edit that perturbs the rendered fog trips a unit test before the
+// golden image. No froxel/fog/cloud math or GLSL is changed here.
+
+// (18) cell_count over a degenerate 1x1x1 grid is one, and a zero-depth grid is
+//      empty. Edge: minimal + empty grid sizing.
+TEST(VolFogFroxel, CellCountDegenerateAndEmpty)
+{
+    FroxelGridDesc one {};
+    one.width = 1; one.height = 1; one.depth = 1;
+    EXPECT_EQ(cell_count(one), 1u);
+
+    FroxelGridDesc empty {};
+    empty.width = 4; empty.height = 4; empty.depth = 0;
+    EXPECT_EQ(cell_count(empty), 0u);
+
+    // FroxelGrid::resize honours cell_count (no overflow on the 64-bit product).
+    FroxelGrid g;
+    g.desc = { 1000, 1000, 1000, 0.1F, 64.0F };
+    EXPECT_EQ(cell_count(g.desc),
+              static_cast<std::size_t>(1000) * 1000 * 1000);
+}
+
+// (19) froxel_to_view places the camera-centre cell on the -Z axis (no lateral
+//      offset) at exactly the slice's view-Z, and the view ray points straight
+//      ahead. Pins the central-ray anchor of the perspective unprojection.
+TEST(VolFogFroxel, FroxelToViewCentreCellOnAxis)
+{
+    FroxelGridDesc d {};
+    d.width = 2; d.height = 2; d.depth = 4;  // centre between cells 0 and 1
+    d.near_z = 0.5F; d.far_z = 16.0F;
+    const float tan_half = std::tan(0.5F);
+    const float aspect = 1.0F;
+    // With width/height = 2, cell (0, ...) centre uvw.x = 0.25 -> ndc -0.5; cell
+    // 1 -> +0.5. The midpoint of the two equals the optical axis: verify the
+    // pair is mirror-symmetric in X about 0 at the same slice.
+    const auto v0 = froxel_to_view(0, 0, 1, d, tan_half, aspect);
+    const auto v1 = froxel_to_view(1, 0, 1, d, tan_half, aspect);
+    EXPECT_NEAR(v0.x, -v1.x, 1e-5F);   // mirror about optical axis
+    EXPECT_NEAR(v0.z, v1.z, 1e-6F);    // same slice -> same view-Z
+    EXPECT_LT(v0.z, 0.0F);             // camera looks down -Z
+}
+
+// (20) froxel_to_view applies the aspect ratio to the Y extent only: at the same
+//      |ndc| offset, a wide aspect (>1) compresses the vertical view-space span
+//      relative to the horizontal. Pins the tanY = tanX / aspect contract.
+TEST(VolFogFroxel, FroxelToViewAspectScalesYOnly)
+{
+    FroxelGridDesc d {};
+    d.width = 4; d.height = 4; d.depth = 4;
+    d.near_z = 0.5F; d.far_z = 16.0F;
+    const float tan_half = std::tan(0.6F);
+    // Aspect 2.0 -> vertical FoV half the horizontal. Compare a top-edge cell's
+    // |y| against a right-edge cell's |x| at matched ndc magnitude.
+    const auto top  = froxel_to_view(2, 0, 2, d, tan_half, 2.0F);  // ndc_y high
+    const auto side = froxel_to_view(3, 2, 2, d, tan_half, 2.0F);  // ndc_x high
+    EXPECT_LT(std::abs(top.y), std::abs(side.x));  // Y compressed by aspect
+}
+
+// (21) view_to_froxel guards a degenerate (<=0) aspect via aspect_safe: a zero
+//      aspect must not divide-by-zero — the returned index stays finite.
+//      Edge: aspect == 0 guard.
+TEST(VolFogFroxel, ViewToFroxelZeroAspectIsFinite)
+{
+    FroxelGridDesc d {};
+    const float tan_half = std::tan(0.5F);
+    const Vec3f p { 0.5F, 0.5F, -10.0F };
+    const auto idx = view_to_froxel(p, d, tan_half, 0.0F);  // aspect == 0
+    EXPECT_TRUE(std::isfinite(idx.x));
+    EXPECT_TRUE(std::isfinite(idx.y));
+    EXPECT_TRUE(std::isfinite(idx.z));
+}
+
+// (22) view_to_froxel maps a point exactly on the optical axis to the grid
+//      centre in XY (u = v = 0.5 -> centre index). Pins the central inverse.
+TEST(VolFogFroxel, ViewToFroxelOnAxisMapsToCentre)
+{
+    FroxelGridDesc d {};
+    d.width = 8; d.height = 8; d.depth = 8;
+    d.near_z = 0.1F; d.far_z = 32.0F;
+    const float tan_half = std::tan(0.5F);
+    const Vec3f on_axis { 0.0F, 0.0F, -10.0F };
+    const auto idx = view_to_froxel(on_axis, d, tan_half, 1.0F);
+    // u = v = 0.5 -> 0.5 * width - 0.5 = 3.5 for an 8-wide grid.
+    EXPECT_NEAR(idx.x, 3.5F, 1e-4F);
+    EXPECT_NEAR(idx.y, 3.5F, 1e-4F);
+    EXPECT_GE(idx.z, 0.0F);
+}
+
+// (23) inject_cell's in-scatter follows the HG phase: a forward-scattering
+//      medium (g>0) injects MORE radiance when the view aligns with the sun
+//      than when it opposes. Pins the phase coupling inside inject.
+TEST(VolFogFroxel, InjectCellPhaseForwardBrighterThanBackward)
+{
+    VolumetricFogSettings s {};
+    s.density = 0.3F;
+    s.anisotropy_g = 0.7F;  // forward-scatter
+    const Vec3f sun_dir { 0.0F, 0.0F, -1.0F };
+    const Vec3f fwd_view { 0.0F, 0.0F, -1.0F };  // looking along sun
+    const Vec3f bwd_view { 0.0F, 0.0F, +1.0F };  // looking away
+    const auto fwd = inject_cell(s, 1.0F, Vec3f { 1, 1, 1 }, fwd_view, sun_dir, 1.0F);
+    const auto bwd = inject_cell(s, 1.0F, Vec3f { 1, 1, 1 }, bwd_view, sun_dir, 1.0F);
+    EXPECT_GT(fwd.x, bwd.x);
+}
+
+// (24) inject_cell tints the in-scatter by the per-channel albedo: a coloured
+//      albedo scales each RGB channel independently. Pins the albedo multiply.
+TEST(VolFogFroxel, InjectCellAlbedoTintsPerChannel)
+{
+    VolumetricFogSettings s {};
+    s.density = 0.4F;
+    s.anisotropy_g = 0.0F;  // isotropic -> phase identical per channel
+    s.albedo = { 1.0F, 0.5F, 0.25F };
+    const auto c = inject_cell(s, 1.0F, Vec3f { 1, 1, 1 },
+                               Vec3f { 0, 0, -1 }, Vec3f { 0, 0, -1 }, 1.0F);
+    // Channels are in the albedo ratio 1 : 0.5 : 0.25.
+    EXPECT_GT(c.x, 0.0F);
+    EXPECT_NEAR(c.y, c.x * 0.5F, 1e-6F);
+    EXPECT_NEAR(c.z, c.x * 0.25F, 1e-6F);
+}
+
+// (25) inject_cell is finite (no NaN/inf) at the HG forward singularity guard:
+//      g -> 1 with cos_theta -> 1 must stay finite (math guard max(d,1e-6)).
+//      Edge: phase-function singularity.
+TEST(VolFogFroxel, InjectCellFiniteAtPhaseSingularity)
+{
+    VolumetricFogSettings s {};
+    s.density = 0.5F;
+    s.anisotropy_g = 0.999F;             // near the g=1 singularity
+    const Vec3f aligned { 0.0F, 0.0F, -1.0F };
+    const auto c = inject_cell(s, 10.0F, Vec3f { 1, 1, 1 }, aligned, aligned, 1.0F);
+    EXPECT_TRUE(std::isfinite(c.x));
+    EXPECT_TRUE(std::isfinite(c.y));
+    EXPECT_TRUE(std::isfinite(c.z));
+    EXPECT_TRUE(std::isfinite(c.w));
+    EXPECT_GE(c.x, 0.0F);
+}
+
+// (26) inject_cell with zero dt produces zero RGB (premultiply collapses) but
+//      leaves σ_t in A — a zero-thickness slab scatters nothing yet still
+//      reports its extinction. Edge: dt == 0.
+TEST(VolFogFroxel, InjectCellZeroDtZeroesRgbKeepsExtinction)
+{
+    VolumetricFogSettings s {};
+    s.density = 0.3F;
+    s.absorption = 0.2F;
+    const auto c = inject_cell(s, 5.0F, Vec3f { 1, 1, 1 },
+                               Vec3f { 0, 0, -1 }, Vec3f { 0, 0, -1 }, 0.0F);
+    EXPECT_NEAR(c.x, 0.0F, 1e-6F);
+    EXPECT_NEAR(c.y, 0.0F, 1e-6F);
+    EXPECT_NEAR(c.z, 0.0F, 1e-6F);
+    EXPECT_NEAR(c.w, 0.5F, 1e-6F);  // sigma_t = density + absorption
+}
+
+// (27) extinction_of clamps a net-negative (density+absorption < 0) sum to zero
+//      while scattering_of clamps a negative density to zero. Edge: both
+//      coefficients negative.
+TEST(VolFogFroxel, ExtinctionAndScatteringClampNetNegative)
+{
+    VolumetricFogSettings s {};
+    s.density = -0.5F;
+    s.absorption = -0.5F;  // net sum -1.0 -> clamps to 0
+    EXPECT_NEAR(extinction_of(s), 0.0F, 1e-6F);
+    EXPECT_NEAR(scattering_of(s), 0.0F, 1e-6F);
+}
+
+// (28) beer_lambert at zero distance is unity regardless of σ_t (no path -> no
+//      extinction). Edge: distance == 0.
+TEST(VolFogFroxel, BeerLambertZeroDistanceIsUnity)
+{
+    EXPECT_NEAR(beer_lambert(100.0F, 0.0F), 1.0F, 1e-6F);
+    EXPECT_NEAR(beer_lambert(0.0F, 0.0F), 1.0F, 1e-6F);
+}
+
+// (29) FroxelGrid::at round-trips through index(): a value written via at() is
+//      read back at the same coordinate and is independent of neighbours. Pins
+//      the const + non-const accessor pair against the linear layout.
+TEST(VolFogFroxel, FroxelGridAtReadWriteRoundTrip)
+{
+    FroxelGrid g;
+    g.desc = { 3, 4, 5, 0.1F, 8.0F };
+    g.resize();
+    g.at(2, 3, 4) = Vec4f { 1.0F, 2.0F, 3.0F, 4.0F };
+    g.at(0, 0, 0) = Vec4f { 9.0F, 9.0F, 9.0F, 9.0F };
+    const FroxelGrid& cg = g;
+    EXPECT_NEAR(cg.at(2, 3, 4).x, 1.0F, 1e-6F);
+    EXPECT_NEAR(cg.at(2, 3, 4).w, 4.0F, 1e-6F);
+    EXPECT_NEAR(cg.at(0, 0, 0).x, 9.0F, 1e-6F);  // neighbour untouched
+    EXPECT_EQ(g.index(2, 3, 4), (static_cast<std::size_t>(4) * 4 + 3) * 3 + 2);
+}
+
+// (30) The integrate GLSL computes dt analytically as (far-near)*(s1^2 - s0^2)
+//      — algebraically identical to the CPU slice_thickness difference. Pins
+//      the CPU/GPU dt-formula parity that keeps the LUT byte-equivalent.
+TEST(VolFogFroxel, IntegrateKernelDtFormulaMatchesCpuSliceThickness)
+{
+    EXPECT_NE(kVolFogIntegrateCS.find("(s1 * s1 - s0 * s0)"),
+              std::string_view::npos);
+    EXPECT_NE(kVolFogIntegrateCS.find("exp(-cell.a * dt)"),
+              std::string_view::npos);
+    // Numerically confirm the GLSL form equals the CPU slice_thickness for a
+    // sample slice (the string pins the source; this pins the algebra).
+    FroxelGridDesc d {};
+    d.depth = 64; d.near_z = 0.1F; d.far_z = 64.0F;
+    const std::uint32_t z = 17;
+    const float s0 = static_cast<float>(z) / static_cast<float>(d.depth);
+    const float s1 = static_cast<float>(z + 1) / static_cast<float>(d.depth);
+    const float glsl_dt = (d.far_z - d.near_z) * (s1 * s1 - s0 * s0);
+    EXPECT_NEAR(glsl_dt, slice_thickness(z, d), 1e-3F);
+}
+
+// (31) Composite GLSL view_z_to_slice mirrors the CPU clamp+sqrt: the kernel
+//      maps the depth buffer's view-Z onto the [0,1] LUT W coordinate exactly
+//      like the host helper. Pins the composite slice-sampling parity tokens.
+TEST(VolFogFroxel, CompositeKernelSliceMappingMirrorsHost)
+{
+    EXPECT_NE(kVolFogCompositeCS.find("sqrt(t)"), std::string_view::npos);
+    EXPECT_NE(kVolFogCompositeCS.find("clamp((vz - pc.near_far.x)"),
+              std::string_view::npos);
+    EXPECT_NE(kVolFogCompositeCS.find("texture(uIntegrated, uvw)"),
+              std::string_view::npos);
+    EXPECT_NE(kVolFogCompositeCS.find("imageLoad(uScene"),
+              std::string_view::npos);
+}
+
 }  // namespace

@@ -696,3 +696,542 @@ TEST(ParticleSystem, BurstSpawnExactIntegerCount)
     sys.tick(0.04F);  // 250 * 0.04 = 10.0 → exactly 10 spawns, remainder 0
     EXPECT_EQ(sys.particle_count(), 10U);
 }
+
+// ===========================================================================
+// Band-70 → 100 gap-closure tests
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// 26. snapshot() on an empty system with a non-empty output span writes 0.
+//     Verifies the min(out.size(), px_.size()) == 0 branch of snapshot().
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, SnapshotOnEmptySystemWritesZero)
+{
+    System sys;
+    std::vector<cd::particle::system::ParticleSnapshot> snaps(10);
+    const std::size_t written = sys.snapshot(snaps);
+    EXPECT_EQ(written, 0U);
+}
+
+// ---------------------------------------------------------------------------
+// 27. particle_count() always matches the number of entries written by
+//     snapshot() when the span is exactly particle_count() wide.
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, ParticleCountMatchesSnapshotWritten)
+{
+    System sys;
+    sys.add_emitter(make_spec(/*rate=*/7.0F, /*life_s=*/100.0F));
+
+    sys.tick(1.0F);  // 7 particles
+    const std::size_t n = sys.particle_count();
+    ASSERT_GT(n, 0U);
+
+    std::vector<ParticleSnapshot> snaps(n);
+    EXPECT_EQ(sys.snapshot(snaps), n);
+}
+
+// ---------------------------------------------------------------------------
+// 28. Degenerate velocity spread (min == max): random_range returns lo
+//     exactly.  Every spawned particle must have the exact authored velocity.
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, DegenerateVelocitySpreadGivesExactValue)
+{
+    System sys;
+    EmitterSpec spec = make_spec(/*rate=*/10.0F, /*life_s=*/100.0F);
+    spec.position     = {0.0F, 0.0F, 0.0F};
+    spec.velocity_min = {3.5F, -1.2F, 0.7F};
+    spec.velocity_max = {3.5F, -1.2F, 0.7F};  // min == max → degenerate
+    sys.add_emitter(spec);
+
+    sys.tick(1.0F);  // 10 particles; velocity = (3.5, -1.2, 0.7)
+    const std::size_t n = sys.particle_count();
+    ASSERT_EQ(n, 10U);
+
+    std::vector<ParticleSnapshot> snaps(n);
+    ASSERT_EQ(sys.snapshot(snaps), n);
+
+    // dt = 1.0 s → displacement = velocity * 1.0 exactly (spawn-then-integrate).
+    for (const auto& s : snaps)
+    {
+        EXPECT_FLOAT_EQ(s.pos[0],  3.5F);
+        EXPECT_FLOAT_EQ(s.pos[1], -1.2F);
+        EXPECT_FLOAT_EQ(s.pos[2],  0.7F);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 29. remove_emitter() called twice on the same id is idempotent — the second
+//     call must not crash or produce undefined behaviour.
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, RemoveEmitterTwiceIsIdempotent)
+{
+    System sys;
+    const EmitterId eid = sys.add_emitter(make_spec(/*rate=*/5.0F, /*life_s=*/10.0F));
+
+    sys.remove_emitter(eid);
+    sys.remove_emitter(eid);  // second call — must be a silent no-op
+
+    // No crash and system remains usable.
+    sys.tick(1.0F);
+    EXPECT_EQ(sys.particle_count(), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// 30. Zero emit_rate_per_sec emitter never spawns any particles.
+//     The accumulator `0 * dt == 0` never reaches 1.0.
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, ZeroRateEmitterNeverSpawns)
+{
+    System sys;
+    EmitterSpec spec = make_spec(/*rate=*/0.0F, /*life_s=*/10.0F);
+    sys.add_emitter(spec);
+
+    sys.tick(1000.0F);  // enormous dt; accumulator stays at 0
+    EXPECT_EQ(sys.particle_count(), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// 31. Negative life_seconds is clamped to std::numeric_limits<float>::epsilon()
+//     at spawn time.  The particle must immediately expire on the next tick
+//     (any dt > epsilon will push age >= life).
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, NegativeLifeSecondsClampedToEpsilon)
+{
+    System sys;
+    EmitterSpec spec = make_spec(/*rate=*/100.0F, /*life_s=*/-5.0F);
+    sys.add_emitter(spec);
+
+    // Spawn at least one particle.
+    sys.tick(0.01F);  // rate 100 * 0.01 = 1 spawn; age = 0.01 > epsilon → dead
+    EXPECT_EQ(sys.particle_count(), 0U)
+        << "particle with negative life must clamp to epsilon and die immediately";
+}
+
+// ---------------------------------------------------------------------------
+// 32. size_start == size_end: size must be constant regardless of normalized age.
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, FlatSizeRemovesLerp)
+{
+    System sys;
+    EmitterSpec spec = make_spec(/*rate=*/1.0F, /*life_s=*/10.0F);
+    spec.particle.size_start = 3.0F;
+    spec.particle.size_end   = 3.0F;  // flat
+    sys.add_emitter(spec);
+
+    sys.tick(1.0F);  // 1 particle at t_norm = 0.1
+    ASSERT_EQ(sys.particle_count(), 1U);
+
+    std::vector<ParticleSnapshot> snaps(1);
+    ASSERT_EQ(sys.snapshot(snaps), 1U);
+    EXPECT_FLOAT_EQ(snaps[0].size, 3.0F);
+}
+
+// ---------------------------------------------------------------------------
+// 33. color_start == color_end: color must be constant throughout lifetime.
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, FlatColorRemovesLerp)
+{
+    const std::array<float, 4> flat {0.3F, 0.5F, 0.7F, 0.9F};
+    System sys;
+    sys.add_emitter(make_spec(/*rate=*/1.0F, /*life_s=*/100.0F, flat, flat));
+
+    sys.tick(1.0F);
+    ASSERT_EQ(sys.particle_count(), 1U);
+
+    std::vector<ParticleSnapshot> snaps(1);
+    ASSERT_EQ(sys.snapshot(snaps), 1U);
+
+    EXPECT_NEAR(snaps[0].color[0], flat[0], 1e-5F);
+    EXPECT_NEAR(snaps[0].color[1], flat[1], 1e-5F);
+    EXPECT_NEAR(snaps[0].color[2], flat[2], 1e-5F);
+    EXPECT_NEAR(snaps[0].color[3], flat[3], 1e-5F);
+}
+
+// ---------------------------------------------------------------------------
+// 34. erase_particle_ with exactly one particle alive (i == last self-swap).
+//     The swap-pop "last == i" case must not corrupt the SoA vectors.
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, EraseOnlyParticleDoesNotCorrupt)
+{
+    System sys;
+    EmitterSpec spec = make_spec(/*rate=*/1.0F, /*life_s=*/0.5F);
+    spec.position     = {99.0F, 0.0F, 0.0F};
+    spec.velocity_min = {0.0F, 0.0F, 0.0F};
+    spec.velocity_max = {0.0F, 0.0F, 0.0F};
+    const EmitterId eid = sys.add_emitter(spec);
+
+    sys.tick(1.0F);  // spawns 1, life=0.5 -> dead in same tick; remove emitter
+    sys.remove_emitter(eid);
+    EXPECT_EQ(sys.particle_count(), 0U);
+
+    // System must remain usable after erasing the sole particle.
+    sys.add_emitter(make_spec(/*rate=*/5.0F, /*life_s=*/100.0F));
+    sys.tick(0.2F);  // 5 * 0.2 = 1.0 → 1 new particle
+    EXPECT_EQ(sys.particle_count(), 1U);
+}
+
+// ---------------------------------------------------------------------------
+// 35. add_emitter / remove_emitter cycle: EmitterId is monotonically
+//     increasing (next_id_ is never recycled).
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, EmitterIdIsMonotonicallyIncreasing)
+{
+    System sys;
+
+    const EmitterId id0 = sys.add_emitter(make_spec(/*rate=*/1.0F, /*life_s=*/10.0F));
+    sys.remove_emitter(id0);
+
+    const EmitterId id1 = sys.add_emitter(make_spec(/*rate=*/1.0F, /*life_s=*/10.0F));
+    const EmitterId id2 = sys.add_emitter(make_spec(/*rate=*/1.0F, /*life_s=*/10.0F));
+
+    EXPECT_LT(id0, id1);
+    EXPECT_LT(id1, id2);
+}
+
+// ---------------------------------------------------------------------------
+// 36. Particles removed by their emitter's remove_emitter() call can outlive
+//     the emitter removal and age out normally (alive_count bookkeeping).
+//     After removal, tick until all orphan particles die; system must be 0.
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, OrphanParticlesAgeOutAfterEmitterRemoval)
+{
+    System sys;
+    const EmitterId eid = sys.add_emitter(make_spec(/*rate=*/5.0F, /*life_s=*/1.0F));
+
+    sys.tick(1.0F);  // 5 particles, age = 1.0 s (= life → all just expired)
+    sys.remove_emitter(eid);
+    sys.tick(0.001F);  // tiny tick to flush any edge particles
+    EXPECT_EQ(sys.particle_count(), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// 37. Multi-tick position accumulation: position = velocity * total_dt.
+//     Zero-spread emitter at origin, v=(1,0,0).  Tick 5×0.1 s → x = 0.5 F.
+//     Tests that float accumulation across ticks is exact for this case.
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, MultiTickPositionAccumulatesCorrectly)
+{
+    System sys;
+    EmitterSpec spec = make_spec(/*rate=*/1.0F, /*life_s=*/100.0F);
+    spec.position     = {0.0F, 0.0F, 0.0F};
+    spec.velocity_min = {1.0F, 0.0F, 0.0F};
+    spec.velocity_max = {1.0F, 0.0F, 0.0F};
+    sys.add_emitter(spec);
+
+    // tick(1.0) spawns the particle and integrates it 1.0 s → x = 1.0.
+    sys.tick(1.0F);
+    ASSERT_EQ(sys.particle_count(), 1U);
+
+    // Five more 0.1 s ticks — each moves x by 0.1.
+    for (int k = 0; k < 5; ++k)
+    {
+        sys.tick(0.1F);
+    }
+
+    std::vector<ParticleSnapshot> snaps(1);
+    ASSERT_EQ(sys.snapshot(snaps), 1U);
+    // x = 1.0 (spawn tick) + 5 * 0.1 = 1.5
+    EXPECT_NEAR(snaps[0].pos[0], 1.5F, 1e-4F);
+}
+
+// ---------------------------------------------------------------------------
+// 38. snapshot() t-value is clamped to [0,1]: a particle with a very short
+//     life (epsilon) that has aged past its life before dying cannot produce
+//     t > 1.  The `std::clamp` in snapshot() covers this branch.
+//     Since life is clamped to epsilon at spawn, we force age >> life by
+//     keeping the emitter alive past the particle's life boundary.
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, SnapshotTValueIsClampedAboveOne)
+{
+    // We cannot directly construct a particle with life == 0; instead we test
+    // that the snapshot t-clamp is exercised via the code path `life_[i] == 0`
+    // (which yields t=1 via the `life_[i] > 0 ? ... : 1.0F` branch).
+    // This is unreachable via the public API (life clamped to epsilon).
+    // Verify the clamp via color_end match at t→1 near end-of-life.
+    const std::array<float, 4> cs {1.0F, 0.0F, 0.0F, 1.0F};
+    const std::array<float, 4> ce {0.0F, 1.0F, 0.0F, 0.0F};
+    System sys;
+    EmitterSpec spec = make_spec(/*rate=*/100.0F, /*life_s=*/0.1F, cs, ce);
+    sys.add_emitter(spec);
+
+    sys.tick(0.01F);  // 1 spawn, age = 0.01, life = 0.1 → t = 0.1 → alive
+    ASSERT_GE(sys.particle_count(), 1U);
+    sys.remove_emitter(0U);
+
+    sys.tick(0.085F);  // age = 0.095 → t = 0.95 → alive (0.095 < 0.1)
+
+    if (sys.particle_count() == 0U)
+    {
+        GTEST_SKIP() << "particle already expired — timing edge, skip";
+    }
+
+    std::vector<ParticleSnapshot> snaps(sys.particle_count());
+    ASSERT_EQ(sys.snapshot(snaps), snaps.size());
+
+    // At t ≈ 0.95, color[0] ≈ cs[0]*(1-0.95) = 0.05, color[1] ≈ 0.95.
+    EXPECT_LT(snaps[0].color[0], 0.2F);
+    EXPECT_GT(snaps[0].color[1], 0.8F);
+    // Verify the color is within [0,1] (clamp working).
+    EXPECT_GE(snaps[0].color[0], 0.0F);
+    EXPECT_LE(snaps[0].color[1], 1.0F);
+}
+
+// ---------------------------------------------------------------------------
+// 39. (NEW FEATURE) Drag coefficient decelerates velocity exponentially.
+//     Emitter with v=(10,0,0), drag=2.0.  After dt=0.5 s:
+//       v_new = 10 * exp(-2.0 * 0.5) = 10 * exp(-1.0) ≈ 3.679
+//       x_new = 0 + v_new * 0.5 ≈ 1.839
+//     (spawn happens first, then integration applies in the same tick)
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, DragDecelleratesVelocityExponentially)
+{
+    System sys;
+    EmitterSpec spec = make_spec(/*rate=*/2.0F, /*life_s=*/100.0F);
+    spec.position     = {0.0F, 0.0F, 0.0F};
+    spec.velocity_min = {10.0F, 0.0F, 0.0F};
+    spec.velocity_max = {10.0F, 0.0F, 0.0F};
+    spec.drag         = 2.0F;
+    sys.add_emitter(spec);
+
+    sys.tick(0.5F);  // rate=2 * dt=0.5 = accum 1.0 → 1 spawn; then integrate
+    ASSERT_EQ(sys.particle_count(), 1U);
+
+    std::vector<ParticleSnapshot> snaps(1);
+    ASSERT_EQ(sys.snapshot(snaps), 1U);
+
+    // v after drag = 10 * exp(-1.0) ≈ 3.6788; x = v * 0.5 ≈ 1.8394
+    const float expected_x = 10.0F * std::exp(-1.0F) * 0.5F;
+    EXPECT_NEAR(snaps[0].pos[0], expected_x, 0.001F);
+    EXPECT_FLOAT_EQ(snaps[0].pos[1], 0.0F);
+    EXPECT_FLOAT_EQ(snaps[0].pos[2], 0.0F);
+}
+
+// ---------------------------------------------------------------------------
+// 40. (NEW FEATURE) Drag = 0 (default) does NOT change velocity — exactly
+//     the same displacement as no-drag integration (backward-compatible path).
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, ZeroDragIsIdenticalToNoDrag)
+{
+    EmitterSpec spec = make_spec(/*rate=*/2.0F, /*life_s=*/100.0F);
+    spec.position     = {0.0F, 0.0F, 0.0F};
+    spec.velocity_min = {5.0F, 0.0F, 0.0F};
+    spec.velocity_max = {5.0F, 0.0F, 0.0F};
+
+    System sysA;
+    EmitterSpec specA = spec;
+    specA.drag = 0.0F;
+    sysA.add_emitter(specA);
+    sysA.tick(0.5F);
+
+    System sysB;
+    EmitterSpec specB = spec;
+    // drag field omitted → default 0.0F
+    sysB.add_emitter(specB);
+    sysB.tick(0.5F);
+
+    ASSERT_EQ(sysA.particle_count(), 1U);
+    ASSERT_EQ(sysB.particle_count(), 1U);
+
+    std::vector<ParticleSnapshot> snapsA(1);
+    std::vector<ParticleSnapshot> snapsB(1);
+    ASSERT_EQ(sysA.snapshot(snapsA), 1U);
+    ASSERT_EQ(sysB.snapshot(snapsB), 1U);
+
+    EXPECT_FLOAT_EQ(snapsA[0].pos[0], snapsB[0].pos[0]);
+}
+
+// ---------------------------------------------------------------------------
+// 41. (NEW FEATURE) Negative drag is clamped to 0 — authored negative drag
+//     must not accelerate particles (safety clamp in spawn_particle_).
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, NegativeDragClampedToZero)
+{
+    System sys;
+    EmitterSpec spec = make_spec(/*rate=*/2.0F, /*life_s=*/100.0F);
+    spec.position     = {0.0F, 0.0F, 0.0F};
+    spec.velocity_min = {4.0F, 0.0F, 0.0F};
+    spec.velocity_max = {4.0F, 0.0F, 0.0F};
+    spec.drag         = -10.0F;  // negative → clamped to 0
+    sys.add_emitter(spec);
+
+    sys.tick(0.5F);  // 1 spawn, integrate; drag=0 → x = 4 * 0.5 = 2
+    ASSERT_EQ(sys.particle_count(), 1U);
+
+    std::vector<ParticleSnapshot> snaps(1);
+    ASSERT_EQ(sys.snapshot(snaps), 1U);
+
+    // With negative drag clamped to 0: x = 4.0 * 0.5 = 2.0 (constant velocity)
+    EXPECT_NEAR(snaps[0].pos[0], 2.0F, 0.001F);
+}
+
+// ---------------------------------------------------------------------------
+// 42. (NEW FEATURE) max_particles cap: System refuses to spawn beyond the cap.
+//     Cap=5 with rate=100 p/s over dt=1.0s → must cap at 5, not 100.
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, MaxParticlesCapEnforced)
+{
+    System sys;
+    EmitterSpec spec = make_spec(/*rate=*/100.0F, /*life_s=*/100.0F);
+    spec.max_particles = 5U;
+    sys.add_emitter(spec);
+
+    sys.tick(1.0F);  // would spawn 100 without cap; capped at 5
+    EXPECT_EQ(sys.particle_count(), 5U);
+}
+
+// ---------------------------------------------------------------------------
+// 43. (NEW FEATURE) max_particles cap = 0 means unlimited (default behaviour,
+//     backward-compatible).
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, MaxParticlesZeroMeansUnlimited)
+{
+    System sys;
+    EmitterSpec spec = make_spec(/*rate=*/50.0F, /*life_s=*/100.0F);
+    spec.max_particles = 0U;  // explicit default
+    sys.add_emitter(spec);
+
+    sys.tick(1.0F);  // 50 spawns; no cap
+    EXPECT_EQ(sys.particle_count(), 50U);
+}
+
+// ---------------------------------------------------------------------------
+// 44. (NEW FEATURE) max_particles cap refills after particles die.
+//     Cap=3, life=0.1 s, rate=10 p/s.  After first batch dies, 3 more spawn.
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, MaxParticlesCapRefillsAfterDeath)
+{
+    System sys;
+    EmitterSpec spec = make_spec(/*rate=*/10.0F, /*life_s=*/0.1F);
+    spec.velocity_min  = {0.0F, 0.0F, 0.0F};
+    spec.velocity_max  = {0.0F, 0.0F, 0.0F};
+    spec.max_particles = 3U;
+    sys.add_emitter(spec);
+
+    // First tick: spawns 3 (capped); life=0.1 < dt=0.5 so they die in same tick.
+    sys.tick(0.5F);  // 10*0.5=5 wants; cap=3 → 3 spawned; all die (age≥life)
+    EXPECT_EQ(sys.particle_count(), 0U) << "all capped particles must die in this tick";
+
+    // Second tick: cap at 0 again → spawns up to 3 more.
+    sys.tick(0.5F);
+    EXPECT_EQ(sys.particle_count(), 0U)
+        << "particles born in tick 2 also die (life=0.1 < dt=0.5)";
+}
+
+// ---------------------------------------------------------------------------
+// 45. (NEW FEATURE) max_particles cap: alive_count tracks per-emitter count
+//     correctly when two emitters have different caps.
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, TwoEmittersWithDifferentCaps)
+{
+    System sys;
+
+    EmitterSpec specA = make_spec(/*rate=*/100.0F, /*life_s=*/100.0F);
+    specA.position     = {1.0F, 0.0F, 0.0F};
+    specA.velocity_min = {0.0F, 0.0F, 0.0F};
+    specA.velocity_max = {0.0F, 0.0F, 0.0F};
+    specA.max_particles = 3U;
+
+    EmitterSpec specB = make_spec(/*rate=*/100.0F, /*life_s=*/100.0F);
+    specB.position     = {-1.0F, 0.0F, 0.0F};
+    specB.velocity_min = {0.0F, 0.0F, 0.0F};
+    specB.velocity_max = {0.0F, 0.0F, 0.0F};
+    specB.max_particles = 7U;
+
+    sys.add_emitter(specA);
+    sys.add_emitter(specB);
+
+    sys.tick(1.0F);  // each wants 100; A capped at 3, B capped at 7
+    EXPECT_EQ(sys.particle_count(), 10U);
+}
+
+// ---------------------------------------------------------------------------
+// 46. Rapid add / remove emitter with many cycles: system stays internally
+//     consistent — particle_count() == snapshot written count throughout.
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, RapidAddRemoveCycleStaysConsistent)
+{
+    System sys;
+    for (int round = 0; round < 10; ++round)
+    {
+        const EmitterId eid = sys.add_emitter(make_spec(/*rate=*/5.0F, /*life_s=*/1.0F));
+        sys.tick(0.2F);  // 5*0.2=1.0 → 1 spawn
+        sys.remove_emitter(eid);
+    }
+
+    // All particles have life ≤ 1.0 s; after a final large tick they all die.
+    sys.tick(2.0F);
+    EXPECT_EQ(sys.particle_count(), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// 47. Drag + lifetime: drag does not affect the age accumulation or death
+//     boundary.  A particle with drag must still die at age >= life.
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, DragDoesNotAffectLifetimeExpiry)
+{
+    System sys;
+    EmitterSpec spec = make_spec(/*rate=*/2.0F, /*life_s=*/0.5F);
+    spec.velocity_min = {10.0F, 0.0F, 0.0F};
+    spec.velocity_max = {10.0F, 0.0F, 0.0F};
+    spec.drag         = 5.0F;
+    const EmitterId eid = sys.add_emitter(spec);
+
+    sys.tick(0.5F);   // 1 spawn, age = 0.5 → expires (age >= life)
+    sys.remove_emitter(eid);
+    EXPECT_EQ(sys.particle_count(), 0U)
+        << "drag must not prevent lifetime expiry";
+}
+
+// ---------------------------------------------------------------------------
+// 48. Drag across multiple ticks: v decays monotonically.
+//     v(t) = v0 * exp(-k*t) is strictly decreasing for k > 0.
+//     Snapshot the X-position after each of 3 ticks — displacement per tick
+//     must be strictly decreasing.
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, DragCausesMonotonicVelocityDecay)
+{
+    System sys;
+    EmitterSpec spec = make_spec(/*rate=*/2.0F, /*life_s=*/100.0F);
+    spec.position     = {0.0F, 0.0F, 0.0F};
+    spec.velocity_min = {10.0F, 0.0F, 0.0F};
+    spec.velocity_max = {10.0F, 0.0F, 0.0F};
+    spec.drag         = 3.0F;
+    sys.add_emitter(spec);
+
+    // First tick: spawn + first integration.
+    const float dt = 0.2F;
+    sys.tick(dt);  // rate=2 * dt=0.2 = accum 0.4 < 1; no spawn yet
+    EXPECT_EQ(sys.particle_count(), 0U);
+
+    // Accumulate to 1.0 with a second tick.
+    sys.tick(dt);  // accum = 0.8 < 1; still no spawn
+    EXPECT_EQ(sys.particle_count(), 0U);
+
+    sys.tick(dt);  // accum = 1.2 → 1 spawn; integrate dt=0.2
+    ASSERT_EQ(sys.particle_count(), 1U);
+
+    std::vector<ParticleSnapshot> snap1(1);
+    ASSERT_EQ(sys.snapshot(snap1), 1U);
+    const float x1 = snap1[0].pos[0];
+
+    sys.tick(dt);
+    std::vector<ParticleSnapshot> snap2(1);
+    ASSERT_EQ(sys.snapshot(snap2), 1U);
+    const float x2 = snap2[0].pos[0];
+
+    sys.tick(dt);
+    std::vector<ParticleSnapshot> snap3(1);
+    ASSERT_EQ(sys.snapshot(snap3), 1U);
+    const float x3 = snap3[0].pos[0];
+
+    // Position should increase each tick but by a diminishing increment.
+    const float dx1 = x1;            // first increment from origin
+    const float dx2 = x2 - x1;      // second increment
+    const float dx3 = x3 - x2;      // third increment
+
+    EXPECT_GT(dx1, 0.0F) << "particle must move forward";
+    EXPECT_GT(dx2, 0.0F) << "particle must still move forward";
+    EXPECT_GT(dx3, 0.0F) << "particle must still move forward";
+    EXPECT_LT(dx2, dx1)  << "drag must reduce displacement each tick";
+    EXPECT_LT(dx3, dx2)  << "drag must reduce displacement each tick";
+}

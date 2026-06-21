@@ -281,4 +281,303 @@ TEST(VirtualTextures, GlslFeedbackContractTokens)
     EXPECT_NE(g.find("binding = 5"),                   std::string_view::npos);
 }
 
+// ===========================================================================
+// COMPREHENSIVE DEPTH — charter-complete host tests.
+// All tests pin ACTUAL behaviour of EXISTING code; ADD-ONLY; no API/math/GLSL
+// change; golden BYTE-IDENTICAL.
+// ===========================================================================
+
+// ---- PageId: max field values as distinct pages ---------------------------
+
+// Each field at its type maximum is a valid PageId and compares unequal to the
+// origin and to sibling pages that differ only in that one field.
+TEST(VirtualTextures, PageIdMaxFieldsAreDistinctPages)
+{
+    constexpr PageId origin   { 0,      0,      0    };
+    constexpr PageId max_x    { 0xFFFF, 0,      0    };
+    constexpr PageId max_y    { 0,      0xFFFF, 0    };
+    constexpr PageId max_mip  { 0,      0,      0xFF };
+    constexpr PageId all_max  { 0xFFFF, 0xFFFF, 0xFF };
+
+    EXPECT_FALSE(origin == max_x);
+    EXPECT_FALSE(origin == max_y);
+    EXPECT_FALSE(origin == max_mip);
+    EXPECT_FALSE(max_x  == max_y);
+    EXPECT_FALSE(max_x  == max_mip);
+    EXPECT_FALSE(max_y  == max_mip);
+    EXPECT_FALSE(origin == all_max);
+    // All-max equals itself.
+    EXPECT_EQ(all_max, (PageId { 0xFFFF, 0xFFFF, 0xFF }));
+}
+
+// ---- PageIdHash: band non-overlap proof for uint16 x/y and uint8 mip ------
+
+// y << 8 tops at bit 23; x << 24 bottoms at bit 24 → zero overlap.
+// mip max 0xFF occupies bits[0..7]; y << 8 starts at bit 8 → zero overlap.
+// Verify the mathematical boundary: the bit directly below x-band == bit 23.
+TEST(VirtualTextures, HashBandBoundaryXStartsAtBit24)
+{
+    const PageIdHash h {};
+    // y=0x8000 (bit 15 set) → y<<8 puts the value at bit 23.
+    // x=1 → x<<24 puts value at bit 24. They are adjacent, not overlapping.
+    const std::size_t h_y   = h(PageId { 0, 0x8000, 0 });
+    const std::size_t h_x   = h(PageId { 1, 0,      0 });
+    EXPECT_EQ(h_y, std::size_t { 0x8000 } << 8);   // bit 23
+    EXPECT_EQ(h_x, std::size_t { 1 }      << 24);  // bit 24
+    EXPECT_EQ(h_y & h_x, std::size_t { 0 });        // non-overlapping
+}
+
+// y<<8 is strictly below x<<24: the max-y hash cannot alias any nonzero-x hash.
+TEST(VirtualTextures, HashMaxYDoesNotAliasMinX)
+{
+    const PageIdHash h {};
+    const std::size_t max_y_hash = h(PageId { 0,    0xFFFF, 0 });
+    const std::size_t min_x_hash = h(PageId { 1,    0,      0 });
+    EXPECT_EQ(max_y_hash, std::size_t { 0xFFFF } << 8);   // 0xFFFF00
+    EXPECT_EQ(min_x_hash, std::size_t { 1 }      << 24);  // 0x1000000
+    EXPECT_NE(max_y_hash, min_x_hash);
+}
+
+// Hash of max mip (0xFF) fills exactly bits[0..7] with no bleed into band y.
+TEST(VirtualTextures, HashMaxMipStaysInBits0To7)
+{
+    const PageIdHash h {};
+    const std::size_t max_mip_hash = h(PageId { 0, 0, 0xFF });
+    EXPECT_EQ(max_mip_hash, std::size_t { 0xFF });
+    // Confirm it does not touch bit 8 (the first y-band bit).
+    EXPECT_EQ(max_mip_hash & (std::size_t { 1 } << 8), std::size_t { 0 });
+}
+
+// ---- AtlasSlot: default-constructed slot has valid == 0 (not ~0u) ----------
+
+// The comment in the header says "~0u = invalid" but the struct code uses
+// `valid { 0 }` for empty and sets `valid = 1` on allocation. Pin actual code.
+TEST(VirtualTextures, AtlasSlotDefaultValidIsZero)
+{
+    const AtlasSlot s {};
+    EXPECT_EQ(s.valid,  0U);
+    EXPECT_EQ(s.slot_x, 0U);
+    EXPECT_EQ(s.slot_y, 0U);
+}
+
+// An allocated slot always has valid == 1 (not some other nonzero value).
+TEST(VirtualTextures, AllocatedSlotValidIsExactlyOne)
+{
+    PageTable t(4, 4);
+    const AtlasSlot s = t.allocate({ 0, 0, 0 });
+    EXPECT_EQ(s.valid, 1U);
+}
+
+// ---- AtlasSlot: 1×1 atlas (single slot, second alloc evicts first) ---------
+
+TEST(VirtualTextures, SingleSlotAtlasEvictsOnSecondAlloc)
+{
+    PageTable t(1, 1);  // total capacity = 1
+    const AtlasSlot first = t.allocate({ 10, 20, 0 });
+    EXPECT_EQ(first.valid,  1U);
+    EXPECT_EQ(first.slot_x, 0U);
+    EXPECT_EQ(first.slot_y, 0U);
+    EXPECT_EQ(t.resident_count(), 1U);
+
+    // Second alloc evicts the first (only one slot available).
+    const AtlasSlot second = t.allocate({ 11, 22, 0 });
+    EXPECT_EQ(second.valid,  1U);
+    EXPECT_EQ(second.slot_x, 0U);  // same physical slot reused
+    EXPECT_EQ(second.slot_y, 0U);
+    EXPECT_EQ(t.resident_count(), 1U);
+
+    EXPECT_EQ(t.lookup({ 10, 20, 0 }), nullptr);  // first evicted
+    EXPECT_NE(t.lookup({ 11, 22, 0 }), nullptr);  // second resident
+}
+
+// ---- FIFO eviction chain (3 allocations on a 2-slot atlas) -----------------
+
+// Sequence: alloc A, alloc B (full), alloc C (evicts A), alloc D (evicts B).
+// After D: only C and D are resident.
+TEST(VirtualTextures, FifoChainEvictsInOrder)
+{
+    PageTable t(2, 1);  // 2 slots
+    const PageId A { 1, 0, 0 };
+    const PageId B { 2, 0, 0 };
+    const PageId C { 3, 0, 0 };
+    const PageId D { 4, 0, 0 };
+
+    (void)t.allocate(A);  // slot 0 → oldest
+    (void)t.allocate(B);  // slot 1 → full
+    (void)t.allocate(C);  // evicts A (oldest), reuses slot 0
+    (void)t.allocate(D);  // evicts B (now oldest), reuses slot 1
+
+    EXPECT_EQ(t.resident_count(), 2U);
+    EXPECT_EQ(t.lookup(A), nullptr);  // A evicted
+    EXPECT_EQ(t.lookup(B), nullptr);  // B evicted
+    EXPECT_NE(t.lookup(C), nullptr);  // C resident
+    EXPECT_NE(t.lookup(D), nullptr);  // D resident
+}
+
+// The page most recently allocated is the last to be evicted.
+TEST(VirtualTextures, FifoLastAllocatedSurvivesLongest)
+{
+    PageTable t(1, 1);  // single slot
+    for (std::uint16_t i = 0; i < 5; ++i)
+        (void)t.allocate({ i, 0, 0 });
+    // After 5 allocations on a 1-slot atlas, only the last one survives.
+    EXPECT_NE(t.lookup({ 4, 0, 0 }), nullptr);
+    for (std::uint16_t i = 0; i < 4; ++i)
+        EXPECT_EQ(t.lookup({ i, 0, 0 }), nullptr);
+}
+
+// ---- Multi-mip: max mip (0xFF) page is independent -----------------------
+
+TEST(VirtualTextures, MaxMipPageIsIndependentResident)
+{
+    PageTable t(4, 4);
+    const AtlasSlot mip0   = t.allocate({ 7, 3, 0    });
+    const AtlasSlot mip255 = t.allocate({ 7, 3, 0xFF });
+
+    EXPECT_EQ(t.resident_count(), 2U);
+    EXPECT_NE(t.lookup({ 7, 3, 0    }), nullptr);
+    EXPECT_NE(t.lookup({ 7, 3, 0xFF }), nullptr);
+    // They occupy different physical slots.
+    const bool different = (mip0.slot_x != mip255.slot_x) ||
+                           (mip0.slot_y != mip255.slot_y);
+    EXPECT_TRUE(different);
+}
+
+// ---- Negative: lookup on un-allocated mip → nullptr ----------------------
+
+// Page (x,y,mip=0) is resident but (x,y,mip=1) is NOT — they are independent.
+TEST(VirtualTextures, LookupUnallocatedMipReturnsNull)
+{
+    PageTable t(4, 4);
+    (void)t.allocate({ 3, 3, 0 });
+    EXPECT_EQ(t.lookup({ 3, 3, 1 }), nullptr);   // mip=1 never allocated
+    EXPECT_EQ(t.lookup({ 3, 3, 2 }), nullptr);   // mip=2 never allocated
+    EXPECT_NE(t.lookup({ 3, 3, 0 }), nullptr);   // mip=0 is resident
+}
+
+// ---- Negative: distinct (x,y) pages are independent ----------------------
+
+TEST(VirtualTextures, LookupAdjacentXReturnsNull)
+{
+    PageTable t(4, 4);
+    (void)t.allocate({ 0, 0, 0 });
+    EXPECT_EQ(t.lookup({ 1, 0, 0 }), nullptr);
+    EXPECT_EQ(t.lookup({ 0, 1, 0 }), nullptr);
+}
+
+// ---- Capacity: exact-fill does NOT evict ---------------------------------
+
+// Filling exactly to capacity must not trigger any eviction.
+TEST(VirtualTextures, ExactCapacityFillNoEviction)
+{
+    constexpr std::uint16_t W = 3;
+    constexpr std::uint16_t H = 2;  // 6 slots
+    PageTable t(W, H);
+    for (std::uint16_t i = 0; i < 6; ++i)
+        (void)t.allocate({ i, 0, 0 });
+    EXPECT_EQ(t.resident_count(), 6U);
+    // All 6 pages must still be resident — no eviction happened.
+    for (std::uint16_t i = 0; i < 6; ++i)
+        EXPECT_NE(t.lookup({ i, 0, 0 }), nullptr) << "page " << i << " was unexpectedly evicted";
+}
+
+// ---- Slot coordinate formula: general slot index n → (n%w, n/w) ----------
+
+// Verify the last slot in a 3×2 atlas has coordinates (2, 1).
+TEST(VirtualTextures, LastSlotCoordinatesAreCorrect)
+{
+    PageTable t(3, 2);  // 6 slots; last index = 5 → (5%3=2, 5/3=1)
+    AtlasSlot slots[6];
+    for (std::uint16_t i = 0; i < 6; ++i)
+        slots[i] = t.allocate({ i, 0, 0 });
+    EXPECT_EQ(slots[5].slot_x, 2U);
+    EXPECT_EQ(slots[5].slot_y, 1U);
+}
+
+// ---- residents() view is a live reference, not a snapshot copy ------------
+
+// The reference returned by residents() reflects subsequent allocations in the
+// same scope, demonstrating it is the live internal map.
+TEST(VirtualTextures, ResidentsViewIsLiveNotSnapshot)
+{
+    PageTable t(4, 4);
+    const auto& view = t.residents();
+    EXPECT_EQ(view.size(), 0U);
+
+    (void)t.allocate({ 1, 2, 0 });
+    EXPECT_EQ(view.size(), 1U);  // live: view updated without re-calling residents()
+
+    (void)t.allocate({ 3, 4, 1 });
+    EXPECT_EQ(view.size(), 2U);
+}
+
+// ---- PageIdHash: zero-field pages hash to zero ---------------------------
+
+// All three fields zero → hash = (0<<24) ^ (0<<8) ^ 0 = 0.
+TEST(VirtualTextures, HashOriginIsZero)
+{
+    const PageIdHash h {};
+    EXPECT_EQ(h(PageId { 0, 0, 0 }), std::size_t { 0 });
+}
+
+// ---- Large atlas: correct slot index for allocation past 256 pages --------
+
+// Allocate 257 pages on a 16×16 (256-slot) atlas; the 257th triggers eviction.
+// The 256th allocation (index 255) must land at slot (15, 15) before eviction.
+TEST(VirtualTextures, LargeAtlasLastSlotBeforeEviction)
+{
+    PageTable t(16, 16);  // 256 slots
+    AtlasSlot last {};
+    for (std::uint16_t i = 0; i < 256; ++i)
+        last = t.allocate({ i, 0, 0 });
+    // Index 255: 255 % 16 = 15, 255 / 16 = 15.
+    EXPECT_EQ(last.slot_x, 15U);
+    EXPECT_EQ(last.slot_y, 15U);
+    EXPECT_EQ(t.resident_count(), 256U);
+
+    // 257th page triggers FIFO eviction; count stays at 256.
+    (void)t.allocate({ 256, 0, 0 });
+    EXPECT_EQ(t.resident_count(), 256U);
+    EXPECT_EQ(t.lookup({ 0, 0, 0 }), nullptr);    // oldest evicted
+    EXPECT_NE(t.lookup({ 256, 0, 0 }), nullptr);  // newest resident
+}
+
+// ---- GLSL: kFeedbackGlsl structural contract -------------------------------
+
+// Pin the GLSL buffer layout (set/binding), the struct name, the count field,
+// and the atomic append pattern in addition to the existing token checks.
+TEST(VirtualTextures, GlslFeedbackStructuralContract)
+{
+    constexpr std::string_view g = cd::virtual_textures::kFeedbackGlsl;
+    // Buffer layout tokens.
+    EXPECT_NE(g.find("layout(set = 0, binding = 5) buffer Feedback"), std::string_view::npos);
+    EXPECT_NE(g.find("uint count"),                                    std::string_view::npos);
+    EXPECT_NE(g.find("FeedbackReq reqs[]"),                            std::string_view::npos);
+    // Struct name and pkg field.
+    EXPECT_NE(g.find("struct FeedbackReq"),                            std::string_view::npos);
+    EXPECT_NE(g.find("uvec4 pkg"),                                     std::string_view::npos);
+    // Function signature.
+    EXPECT_NE(g.find("void cd_vt_request(uvec2 page_xy, uint mip, uint frame_id)"),
+              std::string_view::npos);
+    // Atomic slot acquisition.
+    EXPECT_NE(g.find("uint slot = atomicAdd(F.count, 1u)"), std::string_view::npos);
+    // Assignment of pkg field.
+    EXPECT_NE(g.find("F.reqs[slot].pkg"),                              std::string_view::npos);
+}
+
+// ---- GLSL: kFeedbackGlsl is a string_view (no embedded nul, no heap alloc) -
+
+// Confirm the GLSL is a plain string_view backed by a string literal: its
+// data() is non-null, size() > 0, and it does not contain an embedded NUL
+// before the end (which would indicate truncation bugs).
+TEST(VirtualTextures, GlslFeedbackIsWellFormedStringView)
+{
+    constexpr std::string_view g = cd::virtual_textures::kFeedbackGlsl;
+    EXPECT_NE(g.data(), nullptr);
+    EXPECT_GT(g.size(), std::size_t { 0 });
+    // No embedded NUL before end.
+    const auto nul_pos = g.find('\0');
+    EXPECT_EQ(nul_pos, std::string_view::npos);
+}
+
 }  // namespace

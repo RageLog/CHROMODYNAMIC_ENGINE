@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <string_view>
 #include <vector>
 
 namespace
@@ -167,6 +168,135 @@ TEST(VolumetricFog, IntegrationZeroExtinctionGridIsTransparent)
         EXPECT_NEAR(a.x, 0.0F, 1e-6F);
         EXPECT_NEAR(a.w, 1.0F, 1e-6F);
     }
+}
+
+// ---- ADD-ONLY host regression locks (Run: 70->100) -------------------------
+//
+// Pin the EXACT behaviour of the EXISTING fog/Fog.hpp Frostbite froxel math +
+// GLSL so any future edit that perturbs the rendered fog trips a unit test
+// before it reaches the golden image. No math/GLSL is changed here.
+
+using cd::volumetric::fog::kFogInjectionCS;
+using cd::volumetric::fog::kFogIntegrationCS;
+
+// (18) GridConfig defaults are Wronski's 160x90x128 with the 0.1..64 m range.
+//      NOTE: this header uses 128 depth slices vs VolumetricFog.hpp's 64 — pin
+//      the distinct contract so the two froxel libs stay independently correct.
+TEST(VolumetricFog, GridConfigDefaultsAre160x90x128)
+{
+    GridConfig g {};
+    EXPECT_EQ(g.x, 160u);
+    EXPECT_EQ(g.y, 90u);
+    EXPECT_EQ(g.z, 128u);
+    EXPECT_NEAR(g.near_z, 0.1F, 1e-6F);
+    EXPECT_NEAR(g.far_z, 64.0F, 1e-6F);
+}
+
+// (19) slice_to_view_z endpoints: slice 0 -> near, slice 1 -> far, and the
+//      quadratic midpoint sits at near + (far-near)*0.25. Pins the warp exactly.
+TEST(VolumetricFog, SliceToViewZEndpointsExact)
+{
+    GridConfig g {};
+    g.near_z = 0.5F;
+    g.far_z = 90.0F;
+    EXPECT_NEAR(slice_to_view_z(0.0F, g), g.near_z, 1e-5F);
+    EXPECT_NEAR(slice_to_view_z(1.0F, g), g.far_z, 1e-4F);
+    const float mid = g.near_z + (g.far_z - g.near_z) * 0.25F;
+    EXPECT_NEAR(slice_to_view_z(0.5F, g), mid, 1e-4F);
+}
+
+// (20) view_z_to_slice clamps below-near to 0 and beyond-far to 1. This header
+//      (unlike VolumetricFog.hpp) does NOT guard the denom — pin the default
+//      0.1..64 range behaviour so a future near==far edit is caught downstream.
+TEST(VolumetricFog, ViewZToSliceClampsOutOfRange)
+{
+    GridConfig g {};
+    g.near_z = 1.0F;
+    g.far_z = 50.0F;
+    EXPECT_NEAR(view_z_to_slice(-10.0F, g), 0.0F, 1e-6F);   // before near
+    EXPECT_NEAR(view_z_to_slice(0.5F, g), 0.0F, 1e-6F);     // still < near
+    EXPECT_NEAR(view_z_to_slice(1000.0F, g), 1.0F, 1e-6F);  // past far
+    EXPECT_GE(view_z_to_slice(25.0F, g), 0.0F);
+    EXPECT_LE(view_z_to_slice(25.0F, g), 1.0F);
+}
+
+// (21) slice<->view_z round-trips inside [0,1]. cert-flp30-c: int induction,
+//      `s` accumulates += 0.1F so the sample points are bit-identical to a
+//      former float-counter loop.
+TEST(VolumetricFog, SliceViewZRoundTrip)
+{
+    GridConfig g {};
+    g.near_z = 0.1F;
+    g.far_z = 100.0F;
+    float s = 0.0F;
+    for (int i = 0; i <= 10; ++i)
+    {
+        const float vz = slice_to_view_z(s, g);
+        const float back = view_z_to_slice(vz, g);
+        EXPECT_NEAR(back, s, kEps) << "i=" << i;
+        s += 0.1F;
+    }
+}
+
+// (22) The integrator stops at min(config.z, dst.size()): a dst span SHORTER
+//      than the grid depth must not overrun — only the first dst.size() slices
+//      are written, the rest of the grid is ignored. Edge: undersized span.
+TEST(VolumetricFog, IntegrationStopsAtSpanLength)
+{
+    FroxelGrid grid;
+    grid.config = { 1, 1, 8, 0.1F, 8.0F };
+    grid.resize();
+    for (auto& c : grid.cells) c = { 1.0F, 0.0F, 0.0F, 0.2F };
+    // Only 3 of the 8 slices are integrated (span shorter than depth).
+    std::vector<cd::math::Vec4f> out(3, cd::math::Vec4f { 9, 9, 9, 9 });
+    integrate_view_ray(grid, 0, 0, out);
+    // First three slices were written (w decays below the 9 sentinel).
+    for (const auto& a : out)
+    {
+        EXPECT_LE(a.w, 1.0F + kEps);
+        EXPECT_GE(a.w, 0.0F);
+    }
+    // Accumulation is front-to-back: w strictly drops across the 3 slices.
+    EXPECT_LT(out[2].w, out[0].w);
+}
+
+// (23) Single-slice grid: the whole near->far span is one slab, so the lone dt
+//      equals far - near and the first (only) slice carries the full in-scatter.
+//      Edge: z == 1 degenerate grid.
+TEST(VolumetricFog, IntegrationSingleSliceSpansFullRange)
+{
+    FroxelGrid grid;
+    grid.config = { 1, 1, 1, 2.0F, 50.0F };
+    grid.resize();
+    grid.cells[0] = { 1.0F, 0.0F, 0.0F, 0.0F };  // raw scatter, no extinction
+    std::vector<cd::math::Vec4f> out(1);
+    integrate_view_ray(grid, 0, 0, out);
+    // RGB = raw * dt * 1 (transmittance starts at 1); dt = far - near.
+    EXPECT_NEAR(out[0].x, grid.config.far_z - grid.config.near_z, 1e-2F);
+    EXPECT_NEAR(out[0].w, 1.0F, 1e-6F);  // no extinction
+}
+
+// (24) Injection GLSL mirrors the host: slice_to_z quadratic warp, per-slice dt
+//      pre-multiply (scat * dt), and σ_t in the A channel. Pins CPU/GPU parity.
+TEST(VolumetricFog, InjectionKernelMirrorsHostContract)
+{
+    EXPECT_NE(kFogInjectionCS.find("#version 460"), std::string_view::npos);
+    EXPECT_NE(kFogInjectionCS.find("slice_to_z"), std::string_view::npos);
+    EXPECT_NE(kFogInjectionCS.find("scat * dt"), std::string_view::npos);
+    EXPECT_NE(kFogInjectionCS.find("image3D froxel"), std::string_view::npos);
+}
+
+// (25) Integration GLSL uses the analytic dt = (far-near)*(s1^2 - s0^2) form and
+//      multiplies RGB by dt inside the loop (RAW-scatter contract of THIS
+//      header) — distinct from VolumetricFog.hpp's premultiplied path. Pins it.
+TEST(VolumetricFog, IntegrationKernelUsesRawScatterDtInsideLoop)
+{
+    EXPECT_NE(kFogIntegrationCS.find("(slice1 * slice1 - slice0 * slice0)"),
+              std::string_view::npos);
+    EXPECT_NE(kFogIntegrationCS.find("cell.rgb * dt * accum.a"),
+              std::string_view::npos);  // dt INSIDE loop = raw-scatter contract
+    EXPECT_NE(kFogIntegrationCS.find("exp(-cell.a * dt)"),
+              std::string_view::npos);  // Beer-Lambert per slice
 }
 
 }  // namespace

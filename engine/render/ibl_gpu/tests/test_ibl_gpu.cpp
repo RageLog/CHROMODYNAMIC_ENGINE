@@ -205,6 +205,78 @@ TEST(IblGpuHalf, SignBitIsIndependentOfMagnitudeEncoding)
     }
 }
 
+TEST(IblGpuHalf, ExponentTransitionBoundariesMatchIeee754)
+{
+    // The encoder's bias is 112 (= binary32 bias 127 - binary16 bias 15). The
+    // e<=0 flush-to-zero and e>=31 saturate-to-max guards sit on exact
+    // power-of-two seams; pin BOTH sides of each seam so a one-off in the bias
+    // or the guard comparison is caught.
+    //
+    // Smallest-normal seam: 2^-14 is the first value with e==1 (smallest half
+    // normal -> 0x0400); 2^-15 has e==0 and must flush to +0.
+    EXPECT_EQ(float_to_half(std::ldexp(1.0F, -14)), 0x0400U);
+    EXPECT_EQ(float_to_half(std::ldexp(1.0F, -15)), 0x0000U);
+    // Just below 2^-14 (still e<=0) flushes; just at it does not.
+    EXPECT_EQ(float_to_half(std::nextafter(std::ldexp(1.0F, -14), 0.0F)), 0x0000U);
+    // Overflow seam: 2^16 (= 65536) is the first value with e>=31 -> saturate.
+    EXPECT_EQ(float_to_half(std::ldexp(1.0F, 16)), kHalfMaxFinite);
+    // 2^15 (= 32768) is still a clean normal (e==30, mantissa 0) -> 0x7800.
+    EXPECT_EQ(float_to_half(std::ldexp(1.0F, 15)), 0x7800U);
+}
+
+TEST(IblGpuHalf, EncodingIsMonotonicAcrossThePositiveRange)
+{
+    // For the encoder's representable finite range the mapping is order
+    // preserving: a >= b (both >= 0) implies bits(a) >= bits(b). Walk a dense
+    // multiplicative ladder and assert the half bit pattern never decreases.
+    // Integer-driven induction (k -> f = 2^-14 * 1.3^k) keeps the loop variable
+    // off the float (no float-loop-induction).
+    std::uint16_t prev = float_to_half(0.0F);
+    EXPECT_EQ(prev, 0x0000U);
+    constexpr float kStart = 1.0F / 16384.0F;  // 2^-14, smallest half normal
+    for (std::size_t k = 0; k < 80U; ++k)
+    {
+        const float f = kStart * std::pow(1.3F, static_cast<float>(k));
+        if (f > std::ldexp(1.0F, 15))
+            break;
+        const std::uint16_t cur = float_to_half(f);
+        EXPECT_GE(cur, prev) << "non-monotonic at f=" << f;
+        prev = cur;
+    }
+}
+
+TEST(IblGpuHalf, MaxFiniteDecodesToExactly65504)
+{
+    // The saturation pattern 0x7BFF must decode (via the independent reference)
+    // to the canonical largest finite half, 65504. Locks the clamp target to a
+    // real IEEE-754 value rather than an arbitrary bit pattern.
+    EXPECT_FLOAT_EQ(ref_half_to_float(kHalfMaxFinite), 65504.0F);
+    EXPECT_FLOAT_EQ(ref_half_to_float(float_to_half(70000.0F)), 65504.0F);
+}
+
+TEST(IblGpuHalf, MantissaTruncationSweepDropsLow13Bits)
+{
+    // For a normal value, the encoder keeps mantissa bits [22..13] and drops
+    // [12..0] via `>> 13`. Build binary32 values of the form 1.0 + k*2^-23
+    // (one low binary32 mantissa ULP) and confirm every value strictly inside
+    // one half-ULP window truncates to the SAME half mantissa as the window
+    // base (round-toward-zero, never round-to-nearest-even).
+    for (std::uint32_t low = 0; low < 8192U; low += 1024U)  // within one half-ULP
+    {
+        const std::uint32_t base_bits = 0x3F800000U;  // 1.0F
+        const std::uint32_t bits = base_bits | low;    // 1.0 + low*2^-23
+        float f = 0.0F;
+        std::memcpy(&f, &bits, sizeof(f));
+        // All such f share the half pattern of 1.0 (0x3C00): low bits dropped.
+        EXPECT_EQ(float_to_half(f), 0x3C00U) << "low=" << low;
+    }
+    // Crossing into the next half-ULP (low == 8192) flips the half mantissa.
+    const std::uint32_t crossed_bits = 0x3F800000U | 8192U;
+    float crossed = 0.0F;
+    std::memcpy(&crossed, &crossed_bits, sizeof(crossed));
+    EXPECT_EQ(float_to_half(crossed), 0x3C01U);
+}
+
 // --- Host-side pure: mip-count / byte-layout (always runs) -------------------
 
 TEST(IblGpuLayout, PrefilteredMipChainHalvesEachLevel)
@@ -314,6 +386,87 @@ TEST(IblGpuSizing, PrefilterCapsMipCountAtKMaxSpecularMips)
     EXPECT_LE(spec.mip_count, cd::ibl::kMaxSpecularMips);
 }
 
+// --- Host-side pure: barrier / copy-region / view descriptor sizing ----------
+// The upload helpers build TextureSubresourceRange / BufferImageCopyRegion /
+// TextureViewDesc by hand. Pin the field arithmetic host-side so a regression
+// in mip/layer counts or per-region copy count is caught with no device.
+
+TEST(IblGpuDescriptor, CubeBarrierRangeCoversAllSixLayersOneMip)
+{
+    // upload_cubemap_rgba16f transitions range {base_mip 0, mip_count 1,
+    // base_layer 0, layer_count 6}. Mirror that field-for-field.
+    const cd::rhi::TextureSubresourceRange range { 0, 1, 0, 6 };
+    EXPECT_EQ(range.base_mip, 0U);
+    EXPECT_EQ(range.mip_count, 1U);
+    EXPECT_EQ(range.base_layer, 0U);
+    EXPECT_EQ(range.layer_count, 6U);
+}
+
+TEST(IblGpuDescriptor, PrefilteredBarrierRangeMipCountTracksProductMips)
+{
+    // The prefiltered uploader transitions {0, mip_count, 0, 6}; the mip_count
+    // is exactly the product's mip_count (clamped at kMaxSpecularMips upstream).
+    const auto spec = [] {
+        auto env = cd::ibl::CubeMapRgbF::allocate(8);
+        return cd::ibl::prefilter_specular(env, /*base*/ 8, /*mips*/ 4, /*spp*/ 1);
+    }();
+    const cd::rhi::TextureSubresourceRange range { 0, spec.mip_count, 0, 6 };
+    EXPECT_EQ(range.mip_count, 4U);
+    EXPECT_EQ(range.layer_count, 6U);
+}
+
+TEST(IblGpuDescriptor, PrefilteredCopyRegionCountIsSixPerMip)
+{
+    // The uploader pushes one BufferImageCopyRegion per (mip, face). For a
+    // 4-mip cube that is exactly 4*6 = 24 regions; each region targets one
+    // (mip_level, base_layer) pair with layer_count 1.
+    const auto spec = [] {
+        auto env = cd::ibl::CubeMapRgbF::allocate(8);
+        return cd::ibl::prefilter_specular(env, 8, 4, 1);
+    }();
+    std::vector<cd::rhi::BufferImageCopyRegion> regs;
+    std::size_t total_bytes = 0;
+    for (std::uint32_t m = 0; m < spec.mip_count; ++m)
+    {
+        const std::uint32_t s = spec.mips[m].face_size;
+        const std::size_t face_bytes = cube_face_bytes_rgba16f(s);
+        for (std::uint32_t f = 0; f < 6U; ++f)
+            regs.push_back(cd::rhi::BufferImageCopyRegion {
+                .buffer_offset = total_bytes + face_bytes * f,
+                .mip_level = m,
+                .base_layer = f,
+                .layer_count = 1,
+                .image_offset = { 0, 0, 0 },
+                .image_extent = { s, s, 1 } });
+        total_bytes += face_bytes * 6U;
+    }
+    EXPECT_EQ(regs.size(), std::size_t { 24 });  // 4 mips * 6 faces
+    // The last region must target mip 3, face 5, with the 1px extent.
+    EXPECT_EQ(regs.back().mip_level, 3U);
+    EXPECT_EQ(regs.back().base_layer, 5U);
+    EXPECT_EQ(regs.back().image_extent.width, 1U);
+    EXPECT_EQ(regs.back().layer_count, 1U);
+}
+
+TEST(IblGpuDescriptor, BrdfLutCopyRegionIsSingleFullExtent)
+{
+    // upload_brdf_lut emits one region covering the whole 2D image, mip 0,
+    // layer 0, layer_count 1.
+    const cd::rhi::BufferImageCopyRegion reg {
+        .buffer_offset = 0,
+        .mip_level = 0,
+        .base_layer = 0,
+        .layer_count = 1,
+        .image_offset = { 0, 0, 0 },
+        .image_extent = { 4, 2, 1 } };
+    EXPECT_EQ(reg.buffer_offset, std::uint64_t { 0 });
+    EXPECT_EQ(reg.mip_level, 0U);
+    EXPECT_EQ(reg.layer_count, 1U);
+    EXPECT_EQ(reg.image_extent.width, 4U);
+    EXPECT_EQ(reg.image_extent.height, 2U);
+    EXPECT_EQ(reg.image_extent.depth, 1U);
+}
+
 // --- Empty-input guards (always run) -----------------------------------------
 // The upload helpers must early-out (no device calls) on empty input. We can
 // verify the guard without a device because the size==0 branch returns before
@@ -336,6 +489,35 @@ TEST(IblGpuLayout, EmptyCubemapAndPrefilteredHaveZeroMips)
     EXPECT_EQ(empty_cube.face_size, 0U);
     const cd::ibl::PrefilteredSpecularCube empty_spec {};
     EXPECT_EQ(empty_spec.mip_count, 0U);
+}
+
+TEST(IblGpuLayout, DefaultOutputPodsAreInvalidWithDefaultMipCount)
+{
+    // The helpers return a default-constructed GpuCubemap / GpuLut2D on every
+    // early-out / failure path. Pin that default: invalid handles + mip_count 1
+    // (the struct's documented default) so callers can detect a no-op upload by
+    // checking handle validity, not by the mip count.
+    const cd::ibl_gpu::GpuCubemap cube {};
+    EXPECT_FALSE(cube.image.is_valid());
+    EXPECT_FALSE(cube.view.is_valid());
+    EXPECT_EQ(cube.mip_count, 1U);
+    const cd::ibl_gpu::GpuLut2D lut {};
+    EXPECT_FALSE(lut.image.is_valid());
+    EXPECT_FALSE(lut.view.is_valid());
+}
+
+TEST(IblGpuLayout, SingleMipPrefilteredIsRoughnessZeroMirror)
+{
+    // num_mips == 1 -> roughness 0 (mirror), one mip, full base resolution.
+    // The uploader strides exactly one mip; pin the host-side product shape.
+    auto env = cd::ibl::CubeMapRgbF::allocate(4);
+    const auto spec = cd::ibl::prefilter_specular(env, /*base*/ 4, /*mips*/ 1, /*spp*/ 1);
+    ASSERT_EQ(spec.mip_count, 1U);
+    EXPECT_EQ(spec.mips[0].face_size, 4U);
+    // Staging is exactly one 6-face block at base resolution; no later mips.
+    const std::size_t total = cube_face_bytes_rgba16f(spec.mips[0].face_size) * 6U;
+    // 4*4 texels * 4 channels * 2 B/half = 128 B/face; * 6 faces = 768 bytes.
+    EXPECT_EQ(total, std::size_t { 768 });
 }
 
 // --- Device-gated end-to-end round-trip (skips without Vulkan) ---------------

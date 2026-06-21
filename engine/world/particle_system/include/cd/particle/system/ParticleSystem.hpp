@@ -2,14 +2,17 @@
 // CHROMODYNAMIC - cd/particle/system/ParticleSystem.hpp
 // Phase 564 (M3 W5C) - CPU-side particle simulation system.
 // Phase 583 (M5 W1) - Renamed from system_v2; no v1 ever existed.
+// Phase 1268 (Band-70) - drag coefficient + max_particles cap added.
 //
 // cd::particle::system::System is a CPU particle system with SoA storage
 // and swap-and-pop deletion.  Per-particle integration uses semi-implicit
 // Euler.  GPU dispatch is out of scope (V3).
 //
-// API (Sprint-1, CPU-side):
+// API (Sprint-1 + Band-70 CPU extensions):
 //   ParticleSpec  — per-particle authored parameters (life, size ramp, color ramp).
 //   EmitterSpec   — emitter parameters + embedded ParticleSpec.
+//                   New (Band-70): drag coefficient (linear air-resistance decay);
+//                                  max_particles cap per emitter (0 = unlimited).
 //   EmitterId     — opaque handle returned by add_emitter(); stable until
 //                   remove_emitter() is called.
 //   System        — tick(dt), add_emitter, remove_emitter, particle_count,
@@ -20,6 +23,8 @@
 //   Semi-implicit Euler: velocity updated first from acceleration; position
 //   then updated using the new velocity.  Acceleration is zero in Sprint-1
 //   (no external forces); the integration path is correct for future V3.
+//   Drag (Band-70): exponential velocity decay v *= exp(-drag * dt).
+//   Exact for constant drag (no discretisation error); stable for any dt > 0.
 //
 // SoA layout:
 //   Particle state is stored in seven parallel std::vector<float>s
@@ -75,6 +80,14 @@ struct EmitterSpec
     std::array<float, 3> position         {0.0F, 0.0F, 0.0F};
     std::array<float, 3> velocity_min     {-1.0F, 0.0F, -1.0F};
     std::array<float, 3> velocity_max     { 1.0F, 4.0F,  1.0F};
+    /// Linear drag coefficient (air resistance).  Applied each tick as
+    /// v *= exp(-drag * dt).  0.0 (default) = no drag (backward-compatible).
+    /// Must be >= 0; negative values are clamped to 0 at spawn time.
+    float                drag             {0.0F};
+    /// Hard cap on the number of particles simultaneously alive that were
+    /// spawned by this emitter.  0 (default) = unlimited (backward-compatible).
+    /// Spawn is skipped when alive_count >= max_particles (> 0).
+    std::uint32_t        max_particles    {0U};
     ParticleSpec         particle         {};
 };
 
@@ -144,9 +157,10 @@ public:
 
 private:
     // -------------------------------------------------------------------------
-    // SoA particle storage — seven float channels + one uint32 channel.
+    // SoA particle storage — float channels + uint32 channel.
     //   px/py/pz   — position
     //   vx/vy/vz   — velocity
+    //   drag       — per-particle drag coefficient (copied from EmitterSpec at spawn)
     //   age        — accumulated time since birth
     //   life       — total life duration (from ParticleSpec)
     //   size_start / size_end — interpolated per tick
@@ -161,6 +175,7 @@ private:
     std::vector<float>        vx_ {};
     std::vector<float>        vy_ {};
     std::vector<float>        vz_ {};
+    std::vector<float>        drag_ {};  ///< per-particle drag coefficient
     std::vector<float>        age_ {};
     std::vector<float>        life_ {};
     std::vector<float>        size_start_ {};
@@ -181,10 +196,11 @@ private:
     // -------------------------------------------------------------------------
     struct EmitterEntry
     {
-        EmitterId  id       {kInvalidEmitter};
-        EmitterSpec spec    {};
-        float      accum    {0.0F};  ///< fractional particle accumulator
-        bool       alive    {false};
+        EmitterId     id          {kInvalidEmitter};
+        EmitterSpec   spec        {};
+        float         accum       {0.0F};  ///< fractional particle accumulator
+        std::uint32_t alive_count {0U};    ///< particles currently alive from this emitter
+        bool          alive       {false};
     };
 
     std::vector<EmitterEntry> emitters_   {};

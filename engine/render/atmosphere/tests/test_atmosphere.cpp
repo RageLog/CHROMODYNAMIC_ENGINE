@@ -9,6 +9,7 @@ namespace
 {
 
 using cd::atmosphere::bake_multiscatter_lut;
+using cd::atmosphere::bake_skyview_lut;
 using cd::atmosphere::bake_transmittance_lut;
 using cd::atmosphere::henyey_greenstein;
 using cd::atmosphere::Parameters;
@@ -347,6 +348,145 @@ TEST(Atmosphere, MultiScatterGlslKernelMirrorsCpuContract)
     EXPECT_NE(cd::atmosphere::kMultiScatterCS.find("transmittance_lut"),
               std::string_view::npos);
     EXPECT_NE(cd::atmosphere::kMultiScatterCS.find("imageStore"),
+              std::string_view::npos);
+}
+
+// ---- Sky-view LUT (3rd of Hillaire's 4 LUTs; ADD-ONLY) ---------------------
+// Opt-in baker (Hillaire 2020 §5.4): nothing on the rendered path bakes it, so
+// it cannot change the default sky/golden output. It reads the sealed
+// transmittance + multi-scatter LUTs read-only. A noon sun overhead is used as
+// the canonical fixture (sun_dir = +Z, already unit-length).
+
+// Sun pointing straight up (planet-up = +Z); unit-length, no normalize needed.
+// File-level anonymous namespace (opened at the top) gives it internal linkage.
+constexpr cd::math::Vec3f kSunZenith { 0.0F, 0.0F, 1.0F };
+
+TEST(Atmosphere, SkyViewLutShapeMatchesRequest)
+{
+    Parameters p {};
+    const auto t  = bake_transmittance_lut(p, 32, 32);
+    const auto ms = bake_multiscatter_lut(p, t, 16, 16);
+    const auto sv = bake_skyview_lut(p, t, ms, kSunZenith, 0.5F, 24, 12);
+    EXPECT_EQ(sv.w, 24U);
+    EXPECT_EQ(sv.h, 12U);
+    EXPECT_EQ(sv.texels.size(), 24U * 12U);
+}
+
+TEST(Atmosphere, SkyViewIsFiniteAndNonNegative)
+{
+    // The accumulated in-scattered luminance is a sum of non-negative
+    // contributions (scattering >= 0, phase >= 0, transmittance in [0,1]); the
+    // NaN guards (clamped h + finite sun_trans/psi) keep every texel finite.
+    Parameters p {};
+    const auto t  = bake_transmittance_lut(p, 32, 32);
+    const auto ms = bake_multiscatter_lut(p, t, 16, 16);
+    const auto sv = bake_skyview_lut(p, t, ms, kSunZenith, 0.5F, 24, 12);
+    for (const auto& v : sv.texels)
+    {
+        EXPECT_TRUE(std::isfinite(v.x));
+        EXPECT_TRUE(std::isfinite(v.y));
+        EXPECT_TRUE(std::isfinite(v.z));
+        EXPECT_GE(v.x, 0.0F);
+        EXPECT_GE(v.y, 0.0F);
+        EXPECT_GE(v.z, 0.0F);
+    }
+}
+
+TEST(Atmosphere, SkyViewZeroScatteringGivesZeroLut)
+{
+    // Negative test: with all scattering zeroed there is no in-scatter along
+    // the view ray (rayleigh_s = mie_s = 0, and the MS LUT is also zero), so
+    // the sky-view LUT is identically zero. Guards an accidental offset/bias.
+    Parameters p {};
+    p.rayleigh_scattering = { 0.0F, 0.0F, 0.0F };
+    p.mie_scattering      = { 0.0F, 0.0F, 0.0F };
+    const auto t  = bake_transmittance_lut(p, 16, 16);
+    const auto ms = bake_multiscatter_lut(p, t, 8, 8);
+    const auto sv = bake_skyview_lut(p, t, ms, kSunZenith, 0.5F, 16, 8);
+    for (const auto& v : sv.texels)
+    {
+        EXPECT_NEAR(v.x, 0.0F, 1e-6F);
+        EXPECT_NEAR(v.y, 0.0F, 1e-6F);
+        EXPECT_NEAR(v.z, 0.0F, 1e-6F);
+    }
+}
+
+TEST(Atmosphere, SkyViewRayleighBlueDominatesAwayFromSun)
+{
+    // The clear daytime sky away from the sun is dominated by Rayleigh-
+    // scattered blue. With the sun overhead (+Z), the horizon row (cos_view
+    // ~ 0) viewed sideways should carry more blue than red luminance.
+    Parameters p {};
+    const auto t  = bake_transmittance_lut(p, 32, 32);
+    const auto ms = bake_multiscatter_lut(p, t, 16, 16);
+    const auto sv = bake_skyview_lut(p, t, ms, kSunZenith, 0.5F, 16, 16);
+    const std::uint32_t horizon_y = sv.h / 2;  // cos_view ~ 0
+    const auto& sky = sv.at(0, horizon_y);
+    EXPECT_GT(sky.z, sky.x);  // blue out-scatters red in the clear sky
+}
+
+TEST(Atmosphere, SkyViewBrighterTowardSunThanAway)
+{
+    // The forward-scattering Mie lobe (g = 0.8) + the Rayleigh peak make the
+    // sky brightest looking toward the sun. Put the sun on the horizon along
+    // +X (sun_dir = (1,0,0), unit-length) and compare two view directions in
+    // the SAME zenith row (identical view-ray path length) but opposite
+    // azimuth: az~0 looks toward the sun (cos_vs ~ +1), az~pi looks away
+    // (cos_vs ~ -1). The phase function alone discriminates -> toward-sun wins.
+    Parameters p {};
+    const cd::math::Vec3f sun_horizon { 1.0F, 0.0F, 0.0F };
+    const auto t  = bake_transmittance_lut(p, 32, 32);
+    const auto ms = bake_multiscatter_lut(p, t, 16, 16);
+    const auto sv = bake_skyview_lut(p, t, ms, sun_horizon, 0.5F, 16, 16);
+    const std::uint32_t horizon_y = sv.h / 2;       // cos_view ~ 0 (horizon)
+    const auto& toward = sv.at(0, horizon_y);          // az ~ 0   -> toward sun
+    const auto& away   = sv.at(sv.w / 2, horizon_y);   // az ~ pi  -> away
+    const float lum_toward = toward.x + toward.y + toward.z;
+    const float lum_away   = away.x + away.y + away.z;
+    EXPECT_GT(lum_toward, lum_away);
+}
+
+TEST(Atmosphere, SkyViewReadsSealedTablesReadOnly)
+{
+    // The sky-view baker consumes the transmittance + multi-scatter LUTs but
+    // must not mutate them (sealed tables). Snapshot, bake, compare.
+    Parameters p {};
+    auto t        = bake_transmittance_lut(p, 16, 16);
+    auto ms       = bake_multiscatter_lut(p, t, 8, 8);
+    const auto t_copy  = t.texels;
+    const auto ms_copy = ms.texels;
+    const auto sv = bake_skyview_lut(p, t, ms, kSunZenith, 0.5F, 8, 8);
+    EXPECT_EQ(sv.texels.size(), 8U * 8U);
+    EXPECT_EQ(t.texels, t_copy);    // transmittance untouched
+    EXPECT_EQ(ms.texels, ms_copy);  // multi-scatter untouched
+}
+
+TEST(Atmosphere, SkyViewNegativeAltitudeClampsFinite)
+{
+    // A below-surface camera altitude clamps to r0 = bottom_radius (the
+    // max(0, view_alt) guard); the LUT must stay finite, not NaN.
+    Parameters p {};
+    const auto t  = bake_transmittance_lut(p, 16, 16);
+    const auto ms = bake_multiscatter_lut(p, t, 8, 8);
+    const auto sv = bake_skyview_lut(p, t, ms, kSunZenith, -10.0F, 8, 8);
+    for (const auto& v : sv.texels)
+    {
+        EXPECT_TRUE(std::isfinite(v.x));
+        EXPECT_TRUE(std::isfinite(v.y));
+        EXPECT_TRUE(std::isfinite(v.z));
+    }
+}
+
+TEST(Atmosphere, SkyViewGlslKernelMirrorsCpuContract)
+{
+    // The GLSL kernel must exist and reference both sealed sampler LUTs + the
+    // luminance store, mirroring the CPU baker.
+    EXPECT_FALSE(cd::atmosphere::kSkyViewCS.empty());
+    EXPECT_NE(cd::atmosphere::kSkyViewCS.find("transmittance_lut"),
+              std::string_view::npos);
+    EXPECT_NE(cd::atmosphere::kSkyViewCS.find("multiscatter_lut"),
+              std::string_view::npos);
+    EXPECT_NE(cd::atmosphere::kSkyViewCS.find("imageStore"),
               std::string_view::npos);
 }
 

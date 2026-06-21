@@ -7,11 +7,13 @@
 // path tracer with a single MLP query for substantial variance
 // reduction at constant ray cost.
 //
-// STATUS: research-skeleton-v1 (sealed in
-// docs/ADR/ADR-20260616-band6-render-misc-scope.md §4). This is a CPU
-// reference / research skeleton, NOT a production radiance cache. A usable
-// NRC needs an on-GPU trainable MLP (16-wide fully-fused tensor-core layers,
-// Adam, frequency encoding) — a multi-month subsystem.
+// STATUS: cpu-mlp-v1 CHARTER-COMPLETE; GPU backends formally SEALED in
+// docs/ADR/ADR-20260621-nrc-gpu-backend-seal.md (focused Iglberger seal; the
+// original honest seal is docs/ADR/ADR-20260616-band6-render-misc-scope.md §4).
+// This is a CPU reference MLP, NOT a production radiance cache. A usable NRC
+// needs an on-GPU trainable MLP (16-wide fully-fused tensor-core layers, Adam,
+// frequency encoding) — a multi-month subsystem, sealed with a precise
+// promote-on-need gate (not stubbed).
 //
 // This header ships the **public API** and a **CPU reference MLP**
 // (tiny, single hidden layer, SGD, single-threaded) so consumer code can
@@ -41,8 +43,10 @@
 // frequency encoding, per-frame online training co-scheduled with the path
 // tracer) is a multi-month subsystem requiring a CUDA/SPIR-V toolchain and
 // render-loop integration that this header cannot host. They are gated in
-// docs/ADR/ADR-20260616-band6-render-misc-scope.md §4 (promote-on-need); do
-// not stub partial GPU NN code here — it would be untestable on CI hardware.
+// docs/ADR/ADR-20260621-nrc-gpu-backend-seal.md (focused seal; original
+// docs/ADR/ADR-20260616-band6-render-misc-scope.md §4) with a promote-on-need
+// gate; do not stub partial GPU NN code here — it would be untestable on CI
+// hardware.
 //
 // References:
 //   * Müller, Rousselle, Novák, Keller — "Real-time Neural Radiance
@@ -62,6 +66,7 @@
 #include <random>
 #include <span>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace cd::nrc
@@ -225,6 +230,94 @@ public:
             for (std::uint32_t k = 0; k < kInputDim; ++k)
                 w_in_[i * kInputDim + k] -=
                     cfg_.learning_rate * d_h[i] * features[k];
+        }
+    }
+
+    /// Mini-batch SGD step — applies ONE update from the MEAN of the
+    /// per-sample half-squared-error gradients over `batch` (a span of
+    /// (features, target) pairs). This is exactly what an SGD optimiser sees
+    /// for a batch, and is the shape the GPU fully-fused backward mirrors:
+    /// accumulate gradients across all samples against a FROZEN weight set,
+    /// then apply the averaged delta once (vs. `train_step`, which applies a
+    /// per-sample delta immediately). An empty batch is a no-op. For a
+    /// single-element batch the result equals `train_step` on that element (the
+    /// mean over N=1 is the identity update; bit-for-bit modulo the harmless
+    /// `(lr·err)·h` vs `lr·(err·h)` float reassociation). Determinism: no RNG,
+    /// no allocation beyond the gradient accumulators; output is a pure
+    /// function of the current weights + batch.
+    void train_batch(
+        std::span<const std::pair<std::array<float, kInputDim>,
+                                  cd::math::Vec3f>> batch)
+    {
+        if (batch.empty()) return;
+
+        const std::size_t w_in_n  = w_in_.size();
+        const std::size_t b_in_n  = b_in_.size();
+        const std::size_t w_out_n = w_out_.size();
+
+        std::vector<float> g_w_in(w_in_n, 0.0F);
+        std::vector<float> g_b_in(b_in_n, 0.0F);
+        std::vector<float> g_w_out(w_out_n, 0.0F);
+        std::array<float, kOutputDim> g_b_out {};
+
+        std::vector<float> h(cfg_.hidden_width, 0.0F);
+        std::vector<float> pre(cfg_.hidden_width, 0.0F);
+
+        // Accumulate per-sample gradients against the FROZEN weights.
+        for (const auto& [feat_arr, target] : batch)
+        {
+            const std::span<const float, kInputDim> features(feat_arr);
+            for (std::uint32_t i = 0; i < cfg_.hidden_width; ++i)
+            {
+                float s = b_in_[i];
+                for (std::uint32_t k = 0; k < kInputDim; ++k)
+                    s += w_in_[i * kInputDim + k] * features[k];
+                pre[i] = s;
+                h[i]   = std::max(0.0F, s);
+            }
+            cd::math::Vec3f out { b_out_[0], b_out_[1], b_out_[2] };
+            for (std::uint32_t c = 0; c < kOutputDim; ++c)
+                for (std::uint32_t i = 0; i < cfg_.hidden_width; ++i)
+                    (&out.x)[c] += w_out_[c * cfg_.hidden_width + i] * h[i];
+
+            const std::array<float, kOutputDim> err {
+                out.x - target.x, out.y - target.y, out.z - target.z };
+
+            // Output-layer gradient.
+            for (std::uint32_t c = 0; c < kOutputDim; ++c)
+            {
+                g_b_out[c] += err[c];
+                for (std::uint32_t i = 0; i < cfg_.hidden_width; ++i)
+                    g_w_out[c * cfg_.hidden_width + i] += err[c] * h[i];
+            }
+            // Hidden-layer gradient (ReLU passthrough).
+            for (std::uint32_t i = 0; i < cfg_.hidden_width; ++i)
+            {
+                if (pre[i] <= 0.0F) continue;
+                float d_hi = 0.0F;
+                for (std::uint32_t c = 0; c < kOutputDim; ++c)
+                    d_hi += err[c] * w_out_[c * cfg_.hidden_width + i];
+                g_b_in[i] += d_hi;
+                for (std::uint32_t k = 0; k < kInputDim; ++k)
+                    g_w_in[i * kInputDim + k] += d_hi * features[k];
+            }
+        }
+
+        // Apply the MEAN gradient once (lr · mean = lr/N · Σ).
+        const float inv_n =
+            cfg_.learning_rate / static_cast<float>(batch.size());
+        for (std::uint32_t c = 0; c < kOutputDim; ++c)
+        {
+            b_out_[c] -= inv_n * g_b_out[c];
+            for (std::uint32_t i = 0; i < cfg_.hidden_width; ++i)
+                w_out_[c * cfg_.hidden_width + i] -=
+                    inv_n * g_w_out[c * cfg_.hidden_width + i];
+        }
+        for (std::uint32_t i = 0; i < cfg_.hidden_width; ++i)
+        {
+            b_in_[i] -= inv_n * g_b_in[i];
+            for (std::uint32_t k = 0; k < kInputDim; ++k)
+                w_in_[i * kInputDim + k] -= inv_n * g_w_in[i * kInputDim + k];
         }
     }
 

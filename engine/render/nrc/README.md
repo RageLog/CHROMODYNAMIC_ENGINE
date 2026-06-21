@@ -11,8 +11,9 @@ Neural Radiance Cache (NRC) — learned implicit representation of ray-traced ra
 
 ## Primary types
 - `cd::nrc::Config` — MLP descriptor (hidden layers/width, learning rate)
-- `cd::nrc::CpuReferenceMlp` — single-hidden-layer CPU reference network: `query()` (forward inference → RGB radiance) + `train_step()` (one SGD update toward a path-traced target)
-- `cd::nrc::kInputDim` (32) / `kOutputDim` (3) — feature/output dimensions
+- `cd::nrc::CpuReferenceMlp` — single-hidden-layer CPU reference network: `query()` (forward inference → RGB radiance) + `query_into()` (byte-identical scratch-reusing zero-heap inference) + `train_step()` (one SGD update toward a path-traced target) + `train_batch()` (mini-batch SGD — mean per-sample gradient, the GPU fully-fused backward shape)
+- `cd::nrc::encode_input()` — stateless Müller §3.2 frequency/positional encoding lifting a raw `kRawSampleDim` (5) sample into the `kInputDim` feature vector
+- `cd::nrc::kInputDim` (32) / `kOutputDim` (3) / `kRawSampleDim` (5) — feature/output/raw dimensions
 
 ## Usage example
 ```cpp

@@ -564,4 +564,83 @@ void main() {
 }
 )glsl";
 
+// ---- GLSL compute kernel (sky-view LUT bake) --------------------------------
+// Mirrors bake_skyview_lut (Hillaire 2020 §5.4). Reads the sealed transmittance
+// LUT (binding 1, sun visibility) and the multi-scatter LUT (binding 2, Psi)
+// read-only, accumulating the phased single-scatter + isotropic multi-scatter
+// pair along a 30-step view-ray march. The camera altitude + sun direction are
+// pushed per-bake. OPT-IN runtime bake — off the default rendered path.
+
+constexpr std::string_view kSkyViewCS = R"glsl(
+#version 460
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0, rgba16f) uniform writeonly image2D sky_lut;
+layout(set = 0, binding = 1) uniform sampler2D transmittance_lut;
+layout(set = 0, binding = 2) uniform sampler2D multiscatter_lut;
+layout(push_constant) uniform PC {
+  vec2  size;
+  float bottom_r;
+  float top_r;
+  float ray_h;
+  float mie_h;
+  float mie_g;
+  float view_alt;
+  vec4  ray_s;     // rayleigh scattering RGB + pad
+  vec4  mie_s;     // mie scattering RGB + pad
+  vec4  mie_a;     // mie absorption RGB + pad
+  vec4  ozone_a;   // ozone RGB + pad
+  vec4  sun_dir;   // sun direction XYZ + pad (planet-up = +Z)
+} pc;
+const int   kMarchSteps = 30;
+const float kPi         = 3.14159265358979323846;
+vec3 sample_lut(sampler2D lut, float mu, float h) {
+  float u = (mu + 1.0) * 0.5;
+  float v = h / (pc.top_r - pc.bottom_r);
+  return texture(lut, vec2(clamp(u, 0.0, 1.0), clamp(v, 0.0, 1.0))).rgb;
+}
+float rayleigh_phase(float c) { return 3.0 / (16.0 * kPi) * (1.0 + c * c); }
+float hg_phase(float c, float g) {
+  float d = 1.0 + g * g - 2.0 * g * c;
+  return (1.0 - g * g) / (4.0 * kPi * max(d, 1.0e-4) * sqrt(max(d, 1.0e-4)));
+}
+void main() {
+  uvec2 px = gl_GlobalInvocationID.xy;
+  if (px.x >= uint(pc.size.x) || px.y >= uint(pc.size.y)) return;
+  float r0       = pc.bottom_r + max(0.0, pc.view_alt);
+  float mu_sun   = clamp(pc.sun_dir.z, -1.0, 1.0);
+  float v_frac   = (float(px.y) + 0.5) / pc.size.y;
+  float cos_view = 1.0 - 2.0 * v_frac;
+  float sin_view = sqrt(max(0.0, 1.0 - cos_view * cos_view));
+  float az       = (float(px.x) + 0.5) / pc.size.x * 2.0 * kPi;
+  vec3  view_dir = vec3(sin_view * cos(az), sin_view * sin(az), cos_view);
+  float mu_view  = view_dir.z;
+  float disc     = max(r0 * r0 * (mu_view * mu_view - 1.0) + pc.top_r * pc.top_r, 0.0);
+  float dist     = max(-r0 * mu_view + sqrt(disc), 0.0);
+  float seg      = dist / float(kMarchSteps);
+  float cos_vs   = clamp(dot(view_dir, pc.sun_dir.xyz), -1.0, 1.0);
+  float phase_r  = rayleigh_phase(cos_vs);
+  float phase_m  = hg_phase(cos_vs, pc.mie_g);
+  vec3  l        = vec3(0.0);
+  vec3  trans    = vec3(1.0);
+  for (int i = 0; i < kMarchSteps; ++i) {
+    float t  = (float(i) + 0.5) * seg;
+    float h  = max(0.0, sqrt(max(0.0, r0 * r0 + t * t + 2.0 * r0 * t * mu_view)) - pc.bottom_r);
+    float rd = exp(-h / pc.ray_h);
+    float md = exp(-h / pc.mie_h);
+    float od = max(0.0, 1.0 - abs(h - 25.0) / 15.0);
+    vec3  rayleigh_s = pc.ray_s.rgb * rd;
+    vec3  mie_sc     = pc.mie_s.rgb * md;
+    vec3  extinction = rayleigh_s + mie_sc + pc.mie_a.rgb * md + pc.ozone_a.rgb * od;
+    vec3  step_trans = exp(-extinction * seg);
+    vec3  sun_trans  = sample_lut(transmittance_lut, mu_sun, h);
+    vec3  psi        = sample_lut(multiscatter_lut, mu_sun, h);
+    vec3  in_scatter = (rayleigh_s * phase_r + mie_sc * phase_m) * sun_trans +
+                       (rayleigh_s + mie_sc) * psi;
+    l     += trans * in_scatter * seg;
+    trans *= step_trans;
+  }
+  imageStore(sky_lut, ivec2(px), vec4(l, 1.0));
+}
+)glsl";
+
 }  // namespace cd::atmosphere
