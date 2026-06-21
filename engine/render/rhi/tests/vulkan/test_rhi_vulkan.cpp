@@ -1186,6 +1186,11 @@ TEST(VulkanDevice, CommandBufferBindUnknownPipelineIsSilent)
     auto cb = dev->create_command_buffer(cd::rhi::QueueType::kGraphics);
     ASSERT_NE(cb, nullptr);
     cb->begin();
+    // These binds DELIBERATELY feed null handles to prove the recorder silently
+    // skips them (queryable via recording_error()) rather than crashing. Disable
+    // the debug recording-error assert around the deliberate misses so they do
+    // not abort the process; re-enable afterwards (matches test_rhi_bindpoint).
+    cd::rhi::set_recording_error_assert_enabled(false);
     cb->bind_graphics_pipeline(cd::rhi::GraphicsPipelineHandle {});
     cb->bind_compute_pipeline(cd::rhi::ComputePipelineHandle {});
     cb->bind_descriptor_set(0, cd::rhi::DescriptorSetHandle {});
@@ -1199,6 +1204,7 @@ TEST(VulkanDevice, CommandBufferBindUnknownPipelineIsSilent)
         static_cast<std::uint32_t>(pc.size() * sizeof(std::uint32_t)),
         pc.data()
     );
+    cd::rhi::set_recording_error_assert_enabled(true);
     cb->end();
     dev->submit(*cb);
     dev->wait_idle();
