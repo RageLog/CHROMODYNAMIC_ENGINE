@@ -29,6 +29,15 @@ cd_add_library(imgui_backend
     cd::rhi_vulkan
 )
 
+# D3D12Context (M4H, no longer deferred) — RAII over the DX12 ImGui backend,
+# fed by cd::rhi D3D12 native handles. Windows-only: the source names
+# ID3D12Device + DXGI types directly, so it (and the cd::rhi_d3d12 dep) is
+# gated on WIN32.
+if(WIN32)
+  target_sources(cd_imgui_backend PRIVATE src/ImGuiD3D12Context.cpp)
+  target_link_libraries(cd_imgui_backend PUBLIC cd::rhi_d3d12)
+endif()
+
 # Compile the ImGui core + Vulkan/Win32 backends directly into our static
 # lib. Add them as source files (not a separate target) so their symbols
 # end up in cd_imgui_backend.lib with no extra linker glue.

@@ -21,3 +21,15 @@ cd_add_test(imgui_backend_device
   SOURCES test_imgui_backend_device.cpp
   DEPS    cd::imgui_backend cd::rhi_vulkan cd::platform cd::rhi cd::core
 )
+
+# Device-gated D3D12 GPU-draw test (M4H): drives D3D12Context::render(cmd) ->
+# ImGui_ImplDX12_RenderDrawData onto a REAL ID3D12GraphicsCommandList inside an
+# offscreen render pass (no swapchain / present surface needed). SKIPs cleanly
+# when no D3D12 adapter or no platform window is available. Windows-only -- the
+# source names the cd::rhi D3D12 device factory directly.
+if(WIN32)
+  cd_add_test(imgui_backend_d3d12_device
+    SOURCES test_imgui_backend_d3d12_device.cpp
+    DEPS    cd::imgui_backend cd::rhi_d3d12 cd::platform cd::rhi cd::core
+  )
+endif()

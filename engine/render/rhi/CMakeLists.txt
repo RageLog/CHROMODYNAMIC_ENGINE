@@ -37,6 +37,7 @@ cd_add_library(rhi_d3d12
     src/d3d12/D3D12Device.cpp
     src/d3d12/D3D12ShaderCompile.cpp
     src/d3d12/D3D12ShaderToolchain.cpp  # phase1141 X4-C1: GLSL->SPIR-V->HLSL->DXIL chain
+    src/d3d12/NativeHandles.cpp  # opt-in raw ID3D12Device/queue/list accessors (cd::imgui DX12)
   PUBLIC_DEPS cd::core cd::rhi cd::shader cd::spirv_cross_glue
   # D12 (phase1184): create_shader_module resolves #include <cd/gluon/*.glsl>
   # on the GLSL path via a function-local ModuleResolver (ADR-20260614).

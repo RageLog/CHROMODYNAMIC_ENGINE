@@ -16,6 +16,8 @@
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
 
+#include "D3D12Internal.hpp"  // get_native trampoline declarations
+
 // D12 (phase1184): in-device GLSL/SPIR-V/HLSL → DXIL cross-compile.
 #include <cd/rhi/d3d12/D3D12ShaderToolchain.hpp>
 #include <cd/gluon/ModuleRegistry.hpp>
@@ -8140,6 +8142,37 @@ create_d3d12_device(D3D12CreateInfo info)
             std::string { msg }));
     }
     return std::unique_ptr<cd::rhi::IDevice>(std::move(dev));
+}
+
+// ---------------------------------------------------------------------------
+// Bridges for cd::rhi::d3d12::get_native(...) — defined here because the
+// concrete D3D12Device / D3D12CommandBuffer classes are private to this TU.
+// NativeHandles.cpp calls through these trampolines so it never needs the
+// full class layouts (mirrors VulkanDevice.cpp's try_fill_native_handles).
+// ---------------------------------------------------------------------------
+
+bool try_fill_d3d12_native_handles(
+    cd::rhi::IDevice& dev,
+    ID3D12Device** out_device,
+    ID3D12CommandQueue** out_graphics_queue
+) noexcept
+{
+    auto* concrete = dynamic_cast<D3D12Device*>(&dev);
+    if (concrete == nullptr)
+        return false;
+    if (out_device != nullptr)
+        *out_device = concrete->native_device();
+    if (out_graphics_queue != nullptr)
+        *out_graphics_queue = concrete->native_queue();
+    return true;
+}
+
+ID3D12GraphicsCommandList* native_command_list(cd::rhi::ICommandBuffer& cmd) noexcept
+{
+    auto* concrete = dynamic_cast<D3D12CommandBuffer*>(&cmd);
+    if (concrete == nullptr)
+        return nullptr;
+    return concrete->native();
 }
 
     // End of the Windows-only block — close the diagnostic pragma we

@@ -12,22 +12,25 @@
 // Windows-only. Guard callers with #if defined(_WIN32).
 //
 // The DX12 backend is compiled into cd_imgui_backend.lib alongside the
-// Vulkan and Win32 backends. Callers link cd::imgui_backend and call
-// ImGui_ImplDX12_Init / ImGui_ImplDX12_NewFrame /
-// ImGui_ImplDX12_RenderDrawData / ImGui_ImplDX12_Shutdown directly.
-// A higher-level cd::imgui::D3D12Context RAII wrapper is deferred to
-// the M4H sample phase.
+// Vulkan and Win32 backends. Callers wanting a managed surface should use the
+// RAII wrapper cd::imgui::D3D12Context (cd/imgui/D3D12Context.hpp); this facade
+// remains for callers that drive ImGui_ImplDX12_Init / _NewFrame /
+// _RenderDrawData / _Shutdown directly.
 //
 // -----------------------------------------------------------------------------
-// SEALED — thin/unverified, scope-deferred (band4 §imgui_backend).
-//   This header is a pure include-facade: it adds NO cd:: type, NO RAII
-//   wrapper, NO host-testable surface of its own. It exists only so engine
-//   consumers reach the upstream DX12 backend through a stable cd/ include
-//   path. There is intentionally no cd:: API to test here yet — the DX12
-//   draw path is verified through the D3D12 backend's own pixel-parity
-//   capstone, not through this facade. The RAII wrapper (and its tests)
-//   land together in the M4H sample phase. Do not add a placeholder wrapper
-//   or stub test ahead of that; this facade stays frozen until then.
+// STATUS — M4H delivered: the RAII wrapper now EXISTS and is device-tested.
+//   This header is still a pure include-facade (no cd:: type of its own), but
+//   the previously-deferred higher-level wrapper has landed:
+//     * cd::imgui::D3D12Context (cd/imgui/D3D12Context.hpp + src/
+//       ImGuiD3D12Context.cpp) — RAII over ImGui_ImplDX12_* + ImGui_ImplWin32,
+//       fed by cd::rhi D3D12 native handles (cd/rhi/d3d12/NativeHandles.hpp),
+//       owning its shader-visible SRV descriptor heap. Returns kBackendMismatch
+//       on a non-D3D12 IDevice (mirrors the Vulkan cd::imgui::Context).
+//     * cd_test_imgui_backend_d3d12_device — device-gated GPU-draw test that
+//       drives D3D12Context::render(cmd) -> ImGui_ImplDX12_RenderDrawData onto a
+//       REAL ID3D12GraphicsCommandList in an offscreen render pass, asserting
+//       a non-empty draw (TotalVtxCount > 0). GTEST_SKIPs with no adapter/window.
+//   Both the Vulkan AND D3D12 ImGui draw paths are now device-tested.
 // -----------------------------------------------------------------------------
 //
 // Dear ImGui — MIT licence — Copyright (c) 2014-present Omar Cornut
