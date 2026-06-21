@@ -581,4 +581,157 @@ TEST(VirtualGeometryGpuDispatch, PackVisibilityIsConstexpr)
     SUCCEED();
 }
 
+TEST(VirtualGeometryGpuDispatch, PackMaxClusterIdRoundtripsAtTwentyFiveBitBoundary)
+{
+    // The cluster id occupies bits 7..31 → the +1-shifted maximum that still
+    // fits without overflowing the 32-bit pixel is (2^25 - 2). Pin the exact
+    // top-of-range round-trip (one below the reserved sentinel slot).
+    constexpr std::uint32_t kMaxClusterId = (1U << 25U) - 2U;
+    const std::uint32_t packed = pack_visibility(kMaxClusterId, 127U);
+    EXPECT_NE(packed, 0U);
+    EXPECT_EQ(unpack_cluster_id(packed),  kMaxClusterId);
+    EXPECT_EQ(unpack_triangle_id(packed), 127U);
+}
+
+// ---------------------------------------------------------------------------
+// Frustum partial-intersect (kIntersecting) clusters are KEPT — the cull only
+// rejects on kOutside. A cluster straddling a frustum plane survives.
+// ---------------------------------------------------------------------------
+
+TEST(VirtualGeometryGpuDispatch, ClusterStraddlingFrustumEdgeIsKeptNotCulled)
+{
+    // A wide cluster reaching from inside the view far out past the lateral
+    // FOV at z=12 straddles the side plane → test_aabb returns kIntersecting,
+    // which is NOT kOutside, so the dispatcher keeps it (self=0/parent=1000
+    // makes it the frontier).
+    Cluster c;
+    c.triangles  = { 0U };
+    c.lod_level  = 0U;
+    c.parent_lod = 1U;
+    c.self_error = 0.0F;
+    c.parent_error = 1000.0F;
+    c.bbox.min_corner = { -50.0F, -0.5F, 12.0F };  // far left of the FOV
+    c.bbox.max_corner = {   0.0F,  0.5F, 13.0F };
+    std::vector<Cluster> nodes;
+    nodes.push_back(std::move(c));
+    const ClusterDAG dag { std::move(nodes) };
+
+    cd::rhi::NullDevice device {};
+    cd::rhi::NullCommandBuffer cmd {};
+    const auto frustum = cd::camera::extract_frustum(look_forward_proj());
+
+    GpuDispatcher d;
+    d.configure(dag, device);
+    d.dispatch_cull(cmd, frustum, 1.0F, { 0.0F, 0.0F, 0.0F }, 0.7F, 1080U);
+    EXPECT_EQ(d.visible_clusters().size(), 1U)
+        << "a kIntersecting cluster must survive the cull (only kOutside drops)";
+}
+
+// ---------------------------------------------------------------------------
+// Render-record idempotence + host-side state transitions across repeated
+// dispatch calls (NullDevice: mesh_task_groups never leaves 0).
+// ---------------------------------------------------------------------------
+
+TEST(VirtualGeometryGpuDispatch, RepeatedRenderDispatchKeepsStateStableUnderNullDevice)
+{
+    // Calling dispatch_render twice with the same visible set must leave
+    // render_dispatched true and mesh_task_groups at 0 (NullDevice path) —
+    // idempotent, no accumulation.
+    const auto dag = make_grid_dag(40U);
+    cd::rhi::NullDevice device {};
+    cd::rhi::NullCommandBuffer cmd {};
+    const auto frustum = cd::camera::extract_frustum(look_forward_proj());
+
+    GpuDispatcher d;
+    d.configure(dag, device);
+    d.dispatch_cull(cmd, frustum, 1.0F, { 0.0F, 0.0F, 0.0F }, 0.7F, 1080U);
+    ASSERT_FALSE(d.visible_clusters().empty());
+
+    d.dispatch_render(cmd);
+    EXPECT_TRUE(d.render_dispatched());
+    EXPECT_EQ(d.mesh_task_groups(), 0U);
+
+    d.dispatch_render(cmd);  // second call, same visible set
+    EXPECT_TRUE(d.render_dispatched());
+    EXPECT_EQ(d.mesh_task_groups(), 0U);
+}
+
+TEST(VirtualGeometryGpuDispatch, RenderDispatchedFlagFlipsBackOffWhenCullEmptiesVisibleSet)
+{
+    // After a successful render-record, a subsequent cull that finds nothing
+    // followed by a render must PARK render_dispatched (false) — the flag is
+    // recomputed each dispatch_render, never sticky.
+    cd::rhi::NullDevice device {};
+    cd::rhi::NullCommandBuffer cmd {};
+    const auto frustum = cd::camera::extract_frustum(look_forward_proj());
+
+    const auto front = make_grid_dag(25U);
+    GpuDispatcher d;
+    d.configure(front, device);
+    d.dispatch_cull(cmd, frustum, 1.0F, { 0.0F, 0.0F, 0.0F }, 0.7F, 1080U);
+    d.dispatch_render(cmd);
+    ASSERT_TRUE(d.render_dispatched());
+
+    // Same dispatcher, behind-camera DAG → cull empties the visible set.
+    const auto behind = make_behind_dag(25U);
+    d.configure(behind, device);
+    d.dispatch_cull(cmd, frustum, 1.0F, { 0.0F, 0.0F, 0.0F }, 0.7F, 1080U);
+    ASSERT_TRUE(d.visible_clusters().empty());
+    d.dispatch_render(cmd);
+    EXPECT_FALSE(d.render_dispatched());
+}
+
+TEST(VirtualGeometryGpuDispatch, CullCountIndependentOfViewportHeightForFrontierGridDag)
+{
+    // projected_err scales linearly in viewport_h_px for BOTH self and parent,
+    // and the grid frontier predicate (self=0, parent=1000) is dominated by
+    // the frustum test + the parent>thresh upper bound, which both hold at any
+    // height → the visible COUNT is invariant to viewport height. Pin it at
+    // 540 vs 2160 (1/2x and 2x the canonical 1080).
+    const std::uint32_t n = 100U;
+    const auto dag = make_grid_dag(n);
+    cd::rhi::NullDevice device {};
+    cd::rhi::NullCommandBuffer cmd {};
+    const auto frustum = cd::camera::extract_frustum(look_forward_proj());
+
+    GpuDispatcher d;
+    d.configure(dag, device);
+    d.dispatch_cull(cmd, frustum, 1.0F, { 0.0F, 0.0F, 0.0F }, 0.7F, 540U);
+    const auto count_low = d.visible_clusters().size();
+
+    d.dispatch_cull(cmd, frustum, 1.0F, { 0.0F, 0.0F, 0.0F }, 0.7F, 2160U);
+    const auto count_high = d.visible_clusters().size();
+
+    EXPECT_EQ(count_low, count_high);
+    EXPECT_EQ(count_low, static_cast<std::size_t>(n));
+}
+
+TEST(VirtualGeometryGpuDispatch, DefaultVisibilityBufferDescriptorIsFullHd)
+{
+    // configure() default arg is { 1920, 1080, 32 } — pin that contract so a
+    // future signature change is caught.
+    const auto dag = make_grid_dag(4U);
+    cd::rhi::NullDevice device {};
+    GpuDispatcher d;
+    d.configure(dag, device);  // default vis_desc
+    EXPECT_EQ(d.visibility_buffer().width,                 1920U);
+    EXPECT_EQ(d.visibility_buffer().height,                1080U);
+    EXPECT_EQ(d.visibility_buffer().format_bits_per_pixel, 32U);
+}
+
+TEST(VirtualGeometryGpuDispatch, CullPushConstantPodDefaultsMatchShippedContract)
+{
+    // ClusterCullPushConstants is the host mirror of the cull-CS push block —
+    // pin its documented defaults so host + GLSL stay in sync (Nanite 1px LOD,
+    // 0.7 half-fov, 1080 viewport).
+    const cd::virtual_geometry::ClusterCullPushConstants pc {};
+    EXPECT_FLOAT_EQ(pc.half_fov_rad,     0.7F);
+    EXPECT_EQ(pc.cluster_count,          0U);
+    EXPECT_EQ(pc.viewport_h_px,          1080U);
+    EXPECT_FLOAT_EQ(pc.lod_threshold_px, 1.0F);
+    EXPECT_FLOAT_EQ(pc.cam_eye.x, 0.0F);
+    EXPECT_FLOAT_EQ(pc.cam_eye.y, 0.0F);
+    EXPECT_FLOAT_EQ(pc.cam_eye.z, 0.0F);
+}
+
 }  // namespace

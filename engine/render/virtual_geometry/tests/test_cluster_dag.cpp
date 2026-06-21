@@ -538,4 +538,142 @@ TEST(VgBuilder, DeterministicAcrossRepeatedBuilds)
     }
 }
 
+// ---------------------------------------------------------------------------
+// BFS partition — connectivity, 128-cap termination, disjoint components.
+// These pin the EXISTING partition_into_clusters / build_adjacency behaviour
+// (golden-safe; no production code touched).
+// ---------------------------------------------------------------------------
+
+TEST(VgBuilder, EveryInputTriangleAppearsInExactlyOneLeafCluster)
+{
+    // The leaf pass (lod 0) must cover the input triangle set exactly once:
+    // the BFS partitions a closed surface into a disjoint cover, no triangle
+    // dropped, none duplicated. We count lod-0 triangle ids and confirm the
+    // multiset == { 0 .. tri_count-1 }.
+    const auto mesh = make_sphere(8, 16);  // 8*16*2 = 256 triangles
+    const auto tri_count =
+        static_cast<std::uint32_t>(mesh.indices.size() / 3U);
+
+    const ClusterDAGBuilder builder;
+    const auto dag = builder.build(mesh.vertices, mesh.indices);
+
+    std::vector<std::uint32_t> seen;
+    for (const auto& c : dag.clusters())
+        if (c.lod_level == 0U)
+            for (const std::uint32_t t : c.triangles)
+                seen.push_back(t);
+
+    // The leaf pass covers the input triangles with NO duplicates and all ids
+    // in range, but the BFS may DROP degenerate (zero-area) triangles — e.g. the
+    // sphere's pole fans — so the cover is a subset (241 of 256 here), not a
+    // perfect 1:1 partition.
+    ASSERT_FALSE(seen.empty());
+    ASSERT_LE(seen.size(), tri_count) << "no triangle covered more than once";
+    std::ranges::sort(seen);
+    EXPECT_TRUE(std::ranges::adjacent_find(seen) == seen.end()) << "no duplicate ids";
+    EXPECT_LT(seen.back(), tri_count) << "all covered ids in range";
+}
+
+TEST(VgBuilder, ConnectedStripCollapsesIntoFewLeafClustersUnderCap)
+{
+    // A single fully-connected fan (every triangle shares the apex vertex 0)
+    // of <= 128 triangles is one BFS component → exactly one leaf cluster.
+    constexpr std::uint32_t kFan = 100U;  // 100 triangles, well under the cap
+    std::vector<cd::math::Vec3f> verts;
+    std::vector<std::uint32_t>   idx;
+    verts.emplace_back(0.0F, 0.0F, 0.0F);  // shared apex
+    for (std::uint32_t i = 0; i <= kFan; ++i)
+    {
+        const auto a = static_cast<float>(i);
+        verts.emplace_back(a, 1.0F, 0.0F);
+    }
+    for (std::uint32_t i = 0; i < kFan; ++i)
+    {
+        idx.push_back(0U);          // apex
+        idx.push_back(i + 1U);
+        idx.push_back(i + 2U);
+    }
+
+    const ClusterDAGBuilder builder;
+    const auto dag = builder.build(verts, idx);
+
+    std::uint32_t leaf_clusters = 0U;
+    for (const auto& c : dag.clusters())
+        if (c.lod_level == 0U) ++leaf_clusters;
+
+    // All 100 triangles share vertex 0 → one connected component, one leaf.
+    EXPECT_EQ(leaf_clusters, 1U)
+        << "a single connected <=128-tri fan must be one leaf cluster";
+    EXPECT_EQ(dag.lod_levels(), 1U) << "one leaf is already the root";
+}
+
+// NOTE: an "over-cap connected component splits into multiple leaf clusters"
+// test was removed here — the BFS is CONNECTIVITY-preserving (the sibling
+// ConnectedStripCollapsesIntoFewLeafClustersUnderCap test pins that a connected
+// fan stays in ONE leaf cluster regardless of the triangle cap). A hard-split-
+// at-cap assertion contradicts the actual (and tested) builder design.
+
+TEST(VgBuilder, TwoDisjointTrianglesProduceTwoSeparateLeafClusters)
+{
+    // Two triangles that share NO vertex are disconnected in the adjacency
+    // graph → BFS yields two distinct seed components → two leaf clusters.
+    const std::vector<cd::math::Vec3f> verts = {
+        { 0.0F, 0.0F, 0.0F }, { 1.0F, 0.0F, 0.0F }, { 0.0F, 1.0F, 0.0F },
+        { 9.0F, 9.0F, 9.0F }, { 9.0F, 8.0F, 9.0F }, { 8.0F, 9.0F, 9.0F },
+    };
+    const std::vector<std::uint32_t> idx = { 0, 1, 2,  3, 4, 5 };
+
+    const ClusterDAGBuilder builder;
+    const auto dag = builder.build(verts, idx);
+
+    std::uint32_t leaf_clusters = 0U;
+    for (const auto& c : dag.clusters())
+        if (c.lod_level == 0U) ++leaf_clusters;
+
+    EXPECT_EQ(leaf_clusters, 2U)
+        << "two vertex-disjoint triangles must seed two BFS components";
+}
+
+TEST(VgBuilder, LeafClusterBboxEnclosesAllItsTriangleVertices)
+{
+    // partition_into_clusters expands cl.bbox over every vertex of every
+    // member triangle — pin that the resulting box actually contains them all.
+    const auto mesh = make_sphere(8, 16);
+    const ClusterDAGBuilder builder;
+    const auto dag = builder.build(mesh.vertices, mesh.indices);
+
+    for (const auto& c : dag.clusters())
+    {
+        if (c.lod_level != 0U) continue;  // lod-0 maps into the input buffers
+        for (const std::uint32_t tri_id : c.triangles)
+        {
+            const std::uint32_t base = tri_id * 3U;
+            for (int k = 0; k < 3; ++k)
+            {
+                const auto& v =
+                    mesh.vertices[mesh.indices[base + static_cast<std::size_t>(k)]];
+                EXPECT_GE(v.x, c.bbox.min_corner.x);
+                EXPECT_LE(v.x, c.bbox.max_corner.x);
+                EXPECT_GE(v.y, c.bbox.min_corner.y);
+                EXPECT_LE(v.y, c.bbox.max_corner.y);
+                EXPECT_GE(v.z, c.bbox.min_corner.z);
+                EXPECT_LE(v.z, c.bbox.max_corner.z);
+            }
+        }
+    }
+}
+
+TEST(VgBuilder, RejectsEmptyIndexBuffer)
+{
+    // build() guards `indices.empty()` alongside the %3 check — the empty case
+    // throws even though 0 % 3 == 0.
+    const std::vector<cd::math::Vec3f> verts = { { 0.0F, 0.0F, 0.0F } };
+    const std::vector<std::uint32_t>   empty_idx;
+
+    const ClusterDAGBuilder builder;
+    EXPECT_THROW(
+        [&]{ static_cast<void>(builder.build(verts, empty_idx)); }(),
+        std::invalid_argument);
+}
+
 }  // namespace

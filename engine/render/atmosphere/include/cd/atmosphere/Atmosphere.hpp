@@ -299,6 +299,158 @@ sample_transmittance(const Lut2D& lut, const Parameters& p, float mu,
     return out;
 }
 
+/// Sample the multiple-scattering LUT with the same parameterisation
+/// `bake_multiscatter_lut` writes: `x` <- (mu_sun + 1) / 2, `y` <- altitude /
+/// atmosphere-thickness. Nearest-texel, clamped to the grid; read-only. Mirror
+/// of `sample_transmittance` so the sky-view baker consumes the sealed table the
+/// same way the GPU sampler would.
+[[nodiscard]] inline cd::math::Vec3f
+sample_multiscatter(const Lut2D& lut, const Parameters& p, float mu_sun,
+                    float altitude_km) noexcept
+{
+    const float thickness = p.top_radius_km - p.bottom_radius_km;
+    const float u = (mu_sun + 1.0F) * 0.5F;
+    const float v = thickness > 0.0F ? altitude_km / thickness : 0.0F;
+    const float fx = std::clamp(u, 0.0F, 1.0F) * static_cast<float>(lut.w) - 0.5F;
+    const float fy = std::clamp(v, 0.0F, 1.0F) * static_cast<float>(lut.h) - 0.5F;
+    const auto x = static_cast<std::uint32_t>(
+        std::clamp(fx, 0.0F, static_cast<float>(lut.w - 1)));
+    const auto y = static_cast<std::uint32_t>(
+        std::clamp(fy, 0.0F, static_cast<float>(lut.h - 1)));
+    return lut.at(x, y);
+}
+
+/// Bake the sky-view LUT on the CPU (Hillaire 2020 §5.4 — the third of the four
+/// LUTs). For a fixed camera altitude `view_altitude_km` and sun direction
+/// `sun_dir` (already normalised, planet-up = +Z so `sun_dir.z` == cos(sun-
+/// zenith)), each texel stores the total in-scattered luminance reaching the
+/// eye along the view ray (view-azimuth `width`, view-zenith `height`).
+///
+/// Per step of the single-scattering march we add
+///   * direct sunlight in-scatter: `trans_to_eye * (rayleigh_s * P_R +
+///     mie_s * P_HG) * sun_transmittance * step`, and
+///   * the multiple-scattering term: `trans_to_eye * (rayleigh_s + mie_s) *
+///     Psi(mu_sun, h) * step`,
+/// exactly the two contributions of Hillaire's `RaymarchScattering`. Reads the
+/// sealed transmittance LUT (sun visibility) and the multi-scatter LUT (`Psi`)
+/// read-only; neither baker's math/constants are touched. Production size:
+/// 192x108. OPT-IN — no renderer bakes this today (see README LUT roadmap), so
+/// it cannot alter the default rendered frame.
+[[nodiscard]] inline Lut2D bake_skyview_lut(const Parameters& p,
+                                            const Lut2D& transmittance,
+                                            const Lut2D& multiscatter,
+                                            const cd::math::Vec3f& sun_dir,
+                                            float view_altitude_km,
+                                            std::uint32_t width,
+                                            std::uint32_t height)
+{
+    Lut2D out { width, height, {} };
+    out.texels.resize(static_cast<std::size_t>(width) * height);
+    constexpr std::uint32_t kMarchSteps = 30;
+    const float r0 = p.bottom_radius_km + std::max(0.0F, view_altitude_km);
+    // Camera at (0, 0, r0): planet-up is +Z, so a view direction's z component
+    // is its cos(view-zenith). The sun's z component is cos(sun-zenith).
+    const float mu_sun_global = std::clamp(sun_dir.z, -1.0F, 1.0F);
+    for (std::uint32_t y = 0; y < height; ++y)
+    {
+        // Non-linear zenith parameterisation (Hillaire §5.4 packs more detail
+        // near the horizon): v in [0,1] -> view-zenith angle via a squared map
+        // around the horizon. Here a simpler uniform cos map keeps the CPU
+        // reference legible; the GPU kernel mirrors it 1:1.
+        const float v_frac = (static_cast<float>(y) + 0.5F) /
+                             static_cast<float>(height);
+        const float cos_view = 1.0F - 2.0F * v_frac;  // +1 up .. -1 down
+        const float sin_view = std::sqrt(std::max(0.0F,
+                                                  1.0F - cos_view * cos_view));
+        for (std::uint32_t x = 0; x < width; ++x)
+        {
+            const float az_frac = (static_cast<float>(x) + 0.5F) /
+                                  static_cast<float>(width);
+            const float azimuth = az_frac * 2.0F * std::numbers::pi_v<float>;
+            const cd::math::Vec3f view_dir { sin_view * std::cos(azimuth),
+                                             sin_view * std::sin(azimuth),
+                                             cos_view };
+            const float mu_view = view_dir.z;
+            // Top-of-atmosphere intersection along the view ray.
+            const float disc = std::max(r0 * r0 * (mu_view * mu_view - 1.0F) +
+                                        p.top_radius_km * p.top_radius_km,
+                                        0.0F);
+            const float dist = std::max(-r0 * mu_view + std::sqrt(disc), 0.0F);
+            const float seg = dist / static_cast<float>(kMarchSteps);
+            const float cos_vs = std::clamp(dot(view_dir, sun_dir),
+                                            -1.0F, 1.0F);
+            const float phase_r = rayleigh_phase(cos_vs);
+            const float phase_m = henyey_greenstein(cos_vs, p.mie_g);
+            cd::math::Vec3f l { 0.0F, 0.0F, 0.0F };      // accumulated luminance
+            cd::math::Vec3f trans { 1.0F, 1.0F, 1.0F };  // eye->sample transmit
+            for (std::uint32_t i = 0; i < kMarchSteps; ++i)
+            {
+                const float t = (static_cast<float>(i) + 0.5F) * seg;
+                // Altitude of this march sample (clamped >= 0 — same NaN guard
+                // the multi-scatter baker uses for planet-grazing rays).
+                const float h = std::max(0.0F,
+                                std::sqrt(std::max(0.0F,
+                                          r0 * r0 + t * t +
+                                          2.0F * r0 * t * mu_view)) -
+                                p.bottom_radius_km);
+                const float rayleigh_d = std::exp(-h / p.rayleigh_scale_h);
+                const float mie_d      = std::exp(-h / p.mie_scale_h);
+                const float oz_d = std::max(0.0F,
+                                            1.0F - std::abs(h - 25.0F) / 15.0F);
+                const cd::math::Vec3f rayleigh_s {
+                    p.rayleigh_scattering.x * rayleigh_d,
+                    p.rayleigh_scattering.y * rayleigh_d,
+                    p.rayleigh_scattering.z * rayleigh_d };
+                const cd::math::Vec3f mie_s {
+                    p.mie_scattering.x * mie_d,
+                    p.mie_scattering.y * mie_d,
+                    p.mie_scattering.z * mie_d };
+                const cd::math::Vec3f extinction {
+                    rayleigh_s.x + mie_s.x + p.mie_absorption.x * mie_d +
+                        p.ozone_absorption.x * oz_d,
+                    rayleigh_s.y + mie_s.y + p.mie_absorption.y * mie_d +
+                        p.ozone_absorption.y * oz_d,
+                    rayleigh_s.z + mie_s.z + p.mie_absorption.z * mie_d +
+                        p.ozone_absorption.z * oz_d };
+                const cd::math::Vec3f step_trans {
+                    std::exp(-extinction.x * seg),
+                    std::exp(-extinction.y * seg),
+                    std::exp(-extinction.z * seg) };
+                // Sun visibility at this altitude (sealed transmittance LUT);
+                // guard a non-finite degenerate fetch to 0 (same as §5.3).
+                cd::math::Vec3f sun_trans =
+                    sample_transmittance(transmittance, p, mu_sun_global, h);
+                sun_trans.x = std::isfinite(sun_trans.x) ? sun_trans.x : 0.0F;
+                sun_trans.y = std::isfinite(sun_trans.y) ? sun_trans.y : 0.0F;
+                sun_trans.z = std::isfinite(sun_trans.z) ? sun_trans.z : 0.0F;
+                // Multiple-scattering term Psi(mu_sun, h) (sealed MS LUT).
+                cd::math::Vec3f psi =
+                    sample_multiscatter(multiscatter, p, mu_sun_global, h);
+                psi.x = std::isfinite(psi.x) ? psi.x : 0.0F;
+                psi.y = std::isfinite(psi.y) ? psi.y : 0.0F;
+                psi.z = std::isfinite(psi.z) ? psi.z : 0.0F;
+                // Direct phased single-scatter from the sun + the isotropic
+                // multiple-scatter term, both attenuated by eye->sample trans.
+                const cd::math::Vec3f in_scatter {
+                    (rayleigh_s.x * phase_r + mie_s.x * phase_m) * sun_trans.x +
+                        (rayleigh_s.x + mie_s.x) * psi.x,
+                    (rayleigh_s.y * phase_r + mie_s.y * phase_m) * sun_trans.y +
+                        (rayleigh_s.y + mie_s.y) * psi.y,
+                    (rayleigh_s.z * phase_r + mie_s.z * phase_m) * sun_trans.z +
+                        (rayleigh_s.z + mie_s.z) * psi.z };
+                l.x += trans.x * in_scatter.x * seg;
+                l.y += trans.y * in_scatter.y * seg;
+                l.z += trans.z * in_scatter.z * seg;
+                trans.x *= step_trans.x;
+                trans.y *= step_trans.y;
+                trans.z *= step_trans.z;
+            }
+            out.at(x, y) = l;
+        }
+    }
+    return out;
+}
+
 // ---- GLSL compute kernel (transmittance LUT bake) ---------------------------
 
 constexpr std::string_view kTransmittanceCS = R"glsl(
