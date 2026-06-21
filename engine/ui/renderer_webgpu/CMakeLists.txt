@@ -77,12 +77,13 @@ target_compile_definitions(cd_ui_renderer_webgpu
 )
 
 if(CD_UI_WEBGPU_HAVE_DAWN)
-    # Dawn exposes webgpu_dawn (the C API) and webgpu_cpp (the C++ wrapper).
-    # Link webgpu_cpp for the header-included wgpu:: namespace used in
-    # Submitter.hpp + Submitter.cpp.
+    # The vcpkg Dawn package exports a single import target, dawn::webgpu_dawn,
+    # which carries both the C API (<webgpu/webgpu.h>) and the C++ wrapper
+    # (<webgpu/webgpu_cpp.h>, the wgpu:: namespace used in Submitter.{hpp,cpp})
+    # via its interface include dirs + the webgpu_dawn .lib/.dll.
     target_link_libraries(cd_ui_renderer_webgpu
         PUBLIC
-            Dawn::webgpu_cpp
+            dawn::webgpu_dawn
     )
 endif()
 

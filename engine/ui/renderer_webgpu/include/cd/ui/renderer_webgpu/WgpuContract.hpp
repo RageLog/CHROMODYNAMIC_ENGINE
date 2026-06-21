@@ -349,7 +349,9 @@ struct VsOut {
     @builtin(position) clip    : vec4<f32>,
     @location(0)       uv      : vec2<f32>,
     @location(1)       color   : vec4<f32>,
-    @location(2)       variant : u32,
+    // Integer inter-stage variables MUST be flat-interpolated (WGSL spec):
+    // a non-flat integral vertex output is a Tint compile error.
+    @location(2) @interpolate(flat) variant : u32,
 };
 
 @vertex
@@ -367,22 +369,28 @@ fn vs_main(in : VsIn) -> VsOut {
 
 @fragment
 fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
+    // Sample the atlas ONCE at uniform control flow.  textureSampleLevel (LOD 0,
+    // no implicit derivatives) is mandatory here: a plain textureSample inside
+    // the per-variant `if` branches below is non-uniform control flow, which
+    // WGSL rejects ("must only be called from uniform control flow").  UI atlas
+    // sampling is point/linear at a single mip, so an explicit LOD is correct.
+    let tex = textureSampleLevel(atlas, atlas_sampler, in.uv, 0.0);
+
     // kSolid (0): flat colour.
     if (in.variant == 0u) {
         return in.color;
     }
     // kTextured (1): texture * colour (premultiplied alpha upstream).
     if (in.variant == 1u) {
-        return textureSample(atlas, atlas_sampler, in.uv) * in.color;
+        return tex * in.color;
     }
     // kGlyph (2): alpha-only atlas -> colour modulated by sampled red.
     if (in.variant == 2u) {
-        let a = textureSample(atlas, atlas_sampler, in.uv).r;
-        return vec4<f32>(in.color.rgb, in.color.a * a);
+        return vec4<f32>(in.color.rgb, in.color.a * tex.r);
     }
     // kNinePatch (3): same sampling as textured; tiling handled CPU-side.
     if (in.variant == 3u) {
-        return textureSample(atlas, atlas_sampler, in.uv) * in.color;
+        return tex * in.color;
     }
     // kLinearGrad (4) / kBlur (5): fall back to the vertex colour until the
     // dedicated paths land (matches the batcher's current geometry output).

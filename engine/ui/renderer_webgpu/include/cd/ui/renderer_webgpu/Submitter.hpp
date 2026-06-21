@@ -155,8 +155,25 @@ public:
     /// Vulkan's ICommandBuffer).
     ///
     /// Stub:  iterates DrawCommands and counts them; no GPU calls.
-    /// Dawn:  sets viewport/scissor and issues DrawIndexed per DrawCommand.
+    /// Dawn:  opens a (null-descriptor) pass and issues DrawIndexed per
+    ///        DrawCommand.  Kept for the build-only Dawn=1 draw-count test that
+    ///        passes a null encoder; for real pixel output use record_pass()
+    ///        with a caller-owned render pass targeting a real attachment.
     void record(WgpuCommandEncoder encoder, Extent2D viewport_extent) const;
+
+#if CD_UI_WEBGPU_HAVE_DAWN
+    /// Record the UI draw sequence into a caller-owned, already-open render
+    /// pass (Dawn only).  This is the live pipeline path: it updates the
+    /// Globals UBO for `viewport_extent`, binds the UI RenderPipeline + the
+    /// Globals/atlas bind groups, the vertex/index ring buffers, then issues
+    /// one scissor + DrawIndexed per DrawCommand.  The caller owns the
+    /// colour attachment (offscreen texture or swap-chain view) and the
+    /// pass begin/end — so Submitter stays stateless w.r.t. load/store ops.
+    ///
+    /// A no-op when the pipeline was not built (e.g. created against a null
+    /// device) or before any upload().
+    void record_pass(wgpu::RenderPassEncoder pass, Extent2D viewport_extent) const;
+#endif  // CD_UI_WEBGPU_HAVE_DAWN
 
     // ---- Lifecycle ---------------------------------------------------------
 
@@ -176,8 +193,12 @@ public:
     /// Number of DrawCommands recorded in the most recent upload() call.
     [[nodiscard]] std::uint32_t command_count() const noexcept;
 
-private:
+    // Impl is public-by-forward-declaration so the Dawn-only build_pipeline /
+    // record_commands helpers in Submitter.cpp can name it.  The type itself
+    // is only ever defined in the .cpp, so this exposes no layout to callers.
     struct Impl;
+
+private:
     std::unique_ptr<Impl> impl_;
 };
 
