@@ -18,7 +18,8 @@
         "CD_ENABLE_SAMPLES": "ON",
         "CD_ENABLE_WARNINGS": "ON",
         "CD_WARNINGS_AS_ERRORS": "ON",
-        "CD_SANITIZER": "none"
+        "CD_SANITIZER": "none",
+        "VCPKG_INSTALLED_DIR": "$env{VCPKG_ROOT}/cd_vcpkg_installed"
       }
     },
     {
