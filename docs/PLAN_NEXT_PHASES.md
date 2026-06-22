@@ -70,7 +70,11 @@ Bug-hunt'ta CLEAN çıkan ama LOW not edilen iki iyileştirme — düzeltme zoru
 
 ---
 
-# FAZ 1 — Metal Backend Paritesi (en büyük cephe, çok-haftalık)
+# FAZ 1 — Metal Backend Paritesi (DÜŞÜK ÖNCELİK — donanım-bloke, en büyük cephe, çok-haftalık)
+
+> **Öncelik kararı (2026-06-22):** Metal bu Windows host'unda doğrulanamaz (sadece edit-only).
+> Bu yüzden DÜŞÜK ÖNCELİK; Faz 2'den SONRA, Apple sanal-makine/bulut sağlanınca yürütülür.
+> Shader yolu = **cd::gluon SL→MSL**; köprü = **Metal-cpp (C++)**, fallback ObjC++ (kararlar yukarıda).
 
 **Hedef:** Metal RHI'yi Vulkan/D3D12 paritesine çekmek — "3 backend tam parite" standing direktifinin
 son ayağı (Vulkan TAM → D3D12 olgun → **Metal**).
@@ -201,21 +205,26 @@ varsayıma karşı değil PİKSELE karşı iterasyon.
 | 3 | Dawn DLL closure + imzalama | DLL POST_BUILD copy zaten kurulu; smoke test |
 | 4 | Görsel bug "varsayıma karşı" iterasyon | capture-driven kural; dedicated fixture |
 
-# KARAR BEKLEYEN MADDELER (sen)
-1. **Metal shader yolu:** SPIRV-Cross→MSL mi, cd::gluon SL→MSL mi?
-2. **Metal köprü:** Metal-cpp (Fork-A) mı, ObjC++ `.mm` mi? (ADR §8.5 sign-off bekliyor)
-3. **Apple CI:** self-hosted Mac mı, bulut macOS mu?
-4. **Sürüm etiketi:** ne zaman + hangi SemVer?
-5. **Öncelik:** Faz 1 (Metal) mi önce, Faz 2 (Phase-2 GPU) mi? (Paralel de gidebilir.)
+# KARARLAR (verildi — 2026-06-22)
+1. **Metal shader yolu → cd::gluon SL→MSL.** Tek shader kaynak dili → tüm backend'ler
+   (write-once, en yüksek abstraction, "rahat kullanım"). SPIRV-Cross transpile yolu REDDEDİLDİ;
+   Metal MSL emit, mevcut cd::gluon SL altyapısına bir backend olarak eklenecek.
+2. **Metal köprü → Metal-cpp (C++) BİRİNCİ tercih, çaresi yoksa ObjC++ `.mm` fallback.**
+   (Kullanıcı: "ilk tercihim hep C++, çaresi yoksa objC++.")
+3. **Apple ortamı → sanal makine veya bulut macOS** (self-hosted fiziksel Mac değil).
+4. **Sürüm etiketi → HÂLÂ YOK.** Kullanıcı açıkça isteyene kadar tag atılmaz.
+5. **Öncelik → Metal DÜŞÜK ÖNCELİK.** Metal bu Windows host'unda doğrulanamaz (sadece edit-only
+   geliştirme), bu yüzden **Faz 2 (Phase-2 GPU, Vulkan'da doğrulanabilir) Faz 1'den ÖNCE** gelir.
+   Faz 0 (temizlik) hemen; Metal donanım/CI gelene kadar bekler.
 
 ---
 
-## ÖNERİLEN İLK HAREKET (yarın)
-- **Faz 0'ı bitir** (1 oturum, hemen yeşil): 0.1→0.5, tek commit serisi. Tabanı sağlamlaştırır,
-  hiçbir dış bağımlılık gerektirmez.
-- Paralelde **Faz 2.1 (X5 shader hot-reload)** başlatılabilir (Vulkan'da doğrulanabilir).
-- **Metal (Faz 1)** için önce yukarıdaki 3 kararı ver; donanım yoksa bu Windows'ta sadece edit-only
-  ilerler (doğrulanamaz) — kanıt-temelli kural gereği önermiyorum, donanım gelene kadar bekle.
+## ÖNERİLEN SIRA (kararlar sonrası)
+1. **Faz 0** (hemen, hepsi doğrulanabilir, dış bağımlılık yok) — taban sağlamlaştırma.
+2. **Faz 2** (Phase-2 GPU; Vulkan'da doğrulanabilir) — X5 shader hot-reload + GI sample wiring.
+3. **Faz 3** (sürüm/paketleme; tag YOK) — istendiğinde.
+4. **Faz 1 (Metal)** — DÜŞÜK ÖNCELİK; Apple sanal-makine/bulut sağlanınca. O zamana kadar
+   yalnız edit-only (doğrulanamaz) → kanıt-temelli kural gereği aktif yürütülmez.
 
 > Hazır olduğunda "Faz 0'a başla" veya "Faz X.Y'yi aç" de; planın o kısmını alıp paralel agent'larla
 > yürütüp her yeşil checkpoint'te commit'lerim.
