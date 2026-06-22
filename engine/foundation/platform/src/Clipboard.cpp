@@ -57,13 +57,31 @@ namespace
     return out;
 }
 
+// OpenClipboard fails transiently when another window currently holds the
+// clipboard — it is a single-owner global OS resource, so any app touching it
+// (incl. the test runner's neighbours) can momentarily lock out the caller.
+// Retry with a short backoff: the canonical Win32 mitigation for clipboard
+// contention. (Sleep is correct here — there is no event to wait on; the owner
+// is an unrelated process. This is production code, not a test.)
+[[nodiscard]] bool open_clipboard_retry() noexcept
+{
+    constexpr int kAttempts = 10;
+    for (int attempt = 0; attempt < kAttempts; ++attempt)
+    {
+        if (OpenClipboard(nullptr) != 0)
+            return true;
+        Sleep(5);  // ms — worst case ~45 ms total before giving up
+    }
+    return false;
+}
+
 }  // namespace
 
 std::string get_clipboard_text() noexcept
 {
     if (!IsClipboardFormatAvailable(CF_UNICODETEXT))
         return {};
-    if (!OpenClipboard(nullptr))
+    if (!open_clipboard_retry())
         return {};
     std::string result;
     const auto h = GetClipboardData(CF_UNICODETEXT);
@@ -82,7 +100,7 @@ std::string get_clipboard_text() noexcept
 
 bool set_clipboard_text(std::string_view text) noexcept
 {
-    if (!OpenClipboard(nullptr))
+    if (!open_clipboard_retry())
         return false;
     const std::wstring wide = utf8_to_utf16(text);
     // Guard: non-empty input that failed UTF-8 → UTF-16 conversion (e.g. invalid
