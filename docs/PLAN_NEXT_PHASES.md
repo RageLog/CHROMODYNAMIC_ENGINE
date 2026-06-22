@@ -74,7 +74,8 @@ Bug-hunt'ta CLEAN çıkan ama LOW not edilen iki iyileştirme — düzeltme zoru
 
 > **Öncelik kararı (2026-06-22):** Metal bu Windows host'unda doğrulanamaz (sadece edit-only).
 > Bu yüzden DÜŞÜK ÖNCELİK; Faz 2'den SONRA, Apple sanal-makine/bulut sağlanınca yürütülür.
-> Shader yolu = **cd::gluon SL→MSL**; köprü = **Metal-cpp (C++)**, fallback ObjC++ (kararlar yukarıda).
+> Shader yolu = **katmanlı**: yazar gluon SL; lowering Vulkan→SPIR-V, Metal→MSL (gluon-emit VEYA
+> SPIRV-Cross, benchmark'la seçilir — ikisi bir arada olabilir). Köprü = **Metal-cpp (C++)**, fallback ObjC++.
 
 **Hedef:** Metal RHI'yi Vulkan/D3D12 paritesine çekmek — "3 backend tam parite" standing direktifinin
 son ayağı (Vulkan TAM → D3D12 olgun → **Metal**).
@@ -206,9 +207,19 @@ varsayıma karşı değil PİKSELE karşı iterasyon.
 | 4 | Görsel bug "varsayıma karşı" iterasyon | capture-driven kural; dedicated fixture |
 
 # KARARLAR (verildi — 2026-06-22)
-1. **Metal shader yolu → cd::gluon SL→MSL.** Tek shader kaynak dili → tüm backend'ler
-   (write-once, en yüksek abstraction, "rahat kullanım"). SPIRV-Cross transpile yolu REDDEDİLDİ;
-   Metal MSL emit, mevcut cd::gluon SL altyapısına bir backend olarak eklenecek.
+1. **Shader yolu → katmanlı, esnek, yüksek-performanslı bir boru hattı (best-practice, 2026-06-22 revize).**
+   SPIRV-Cross REDDEDİLMEDİ — soyutlamanın altında geçerli bir "lowering" aracı olarak kalır.
+   Mimari:
+   - **Yazar-yüzü (yüksek abstraction):** cd::gluon SL — tek kaynak, write-once, "rahat kullanım".
+     Tüm shader'lar burada yazılır; backend ayrımı yazar'a sızmaz.
+   - **Backend-başına lowering (pluggable, esnek):** her API kendine en uygun yolu seçer —
+     **Vulkan → SPIR-V** (native tüketim, gluon→SPIR-V), **Metal → MSL**. MSL üretimi iki yoldan
+     biriyle: (a) gluon→MSL doğrudan emit, VEYA (b) SPIRV-Cross (SPIR-V→MSL) transpile. İkisi de
+     soyutlamanın altında **bir arada yaşayabilir**; Metal için hangisinin kullanılacağı
+     implementasyon anında **benchmark + bakım-maliyeti** ile seçilir (perf/doğruluk karşılaştırması).
+   - **Net:** yüksek-seviye + esnek + yüksek-performans interface hedefi; lowering stratejisi
+     değiştirilebilir/çoğaltılabilir bir detay. SPIRV-Cross = D3D12/Metal için hazır bir transpile
+     opsiyonu olarak tutulur (zaten vcpkg `spirv-cross` bağımlılığı var).
 2. **Metal köprü → Metal-cpp (C++) BİRİNCİ tercih, çaresi yoksa ObjC++ `.mm` fallback.**
    (Kullanıcı: "ilk tercihim hep C++, çaresi yoksa objC++.")
 3. **Apple ortamı → sanal makine veya bulut macOS** (self-hosted fiziksel Mac değil).

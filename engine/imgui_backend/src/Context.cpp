@@ -156,7 +156,7 @@ cd::core::Result<std::unique_ptr<Context>> Context::create(const InitDesc& desc)
 #endif
 
     // Dynamic-rendering setup — the engine doesn't expose a VkRenderPass
-    // because Renderer uses VK_KHR_dynamic_rendering. ImGui v1.90+ supports
+    // because Renderer uses VK_KHR_dynamic_rendering. ImGui 1.92.9 supports
     // this via PipelineRenderingCreateInfo.
     VkPipelineRenderingCreateInfoKHR pri {};
     pri.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
@@ -191,8 +191,9 @@ cd::core::Result<std::unique_ptr<Context>> Context::create(const InitDesc& desc)
         return std::unexpected(imgui_errors::make(imgui_errors::Code::kInitFailed, "ImGui_ImplVulkan_Init failed"));
     }
 
-    // Font texture is now created lazily on first NewFrame in v1.90+
-    // (CreateFontsTexture happens internally). No-op here.
+    // Font texture is created on-demand via ImGuiBackendFlags_RendererHasTextures
+    // (ImGui 1.92 dynamic font atlas). CreateFontsTexture is managed internally;
+    // no explicit call required here.
 
     auto ctx = std::unique_ptr<Context> { new Context };
     ctx->impl_ = std::move(impl);
