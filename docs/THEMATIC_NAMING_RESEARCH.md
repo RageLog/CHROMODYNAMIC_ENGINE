@@ -1,5 +1,13 @@
 # CHROMODYNAMIC — Thematic Naming System (QCD / Particle Physics)
 
+> ## ⛔ ON HOLD / ASKIDA (2026-06-22)
+> **This proposal is SHELVED at the user's decision — "naming şimdilik askıya
+> alıyorum, kafa karıştıracak".** Nothing here is adopted. NO library, type, or
+> namespace has been renamed; the engine keeps its descriptive names everywhere.
+> Kept only as a research record for a possible future revisit (would need a
+> fresh ADR + sign-off then). Do NOT introduce any of these themed names into
+> code while this banner stands.
+
 > **Status**: Researcher proposal, 2026-06-22. **Scope**: naming design only —
 > no code, no renames executed. Adoption requires an ADR + user sign-off.
 > **Premise**: the engine name CHROMODYNAMIC *is already* a QCD pun
