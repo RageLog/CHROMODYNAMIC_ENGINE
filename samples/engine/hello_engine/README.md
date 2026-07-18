@@ -64,12 +64,24 @@ path pays no needless drain. The cost is ~1 ms once per shader edit.
 > byte-identical golden** (the golden is computed against the unchanged
 > blob, masking the edit).
 
-Two-part guard:
+Three-layer model:
 
-1. The POST_BUILD shader copy uses `copy_if_different` and lists the
-   shader files as explicit `DEPENDS`, so any shader edit re-fires the
-   copy even on a relink-only build (`CMakeLists.txt`).
-2. A pre-golden CTest fixture (`cd_test_hello_engine_shader_staleness`,
+1. **Dev builds read the SOURCE tree directly** (X5 hardening step 2,
+   ADR-20260608 addendum A.3(a)). With
+   `HELLO_ENGINE_USE_ON_DISK_SHADERS=ON`, CMake also defines
+   `HELLO_ENGINE_SHADER_SOURCE_DIR` and `resolve_shader_path()`
+   (`HelloMaterials.hpp`) maps `shaders/<file>.glsl` to
+   `<repo>/samples/engine/hello_engine/shaders/<file>.glsl` whenever that
+   source file exists — for BOTH the compile path and the `FileWatcher`
+   watch path (one shared resolution, so they cannot diverge). Editing
+   the source shader hot-reloads immediately; no copy step is involved.
+2. The POST_BUILD shader copy (`copy_if_different`) refreshes the
+   exe-side `shaders/` on **relink only** — a TARGET-form POST_BUILD
+   cannot take file-level `DEPENDS` (CMP0175) and never re-fires on a
+   shader-only edit. It exists for the shipped-binary fallback (no
+   source tree at runtime), where `resolve_shader_path` returns the
+   cwd-relative path unchanged.
+3. A pre-golden CTest fixture (`cd_test_hello_engine_shader_staleness`,
    driven by `scripts/check_shader_staleness.cmake`) asserts
    `sha256(source) == sha256(exe-side copy)` for every shader. It is wired
    with `FIXTURES_SETUP HELLO_ENGINE_SHADERS_FRESH`; the Sponza golden

@@ -98,6 +98,18 @@ cd_add_sample(hello_engine
 target_compile_definitions(cd_sample_hello_engine PRIVATE
   HELLO_ENGINE_USE_ON_DISK_SHADERS=$<BOOL:${HELLO_ENGINE_USE_ON_DISK_SHADERS}>)
 
+# X5 hardening step 2 (ADR-20260608 addendum A.3(a)): in dev builds, ALSO hand
+# the binary the SOURCE-tree shaders dir so resolve_shader_path()
+# (HelloMaterials.hpp) can point BOTH the compile path and the FileWatcher at
+# the very file the developer edits. This sidesteps the relink-only
+# stale-exe-copy trap during iteration; the POST_BUILD copy below stays as the
+# shipped-binary fallback and remains the subject of the pre-golden sha256
+# staleness fixture (cd_test_hello_engine_shader_staleness).
+if(HELLO_ENGINE_USE_ON_DISK_SHADERS)
+  target_compile_definitions(cd_sample_hello_engine PRIVATE
+    HELLO_ENGINE_SHADER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/shaders")
+endif()
+
 # Copy shaders folder next to exe so on-disk hot-reload works from
 # build/bin/Debug/ (or Release/) cwd without needing to run from repo root.
 #

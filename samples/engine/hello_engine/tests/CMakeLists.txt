@@ -73,6 +73,21 @@ cd_add_test(hello_materials_prim_bindless
           cd::velocity
 )
 
+# X5 hardening step 2 (ADR-20260608 addendum A.3(a)) -- unit net for
+# cd_sample::resolve_shader_path (HelloMaterials.hpp): dev builds map the
+# cwd-relative "shaders/<file>.glsl" onto the SOURCE-tree file so compile
+# path and FileWatcher watch path are the SAME file the developer edits;
+# shipped binaries get the relative path back byte-identical. source_dir is
+# an injectable parameter, so the tests are compile-definition-independent.
+# HelloMaterials.hpp pulls the sample's shader/material include graph,
+# hence the same DEPS list as hello_materials_prim_bindless above.
+cd_add_test(hello_resolve_shader_path
+  SOURCES test_hello_resolve_shader_path.cpp
+  DEPS    cd::asset cd::core cd::debug_line cd::gluon cd::light cd::material
+          cd::math cd::post_bloom cd::post_composite cd::rhi cd::shader
+          cd::velocity
+)
+
 # T1.7 phase543 -- Sponza golden-image CI gate.
 #
 # Two tiers (see test source header for details):

@@ -40,10 +40,14 @@
 #include <cd/velocity/Velocity.hpp>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <expected>
+#include <filesystem>
+#include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 namespace cd_sample {
@@ -94,6 +98,45 @@ inline constexpr std::string_view kLineVertGlslPath =
     "shaders/line.vert.glsl";
 inline constexpr std::string_view kLineFragGlslPath =
     "shaders/line.frag.glsl";
+
+// X5 hardening step 2 (ADR-20260608 addendum A.3(a)) — SOURCE-TREE shader
+// resolution. The exe-side shaders/ copy refreshes on relink only, so during
+// dev a shader-ONLY edit would otherwise hot-reload a STALE copy (the
+// relink-only staleness trap). Dev builds (HELLO_ENGINE_USE_ON_DISK_SHADERS
+// =ON) define HELLO_ENGINE_SHADER_SOURCE_DIR; this helper maps a cwd-relative
+// "shaders/<file>.glsl" onto "<source_dir>/<file>.glsl" (basename after the
+// last path separator) whenever that source file exists, so the COMPILE path
+// and the FileWatcher WATCH path both land on the very file the developer
+// edits (both call sites route through this ONE function — they cannot
+// diverge). Shipped binaries (macro absent, or the source tree gone at
+// runtime) get the relative path back byte-identical: behaviour unchanged.
+// `source_dir` is injectable for tests; the macro is only its default.
+[[nodiscard]] inline std::string
+resolve_shader_path(std::string_view relative,
+                    std::string_view source_dir =
+#ifdef HELLO_ENGINE_SHADER_SOURCE_DIR
+                        HELLO_ENGINE_SHADER_SOURCE_DIR
+#else
+                        std::string_view {}
+#endif
+)
+{
+    if (source_dir.empty())
+        return std::string { relative };
+    const std::size_t slash = relative.find_last_of("/\\");
+    const std::string_view filename = (slash == std::string_view::npos)
+        ? relative
+        : relative.substr(slash + 1U);
+    std::string candidate;
+    candidate.reserve(source_dir.size() + 1U + filename.size());
+    candidate.append(source_dir);
+    candidate.push_back('/');
+    candidate.append(filename);
+    std::error_code ec;
+    if (std::filesystem::exists(std::filesystem::path { candidate }, ec))
+        return candidate;
+    return std::string { relative };
+}
 
 /// phase864-bindless-dedicated-set: build the standalone descriptor set
 /// layout that hosts the bindless sampler2D array on its own set index
@@ -207,8 +250,13 @@ prim_recreate(cd::rhi::IDevice&                       device,
     // (default ON). When OFF the on-disk paths are not set and the
     // embedded strings are used directly.
 #if HELLO_ENGINE_USE_ON_DISK_SHADERS
-    md.vertex_glsl_path   = kPrimVertGlslPath;
-    md.fragment_glsl_path = kPrimFragGlslPath;
+    // X5 step 2: dev builds resolve to the SOURCE tree — the SAME
+    // resolution the shader-watch entries use (resolve_shader_path).
+    // Locals must outlive Material::create below (glsl_path is a view).
+    const std::string vert_path = resolve_shader_path(kPrimVertGlslPath);
+    const std::string frag_path = resolve_shader_path(kPrimFragGlslPath);
+    md.vertex_glsl_path   = vert_path;
+    md.fragment_glsl_path = frag_path;
 #endif
     md.vertex_glsl        = cd::hello_engine::kPrimVS;
     md.fragment_glsl      = cd::hello_engine::kPrimFS;
@@ -284,8 +332,12 @@ shadow_recreate(cd::rhi::IDevice&       device,
     // D-F6: on-disk paths win over embedded strings per ADR-20260529-X5
     // precedence rule (_glsl_path > _glsl). Embedded strings stay as
     // the fallback for shipped binaries without the shaders folder.
-    md.vertex_glsl_path   = kShadowVertGlslPath;
-    md.fragment_glsl_path = kShadowFragGlslPath;
+    // X5 step 2: source-tree resolution, same as the watch entry.
+    // Locals must outlive Material::create below (glsl_path is a view).
+    const std::string vert_path = resolve_shader_path(kShadowVertGlslPath);
+    const std::string frag_path = resolve_shader_path(kShadowFragGlslPath);
+    md.vertex_glsl_path   = vert_path;
+    md.fragment_glsl_path = frag_path;
 #endif
     md.vertex_glsl   = cd::hello_engine::kShadowVS;
     md.fragment_glsl = cd::hello_engine::kShadowFS;

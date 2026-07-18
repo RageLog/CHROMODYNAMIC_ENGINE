@@ -5556,8 +5556,15 @@ cd::core::Result<void> HelloEngineApp::on_boot()
         dd.vertex_glsl   = cd::hello_engine::kLineVS;
         dd.fragment_glsl = cd::hello_engine::kLineFS;
 #if HELLO_ENGINE_USE_ON_DISK_SHADERS
-        dd.vertex_glsl_path   = cd_sample::kLineVertGlslPath;
-        dd.fragment_glsl_path = cd_sample::kLineFragGlslPath;
+        // X5 step 2: source-tree resolution (same as the watch entry
+        // below). Locals must outlive Renderer::create (glsl_path is a
+        // view into them).
+        const std::string line_vert_path =
+            cd_sample::resolve_shader_path(cd_sample::kLineVertGlslPath);
+        const std::string line_frag_path =
+            cd_sample::resolve_shader_path(cd_sample::kLineFragGlslPath);
+        dd.vertex_glsl_path   = line_vert_path;
+        dd.fragment_glsl_path = line_frag_path;
 #endif
         dd.name = "hello_engine/debug_line";
         auto dd_r = cd::debug_draw::Renderer::create(
@@ -5574,8 +5581,8 @@ cd::core::Result<void> HelloEngineApp::on_boot()
         s.shader_watch.add_entry(
             nullptr,
             std::vector<std::string> {
-                std::string { cd_sample::kLineVertGlslPath },
-                std::string { cd_sample::kLineFragGlslPath } },
+                cd_sample::resolve_shader_path(cd_sample::kLineVertGlslPath),
+                cd_sample::resolve_shader_path(cd_sample::kLineFragGlslPath) },
             [this](cd::rhi::IDevice& d, cd::shader::ICompiler* c) -> bool
             {
                 static constexpr std::array<cd::rhi::Format, 4> kFmts {
@@ -5589,8 +5596,14 @@ cd::core::Result<void> HelloEngineApp::on_boot()
                 rd.depth_attachment_format  = cd::rhi::Format::kD32Float;
                 rd.vertex_glsl   = cd::hello_engine::kLineVS;
                 rd.fragment_glsl = cd::hello_engine::kLineFS;
-                rd.vertex_glsl_path   = cd_sample::kLineVertGlslPath;
-                rd.fragment_glsl_path = cd_sample::kLineFragGlslPath;
+                // X5 step 2: same source-tree resolution as the watch
+                // paths; locals must outlive recreate_pipeline (view).
+                const std::string rl_vert_path =
+                    cd_sample::resolve_shader_path(cd_sample::kLineVertGlslPath);
+                const std::string rl_frag_path =
+                    cd_sample::resolve_shader_path(cd_sample::kLineFragGlslPath);
+                rd.vertex_glsl_path   = rl_vert_path;
+                rd.fragment_glsl_path = rl_frag_path;
                 rd.name = "hello_engine/debug_line";
                 return state_->debug_draw.recreate_pipeline(d, c, rd);
             },
@@ -5598,11 +5611,15 @@ cd::core::Result<void> HelloEngineApp::on_boot()
 #endif
     }
 
-    // Shader hot-reload entries
+    // Shader hot-reload entries. X5 step 2: watch paths go through the
+    // SAME resolve_shader_path the *_recreate compile paths use, so the
+    // watched file and the compiled file can never diverge (dev builds
+    // watch the SOURCE tree; shipped builds fall back to exe-side).
     s.shader_watch.add_entry(
         &s.materials.prim,
-        std::vector<std::string> { std::string { cd_sample::kPrimVertGlslPath },
-                                   std::string { cd_sample::kPrimFragGlslPath } },
+        std::vector<std::string> {
+            cd_sample::resolve_shader_path(cd_sample::kPrimVertGlslPath),
+            cd_sample::resolve_shader_path(cd_sample::kPrimFragGlslPath) },
         [this](cd::rhi::IDevice& d, cd::shader::ICompiler* c) -> bool
         {
             // Boot/reload parity: spawn_materials passes prim_bindless_layout
@@ -5616,8 +5633,9 @@ cd::core::Result<void> HelloEngineApp::on_boot()
         "prim");
     s.shader_watch.add_entry(
         &s.materials.shadow,
-        std::vector<std::string> { std::string { cd_sample::kShadowVertGlslPath },
-                                   std::string { cd_sample::kShadowFragGlslPath } },
+        std::vector<std::string> {
+            cd_sample::resolve_shader_path(cd_sample::kShadowVertGlslPath),
+            cd_sample::resolve_shader_path(cd_sample::kShadowFragGlslPath) },
         [this](cd::rhi::IDevice& d, cd::shader::ICompiler* c) -> bool
         { return cd_sample::shadow_recreate(d, c, &state_->materials.shadow); },
         "shadow");
