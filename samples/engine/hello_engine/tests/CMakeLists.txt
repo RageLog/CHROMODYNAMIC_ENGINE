@@ -55,6 +55,24 @@ cd_add_test(hello_engine_w8be_layout
   DEPS    cd::core cd::math cd::rhi cd::concurrency
 )
 
+# prim hot-reload bindless-layout parity -- regression net for the
+# phase864-class silent bindless drop: the main.cpp shader-watch closure
+# (add_entry "prim") once called prim_recreate WITHOUT the 4th
+# bindless_set_layout arg (defaulted {}) while boot (spawn_materials)
+# passes out.prim_bindless_layout, so the first prim hot-reload rebuilt
+# the pipeline without its dedicated set=1 bindless sampler-array layout.
+# The test pins the prim_recreate contract on the Null backend via a
+# forwarding device that captures PipelineLayoutDesc::set_layouts:
+# with-layout => 2 sets (own + bindless), defaulted => 1 set (the drop).
+# HelloMaterials.hpp pulls the sample's shader/material include graph,
+# hence the wider DEPS list than the sibling tests.
+cd_add_test(hello_materials_prim_bindless
+  SOURCES test_hello_materials_prim_bindless.cpp
+  DEPS    cd::asset cd::core cd::debug_line cd::gluon cd::light cd::material
+          cd::math cd::post_bloom cd::post_composite cd::rhi cd::shader
+          cd::velocity
+)
+
 # T1.7 phase543 -- Sponza golden-image CI gate.
 #
 # Two tiers (see test source header for details):

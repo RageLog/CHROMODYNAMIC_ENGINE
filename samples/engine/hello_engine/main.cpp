@@ -5604,7 +5604,15 @@ cd::core::Result<void> HelloEngineApp::on_boot()
         std::vector<std::string> { std::string { cd_sample::kPrimVertGlslPath },
                                    std::string { cd_sample::kPrimFragGlslPath } },
         [this](cd::rhi::IDevice& d, cd::shader::ICompiler* c) -> bool
-        { return cd_sample::prim_recreate(d, c, &state_->materials.prim); },
+        {
+            // Boot/reload parity: spawn_materials passes prim_bindless_layout
+            // so the prim pipeline carries the dedicated set=1 bindless
+            // sampler-array layout (phase864). The reload closure MUST pass it
+            // too — omitting it recreates a pipeline WITHOUT set 1 and the
+            // bindless path breaks silently on the first prim hot-reload.
+            return cd_sample::prim_recreate(d, c, &state_->materials.prim,
+                                            state_->materials.prim_bindless_layout);
+        },
         "prim");
     s.shader_watch.add_entry(
         &s.materials.shadow,
