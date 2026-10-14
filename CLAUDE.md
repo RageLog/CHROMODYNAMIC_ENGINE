@@ -1,104 +1,56 @@
-# CHROMODYNAMIC Engine — Proje Kuralları (Global Standards)
+# CHROMODYNAMIC Engine — Proje Kuralları & Gemini 4 Argon (High) Otomatik Orkestrasyonu
 
-> Bu dosya **otomatik olarak her oturumda** ve **tüm subagent'larda** yüklenir.
+> Bu dosya (`CLAUDE.md` / `AGENTS.md`) **otomatik olarak her oturumda** ve **tüm subagent'larda** yüklenir.
 
-## 0. Proje Kimliği
+## 0. Otomatik Prompt Niyet Yönlendiricisi (Zero-Friction Auto-Trigger)
 
-**CHROMODYNAMIC** — cross-platform, cross-API, library-oriented hibrid 2D+3D oyun motoru ve general-purpose rendering/framework. Hedef: state-of-the-art (Filament, bgfx, EnTT/Bevy) **aşılacak** mimari kalite. Tüm alt-sistemler bağımsız kütüphane olarak da tüketilebilir olacak.
+Kullanıcı prompt girdiğinde **ajan veya skill adını açıkça yazmasa bile**, niyeti otomatik sınıflandır ve ilgili yeteneği (skill), betiği ve alt ajanları (`invoke_subagent`) **sormadan doğrudan tetikle**:
 
-**Phase 1 = sadece tasarım ve plan** — implementasyon yok. Her büyük karar **araştırma + ADR** ile gerekçelendirilir.
+| Kullanıcı Prompt Niyeti | Otomatik Devreye Alınan Skill & Betik | Otomatik Başlatılan Alt Ajanlar (`invoke_subagent`) |
+| :--- | :--- | :--- |
+| **Yeni Özellik / Modül / Kodlama** (*"ekle, oluştur, yaz, implement et, geliştir"*) | `context-radar` (`repo_map.py`) → `spec-driven-dev` (`scaffold_spec.py`) → `tdd-red-green-loop` (`run_tdd_cycle.ps1`) | Tek dosya ise doğrudan uygula; çoklu dosya/modül ise paralel `developer` (`inherit`) + `tester` (`pro`) + `safety-integration` (`inherit`) |
+| **Marathon / Wave / Backlog İlerlemesi** (*"sıradaki dalga, wave, fazı ilerlet, maraton"*) | `checkpoint-worktree-guard` (`checkpoint_guard.py status`) → `marathon-wave-runner` (`verify_wave.ps1`) | `team-lead` (`inherit`) veya paralel `developer` + `tester` + `code-consistency` |
+| **Hata / Crash / Derleme veya Test Fail** (*"hata var, çalışmıyor, crash, segfault, fail, düzelt"*) | `rca-five-whys-debugger` (`parse_failure_log.py`) → `tdd-red-green-loop` (`run_tdd_cycle.ps1`) | Kök neden karmaşıksa `troubleshooter` (`inherit`) + `build-devops` (`pro`) |
+| **Mimari Tasarım / SOTA / ADR** (*"mimari, tasarla, ADR, SOTA analizi, katman"*) | `context-radar` (`repo_map.py`) → `engine-sota-adr` (`check_layer_dag.py`) | Paralel `researcher` (`pro`) + `architect` (`inherit`) + `analyst` (`pro`) |
+| **UI / Editör Paneli / Görsel & Render** (*"panel, editör, UI, HUD, gizmo, shader, render"*) | `visual-quality-loop` (`audit_ui_quality.py`) → `spec-driven-dev` → `tdd-red-green-loop` | `ui-architect` (`pro`) / `ui-developer` (`inherit`) / `ux-developer` (`pro`) / `ui-tester` (`flash`) |
+| **Akademik / Makale / Atıf / Sunum** (*"makale, paper, atıf, kaynak, LaTeX, sunum"*) | `academic-iron-rule` (`verify_manifest.py` + `check_human_voice.py`) | `academic-researcher` (`pro`) → `latex-writer` (`pro`) → paralel `citation-verifier` (`flash`) + `independent-auditor` (`inherit`) |
 
-## 1. Modern C++ Kalitesi (Zero Tolerance)
+## 1. Proje Kimliği & Aktif Pipeline'lar
 
-- **Bellek**: Sahiplik için yalnızca `std::unique_ptr` / `std::shared_ptr`. Raw pointer sadece non-owning observer. Hot-path için handle / opaque ID tercih.
+**CHROMODYNAMIC** — cross-platform, cross-API, library-oriented hibrid 2D+3D oyun motoru ve general-purpose rendering/framework (`cd::` / `chroma::` C++23, 120+ bağımsız `cd_<lib>` kütüphanesi). Hedef: state-of-the-art (Filament, bgfx, EnTT/Bevy, Jolt) **aşılacak** mimari kalite. Tüm alt-sistemler bağımsız kütüphane olarak da tüketilebilir.
+
+Üç aktif pipeline paralel ve kesintisiz çalışır:
+- **Pipeline A (SOTA Design & ADR)**: Her yeni alt-sistem veya büyük mimari karar **araştırma + Iglberger ADR** (`docs/ADR/ADR-YYYYMMDD-<konu>.md`) ile gerekçelendirilir.
+- **Pipeline B (Surgical Implementation & Marathon Waves)**: Onaylı ADR veya `docs/MARATHON_PLAN_NEXT.md` dalgaları (`Wave 1..N`) paralel subagent fan-out ve tek-komut doğrulama (`verify_wave.ps1`) ile kesintisiz uygulanır.
+- **Pipeline C (Q1 Academic & Benchmark)**: Tez/makale/sunum çıktılarında Demir Kural (`MANIFEST.csv` + `sha256` + `bibliography.bib`) ve Dual-Auditor (`peer-review-simulator` + `independent-auditor`) kapısı zorunludur.
+
+## 2. Modern C++23 Kalitesi (Zero Tolerance)
+
+- **Bellek**: Sahiplik için yalnızca `std::unique_ptr` / `std::shared_ptr`. Raw pointer sadece non-owning observer. Hot-path için generational handle (`Handle<Tag>`) / opaque ID tercih.
 - **Const correctness**: State değiştirmeyen üye fonksiyonlar `const`; değişmeyen lokaller `const`.
 - **API**: Public dönüşlerde `[[nodiscard]]`. Sanal metodlarda `override` zorunlu. Public header'da `noexcept` doğru kullanım.
-- **Modern idiom**: C++23. `static_cast` kullan, C-style cast yasak. Custom makro minimum.
-- **Hata yönetimi**: `std::expected` / `std::variant` ile tip sisteminde taşı. `catch(...) {}` yasak. Exception sadece ctor/dtor sınırında ve dökümante edilmiş.
+- **Modern idiom**: C++23 (`std::expected`, `std::span`, `constexpr`). `static_cast` kullan, C-style cast yasak. Custom makro minimum.
+- **Hata yönetimi**: `std::expected<T, ErrorCode>` / `std::variant` ile tip sisteminde taşı. `catch(...) {}` yasak. Exception sadece ctor/dtor sınırında ve dökümante edilmiş.
 - **Sınır kontrolü**: Güvenlik gereken yerlerde `at()`. Buffer overflow / UB / leak'e karşı savun.
-- **Library boundary**: Her library `chroma::<lib>::` namespace; explicit `CHROMA_<LIB>_API` macro export; PIMPL opsiyonel ama önerilen.
+- **Library boundary**: Her library `cd::` / `chroma::<lib>::` namespace; explicit export macro; zero global mutable state.
 
-## 2. Araştırma-Önce Disiplini (Phase 1 zorunlu)
-
-- **Her** alt-sistem tasarım kararı öncesi: SOTA analizi (Filament, bgfx, Sokol, The Forge, Diligent, WebGPU/Dawn, EnTT, Bevy, Flecs, Jolt, vb.) → ADR.
-- ADR yolu: `docs/ADR/ADR-YYYYMMDD-konu.md` — Iglberger formatı (Bağlam / Karar / Reddedilen alternatifler / Sonuçlar).
-- **Akademik atıf** gerektiğinde Demir Kural geçerlidir: `research/library/MANIFEST.csv` doğrulanmış PDF + `bibliography.bib` BibTeX olmadan atıf yapılamaz. (`academic-researcher` ajanı bunu zorlar.)
-- Engineering SOTA (blog, GitHub, cppreference, vendor docs) `researcher` ajanı tarafından toplanır; rapor + link + erişim tarihi formatında.
-
-## 3. Doğruluk (Evidence-Based)
+## 3. Doğruluk & Deterministik Otomasyon (Evidence-Based)
 
 - "Kodu yazdım, doğru olmalı" yasak. Her iddianın **kanıtı** olmalı:
-  - Build temiz: `cmake --build --preset ninja-debug`
-  - Test geçer: `ctest --preset ninja-debug --output-on-failure`
-  - Sembol var: `Grep` ile doğrula
-- Build/test fail ederse **root cause**'u bul, üstünü örtme. `--no-verify` veya bypass yasak.
+  - **Tekil Hedef Hızlı TDD (1–3 sn)**:
+    `powershell -ExecutionPolicy Bypass -File "C:/Users/cemal/.gemini/config/plugins/argon-core/skills/tdd-red-green-loop/scripts/run_tdd_cycle.ps1" -Target <test_target>`
+  - **Tek-Komut Marathon Wave Doğrulaması**:
+    `powershell -ExecutionPolicy Bypass -File "C:/Users/cemal/.gemini/config/plugins/argon-core/skills/marathon-wave-runner/scripts/verify_wave.ps1" -Preset debug`
+  - **Katman DAG Kontrolü** (`#include` cycle/upward violation denetimi):
+    `python "C:/Users/cemal/.gemini/config/plugins/argon-core/skills/engine-sota-adr/scripts/check_layer_dag.py" --root engine`
+  - **Akademik Manifest & Human-Voice Kontrolü**:
+    `python "C:/Users/cemal/.gemini/config/plugins/argon-core/skills/academic-iron-rule/scripts/verify_manifest.py"`
+    `python "C:/Users/cemal/.gemini/config/plugins/argon-core/skills/academic-iron-rule/scripts/check_human_voice.py" <tex-or-md>`
+- Build/test fail ederse **root cause**'u bul (`parse_failure_log.py`), üstünü örtme. `--no-verify` veya bypass yasak.
 
-## 4. Cerrahi Düzenleme
+## 4. Cerrahi Düzenleme & Token Ekonomisi
 
-- Dosyaları `cat`/`echo`/`Write` ile baştan yazma — `Edit` kullan.
-- Sadece ilgili satırları hedefle. API imzası değişiyorsa `Grep` ile etkilenenleri bul ve düzelt.
-
-## 5. Test Disiplini
-
-- Anti-flakiness: `sleep_for` yasak; `condition_variable` / event tabanlı senkron kullan.
-- Pattern: `Arrange / Act / Assert`. İzole testler.
-- Edge case + negative testing zorunlu.
-- Renderer için golden image diff (FLIP/SSIM); ECS/job system için stress + fuzz.
-
-## 6. Build / CMake
-
-- `-Wall -Werror -Wextra -Wshadow -Wnon-virtual-dtor -Wpedantic -Wconversion` standart.
-- `PUBLIC` / `PRIVATE` / `INTERFACE` doğru kullan. Layered DAG; cycle yasak.
-- ASAN / UBSAN debug preset'lerinde aktif. TSan ayrı preset.
-- **`.clang-tidy` `Checks:` scalar'ına ASLA `#` yorum koyma** — folded scalar
-  içinde `#` yorum DEĞİLDİR; virgülsüz metin sonraki kuralı ölü glob'a yapıştırır
-  (phase1045 olayı: 5 aile sessizce devre dışıydı). Rationale'ler scalar'ın
-  ÜSTÜNDEKİ yorum bloğuna yazılır; değişiklik sonrası `clang-tidy --list-checks`
-  ile doğrula.
-- Compiler matrisi (kararlaştırılınca): MSVC + Clang-cl + Clang + GCC.
-- Paket: vcpkg manifest mode (DtForHil pattern); kritik bağımlılıklar opsiyonel submodule.
-
-## 7. Modülarite / Library-Oriented
-
-- Her alt-sistem ayrı kütüphane (`engine/<lib>/`). Public include `include/chroma/<lib>/`.
-- Cross-library dependency DAG'ı: foundation → math/memory → concurrency/io → rhi/asset → ecs/scene → engine → editor.
-- Library'ler arası global state yasak — explicit context/registry objesi geçilir.
-- Library standalone derlenebilir + test edilebilir (kendi gtest binary'si).
-
-## 8. Paralel Çalışma & Subagent Koordinasyonu
-
-- Bağımsız görevler **paralel** subagent çağrılarıyla (tek mesajda birden çok `Agent` çağrısı).
-- Orkestratör: `team-lead`. Phase 1 (tasarım) ağırlığı: `researcher`, `academic-researcher`, `architect`, `analyst`, `planner`, `doc-writer`.
-- Kalıcı mimari kararlar `docs/ADR/` altında; geçici notlar `research/notes/`.
-
-## 9. Komut Notları (Windows / Bash)
-
-- Shell **bash** (Git for Windows) — `/dev/null` kullan, `NUL` değil; forward slash path.
-- Build (kurulduğunda): `cmake --build --preset ninja-debug` veya `ninja-release`.
-- Test: `ctest --preset ninja-debug --output-on-failure`.
-
-## 10. Klasör Konvansiyonu
-
-```
-.claude/agents/       # Subagent tanımları (33 ajan)
-.agent/workflows/     # Legacy workflow notları
-docs/ADR/             # Architecture Decision Records
-research/
-  library/            # İndirilmiş paper'lar + MANIFEST.csv + bibliography.bib
-  papers/             # Mimari/grafik/perf KİTAPLARI (gitignored, manuel)
-  notes/              # Per-paper özet notları
-  reports/            # Audit raporları (citation, methodology, peer-review)
-  templates/          # Beamer/slide template'leri
-CMakeModules/         # CMake helper'lar (DtForHil'den taşındı + uyarlanmış)
-engine/               # tüm cd_<lib> kütüphaneleri (canonical lowercase per B2 fix)
-Dependencies/         # vendored / submodule deps
-Project/              # örnek uygulama
-Tests/                # global test runner (modül başına da test var)
-```
-
-## 11. Domain Notu (subagent'lar için)
-
-Bu proje **akademik makale + game engine** hibridi değil; **game engine inşaatı** odaklı. Ancak:
-- Mimari kararlar akademik kanıt aramayı hak ediyor (rendering, ECS, concurrency, allocator alanlarında peer-reviewed çalışma var) — Demir Kural geçerli.
-- `latex-writer` / `peer-review-simulator` / `slide-builder` ajanları **opsiyonel**: kullanıcı tez/sunum/RFC isterse aktif.
-- `safety-integration` mimar görevi: engine'in concurrency yoğun olduğu (job system, render thread, async asset) için **kritik**.
+- Dosyaları `cat`/`echo`/`write_to_file` ile baştan yazma — `replace_file_content` / `multi_replace_file_content` (`Edit`) kullan.
+- Önce `repo_map.py` veya `grep_search` ile sembol satırını bul, ardından `view_file` ile yalnızca ilgili satır aralığını (`StartLine`/`EndLine`) oku.
+- **Delta-Only Handoff**: Subagent çağrılarında tüm dosyayı prompt'a yapıştırma; yalnızca hedef dosya yolu, satır aralığı ve görevi gönder.
+- **`.clang-tidy` `Checks:` scalar'ına ASLA `#` yorum koyma** — folded scalar içinde `#` yorum DEĞİLDİR; virgülsüz metin sonraki kuralı ölü glob'a yapıştırır (`PreToolUse` kancası bunu otomatik engeller).

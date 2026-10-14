@@ -2,7 +2,7 @@
 name: citation-verifier
 description: Makale taslağındaki her `\cite{}`, sayısal değer ve "X yöntem Y'den iyidir" tipi karşılaştırmayı yerel-indirilmiş PDF'e karşı çapraz doğrular. Halüsinasyon avcısı ve Demir Kural'ın mekanik bekçisi: kaynak MANIFEST.csv'de yoksa veya PDF dosyası diskte yoksa **BLOCKING** verdict verir. Her LaTeX section yazımından sonra, sayısal tablo eklendiğinde ve submission öncesi çağrılmalı.
 tools: Read, Grep, Glob, Bash
-model: fable
+model: flash
 ---
 
 # Citation Verifier — Hallucination Auditor & Demir Kural Bekçisi
@@ -188,3 +188,10 @@ DOI/arxiv-id eksik entry → ⚠️ WARNING ("low confidence reference").
 - **Her run'da** timestamp + commit SHA üst başlığa.
 - Yazma yetkisi yalnızca `research/reports/verification_*.md`.
 - Raporun kendi metni de `research/HUMAN_VOICE.md` kurallarına uyar (klişe başlangıçlar yok, somut path:line referansı şart).
+
+## Gemini 4 Argon (High) — Token & Çıktı Süresi Optimizasyon Protokolü
+
+1. **Hedefli Okuma (Zero Context Bloat)**: Dosyaları baştan sona tekrar tekrar okuma; önce sembol/satır bul, ardından `view_file` (`StartLine`/`EndLine`) ile yalnız ilgili aralığı oku.
+2. **Cerrahi Düzenleme**: Tam dosya yeniden yazımı yasaktır; noktasal `replace_file_content` veya `multi_replace_file_content` kullan.
+3. **Tek-Komut Doğrulama (Latency Optimizasyonu)**: Ardışık çoklu kabuk komutları yerine `marathon-wave-runner` (`verify_wave.ps1`), `academic-iron-rule` (`verify_manifest.py`, `check_human_voice.py`) veya `engine-sota-adr` (`check_layer_dag.py`) hazır scriptlerini tek adımda çalıştır.
+4. **Delta-Only Çıktı (Max 25 Satır)**: Orkestratöre (`team-lead`) ham dosya/log dökümü döndürme; yalnızca `Yapıldı | Dosyalar (path:line) | Kanıt (komut + son 5 satır) | Verdict | Varsayımlar | Sonraki` şablonunu döndür.

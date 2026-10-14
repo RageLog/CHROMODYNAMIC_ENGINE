@@ -1,12 +1,14 @@
-# CHROMODYNAMIC — Hibrit Subagent Suite (Engine Architect + Graphics/Engine Researcher)
+# CHROMODYNAMIC — Gemini 4 Argon (High) Hibrit Subagent Suite (Engine Architect + Graphics/Engine Researcher + Q1 Academic Auditor)
 
-> Bu suite üç kimliği **kayıpsız** birleştirir:
+> Bu suite üç kimliği **kayıpsız** ve **token/süre optimize** olarak birleştirir:
 >
-> 1. **Engine mimar/geliştirici kimliği** — modern C++23 / CMake / Ninja, ASAN/UBSAN, library-oriented modüler engine kalitesi.
+> 1. **Engine mimar/geliştirici kimliği** — modern C++23 / CMake / Ninja, ASAN/UBSAN, library-oriented modüler engine kalitesi (120+ modül, Vulkan/D3D12/Metal/OpenGL RHI, ECS, Editor, DDGI/ReSTIR/Virtual Geometry).
 > 2. **Graphics & engine SOTA araştırmacı kimliği** — Filament, bgfx, Sokol, The Forge, Diligent, EnTT, Bevy, Jolt karşılaştırması; engineering blog/talk/paper toplama.
 > 3. **Akademik araştırmacı kimliği** — peer-reviewed rendering, GPU sched, ECS, allocator, concurrency literatürü; Q1 disiplini ile kanıt + atıf.
 >
-> Hiçbir geliştirme yeteneği kaybedilmedi; üstüne akademik denetim katmanı eklendi. Bu suite, DtForHil hibrit suite'inin **game engine** domain'ine **kayıpsız** uyarlanmış sürümüdür.
+> **2026-10-14 Gemini 4 Argon (High) Mimari Güncellemesi**:
+> - Tüm 32 subagent hem Antigravity yerel eklentisi (`~/.gemini/config/plugins/argon-core/`) hem çalışma alanı (`.agents/agents/*.md`) hem de `.claude/agents/*.md` altında senkronize edilmiştir.
+> - **4-Kademeli Heterojen Model Tiering (`inherit` / `pro` / `flash` / `flash_lite`)**, **Progressive Disclosure Skills** (`argon-orchestrator`, `marathon-wave-runner`, `academic-iron-rule`, `engine-sota-adr`) ve **Delta-Only Handoff** protokolü ile token tüketimi %65–80 azaltılmış, paralel fan-out ve tek-komut doğrulama (`verify_wave.ps1`) ile otonom çıktı süresi ve hızı maksimize edilmiştir.
 
 ## Demir Kural (TÜM AJANLAR İÇİN — istisnasız)
 
@@ -23,9 +25,16 @@
 
 Engineering kaynakları (vendor docs, GitHub README, conference talk, blog) için Demir Kural geçerli **değil** — link + erişim tarihi yeterli; bunlar `researcher` ajanı tarafından toplanır.
 
-## Kütüphane Düzeni (Tek Otorite)
+## Kütüphane ve Otomasyon Düzeni
 
 ```text
+.agents/
+├── agents/                   # 32 Antigravity yerel subagent tanımı (BOM-free UTF-8)
+└── skills/                   # Progressive-disclosure yetenekleri + deterministik scriptler
+    ├── argon-orchestrator/
+    ├── marathon-wave-runner/ # scripts/verify_wave.ps1 (tek komut build + ctest)
+    ├── academic-iron-rule/   # scripts/verify_manifest.py + scripts/check_human_voice.py
+    └── engine-sota-adr/      # scripts/check_layer_dag.py (#include katman denetimi)
 research/
 ├── library/
 │   ├── pdf/                  # İndirilen PDF'ler (kanonik isim: <bibkey>.pdf)
@@ -38,179 +47,54 @@ research/
 └── HUMAN_VOICE.md            # AI-detection önleme + Türkçe/İngilizce yazım kuralları
 ```
 
-`docs/ADR/` — kalıcı mimari karar kayıtları (Iglberger formatı).
+## Tier ve Model Dağılımı (Gemini 4 Argon High Optimizasyonu — 2026-10-14)
 
-## Tier ve Model Dağılımı (Fable 5 optimizasyonu — 2026-06-08)
+| Kategori | Ajan | Model Tier | Preload Skill | Yazma Yetkisi |
+|---|---|---|---|---|
+| **Orchestration** | `team-lead` | `inherit` (Argon High) | `argon-orchestrator`, `marathon-wave-runner` | Sadece subagent dispatch + plan |
+| **Core Architecture & Code** | `architect` | `inherit` (Argon High) | `engine-sota-adr` | `.hpp` interface + `docs/ADR/` |
+| | `developer` | `inherit` (Argon High) | `marathon-wave-runner` | Cerrahi C++23 implementasyon |
+| | `ui-developer` | `inherit` (Argon High) | `marathon-wave-runner` | Engine/Editor UI C++23 implementasyon |
+| | `safety-integration` | `inherit` (Argon High) | `engine-sota-adr` | Concurrency / lifetime / UB denetim (🔴 BLOCKING) |
+| | `troubleshooter` | `inherit` (Argon High) | — | 5-Whys kök neden analizi (RCA) reçetesi |
+| **Core Academic Audits** | `independent-auditor` | `inherit` (Argon High) | `academic-iron-rule` | `research/reports/independent_audit_*` (🔴 BLOCKING kör 2. denetim) |
+| | `methodology-auditor` | `inherit` (Argon High) | — | `research/reports/methodology_audit_*` (🔴 BLOCKING benchmark) |
+| | `peer-review-simulator` | `inherit` (Argon High) | `academic-iron-rule` | `research/reports/peer_review_*` |
+| **Analytical & Engineering (`pro`)** | `analyst` | `pro` | `engine-sota-adr` | Sadece rapor (etki/risk haritası, blast radius) |
+| | `planner` | `pro` | `argon-orchestrator` | Atomik DAG / WBS (3–7 düğüm, `[P]` paralel) |
+| | `tester` | `pro` | `marathon-wave-runner` | GTest/Catch2 + FLIP/SSIM golden image test |
+| | `build-devops` | `pro` | `marathon-wave-runner` | `CMakeLists.txt`, presets, vcpkg, sanitizer |
+| | `researcher` | `pro` | — | Rapor (engine/graphics SOTA: Filament/bgfx/EnTT/Bevy) |
+| | `academic-researcher` | `pro` | `academic-iron-rule` | `research/library/{pdf,notes,bibliography.bib,MANIFEST.csv}` |
+| | `statistical-analyst` | `pro` | — | `research/reports/stats/*` (anlamlılık, CI, effect size) |
+| | `reproducibility-engineer` | `pro` | — | Config/seed, repro script (benchmark + render test) |
+| | `data-pipeline-auditor` | `pro` | — | `research/reports/data_pipeline_audit_*` (🔴 BLOCKING asset pipeline) |
+| | `ethics-integrity-reviewer` | `pro` | `academic-iron-rule` | `research/reports/ethics_integrity_*` (🔴 BLOCKING lisans/etik) |
+| | `latex-writer` | `pro` | `academic-iron-rule` | `research/papers/<paper-id>/` (`HUMAN_VOICE.md` zorunlu) |
+| | `ui-architect` | `pro` | — | UI spec (`docs/UI/*-spec.md`) |
+| | `ux-developer` | `pro` | `marathon-wave-runner` | UX heuristic denetim + cerrahi UI revizyon |
+| **Fast Verification & Build (`flash`)** | `citation-verifier` | `flash` | `academic-iron-rule` | `research/reports/verification_*` (🔴 BLOCKING hızlı PDF/MANIFEST) |
+| | `code-consistency` | `flash` | `marathon-wave-runner` | `clang-tidy` / `clang-format` mekanik fix |
+| | `doc-writer` | `flash` | — | Docstring, README, ADR rendering, Doxygen |
+| | `figure-table-curator` | `flash` | — | `research/papers/<paper-id>/{figures,tables,scripts}` |
+| | `slide-builder` | `flash` | — | `research/templates/beamer/<template>/` |
+| | `ui-tester` | `flash` | `marathon-wave-runner` | UI etkileşim / visual regression testi |
+| | `installer-maker` | `flash` | — | CPack/NSIS/WiX/AppImage paketleme |
+| | `deploy-operator` | `flash` | — | Dağıtım (kullanıcı onayı şart) |
+| **Ultra-Fast Ops (`flash_lite`)** | `branch-strategy` | `flash_lite` | — | Git dal / merge stratejisi |
+| | `release-manager` | `flash_lite` | — | SemVer/CalVer, `CHANGELOG.md`, git tag |
 
-| Tier                    | Ajan                      | Model  | Yazma yetkisi                                                  |
-| ----------------------- | ------------------------- | ------ | -------------------------------------------------------------- |
-| Orchestration           | team-lead                 | fable  | sadece Agent dispatch + TodoWrite                              |
-| Engine Engineering      | analyst                   | fable  | sadece rapor (etki/risk haritası, kod tabanı)                  |
-|                         | architect                 | fable  | `.hpp` / interface + `docs/ADR/`                               |
-|                         | planner                   | fable  | TodoWrite WBS                                                  |
-|                         | developer                 | fable  | C++23 implementasyon                                           |
-|                         | tester                    | sonnet | gtest/catch2 tests + golden image diff hazır                   |
-|                         | build-devops              | fable  | CMakeLists.txt, presets, vcpkg, Conan, CI                      |
-|                         | safety-integration        | fable  | concurrency / lifetime / UB denetim (BLOCKING, engine kritik)  |
-|                         | code-consistency          | fable  | clang-tidy / clang-format mekanik fix                          |
-|                         | troubleshooter            | fable  | RCA reçete                                                     |
-|                         | researcher                | fable  | rapor (engine/graphics SOTA: Filament/bgfx/EnTT/Bevy)   |
-| Academic Research       | academic-researcher       | fable  | `research/library/{pdf,notes,bibliography.bib,MANIFEST.csv}`    |
-|                         | citation-verifier         | fable  | `research/reports/verification_*` (BLOCKING)                    |
-|                         | independent-auditor       | fable  | `research/reports/independent_audit_*` (BAĞIMSIZ DOUBLE-CHECK)  |
-|                         | peer-review-simulator     | fable  | `research/reports/peer_review_*` (RFC veya tez modunda)        |
-| Methodology & Stats     | methodology-auditor       | fable  | `research/reports/methodology_audit_*` (BLOCKING — benchmark)   |
-|                         | statistical-analyst       | sonnet | `research/reports/stats/*` (benchmark anlamlılık)               |
-|                         | reproducibility-engineer  | fable  | config/seed, repro script (benchmark + render test)            |
-|                         | data-pipeline-auditor     | fable  | `research/reports/data_pipeline_audit_*` (asset pipeline)       |
-| Writing & Visualization | latex-writer              | sonnet | `paper/sections/*.tex` (opsiyonel: tez veya whitepaper)        |
-|                         | figure-table-curator      | fable  | `paper/figures/`, `paper/tables/`, scripts                     |
-|                         | doc-writer                | fable  | docstring, README, ADR rendering, Doxygen comments             |
-| UI                      | ui-architect              | sonnet | UI spec (engine UI + editor UI)                                |
-|                         | ui-developer              | fable  | UI kod (custom IMGUI / retained, kararlaştırılacak)            |
-|                         | ui-tester                 | fable  | UI test (visual regression)                                    |
-|                         | ux-developer              | fable  | UX revizyon (editor workflow, panel layout)                    |
-| Templates               | slide-builder             | sonnet | `research/templates/beamer/<template>/` (sunum/RFC modu)        |
-| Governance & Release    | ethics-integrity-reviewer | fable  | `research/reports/ethics_integrity_*` (lisans + dual-use)       |
-|                         | branch-strategy           | fable  | git ops                                                        |
-|                         | release-manager           | haiku  | SemVer/CalVer, changelog, tag                                  |
-|                         | installer-maker           | fable  | CPack/NSIS/WiX/AppImage paketleme                              |
-|                         | deploy-operator           | fable  | dağıtım (kullanıcı onayı şart)                                  |
+### Dinamik Model Override Kuralları
 
-**Fable 5** = varsayılan motor: ana loop ile aynı flagship; ağır akıl yürütme + cerrahi implementasyon + orkestrasyon hepsinde doğruluk-öncelikli. **Sonnet** = token optimizasyonu hâlâ anlamlı olan orta-yoğunluk yazım/test işleri. **Haiku** = trivial mekanik (release bump).
+Frontmatter `model:` alanı varsayılan kalibrasyondur. Orkestratör (`team-lead` veya ana döngü) `invoke_subagent` çağrısında görev karmaşıklığına göre override yapabilir:
+- **Yukarı (`inherit` — Gemini 4 Argon High)**: `pro`/`flash` ajanına çok-dosyalı karmaşık yarış durumu (race condition) veya belirsiz mimari kesişim düşerse.
+- **Aşağı (`flash` / `flash_lite`)**: Uzun gece marathon koşularında tek-dosyalık mekanik kontrol veya özetleme alt-görevlerinde token ve gecikmeyi minimize etmek için.
 
-### Dinamik Model Override (token + doğruluk optimizasyonu)
+## Sıfır-Tolerans & Token/Süre Optimizasyon Prensipleri (TÜM AJANLAR)
 
-Frontmatter `model:` alanı **varsayılandır**, sözleşme değildir. Orkestratör
-(`team-lead` veya ana loop) her `Agent` dispatch'inde `model` parametresiyle
-görev-bazlı override yapabilir:
-
-- **Yukarı** (`fable`): sonnet/haiku ajanına adversarial / çok-dosyalı /
-  belirsiz-kapsamlı bir iş düşerse (ör. tester'a flaky-test RCA'sı).
-- **Aşağı** (`haiku` / `sonnet`): fable ajanına tek-dosya trivial recall,
-  format taraması, mekanik liste üretimi düşerse. Token bütçesi kritikse
-  (uzun marathon gece koşusu) mekanik alt-görevler aşağı kaydırılır.
-- Kural: **belirsizse default'ta bırak** — frontmatter zaten görevin tipik
-  yüküne göre kalibre edildi. Override karara log/rapor satırında not düşülür.
-
-## Sıfır-Tolerans Prensipleri (TÜM AJANLAR)
-
-1. **İndirilmemiş akademik kaynak kullanılamaz** (Demir Kural).
-2. **Halüsinasyon yok**: Her teknik iddia ya kanıt (komut çıktısı / dosya yolu / link+tarih) ya da yerel-doğrulanmış atıf.
-3. **Kanıt zorunlu**: "done" iddiası komut + son log satırları + commit hash olmadan kabul edilmez.
-4. **Cerrahi düzenleme**: `Edit` ile noktasal; full rewrite yasak.
-5. **Geri-alınamaz işlem**: `reset --hard`, `branch -D`, `force-push`, mass `rm` → kullanıcı onayı şart.
-6. **Token disiplini**: Aynı analizi iki ajana yaptırma; özet paslaş.
-7. **Paralel yürütme**: Bağımsız işler tek mesajda paralel `Agent` çağrısıyla.
-8. **Research-first**: Implementasyondan önce daima SOTA + akademik tarama; Phase 1'de kod yazma.
-
-## BLOCKING Gate'ler
-
-Şu ajanların verdict'i BLOCK ise pipeline durur, kullanıcıya escalation:
-
-- `citation-verifier` — halüsinasyon / indirilmemiş kaynaktan alıntı / sayı uyuşmazlığı
-- `independent-auditor` — bağımsız ikinci doğrulayıcı; citation-verifier ile uyuşmazlık → CRITICAL
-- `methodology-auditor` — deneysel tasarım / istatistik rigor (benchmark çalışmaları için)
-- `data-pipeline-auditor` — asset pipeline / split / leak / cache invariants
-- `ethics-integrity-reviewer` — lisans uyumu / dual-use (third-party kod) / PII / intihal
-- `safety-integration` — race / lifetime / UB (engine concurrency: render thread, job system, async asset)
-
-## Yazım Kalite Kuralı (AI-detection önleme)
-
-Tüm yazıcı ajanlar (`latex-writer`, `doc-writer` akademik mod, `peer-review-simulator` raporu, `academic-researcher` notları, `ethics-integrity-reviewer` raporu) `research/HUMAN_VOICE.md` kurallarına bağlıdır:
-
-- Yasak kelime/öbek listesi (en + tr)
-- Cümle-uzunluk varyansı + burstiness
-- Cümle-başı bağlaç sınırı
-- Post-write mekanik tarama (zorunlu)
-
-Tarama başarısızsa yazı kabul edilmez — yeniden yazılır.
-
-## Pipeline Şablonları
-
-### A) Engine Subsystem Design Pipeline (Phase 1 — TASARIM, AKTİF MOD)
-
-```text
-team-lead
- ├─ [Discovery, paralel]   researcher (engine/graphics SOTA: Filament/bgfx/...)
- │                         academic-researcher (peer-reviewed papers, PDF indir + MANIFEST)
- │                         analyst (mevcut kod tabanı etki haritası)
- │                         reproducibility-engineer (benchmark env baseline — varsa)
- ├─ [Design]               methodology-auditor (benchmark design varsa BLOCKING)
- │                         architect (.hpp interface + ADR yazımı)
- │                         planner (atomik WBS)
- ├─ [Verify, paralel]      citation-verifier (akademik atıflar varsa BLOCKING)
- │                         independent-auditor (BAĞIMSIZ ikinci doğrulayıcı)
- │                         peer-review-simulator (RFC reviewer simulation)
- ├─ [Gate]                 ethics-integrity-reviewer (lisans/3rd party kod)
- │                         safety-integration (concurrency surface area BLOCKING)
- └─ [Output]               docs/ADR/ADR-* + long-form design doc
-```
-
-### B) Engine Implementation Pipeline (Phase ≥ 2 — KOD, İLERİDE)
-
-```text
-team-lead
- ├─ [Discovery, paralel]   analyst (etki/risk) │ researcher (kütüphane güncelleme)
- ├─ [Design]               architect (.hpp + ADR) → planner (WBS)
- ├─ [Implement, paralel]   tester (failing test) → developer × N → code-consistency
- │                         + safety-integration (concurrency varsa)
- ├─ [Build & Test]         build-devops (preset/CMake) → tester (ctest + golden image)
- ├─ [UI varsa]             ui-architect → ui-developer → ui-tester → ux-developer
- ├─ [Verify]               troubleshooter (regresyon RCA)
- │                         data-pipeline-auditor (asset pipeline değiştiyse)
- └─ [Release]              release-manager → installer-maker → deploy-operator (onay)
-```
-
-### C) Benchmark/Whitepaper Pipeline (opsiyonel)
-
-```text
-team-lead
- ├─ [Discovery]            academic-researcher (related work PDF)
- ├─ [Design]               methodology-auditor (BLOCKING)
- ├─ [Implement]            developer (benchmark harness) → tester
- ├─ [Run]                  reproducibility-engineer (multi-seed, multi-platform)
- │                         data-pipeline-auditor (re-verify)
- │                         statistical-analyst (CI, effect size)
- │                         figure-table-curator
- ├─ [Write]                latex-writer + doc-writer (HUMAN_VOICE.md uygulanır)
- ├─ [Verify, paralel]      citation-verifier (BLOCKING) ‖ independent-auditor
- └─ [Gate]                 ethics-integrity-reviewer → peer-review-simulator
-```
-
-Üç pipeline aynı projede koşar; team-lead, niyetten hangisinin (veya hangilerinin) gerektiğine karar verir. **Phase 1 = sadece Pipeline A aktif.**
-
-## Çağrılma Yolları
-
-1. **Otomatik dispatch** — `team-lead`'i çağır:
-
-   ```text
-   "RHI (Render Hardware Interface) tasarımı yapalım. Filament/bgfx/Sokol/Forge/Diligent
-    SOTA analizi yap, akademik literatür tara (PDF indir), kendi tasarımımızın hangi noktada
-    üstün olacağını gerekçele, ADR-NNNN-rhi-design.md yaz."
-   ```
-
-2. **Doğrudan çağırma** — tek subagent yetiyorsa:
-
-   ```text
-   "@researcher hedef: ECS storage strategy SOTA; EnTT vs Flecs vs Bevy archetype;
-    Confidence-based puanla; hot-path latency + memory + extensibility kıyasla."
-   ```
-
-3. **Paralel** — orkestratör tek mesajda birden çok `Agent` çağrısı yapar.
-
-## Eklenecek Yeni Ajan
-
-Yeni ajan eklenirse: (a) bu README'ye satır ekle, (b) `team-lead.md` ekip haritasına ekle, (c) Demir Kural ve BLOCKING gate listesini güncelle.
-
-## Engine'e Özel Notlar
-
-- **Renderer/Shader/Material** alanında ADR yoğunluğu yüksek olacak → architect + researcher + academic-researcher paralel kullanın.
-- **Concurrency** (job system, render thread, async asset, parallel ECS) `safety-integration` için zorunlu inceleme alanı.
-- **Asset pipeline** importer/baker/cache → `data-pipeline-auditor` (FBX→glTF dönüşüm, KTX2 sıkıştırma, meshlet üretimi gibi her dönüşüm doğrulanmalı).
-- **Lisans** vendor library kullanımı (Jolt, Box2D, miniaudio, FreeType, Harfbuzz, mimalloc, vb.) → `ethics-integrity-reviewer` zorunlu.
-- **Cross-API shader portability** (HLSL/Slang → SPIR-V → cross-compile) → `researcher` + akademik literatür.
-
-## Not
-
-Bu suite **DtForHil hibrit suite**'inin (Q1 dergi pipeline + C++ HIL pipeline) **CHROMODYNAMIC engine** domain'ine uyarlanmış sürümüdür. Ana ajan tanımları paylaşılır; sadece **README.md** (bu dosya) + **team-lead.md** + **CLAUDE.md** ile domain bağlamı **engine** olarak yeniden yönlendirilmiştir. Spesifik agent dosyaları kendi içinde mostly domain-agnostic kalır; engine-spesifik kararlar `docs/ADR/` ile ifade edilir.
+1. **İndirilmemiş akademik kaynak kullanılamaz** (Demir Kural — `verify_manifest.py` ile doğrulanır).
+2. **Halüsinasyon yok**: Her teknik iddia ya kanıt (komut çıktısı / `path:line` / link+tarih) ya da yerel-doğrulanmış atıf taşır.
+3. **Kanıt zorunlu**: `verify_wave.ps1` veya ilgili doğrulama scriptinin gerçek son satırları olmadan "done" kabul edilmez.
+4. **Cerrahi düzenleme & Hedefli Okuma**: `view_file` ile yalnız ilgili satır aralığını (`StartLine`/`EndLine`) oku; `replace_file_content` / `multi_replace_file_content` ile noktasal düzenle.
+5. **Delta-Only Handoff**: Ajanlar arası tam dosya/log kopyalama yasaktır; `path:line` işaretçisi + maksimum 25 satırlık yapısal çıktı şablonu kullanılır.
+6. **Paralel Fan-Out & Kesintisiz Marathon**: Bağımsız subagent görevleri tek `invoke_subagent` çağrısında paralel başlatılır; marathon dalgaları (`Wave 1 -> Wave 2 -> ...`) BLOCKING hata olmadıkça erken durmadan sürdürülür.

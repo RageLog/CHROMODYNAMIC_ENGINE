@@ -44,11 +44,55 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.15 CACHE STRING
 # entirely and use vendored fallbacks (Dependencies/googletest, etc.).
 option(CD_DISABLE_VCPKG "Bypass vcpkg toolchain; use vendored fallbacks only" OFF)
 if(NOT CD_DISABLE_VCPKG)
-  if(DEFINED ENV{VCPKG_ROOT})
-    set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
+  set(_cd_vcpkg_root "$ENV{VCPKG_ROOT}")
+  # Visual Studio's VsDevCmd.bat (invoked by VS Code CMake Tools on Windows)
+  # runs VC/vcpkg/vcpkg-init.cmd which overwrites ENV{VCPKG_ROOT} with the
+  # read-only bundled vcpkg under C:/Program Files/Microsoft Visual Studio/...
+  # (identifiable by vcpkg-bundle.json). Recover the user's real VCPKG_ROOT
+  # from the Windows registry or existing cache so VCPKG_INSTALLED_DIR never
+  # points inside Program Files.
+  if(CMAKE_HOST_WIN32 AND (NOT _cd_vcpkg_root OR EXISTS "${_cd_vcpkg_root}/vcpkg-bundle.json"))
+    cmake_host_system_information(RESULT _cd_reg_vcpkg_root
+      QUERY WINDOWS_REGISTRY "HKCU/Environment" VALUE "VCPKG_ROOT"
+      ERROR_VARIABLE _cd_reg_err)
+    if(NOT _cd_reg_vcpkg_root OR NOT EXISTS "${_cd_reg_vcpkg_root}/.vcpkg-root")
+      cmake_host_system_information(RESULT _cd_reg_vcpkg_root
+        QUERY WINDOWS_REGISTRY "HKLM/SYSTEM/CurrentControlSet/Control/Session Manager/Environment" VALUE "VCPKG_ROOT"
+        ERROR_VARIABLE _cd_reg_err)
+    endif()
+    if(_cd_reg_vcpkg_root AND EXISTS "${_cd_reg_vcpkg_root}/.vcpkg-root"
+       AND NOT EXISTS "${_cd_reg_vcpkg_root}/vcpkg-bundle.json")
+      set(_cd_vcpkg_root "${_cd_reg_vcpkg_root}")
+    elseif(DEFINED Z_VCPKG_ROOT_DIR AND EXISTS "${Z_VCPKG_ROOT_DIR}/.vcpkg-root"
+           AND NOT EXISTS "${Z_VCPKG_ROOT_DIR}/vcpkg-bundle.json")
+      set(_cd_vcpkg_root "${Z_VCPKG_ROOT_DIR}")
+    endif()
+  endif()
+
+  if(_cd_vcpkg_root)
+    cmake_path(SET _cd_vcpkg_root NORMALIZE "${_cd_vcpkg_root}")
+    set(ENV{VCPKG_ROOT} "${_cd_vcpkg_root}")
+    if(EXISTS "${_cd_vcpkg_root}/scripts/buildsystems/vcpkg.cmake")
+      set(CMAKE_TOOLCHAIN_FILE "${_cd_vcpkg_root}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "" FORCE)
+    endif()
+    if(NOT EXISTS "${_cd_vcpkg_root}/vcpkg-bundle.json")
+      if(NOT DEFINED VCPKG_INSTALLED_DIR OR VCPKG_INSTALLED_DIR STREQUAL ""
+         OR EXISTS "${VCPKG_INSTALLED_DIR}/../vcpkg-bundle.json")
+        set(VCPKG_INSTALLED_DIR "${_cd_vcpkg_root}/cd_vcpkg_installed" CACHE PATH
+            "The directory which contains the installed libraries for each triplet" FORCE)
+        set(_VCPKG_INSTALLED_DIR "${_cd_vcpkg_root}/cd_vcpkg_installed" CACHE PATH
+            "The directory which contains the installed libraries for each triplet" FORCE)
+      endif()
+      if(DEFINED Z_VCPKG_ROOT_DIR AND EXISTS "${Z_VCPKG_ROOT_DIR}/vcpkg-bundle.json")
+        set(Z_VCPKG_ROOT_DIR "${_cd_vcpkg_root}" CACHE INTERNAL "Vcpkg root directory" FORCE)
+      endif()
+    endif()
   elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/vcpkg/scripts/buildsystems/vcpkg.cmake")
     set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
   endif()
+  unset(_cd_vcpkg_root)
+  unset(_cd_reg_vcpkg_root)
+  unset(_cd_reg_err)
 endif()
 set(VCPKG_INSTALL_OPTIONS "--no-print-usage")
 
