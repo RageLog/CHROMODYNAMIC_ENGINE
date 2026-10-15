@@ -1235,3 +1235,33 @@ TEST(ParticleSystem, DragCausesMonotonicVelocityDecay)
     EXPECT_LT(dx2, dx1)  << "drag must reduce displacement each tick";
     EXPECT_LT(dx3, dx2)  << "drag must reduce displacement each tick";
 }
+
+// ---------------------------------------------------------------------------
+// 49. Wave 1.1 regression: Dead emitter is compacted on the exact tick its
+//     last particle expires, while surviving emitters preserve particle linkage.
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, DeadEmitterCompactedOnExactExpiryTickPreservesActiveEmitters)
+{
+    System sys;
+    const EmitterId dead_id = sys.add_emitter(make_spec(/*rate=*/10.0F, /*life_s=*/0.2F));
+    const EmitterId live_id = sys.add_emitter(make_spec(/*rate=*/10.0F, /*life_s=*/1.0F));
+
+    // Tick 0.1s: both emitters spawn 1 particle each.
+    sys.tick(0.1F);
+    ASSERT_EQ(sys.particle_count(), 2U);
+
+    // Mark first emitter dead while its particle is still alive.
+    sys.remove_emitter(dead_id);
+
+    // Next tick (0.15s): dead_id's particle reaches age 0.25 >= 0.20 and expires;
+    // live_id spawns 1 more particle (accum 0.5 + 1.5 -> spawns 1, accum=0.5).
+    sys.tick(0.15F);
+    EXPECT_GE(sys.particle_count(), 2U);
+
+    // Remove second emitter and advance past its particle life: all particles
+    // must cleanly expire without dangling emitter_idx_ references.
+    sys.remove_emitter(live_id);
+    sys.tick(1.5F);
+    EXPECT_EQ(sys.particle_count(), 0U);
+}
+

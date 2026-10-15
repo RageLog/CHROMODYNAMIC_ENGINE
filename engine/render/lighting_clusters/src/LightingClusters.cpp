@@ -27,6 +27,8 @@
 // =============================================================================
 #include <cd/render/lighting_clusters/LightingClusters.hpp>
 
+#include <cd/render/cluster/ClusterGrid.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -55,41 +57,32 @@ inline std::array<float, 4> mat4_mul_vec4(
     };
 }
 
-/// Log-z depth-to-slice mapping.
-/// depth_view ∈ [near, far] → z_slice ∈ [0, z_slices).
+/// Log-z depth-to-slice mapping (delegates to cd::render::cluster).
 [[nodiscard]] std::uint32_t depth_to_z_slice(
     float depth_view,
     float near_plane,
     float far_plane,
     std::uint32_t z_slices) noexcept
 {
-    const float clamped = std::clamp(depth_view, near_plane, far_plane);
-    const float t       = std::log(clamped / near_plane)
-                        / std::log(far_plane / near_plane);
-    const auto slice = static_cast<std::uint32_t>(
-        std::floor(t * static_cast<float>(z_slices)));
-    return std::min(slice, z_slices - 1U);
+    return cd::render::cluster::depth_to_log_z_slice(
+        depth_view, near_plane, far_plane, z_slices);
 }
 
-/// View-space depth of the near face of a z-slice.
+/// View-space depth of the near face of a z-slice (delegates to cd::render::cluster).
 [[nodiscard]] float slice_near_depth(
     std::uint32_t  slice,
     float          near_plane,
     float          far_plane,
     std::uint32_t  z_slices) noexcept
 {
-    const float t = static_cast<float>(slice) / static_cast<float>(z_slices);
-    return near_plane * std::pow(far_plane / near_plane, t);
+    return cd::render::cluster::log_z_slice_near_depth(
+        slice, near_plane, far_plane, z_slices);
 }
 
-/// NDC-space tile boundaries → tile index.
+/// NDC-space tile boundaries → tile index (delegates to cd::render::cluster).
 [[nodiscard]] std::uint32_t ndc_to_tile(float ndc, std::uint32_t tiles) noexcept
 {
-    // NDC ∈ [-1, +1] → [0, tiles)
-    const float u = (ndc + 1.0F) * 0.5F * static_cast<float>(tiles);
-    const auto  t = static_cast<std::int32_t>(std::floor(u));
-    return static_cast<std::uint32_t>(
-        std::clamp(t, 0, static_cast<std::int32_t>(tiles) - 1));
+    return cd::render::cluster::ndc_to_tile_index(ndc, tiles);
 }
 
 /// Per-cluster AABB-vs-sphere test in view space.
@@ -165,7 +158,8 @@ std::uint32_t Clusterer::cluster_index(
     std::uint32_t ty,
     std::uint32_t z_slice) const noexcept
 {
-    return (z_slice * grid_.y_tiles + ty) * grid_.x_tiles + tx;
+    return cd::render::cluster::linear_cluster_index(
+        tx, ty, z_slice, grid_.x_tiles, grid_.y_tiles);
 }
 
 std::span<const std::uint32_t> Clusterer::lights_in_cluster(

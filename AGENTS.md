@@ -54,3 +54,9 @@ Kullanıcı prompt girdiğinde **ajan veya skill adını açıkça yazmasa bile*
 - Önce `repo_map.py` veya `grep_search` ile sembol satırını bul, ardından `view_file` ile yalnızca ilgili satır aralığını (`StartLine`/`EndLine`) oku.
 - **Delta-Only Handoff**: Subagent çağrılarında tüm dosyayı prompt'a yapıştırma; yalnızca hedef dosya yolu, satır aralığı ve görevi gönder.
 - **`.clang-tidy` `Checks:` scalar'ına ASLA `#` yorum koyma** — folded scalar içinde `#` yorum DEĞİLDİR; virgülsüz metin sonraki kuralı ölü glob'a yapıştırır (`PreToolUse` kancası bunu otomatik engeller).
+
+## 5. Kesintisiz Otonom Maraton & Auto-Continue Protokolü (`docs/PLAN_NEXT_PHASES.md`)
+
+- **Tek Doğruluk Kaynağı**: [`docs/PLAN_NEXT_PHASES.md`](docs/PLAN_NEXT_PHASES.md) içindeki **10-Fazlı Master Plan** (`[ ]` / `[x]` dalga listesi) otonom yürütmenin kalıcı durum defteridir.
+- **Auto-Continue (Kota/Oturum Yenilenmesi)**: Kullanıcı *"devam"*, *"."* veya herhangi bir kısa devam komutu verdiğinde (ya da mevcut tur içinde bir dalga `[x]` olduğunda), **kullanıcıya "sıradaki faza geçeyim mi?" diye SORMA**; doğrudan `docs/PLAN_NEXT_PHASES.md` içindeki ilk `[ ]` işaretli Wave'i başlat, uygula, `verify_wave.ps1` / `run_tdd_cycle.ps1` ile doğrula, `[x]` olarak işaretle ve bir sonraki Wave'e kesintisiz geç.
+

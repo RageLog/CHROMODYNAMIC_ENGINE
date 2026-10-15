@@ -51,10 +51,10 @@ namespace cd::ui::renderer_webgpu
 namespace texture_format
 {
 inline constexpr std::uint32_t kUndefined      = 0x00U;
-inline constexpr std::uint32_t kRgba8Unorm     = 0x12U;  ///< WGPUTextureFormat_RGBA8Unorm
-inline constexpr std::uint32_t kRgba8UnormSrgb = 0x13U;  ///< WGPUTextureFormat_RGBA8UnormSrgb
-inline constexpr std::uint32_t kBgra8Unorm     = 0x17U;  ///< WGPUTextureFormat_BGRA8Unorm (common surface)
-inline constexpr std::uint32_t kBgra8UnormSrgb = 0x18U;  ///< WGPUTextureFormat_BGRA8UnormSrgb
+inline constexpr std::uint32_t kRgba8Unorm     = 0x16U;  ///< WGPUTextureFormat_RGBA8Unorm
+inline constexpr std::uint32_t kRgba8UnormSrgb = 0x17U;  ///< WGPUTextureFormat_RGBA8UnormSrgb
+inline constexpr std::uint32_t kBgra8Unorm     = 0x1BU;  ///< WGPUTextureFormat_BGRA8Unorm (common surface)
+inline constexpr std::uint32_t kBgra8UnormSrgb = 0x1CU;  ///< WGPUTextureFormat_BGRA8UnormSrgb
 }  // namespace texture_format
 
 /// True when `fmt` is one of the four 8-bit RGBA/BGRA colour formats the UI
@@ -86,15 +86,23 @@ inline constexpr std::uint32_t kBgra8UnormSrgb = 0x18U;  ///< WGPUTextureFormat_
 //   offset 16 : u8 r,g,b,a (unorm8x4)         -> @location(2) vec4<f32>
 //   offset 20 : u8 variant + 3 pad (uint8x4)  -> @location(3) vec4<u32> (x = variant)
 //
-// WebGPU vertex format codes (wgpu::VertexFormat) used here:
-//   Float32x2 = 0x1C, Unorm8x4 = 0x05, Uint8x4 = 0x01.
+// WebGPU vertex format codes (WGPUVertexFormat / wgpu::VertexFormat) used here:
+//   Uint8x4 = 0x03, Unorm8x4 = 0x09, Float32x2 = 0x1D.
 // ---------------------------------------------------------------------------
 namespace vertex_format
 {
-inline constexpr std::uint32_t kFloat32x2 = 0x1CU;  ///< wgpu::VertexFormat::Float32x2
-inline constexpr std::uint32_t kUnorm8x4  = 0x05U;  ///< wgpu::VertexFormat::Unorm8x4
-inline constexpr std::uint32_t kUint8x4   = 0x01U;  ///< wgpu::VertexFormat::Uint8x4
+inline constexpr std::uint32_t kUint8x4   = 0x03U;  ///< wgpu::VertexFormat::Uint8x4
+inline constexpr std::uint32_t kUnorm8x4  = 0x09U;  ///< wgpu::VertexFormat::Unorm8x4
+inline constexpr std::uint32_t kFloat32x2 = 0x1DU;  ///< wgpu::VertexFormat::Float32x2
 }  // namespace vertex_format
+
+/// True when `fmt` is one of the vertex attribute formats used by the UI Vertex layout.
+[[nodiscard]] constexpr bool is_valid_vertex_format(std::uint32_t fmt) noexcept
+{
+    return fmt == vertex_format::kFloat32x2
+        || fmt == vertex_format::kUnorm8x4
+        || fmt == vertex_format::kUint8x4;
+}
 
 /// One vertex attribute, decoupled from Dawn's wgpu::VertexAttribute so the
 /// layout can be asserted on the host.  Mirrors the field order of

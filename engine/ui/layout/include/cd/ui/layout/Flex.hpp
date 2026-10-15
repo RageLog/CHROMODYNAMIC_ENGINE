@@ -195,6 +195,10 @@ public:
     /// node in the tree.
     void solve(NodeId root, float available_width, float available_height);
 
+    /// Solve layout and mirror horizontal X coordinates across `available_width`
+    /// for right-to-left (RTL) locales.
+    void solve_rtl(NodeId root, float available_width, float available_height);
+
     /// Number of nodes currently in the tree.
     [[nodiscard]] std::size_t node_count() const noexcept { return nodes_.size(); }
 
@@ -240,5 +244,22 @@ private:
     /// Phase C: compute justify offsets, assign computed_rect per child, recurse.
     void position_children(NodeId node_id, const SolveContext& ctx);
 };
+
+/// Uniform / multi-column 2D grid layout specification (Asset Browser tiles,
+/// Inventory grids, Inspector 2-column property grids).
+struct GridSpec
+{
+    std::uint32_t columns    { 4U };
+    float         row_height { 64.0F };
+    float         gap_x      { 8.0F };
+    float         gap_y      { 8.0F };
+    EdgeInsets    padding    {};
+    bool          rtl        { false };
+};
+
+/// Compute `cell_count` cell rects inside `bounds` according to `spec`.
+[[nodiscard]] std::vector<Rect> solve_grid(const Rect&     bounds,
+                                           const GridSpec& spec,
+                                           std::size_t     cell_count);
 
 }  // namespace cd::ui::layout

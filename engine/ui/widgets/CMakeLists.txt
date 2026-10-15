@@ -24,6 +24,7 @@ cd_add_library(ui_widgets
     src/PopoutDock.cpp
     src/Table.cpp
     src/TreeView.cpp
+    src/EditorAndHudWidgets.cpp
   PUBLIC_DEPS
     cd::core
     cd::platform

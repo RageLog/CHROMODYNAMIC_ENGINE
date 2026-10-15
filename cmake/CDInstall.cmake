@@ -95,7 +95,7 @@ function(cd_finalize_install)
   set(_doc_files "")
   foreach(_doc IN ITEMS Readme.md CHANGELOG.md CLAUDE.md
                         docs/ARCHITECTURE.md docs/LIBRARIES.md
-                        docs/DESIGN.md docs/PLAN.md docs/Modules.dox)
+                        docs/DESIGN.md docs/PLAN.md docs/ENGINE_GUIDE.md docs/Modules.dox)
     if(EXISTS "${CMAKE_SOURCE_DIR}/${_doc}")
       list(APPEND _doc_files "${CMAKE_SOURCE_DIR}/${_doc}")
     endif()
@@ -109,6 +109,23 @@ function(cd_finalize_install)
       FILES_MATCHING PATTERN "*.md"
     )
   endif()
+  if(EXISTS "${CMAKE_SOURCE_DIR}/showcases")
+    install(DIRECTORY "${CMAKE_SOURCE_DIR}/showcases"
+      DESTINATION "${CMAKE_INSTALL_DATADIR}/chromodynamic"
+    )
+  endif()
+
+  # FAZ 10 Wave 10.3 — CPack / NSIS / ZIP / TGZ distribution configuration
+  set(CPACK_PACKAGE_NAME "CHROMODYNAMIC" PARENT_SCOPE)
+  set(CPACK_PACKAGE_VENDOR "CHROMODYNAMIC Engine Team" PARENT_SCOPE)
+  set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "CHROMODYNAMIC Cross-Platform C++23 Hybrid 2D+3D Game Engine & Editor" PARENT_SCOPE)
+  set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}" PARENT_SCOPE)
+  if(WIN32)
+    set(CPACK_GENERATOR "ZIP;NSIS" PARENT_SCOPE)
+  else()
+    set(CPACK_GENERATOR "TGZ;ZIP" PARENT_SCOPE)
+  endif()
+  include(CPack)
 
   message(STATUS "[cd-install] Install prefix: ${CMAKE_INSTALL_PREFIX}")
   message(STATUS "[cd-install]   config dir: ${_config_dir}")
@@ -116,3 +133,4 @@ function(cd_finalize_install)
   message(STATUS "[cd-install]   lib dir:     ${CMAKE_INSTALL_LIBDIR}")
   message(STATUS "[cd-install]   bin dir:     ${CMAKE_INSTALL_BINDIR}")
 endfunction()
+

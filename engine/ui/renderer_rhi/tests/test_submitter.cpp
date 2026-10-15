@@ -128,3 +128,55 @@ TEST(Submitter, RecordRunsWithoutCrashOnNullDevice)
     // doesn't expose introspection. Smoke-tests that the call sequence
     // doesn't crash + the API surface is callable end-to-end.
 }
+
+TEST(Submitter, MultiTextureSlotRegistrationAndAllMaterialVariantsRecord)
+{
+    cd::rhi::NullDevice dev;
+    rh::SubmitterCreateInfo info {};
+    info.max_vertices = 512U;
+    info.max_indices  = 1024U;
+    auto r = rh::Submitter::create(dev, info);
+    ASSERT_TRUE(r.has_value());
+    auto& sub = *r;
+
+    cd::rhi::TextureDesc td {};
+    td.extent = { 64U, 64U, 1U };
+    td.format = cd::rhi::Format::kRGBA8Unorm;
+    td.usage  = cd::rhi::TextureUsage::kSampled;
+    auto tex0 = dev.create_texture(td);
+    auto tex1 = dev.create_texture(td);
+    ASSERT_TRUE(tex0.has_value() && tex1.has_value());
+
+    cd::rhi::TextureViewDesc vd {};
+    vd.texture = *tex0;
+    vd.format  = td.format;
+    auto view0 = dev.create_texture_view(vd);
+    vd.texture = *tex1;
+    auto view1 = dev.create_texture_view(vd);
+    auto samp  = dev.create_sampler(cd::rhi::SamplerDesc {});
+    ASSERT_TRUE(view0.has_value() && view1.has_value() && samp.has_value());
+
+    EXPECT_TRUE(sub.set_texture_slot(0U, *view0, *samp));
+    EXPECT_TRUE(sub.set_texture_slot(2U, *view1, *samp));
+    EXPECT_EQ(sub.texture_slot_count(), 2U);
+    EXPECT_TRUE(sub.has_texture_slot(0U));
+    EXPECT_TRUE(sub.has_texture_slot(2U));
+    EXPECT_FALSE(sub.has_texture_slot(1U));
+
+    ur::DrawBatcher batcher;
+    batcher.begin_frame();
+    batcher.quad(0.0F, 0.0F, 50.0F, 50.0F, ur::Color::white());
+    batcher.nine_patch(10.0F, 10.0F, 80.0F, 60.0F, 0U, ur::NinePatchDesc {});
+    batcher.linear_gradient(0.0F, 0.0F, 50.0F, 50.0F, ur::Color::white(), ur::Color::black());
+    batcher.backdrop_blur(0.0F, 0.0F, 50.0F, 50.0F, 8.0F);
+    batcher.drop_shadow(10.0F, 10.0F, 50.0F, 50.0F, 6.0F);
+    batcher.rounded_rect(10.0F, 10.0F, 50.0F, 50.0F, 4.0F, ur::Color::white());
+    EXPECT_TRUE(sub.upload(batcher));
+
+    auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
+    ASSERT_NE(cmd, nullptr);
+    cmd->begin();
+    sub.record(*cmd, { 1280U, 720U });
+    cmd->end();
+}
+

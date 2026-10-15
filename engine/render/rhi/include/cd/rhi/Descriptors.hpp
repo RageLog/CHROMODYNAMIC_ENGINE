@@ -230,13 +230,11 @@ struct AttachmentDesc
 
 // ---- Acceleration structures (Phase 14.G — Wave 163) ----------------------
 //
-// API shape lands at v0.40.0; backend implementation is queued for a
-// follow-up wave alongside the ray-tracing pipeline + shader-binding
-// table. The interface mirrors VK_KHR_acceleration_structure +
-// DXR Tier 1.1: BLAS (per-mesh triangle geometry) and TLAS (instance
-// list referencing BLAS handles).
+// Implemented across Vulkan (VK_KHR_acceleration_structure), D3D12 (DXR Tier 1.1),
+// and Metal (MTLAccelerationStructure): BLAS (per-mesh triangle geometry) and
+// TLAS (instance list referencing BLAS handles).
 //
-// Backends that don't support RT return kNotImplemented from the
+// Backends or adapters that don't support RT return kNotImplemented from the
 // `create_acceleration_structure` / `build_acceleration_structure`
 // entry points; consumers gate on `device.features().ray_tracing`
 // before reaching for these.

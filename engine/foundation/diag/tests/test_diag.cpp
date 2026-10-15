@@ -621,4 +621,19 @@ TEST(DeadlineMonitor, IsArmedReturnsFalseForUnknown)
     EXPECT_FALSE(m.is_armed("not-registered"));
 }
 
+/// FAZ 10 Wave 10.2 — Stack backtrace capture and .cdcrash minidump generation.
+TEST_F(CrashReporterTest, Faz10Wave102CaptureStackBacktraceAndWriteMinidumpReport)
+{
+    const auto frames = cd::diag::CrashReporter::capture_stack_backtrace(8);
+    ASSERT_FALSE(frames.empty());
+    EXPECT_NE(frames.front().address, 0U);
+    EXPECT_FALSE(frames.front().symbol_name.empty());
+
+    cd::diag::CrashReporter cr;
+    const std::string inline_report = cr.write_minidump_report("gpu-device-removed", cd::diag::CrashSeverity::kNonFatal);
+    EXPECT_NE(inline_report.find("CDCRASH_MINIDUMP_V1"), std::string::npos);
+    EXPECT_NE(inline_report.find("reason=gpu-device-removed"), std::string::npos);
+}
+
 }  // namespace
+

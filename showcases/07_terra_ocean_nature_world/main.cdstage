@@ -1,0 +1,6 @@
+# CHROMODYNAMIC .cdstage v1
+stage "07_terra_ocean_nature_world"
+  element TerraClipmap3D "AlpineClipmapTerrain" { enabled=true clipmap_rings=6 world_extent_m=4096.0 }
+  element OceanWave3D "FftOceanSurface" { enabled=true wind_speed_mps=14.0 choppiness=1.35 }
+  element SwarmMesh3D "PineForestSwarm" { enabled=true instance_count=8192 cull_distance_m=300.0 }
+end_stage

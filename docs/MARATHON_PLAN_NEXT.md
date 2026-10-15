@@ -1,13 +1,9 @@
-# Marathon Plan — Next Sessions
+# Marathon Plan — Next Sessions (✅ 100% COMPLETED — FAZ 1–10 Close-Out)
 
-Last updated: 2026-05-31, after `phase552-M2-library-polish-close-out`.
-Baseline: 158 / 158 tests PASS + 1 disabled golden, ninja-debug clean, 120+ libraries.
+> **Status**: All Tiers (`Tier 0` through `Tier 5`) and the subsequent 10-Phase Master Plan ([`docs/PLAN_NEXT_PHASES.md`](PLAN_NEXT_PHASES.md), `FAZ 1`–`FAZ 10`, 29 Waves) are **100% implemented and verified (`193 libraries`, `347/347 CTest suites PASSED`)**.
 
-This document is the **forward backlog** — what remains to be built after
-the Tier 0-5 complete close-out (phases 511-535). Items are grouped by
-domain and prioritized within each group. Most items have an existing
-ADR in `docs/ADR/` that should be the authoritative spec; this doc is
-just the schedule + status lens.
+This document records the historical forward backlog that was completed across
+the Tier 0-5 and FAZ 1-10 autonomous marathons.
 
 ---
 

@@ -217,11 +217,53 @@ private:
 /// thin quad between the two children of a `kSplit` node. Hovering it
 /// reports `state.hovered`; dragging it (`pressed` then `down`) updates
 /// the parent split's `ratio` in real time.
-struct Splitter
+#ifndef CD_UI_WIDGETS_SPLITTER_DEFINED
+#define CD_UI_WIDGETS_SPLITTER_DEFINED
+class Splitter
 {
+public:
     static constexpr float kHandleThickness { 6.0F };  ///< visible bar
     static constexpr float kHitTolerance    { 8.0F };  ///< click target padding
+
+    using ChangeCallback = std::function<void(float)>;
+
+    Splitter() = default;
+    explicit Splitter(bool vertical_split,
+                      float initial_ratio = 0.5F,
+                      ChangeCallback on_change = {});
+
+    void set_rect(Rect r) noexcept { rect_ = r; }
+    [[nodiscard]] const Rect& rect() const noexcept { return rect_; }
+
+    void set_ratio(float r) noexcept;
+    [[nodiscard]] float ratio() const noexcept { return ratio_; }
+
+    void set_limits(float min_r, float max_r) noexcept;
+    void set_bar_thickness(float t) noexcept { bar_thickness_ = t > 1.0F ? t : 1.0F; }
+    [[nodiscard]] float bar_thickness() const noexcept { return bar_thickness_; }
+
+    [[nodiscard]] bool is_vertical() const noexcept { return vertical_; }
+    [[nodiscard]] bool is_dragging() const noexcept { return dragging_; }
+
+    [[nodiscard]] Rect first_rect() const noexcept;
+    [[nodiscard]] Rect second_rect() const noexcept;
+    [[nodiscard]] Rect bar_rect() const noexcept;
+
+    bool tick(const InputState& input);
+    void draw(cd::ui::renderer::DrawBatcher& batcher, const Theme& theme) const;
+
+private:
+    Rect           rect_          {};
+    bool           vertical_      { true };  ///< true = left | right, false = top / bottom
+    float          ratio_         { 0.5F };
+    float          min_ratio_     { 0.1F };
+    float          max_ratio_     { 0.9F };
+    float          bar_thickness_ { 6.0F };
+    bool           dragging_      { false };
+    bool           hovered_       { false };
+    ChangeCallback on_change_     {};
 };
+#endif // CD_UI_WIDGETS_SPLITTER_DEFINED
 
 // ---- TabStrip (per tab-group) --------------------------------------------
 

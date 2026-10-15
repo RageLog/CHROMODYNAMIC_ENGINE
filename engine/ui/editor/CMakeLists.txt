@@ -34,10 +34,17 @@ cd_add_library(editor_ui
 # Phase 5 / Sprint S5.3 — editor application shell.
 cd_add_library(editor
   TYPE STATIC
-  SOURCES src/Editor.cpp
+  SOURCES
+    src/Editor.cpp
+    src/FullFledgedEditorSuite.cpp
   PUBLIC_DEPS
     cd::editor_ui
     cd::ui
+    cd::ui_widgets
+    cd::element_core
+    cd::elements_domain
+    cd::gameplay_framework
+    cd::runtime
     cd::scene
     cd::ecs
     cd::input

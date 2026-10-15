@@ -1,0 +1,8 @@
+{
+  "stage": "11_custom_ui_hud_and_menus",
+  "elements": [
+    {"class": "HudCanvas", "name": "RtlHudAndMinimapOverlay"},
+    {"class": "SpatialSlate3D", "name": "DiegeticHologramTerminal"},
+    {"class": "CineLens3D", "name": "MenuBackdropCamera"}
+  ]
+}

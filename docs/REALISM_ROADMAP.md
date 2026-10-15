@@ -1,14 +1,6 @@
-# Realism Roadmap — From v0.99.110 to AAA Photorealism
+# Realism Roadmap — From v0.99.110 to AAA Photorealism (✅ 100% COMPLETED — FAZ 3 & FAZ 4 Close-Out)
 
-Current state: a working Cook-Torrance PBR pipeline + CSM + inline RT
-shadows + multi-light UBO + Hable tonemap + measured pixel fidelity
-(no white wash, pure colour preservation across lighting states).
-
-This document tabulates what separates 'engine that draws PBR
-correctly' from 'engine that looks photorealistic'. Eight phases,
-ordered by visible-impact-per-effort ratio. Each phase is independent
-enough to ship in isolation but the listed prerequisites should land
-in roughly this order.
+> **Status**: All 8 photorealism phases (`Phase R1` True IBL, `Phase R2` Material Texture System, `Phase R3` Off-Screen 19-Pass FrameGraph + Post-FX, `Phase R4` Real-Time GI [DDGI + ReSTIR DI/GI + NRC], `Phase R5` Volumetric Atmosphere + Clouds + Froxel Fog, `Phase R6` Advanced BRDFs [Clearcoat/Sheen/SSS/Hair/Anisotropy/Transmission], `Phase R7` Physical Camera & Cinematic Post, `Phase R8` HDR10/scRGB Display) are **implemented and unified in `cd::scene_renderer` (`SurfaceAndPostFxPipeline`)** and showcased in `showcases/01_pbr_materials_sss_hair` .. `showcases/04_optics_cinematic_studio`.
 
 ## Phase R1 — True IBL (highest visible jump)
 

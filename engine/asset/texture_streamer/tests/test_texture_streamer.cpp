@@ -1141,3 +1141,41 @@ TEST(TextureStreamer, EnqueueMipUpgradeDoesNotLeakGpuHandle)
     EXPECT_EQ(device.live_texture_count(), 1U);
     EXPECT_EQ(device.live_texture_count(), ts.loaded_count());
 }
+
+// ---- T37: failed create_texture does NOT evict existing resident texture ----
+//
+// Wave 1.1 regression: if the streamer is at budget capacity (budget == 1) and
+// the next decoded texture fails `device.create_texture()`, the existing
+// resident texture must NOT be evicted.
+
+TEST(TextureStreamer, FailedCreateTextureDoesNotEvictResidentLru)
+{
+    PathGuard g1 { tmp_cdtex_path() };
+    PathGuard g2 { tmp_cdtex_path() };
+    write_cdtex(g1.path, 32U, 32U);
+    write_cdtex(g2.path, 32U, 32U);
+    const std::string p1 = g1.path.string();
+    const std::string p2 = g2.path.string();
+
+    cd::rhi::NullDevice device;
+    TextureStreamer     ts;
+    ts.set_texture_budget(1U);
+
+    // First texture loads normally and fills the budget (1 / 1).
+    ts.enqueue(StreamRequest{ p1, 0U, 200U });
+    ts.tick(0.016F, device);
+    ASSERT_TRUE(ts.is_loaded(p1));
+    ASSERT_EQ(ts.loaded_count(), 1U);
+
+    // Second texture decodes from disk, but GPU texture allocation fails.
+    device.set_fail_texture_creation(true);
+    ts.enqueue(StreamRequest{ p2, 0U, 200U });
+    ts.tick(0.016F, device);
+
+    // p2 failed to allocate on the GPU, so p1 MUST still be resident!
+    EXPECT_FALSE(ts.is_loaded(p2));
+    EXPECT_TRUE(ts.is_loaded(p1));
+    EXPECT_EQ(ts.loaded_count(), 1U);
+    EXPECT_EQ(device.live_texture_count(), 1U);
+}
+

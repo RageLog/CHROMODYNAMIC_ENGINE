@@ -229,4 +229,109 @@ private:
     float              now_s_ { 0.0F };
 };
 
+// ---- CubicBezier -----------------------------------------------------------
+
+/// CSS-style cubic-bezier(x1, y1, x2, y2) timing function with
+/// Newton-Raphson parameter solver.
+struct CubicBezier
+{
+    float x1 { 0.25F };
+    float y1 { 0.10F };
+    float x2 { 0.25F };
+    float y2 { 1.00F };
+
+    [[nodiscard]] static constexpr CubicBezier ease()        noexcept { return { 0.25F, 0.10F, 0.25F, 1.00F }; }
+    [[nodiscard]] static constexpr CubicBezier ease_in()     noexcept { return { 0.42F, 0.00F, 1.00F, 1.00F }; }
+    [[nodiscard]] static constexpr CubicBezier ease_out()    noexcept { return { 0.00F, 0.00F, 0.58F, 1.00F }; }
+    [[nodiscard]] static constexpr CubicBezier ease_in_out() noexcept { return { 0.42F, 0.00F, 0.58F, 1.00F }; }
+
+    [[nodiscard]] constexpr float evaluate(float t) const noexcept
+    {
+        if (t <= 0.0F) return 0.0F;
+        if (t >= 1.0F) return 1.0F;
+
+        const float cx = 3.0F * x1;
+        const float bx = 3.0F * (x2 - x1) - cx;
+        const float ax = 1.0F - cx - bx;
+
+        const float cy = 3.0F * y1;
+        const float by = 3.0F * (y2 - y1) - cy;
+        const float ay = 1.0F - cy - by;
+
+        float u = t;
+        for (int i = 0; i < 8; ++i)
+        {
+            const float x_u  = ((ax * u + bx) * u + cx) * u - t;
+            const float dx_u = (3.0F * ax * u + 2.0F * bx) * u + cx;
+            if (dx_u > -1e-6F && dx_u < 1e-6F) break;
+            u -= x_u / dx_u;
+            if (u < 0.0F) u = 0.0F;
+            if (u > 1.0F) u = 1.0F;
+        }
+        return ((ay * u + by) * u + cy) * u;
+    }
+};
+
+// ---- SpringDamper ----------------------------------------------------------
+
+/// Second-order damped harmonic oscillator for responsive UI micro-interactions
+/// (scroll momentum, panel resize, gizmo hover, dock tab slide).
+class SpringDamper
+{
+public:
+    constexpr SpringDamper(float initial   = 0.0F,
+                           float stiffness = 180.0F,
+                           float damping   = 24.0F) noexcept
+        : value_ { initial }
+        , target_ { initial }
+        , stiffness_ { stiffness }
+        , damping_ { damping }
+    {
+    }
+
+    constexpr void set_target(float t) noexcept { target_ = t; }
+    [[nodiscard]] constexpr float target() const noexcept { return target_; }
+
+    constexpr void snap(float v) noexcept
+    {
+        value_    = v;
+        target_   = v;
+        velocity_ = 0.0F;
+    }
+
+    [[nodiscard]] constexpr float value() const noexcept { return value_; }
+    [[nodiscard]] constexpr float velocity() const noexcept { return velocity_; }
+
+    constexpr float step(float dt_s) noexcept
+    {
+        if (dt_s <= 0.0F) return value_;
+        // Sub-step at <= 4ms for unconditional semi-implicit Euler stability.
+        float remaining = dt_s > 0.25F ? 0.25F : dt_s;
+        constexpr float kMaxStep = 0.004F;
+        while (remaining > 0.0F)
+        {
+            const float h = remaining < kMaxStep ? remaining : kMaxStep;
+            const float accel = -stiffness_ * (value_ - target_) - damping_ * velocity_;
+            velocity_ += accel * h;
+            value_    += velocity_ * h;
+            remaining -= h;
+        }
+        return value_;
+    }
+
+    [[nodiscard]] constexpr bool at_rest(float eps = 1e-3F) const noexcept
+    {
+        const float dx = value_ - target_;
+        const float dv = velocity_;
+        return (dx > -eps && dx < eps) && (dv > -eps && dv < eps);
+    }
+
+private:
+    float value_     { 0.0F };
+    float target_    { 0.0F };
+    float velocity_  { 0.0F };
+    float stiffness_ { 180.0F };
+    float damping_   { 24.0F };
+};
+
 }  // namespace cd::ui::animation

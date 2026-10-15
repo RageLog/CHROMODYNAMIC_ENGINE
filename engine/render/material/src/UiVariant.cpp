@@ -81,7 +81,7 @@ constexpr std::uint32_t kUiDefaultVertexStride = 24U;
                                           bool include_sampler)
 {
     std::string s;
-    s.reserve(1024U);
+    s.reserve(1536U);
     s += "#version 450\n";
     s += "layout(set = 0, binding = ";
     s += std::to_string(theme_slot);
@@ -106,14 +106,30 @@ constexpr std::uint32_t kUiDefaultVertexStride = 24U;
     if (include_sampler)
     {
         s += "    const float kSdfZero = 128.0 / 255.0;\n"
-             "    if (v_uv.x >= 0.0 && v_uv.x <= 1.0 &&\n"
-             "        v_uv.y >= 0.0 && v_uv.y <= 1.0) {\n"
+             "    if (v_variant == 1u || v_variant == 3u) {\n"
+             "        base *= texture(u_sdf_atlas, v_uv);\n"
+             "    } else if (v_uv.x >= 0.0 && v_uv.x <= 1.0 &&\n"
+             "               v_uv.y >= 0.0 && v_uv.y <= 1.0 &&\n"
+             "               (v_variant == 0u || v_variant == 2u)) {\n"
              "        float d = texture(u_sdf_atlas, v_uv).r;\n"
              "        float a = smoothstep(kSdfZero - 0.0625, kSdfZero + 0.0625, d);\n"
              "        base.a *= a;\n"
              "    }\n";
     }
-    s += "    vec4 tint = (v_variant == 1u) ? u_theme.surface : u_theme.primary;\n"
+    s += "    if (v_variant == 5u) {\n"
+         "        float edge = 1.0 - smoothstep(0.0, 0.04, min(min(v_uv.x, 1.0 - v_uv.x), min(v_uv.y, 1.0 - v_uv.y)));\n"
+         "        base.rgb = mix(base.rgb, vec3(1.0), edge * 0.15);\n"
+         "    } else if (v_variant == 6u) {\n"
+         "        vec2 d = abs(v_uv * 2.0 - 1.0) - vec2(0.75);\n"
+         "        float dist = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);\n"
+         "        float falloff = 1.0 - smoothstep(-0.05, 0.25, dist);\n"
+         "        base.a *= (falloff * falloff);\n"
+         "    } else if (v_variant == 7u) {\n"
+         "        vec2 q = abs(v_uv * 2.0 - 1.0) - vec2(0.85);\n"
+         "        float dist = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - 0.15;\n"
+         "        base.a *= (1.0 - smoothstep(-0.02, 0.02, dist));\n"
+         "    }\n"
+         "    vec4 tint = (v_variant == 1u) ? u_theme.surface : u_theme.primary;\n"
          "    out_color = base * tint;\n"
          "}\n";
     return s;

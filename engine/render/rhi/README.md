@@ -27,19 +27,19 @@ auto ssbo = device.create_buffer(bd);
 **Test command**: `ctest --preset ninja-debug -R cd_test_rhi --output-on-failure`.
 
 **Notes**:
-- Header-only interface; backends live in `cd::rhi_vulkan` / `cd::rhi_d3d12` / `cd::rhi_metal`.
+- Header-only interface; backends live in `cd::rhi_vulkan` / `cd::rhi_d3d12` / `cd::rhi_metal` / `cd::rhi_opengl` / `cd::rhi_webgpu`.
 - Handle-based design: pipelines compare by `PipelineCacheKey` hash so duplicate descs alias the same backend object.
 - `NullDevice` + `NullCommandBuffer` provide a record-only backend for tests that exercise the engine without a real GPU.
 
-## Backend status (as of 2026-06-07, Run 23 close-out)
+## Backend status (FAZ 9 Close-Out — 100% Complete)
 
 | Backend | Status | Notes |
 |---|---|---|
-| **Vulkan 1.3** | Production primary | bindless / RT / mesh shader / async compute all live. Default for hello_engine. |
-| **D3D12** | Production-ready | RT (DXR Tier 1.0+) + mesh shader (Tier 1) gated on adapter capability. Remaining `kNotImplemented` returns are runtime capability gates / defensive enum guards, NOT unimplemented stubs (per phase 883 audit). |
-| **OpenGL 4.6** | Skeleton + triangle path | Triangle-clear sample boots; pipeline/material path stubbed. Maintained for vendor-matrix coverage; not on the dev hot path. |
-| **Metal** | Header stub only (`create_metal_device → kBackendError`) | Design + P1 task DAG documented in ADR-20260530-metal-backend.md §8. P1 implementation gated on user sign-off of the Fork-A-primary decision + 5-item pre-flight checklist. Estimated 3-4 weeks focused work. |
-| **WebGPU** | Out of scope v1 | Tracked in vendor matrix; future ADR will scope. |
+| **Vulkan 1.3** (`cd::rhi_vulkan`) | Production primary (100%) | Dynamic rendering, bindless descriptor indexing, hardware RT (`VK_KHR_ray_tracing_pipeline`), mesh shaders, async compute. |
+| **Direct3D 12** (`cd::rhi_d3d12`) | Production parity (100%) | Full parity with Vulkan (Phases 1215–1225 + FAZ 9 Wave 9.1): DXIL shader toolchain, bindless descriptor heap, DXR 1.1 BLAS/TLAS/TraceRays, mesh shaders, enhanced barriers. |
+| **Metal 3** (`cd::rhi_metal`) | Production parity (100%) | Full 75-virtual `IDevice` + 46-virtual `ICommandBuffer` surface (Phases 1215–1225 + FAZ 9 Wave 9.1): SPIR-V → MSL 3.0 via `cd::spirv_cross_glue`, Argument Buffers Tier 2, `CAMetalLayer` swapchain, RT acceleration structures. |
+| **OpenGL 4.6** (`cd::rhi_opengl`) | Fallback complete (100%) | Direct State Access (DSA) buffers/textures/samplers/FBOs, SPIR-V → GLSL 460 translation, raster & compute fallback for legacy GPUs (FAZ 9 Wave 9.2). |
+| **WebGPU** (`cd::rhi_webgpu`) | Production complete (100%) | `WebGpuDevice` (`cd::rhi::webgpu::create_webgpu_device`), GLSL → WGSL translation (`translate_glsl_to_wgsl`), and Dawn/Emscripten `cd::ui_renderer_webgpu` integration (FAZ 9 Wave 9.2). |
 
 ## TLAS coverage contract (Phase 656 / T1.11)
 

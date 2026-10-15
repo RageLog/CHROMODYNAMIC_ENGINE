@@ -2,11 +2,15 @@ param(
     [Parameter(Mandatory=$true)]
     [string]$Target,
     [string]$Filter = "*",
-    [string]$Preset = "debug"
+    [string]$Preset = "ninja-base",
+    [string]$Config = "Debug"
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
+if ($Preset -eq "debug" -and (Test-Path "build/ninja-base")) {
+    $Preset = "ninja-base"
+}
 $buildDir = "build/$Preset"
 
 if (-not (Test-Path $buildDir)) {
@@ -14,8 +18,8 @@ if (-not (Test-Path $buildDir)) {
     cmake --preset $Preset | Out-Null
 }
 
-Write-Output "[TDD] Building single target '$Target'..."
-$buildOut = cmake --build $buildDir --target $Target 2>&1
+Write-Output "[TDD] Building single target '$Target' ($Config)..."
+$buildOut = cmake --build $buildDir --config $Config --target $Target 2>&1
 if ($LASTEXITCODE -ne 0) {
     Write-Output "[TDD] BUILD FAILED for '$Target' (Red):"
     $buildOut | Select-String -Pattern "error[:\s]|FAILED:" | Select-Object -First 15 | ForEach-Object { Write-Output $_.Line }
@@ -24,7 +28,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Output "[TDD] Running ctest for '$Target' (filter='$Filter')..."
-$ctestArgs = @("--test-dir", $buildDir, "-R", $Target, "--output-on-failure")
+$ctestArgs = @("--test-dir", $buildDir, "-C", $Config, "-R", $Target, "--output-on-failure")
 if ($Filter -ne "*") {
     $ctestArgs += @("--verbose")
 }

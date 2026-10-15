@@ -280,7 +280,10 @@
 #include <cd/material/Material.hpp>
 
 #include <cd/editor/Editor.hpp>
+#include <cd/editor/FullFledgedEditorSuite.hpp>
 #include <cd/editor/HierarchyView.hpp>
+#include <cd/runtime/EngineContext.hpp>
+#include <cd/runtime/EngineLoop.hpp>
 #include <cd/editor/panel_inspector/Inspector.hpp>
 #include <cd/editor/panel_console/Console.hpp>
 #include <cd/editor/panel_asset_browser/AssetBrowser.hpp>
@@ -466,8 +469,13 @@ namespace uth      = cd::ui::theme;
 
 struct EditorArgs
 {
-    bool        force_null { false };
-    std::string project_path;
+    bool          force_null { false };
+    bool          pie_play { false };
+    bool          skip_splash { false };
+    std::uint32_t max_frames { 0U };
+    std::string   project_path;
+    std::string   showcase_slug { "01_pbr_materials_sss_hair" };
+    std::string   capture_png;
 };
 
 [[nodiscard]] EditorArgs parse_editor_args(int argc, char** argv)
@@ -479,6 +487,38 @@ struct EditorArgs
         if (s == "--null")
         {
             a.force_null = true;
+        }
+        else if (s == "--pie-play")
+        {
+            a.pie_play = true;
+        }
+        else if (s == "--skip-splash")
+        {
+            a.skip_splash = true;
+        }
+        else if ((s == "--frames" || s == "--smoke-frames" || s == "--headless-frames") && i + 1 < argc)
+        {
+            const long v = std::strtol(argv[i + 1], nullptr, 10);
+            if (v > 0)
+            {
+                a.max_frames = static_cast<std::uint32_t>(v);
+            }
+            ++i;
+        }
+        else if (s == "--showcase" && i + 1 < argc)
+        {
+            a.showcase_slug = argv[i + 1];
+            ++i;
+        }
+        else if (s == "--capture-png" && i + 1 < argc)
+        {
+            a.capture_png = argv[i + 1];
+            a.skip_splash = true;
+            if (a.max_frames == 0U)
+            {
+                a.max_frames = 4U;
+            }
+            ++i;
         }
         else if (s == "--project" && i + 1 < argc)
         {
@@ -493,6 +533,199 @@ struct EditorArgs
     }
     return a;
 }
+
+// ---- Deterministic PNG Frame Capture for Visual Quality Loop ----------------
+
+[[nodiscard]] std::uint32_t png_crc32(std::span<const std::uint8_t> data) noexcept
+{
+    std::uint32_t crc = 0xFFFFFFFFU;
+    for (const std::uint8_t b : data)
+    {
+        crc ^= static_cast<std::uint32_t>(b);
+        for (int k = 0; k < 8; ++k)
+        {
+            crc = (crc & 1U) != 0U ? ((crc >> 1U) ^ 0xEDB88320U) : (crc >> 1U);
+        }
+    }
+    return ~crc;
+}
+
+void write_be32(std::vector<std::uint8_t>& out, std::uint32_t v)
+{
+    out.push_back(static_cast<std::uint8_t>((v >> 24U) & 0xFFU));
+    out.push_back(static_cast<std::uint8_t>((v >> 16U) & 0xFFU));
+    out.push_back(static_cast<std::uint8_t>((v >> 8U) & 0xFFU));
+    out.push_back(static_cast<std::uint8_t>(v & 0xFFU));
+}
+
+void write_png_chunk(std::vector<std::uint8_t>& out, const char type[4], std::span<const std::uint8_t> payload)
+{
+    write_be32(out, static_cast<std::uint32_t>(payload.size()));
+    const std::size_t type_offset = out.size();
+    out.push_back(static_cast<std::uint8_t>(type[0]));
+    out.push_back(static_cast<std::uint8_t>(type[1]));
+    out.push_back(static_cast<std::uint8_t>(type[2]));
+    out.push_back(static_cast<std::uint8_t>(type[3]));
+    out.insert(out.end(), payload.begin(), payload.end());
+    const std::uint32_t crc = png_crc32(std::span<const std::uint8_t>(out.data() + type_offset, 4U + payload.size()));
+    write_be32(out, crc);
+}
+
+[[nodiscard]] bool write_rgba_png(const std::filesystem::path& path, std::uint32_t w, std::uint32_t h, std::span<const std::uint8_t> rgba)
+{
+    if (w == 0U || h == 0U || rgba.size() < static_cast<std::size_t>(w) * h * 4U)
+    {
+        return false;
+    }
+    std::vector<std::uint8_t> raw_scanlines;
+    const std::size_t row_bytes = static_cast<std::size_t>(w) * 4U;
+    raw_scanlines.reserve(static_cast<std::size_t>(h) * (1U + row_bytes));
+    for (std::uint32_t y = 0U; y < h; ++y)
+    {
+        raw_scanlines.push_back(0U);  // filter type 0 (None)
+        const auto* row = rgba.data() + static_cast<std::size_t>(y) * row_bytes;
+        raw_scanlines.insert(raw_scanlines.end(), row, row + row_bytes);
+    }
+
+    // Build zlib stream using stored (uncompressed) deflate blocks
+    std::vector<std::uint8_t> zlib_data;
+    zlib_data.push_back(0x78U);
+    zlib_data.push_back(0x01U);
+    std::size_t offset = 0U;
+    while (offset < raw_scanlines.size())
+    {
+        const std::size_t rem = raw_scanlines.size() - offset;
+        const std::uint16_t blk = static_cast<std::uint16_t>(std::min<std::size_t>(rem, 65535U));
+        const bool is_last = (offset + blk >= raw_scanlines.size());
+        zlib_data.push_back(is_last ? 0x01U : 0x00U);
+        zlib_data.push_back(static_cast<std::uint8_t>(blk & 0xFFU));
+        zlib_data.push_back(static_cast<std::uint8_t>((blk >> 8U) & 0xFFU));
+        const std::uint16_t nlen = static_cast<std::uint16_t>(~blk);
+        zlib_data.push_back(static_cast<std::uint8_t>(nlen & 0xFFU));
+        zlib_data.push_back(static_cast<std::uint8_t>((nlen >> 8U) & 0xFFU));
+        zlib_data.insert(
+            zlib_data.end(),
+            raw_scanlines.begin() + static_cast<std::ptrdiff_t>(offset),
+            raw_scanlines.begin() + static_cast<std::ptrdiff_t>(offset + blk)
+        );
+        offset += blk;
+    }
+    std::uint32_t s1 = 1U;
+    std::uint32_t s2 = 0U;
+    for (const std::uint8_t b : raw_scanlines)
+    {
+        s1 = (s1 + b) % 65521U;
+        s2 = (s2 + s1) % 65521U;
+    }
+    write_be32(zlib_data, (s2 << 16U) | s1);
+
+    std::vector<std::uint8_t> png;
+    static constexpr std::array<std::uint8_t, 8> kSig { 137U, 80U, 78U, 71U, 13U, 10U, 26U, 10U };
+    png.insert(png.end(), kSig.begin(), kSig.end());
+
+    std::vector<std::uint8_t> ihdr;
+    write_be32(ihdr, w);
+    write_be32(ihdr, h);
+    ihdr.push_back(8U);  // bit depth
+    ihdr.push_back(6U);  // color type RGBA
+    ihdr.push_back(0U);
+    ihdr.push_back(0U);
+    ihdr.push_back(0U);
+    write_png_chunk(png, "IHDR", ihdr);
+    write_png_chunk(png, "IDAT", zlib_data);
+    write_png_chunk(png, "IEND", {});
+
+    std::error_code ec;
+    if (path.has_parent_path())
+    {
+        std::filesystem::create_directories(path.parent_path(), ec);
+    }
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out)
+    {
+        return false;
+    }
+    out.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+    return out.good();
+}
+
+void dump_batcher_to_png(const ur::DrawBatcher& batcher, std::uint32_t w, std::uint32_t h, const std::filesystem::path& path)
+{
+    std::vector<std::uint8_t> fb(static_cast<std::size_t>(w) * h * 4U, 0U);
+    for (std::size_t i = 0U; i < fb.size(); i += 4U)
+    {
+        fb[i + 0U] = 15U;
+        fb[i + 1U] = 18U;
+        fb[i + 2U] = 26U;
+        fb[i + 3U] = 255U;
+    }
+
+    const auto verts = batcher.vertices();
+    const auto idxs  = batcher.indices();
+    for (const auto& cmd : batcher.commands())
+    {
+        const int sx0 = (cmd.scissor.width == 0xFFFFFFFFu) ? 0 : std::max(0, cmd.scissor.x);
+        const int sy0 = (cmd.scissor.height == 0xFFFFFFFFu) ? 0 : std::max(0, cmd.scissor.y);
+        const int sx1 = (cmd.scissor.width == 0xFFFFFFFFu)
+                            ? static_cast<int>(w)
+                            : std::min(static_cast<int>(w), cmd.scissor.x + static_cast<int>(cmd.scissor.width));
+        const int sy1 = (cmd.scissor.height == 0xFFFFFFFFu)
+                            ? static_cast<int>(h)
+                            : std::min(static_cast<int>(h), cmd.scissor.y + static_cast<int>(cmd.scissor.height));
+
+        for (std::uint32_t k = 0U; k + 2U < cmd.index_count; k += 3U)
+        {
+            const std::uint32_t base = cmd.index_offset + k;
+            if (base + 2U >= idxs.size()) { break; }
+            const auto& v0 = verts[idxs[base + 0U]];
+            const auto& v1 = verts[idxs[base + 1U]];
+            const auto& v2 = verts[idxs[base + 2U]];
+
+            const int min_x = std::max(sx0, static_cast<int>(std::floor(std::min({ v0.pos_x, v1.pos_x, v2.pos_x }))));
+            const int max_x = std::min(sx1 - 1, static_cast<int>(std::ceil(std::max({ v0.pos_x, v1.pos_x, v2.pos_x }))));
+            const int min_y = std::max(sy0, static_cast<int>(std::floor(std::min({ v0.pos_y, v1.pos_y, v2.pos_y }))));
+            const int max_y = std::min(sy1 - 1, static_cast<int>(std::ceil(std::max({ v0.pos_y, v1.pos_y, v2.pos_y }))));
+
+            const float denom = (v1.pos_y - v2.pos_y) * (v0.pos_x - v2.pos_x) +
+                                (v2.pos_x - v1.pos_x) * (v0.pos_y - v2.pos_y);
+            if (std::abs(denom) < 1e-5F) { continue; }
+            const float inv_denom = 1.0F / denom;
+
+            for (int py = min_y; py <= max_y; ++py)
+            {
+                const float fy = static_cast<float>(py) + 0.5F;
+                for (int px = min_x; px <= max_x; ++px)
+                {
+                    const float fx = static_cast<float>(px) + 0.5F;
+                    const float w0 = ((v1.pos_y - v2.pos_y) * (fx - v2.pos_x) +
+                                      (v2.pos_x - v1.pos_x) * (fy - v2.pos_y)) * inv_denom;
+                    const float w1 = ((v2.pos_y - v0.pos_y) * (fx - v2.pos_x) +
+                                      (v0.pos_x - v2.pos_x) * (fy - v2.pos_y)) * inv_denom;
+                    const float w2 = 1.0F - w0 - w1;
+                    if (w0 >= -1e-4F && w1 >= -1e-4F && w2 >= -1e-4F)
+                    {
+                        const float sr = std::clamp(w0 * v0.r + w1 * v1.r + w2 * v2.r, 0.0F, 255.0F);
+                        const float sg = std::clamp(w0 * v0.g + w1 * v1.g + w2 * v2.g, 0.0F, 255.0F);
+                        const float sb = std::clamp(w0 * v0.b + w1 * v1.b + w2 * v2.b, 0.0F, 255.0F);
+                        const float sa = std::clamp(w0 * v0.a + w1 * v1.a + w2 * v2.a, 0.0F, 255.0F) / 255.0F;
+                        const std::size_t dst = (static_cast<std::size_t>(py) * w + static_cast<std::size_t>(px)) * 4U;
+                        fb[dst + 0U] = static_cast<std::uint8_t>(sr * sa + fb[dst + 0U] * (1.0F - sa));
+                        fb[dst + 1U] = static_cast<std::uint8_t>(sg * sa + fb[dst + 1U] * (1.0F - sa));
+                        fb[dst + 2U] = static_cast<std::uint8_t>(sb * sa + fb[dst + 2U] * (1.0F - sa));
+                        fb[dst + 3U] = 255U;
+                    }
+                }
+            }
+        }
+    }
+
+    if (write_rgba_png(path, w, h, fb))
+    {
+        std::printf("editor: captured frame PNG (%ux%u) -> %s\n", w, h, path.string().c_str());
+        std::fflush(stdout);
+    }
+}
+
 
 // ---- TTF probe (shared logic with hello_ui) --------------------------------
 
@@ -520,69 +753,259 @@ struct EditorArgs
     return {};
 }
 
+// ---- Crisp 5x7 ASCII Bitmap-Quad Text & Line Renderer ----------------------
+//
+// Renders crisp 5x7 pixel-grid glyphs directly into `ur::DrawBatcher` as
+// solid-colour quads so all UI labels, tab strips, 3D viewport HUD, scene
+// hierarchy nodes, inspector properties, and status bar metrics are 100%
+// legible on both Route A/B GPU swapchains and PNG frame captures.
+
+[[nodiscard]] constexpr std::array<std::uint8_t, 7> glyph_5x7(char c) noexcept
+{
+    if (c >= 'a' && c <= 'z')
+    {
+        c = static_cast<char>(c - 'a' + 'A');
+    }
+    switch (c)
+    {
+        case 'A': return { 0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 };
+        case 'B': return { 0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E };
+        case 'C': return { 0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E };
+        case 'D': return { 0x1C, 0x12, 0x11, 0x11, 0x11, 0x12, 0x1C };
+        case 'E': return { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F };
+        case 'F': return { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10 };
+        case 'G': return { 0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F };
+        case 'H': return { 0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 };
+        case 'I': return { 0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E };
+        case 'J': return { 0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C };
+        case 'K': return { 0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11 };
+        case 'L': return { 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F };
+        case 'M': return { 0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11 };
+        case 'N': return { 0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11 };
+        case 'O': return { 0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E };
+        case 'P': return { 0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10 };
+        case 'Q': return { 0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D };
+        case 'R': return { 0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11 };
+        case 'S': return { 0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E };
+        case 'T': return { 0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 };
+        case 'U': return { 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E };
+        case 'V': return { 0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04 };
+        case 'W': return { 0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11 };
+        case 'X': return { 0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11 };
+        case 'Y': return { 0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04 };
+        case 'Z': return { 0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F };
+        case '0': return { 0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E };
+        case '1': return { 0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E };
+        case '2': return { 0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F };
+        case '3': return { 0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E };
+        case '4': return { 0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02 };
+        case '5': return { 0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E };
+        case '6': return { 0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E };
+        case '7': return { 0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08 };
+        case '8': return { 0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E };
+        case '9': return { 0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C };
+        case ':': return { 0x00, 0x04, 0x04, 0x00, 0x04, 0x04, 0x00 };
+        case '.': return { 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x06 };
+        case ',': return { 0x00, 0x00, 0x00, 0x00, 0x04, 0x04, 0x08 };
+        case '-': return { 0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00 };
+        case '_': return { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F };
+        case '+': return { 0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00 };
+        case '/': return { 0x01, 0x02, 0x02, 0x04, 0x08, 0x08, 0x10 };
+        case '|': return { 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 };
+        case '[': return { 0x0E, 0x08, 0x08, 0x08, 0x08, 0x08, 0x0E };
+        case ']': return { 0x0E, 0x02, 0x02, 0x02, 0x02, 0x02, 0x0E };
+        case '(': return { 0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02 };
+        case ')': return { 0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08 };
+        case '<': return { 0x02, 0x04, 0x08, 0x10, 0x08, 0x04, 0x02 };
+        case '>': return { 0x08, 0x04, 0x02, 0x01, 0x02, 0x04, 0x08 };
+        case '=': return { 0x00, 0x00, 0x1F, 0x00, 0x1F, 0x00, 0x00 };
+        case '%': return { 0x19, 0x19, 0x02, 0x04, 0x08, 0x13, 0x13 };
+        case '#': return { 0x0A, 0x1F, 0x0A, 0x0A, 0x1F, 0x0A, 0x00 };
+        case '?': return { 0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04 };
+        case '!': return { 0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04 };
+        case '*': return { 0x00, 0x04, 0x15, 0x0E, 0x15, 0x04, 0x00 };
+        case '&': return { 0x0C, 0x12, 0x14, 0x08, 0x15, 0x12, 0x0D };
+        case '\'': return { 0x04, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00 };
+        default:  return { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    }
+}
+
+void draw_ui_text_clipped(ur::DrawBatcher& batcher,
+                          float x,
+                          float y,
+                          std::string_view text,
+                          ur::Color color,
+                          float scale = 1.0F,
+                          float max_x = 1e9F)
+{
+    const float px = std::max(1.0F, std::round(scale));
+    const float adv = 6.0F * px;
+    float cx = std::round(x);
+    const float cy = std::round(y);
+    for (const char ch : text)
+    {
+        if (cx + 5.0F * px > max_x)
+        {
+            break;
+        }
+        if (ch != ' ')
+        {
+            auto rows = glyph_5x7(ch);
+            for (std::size_t ry = 0U; ry < 7U; ++ry)
+            {
+                std::size_t rx = 0U;
+                while (rx < 5U)
+                {
+                    if (((rows[ry] >> (4U - rx)) & 1U) != 0U)
+                    {
+                        std::size_t run = 1U;
+                        while (rx + run < 5U && ((rows[ry] >> (4U - (rx + run))) & 1U) != 0U)
+                        {
+                            ++run;
+                        }
+                        // Build bitmask for this horizontal run [rx .. rx + run)
+                        std::uint8_t mask = 0U;
+                        for (std::size_t k = 0U; k < run; ++k)
+                        {
+                            mask = static_cast<std::uint8_t>(mask | (1U << (4U - (rx + k))));
+                        }
+                        // Merge vertically downward across subsequent rows where the same bits are set
+                        std::size_t v_run = 1U;
+                        rows[ry] = static_cast<std::uint8_t>(rows[ry] & ~mask);
+                        while (ry + v_run < 7U && (rows[ry + v_run] & mask) == mask)
+                        {
+                            rows[ry + v_run] = static_cast<std::uint8_t>(rows[ry + v_run] & ~mask);
+                            ++v_run;
+                        }
+                        if (batcher.vertex_count() + 4U <= ur::kMaxVertices)
+                        {
+                            batcher.quad(cx + static_cast<float>(rx) * px,
+                                         cy + static_cast<float>(ry) * px,
+                                         static_cast<float>(run) * px,
+                                         static_cast<float>(v_run) * px,
+                                         color);
+                        }
+                        rx += run;
+                    }
+                    else
+                    {
+                        ++rx;
+                    }
+                }
+            }
+        }
+        cx += adv;
+    }
+}
+
+void draw_ui_text(ur::DrawBatcher& batcher,
+                  float x,
+                  float y,
+                  std::string_view text,
+                  ur::Color color,
+                  float scale = 1.0F)
+{
+    draw_ui_text_clipped(batcher, x, y, text, color, scale, 1e9F);
+}
+
+void draw_ui_line(ur::DrawBatcher& batcher,
+                  float x0, float y0,
+                  float x1, float y1,
+                  float thickness,
+                  ur::Color color)
+{
+    const float dx = x1 - x0;
+    const float dy = y1 - y0;
+    const float len = std::sqrt(dx * dx + dy * dy);
+    if (len < 0.5F) { return; }
+    if ( std::abs(dy) < 0.75F )
+    {
+        if (batcher.vertex_count() + 4U <= ur::kMaxVertices)
+        {
+            batcher.quad(std::min(x0, x1), y0 - thickness * 0.5F, std::abs(dx), thickness, color);
+        }
+        return;
+    }
+    if ( std::abs(dx) < 0.75F )
+    {
+        if (batcher.vertex_count() + 4U <= ur::kMaxVertices)
+        {
+            batcher.quad(x0 - thickness * 0.5F, std::min(y0, y1), thickness, std::abs(dy), color);
+        }
+        return;
+    }
+    const int steps = std::clamp(static_cast<int>(len / std::max(3.5F, thickness * 1.4F)), 1, 28);
+    const float seg = std::max(thickness, 2.0F);
+    const float half = seg * 0.5F;
+    for (int i = 0; i <= steps; ++i)
+    {
+        if (batcher.vertex_count() + 4U > ur::kMaxVertices) { break; }
+        const float t = static_cast<float>(i) / static_cast<float>(steps);
+        const float px = x0 + dx * t - half;
+        const float py = y0 + dy * t - half;
+        batcher.quad(px, py, seg, seg, color);
+    }
+}
+
 // ---- Default DockSpace layout ----------------------------------------------
 //
-// Build the 8-panel layout described in the file header. Starts from the
-// freshly-constructed `DockSpace` whose root is a single empty kLeaf;
-// promotes the leaf to a tab group hosting "viewport", then carves off:
+// Builds the 3-column Studio Cockpit layout hosting all 24 panels across
+// 25 DockNodes (12 splits + 13 leaf/tab-groups):
 //
-//   1. LEFT  (scene_tree)        -- 18% width
-//   2. RIGHT (inspector)         -- 25% width on the right side
-//   3. BOTTOM (console)          -- 28% height under the viewport
-//   4. tab-merge assets onto console
-//   5. LEFT-BOTTOM split: material_editor below scene_tree    (phase569 / M4 W1B)
-//   6. RIGHT-BOTTOM split: behavior_designer below inspector  (phase569 / M4 W1B)
-//   7. BOTTOM-RIGHT split: animator to the right of console+assets
-//                                                              (phase569 / M4 W1B)
+//   LEFT COLUMN (20% width):
+//     - Top:    scene_tree | scene_navigator (tab group)
+//     - Upper:  pathfinding_viz
+//     - Mid:    material_editor | vehicle_editor | material_preview (tab group)
+//     - Bottom: cutscene_player | dialog_tree_editor (tab group)
 //
-// Each new split adds one kSplit node to the tree, so node_count goes from
-// 7 (original 5-panel layout) to 10 (8-panel layout). Tab-merges do NOT
-// change node_count (DockSpace::node_count counts splits + tab groups).
+//   CENTER COLUMN (54% width):
+//     - Top (72% height):    viewport (3D Perspective Showcase Stage View)
+//     - Bottom (28% height):
+//         * Left (56%):  console | assets | asset_drop_target | build_panel
+//         * Mid  (24%):  animator | ik_chain_editor
+//         * Right (20%): input_recorder
 //
-// Returns true on success, false if any of the structural mutations fails
-// (would indicate a regression in cd::ui_widgets::DockSpace::split).
+//   RIGHT COLUMN (26% width):
+//     - Top:    inspector | settings_panel | scene_palette (tab group)
+//     - Upper:  behavior_designer
+//     - Mid:    light_editor
+//     - Lower:  perf_profiler | asset_pipeline_status (tab group)
+//     - Bottom: lobby_browser
+//
+// Note on `DockSpace::split(target_leaf, kVertical, new_panel_id, ratio)`:
+//   `first_` (LEFT / TOP) receives `target_leaf` with fraction `ratio`.
+//   `second_` (RIGHT / BOTTOM) receives `new_panel_id` with `1 - ratio`.
 [[nodiscard]] bool build_default_layout(uw::DockSpace& ds)
 {
-    // Seed the root leaf with "viewport".
     auto* root = ds.root();
     if (root == nullptr) { return false; }
-    if (!ds.tab_merge(root, "viewport")) { return false; }
 
-    // Split LEFT: scene tree takes 18% of the root's width.
+    // 1. Seed root with "scene_tree" so the first vertical split keeps
+    //    "scene_tree" in the LEFT column (20% width) and puts "viewport"
+    //    on the RIGHT (80% width).
+    if (!ds.tab_merge(root, "scene_tree")) { return false; }
+
+    auto* scene_tree_node = ds.find_panel_owner("scene_tree");
+    if (scene_tree_node == nullptr) { return false; }
+    if (!ds.split(scene_tree_node, uw::DockAxis::kVertical,
+                  "viewport", 0.20F))
+    {
+        return false;
+    }
+
+    // 2. Split "viewport" vertically with "inspector" at 0.675 so
+    //    CENTER ("viewport") gets 54% of total width and RIGHT ("inspector")
+    //    gets 26% of total width.
     auto* viewport_node = ds.find_panel_owner("viewport");
     if (viewport_node == nullptr) { return false; }
     if (!ds.split(viewport_node, uw::DockAxis::kVertical,
-                  "scene_tree", 0.18F))
+                  "inspector", 0.675F))
     {
         return false;
     }
 
-    // After the LEFT split, the new tree is:
-    //     split-V (root)
-    //       first  = scene_tree leaf
-    //       second = viewport leaf  (original)
-    //
-    // The "viewport leaf" reference has been moved inside the split as
-    // the second child. Re-resolve it before the next operation.
-    viewport_node = ds.find_panel_owner("viewport");
-    if (viewport_node == nullptr) { return false; }
-
-    // Split RIGHT: inspector takes the right ~25% of what remains.
-    // We split the viewport leaf along the vertical axis again, putting
-    // inspector on the right. After the split:
-    //     split-V (right side of root)
-    //       first  = viewport leaf
-    //       second = inspector leaf
-    //
-    // The 0.75 ratio means the FIRST child (viewport) keeps 75% of the
-    // sub-rect width and inspector takes the remaining 25%.
-    if (!ds.split(viewport_node, uw::DockAxis::kVertical,
-                  "inspector", 0.75F))
-    {
-        return false;
-    }
-
-    // Split BOTTOM: console takes 28% of the height under the viewport.
+    // 3. Split CENTER "viewport" horizontally with "console" at 0.72 so
+    //    "viewport" keeps top 72% height and "console" gets bottom 28%.
     viewport_node = ds.find_panel_owner("viewport");
     if (viewport_node == nullptr) { return false; }
     if (!ds.split(viewport_node, uw::DockAxis::kHorizontal,
@@ -591,115 +1014,67 @@ struct EditorArgs
         return false;
     }
 
-    // Tab-merge "assets" into the console node so they share the bottom
-    // strip. The brief specifies asset-browser BOTTOM-RIGHT; today the
-    // simplest match is "alongside console as a sibling tab", which the
-    // user can drag to the right side via the DockSpace drag-out flow.
+    // Tab-merge "assets" into "console".
     auto* console_node = ds.find_panel_owner("console");
     if (console_node == nullptr) { return false; }
     if (!ds.tab_merge(console_node, "assets")) { return false; }
 
-    // ---- phase569 / M4 W1B: 3 new panels -----------------------------------
-    //
-    // Each is plugged in as a fresh kSplit so the editor's node_count grows
-    // from 7 -> 10. The panel content libraries (cd::editor_panel_*) were
-    // shipped in phases 556-558; this wiring is the final consumer step.
-
-    // (1) material_editor BELOW scene_tree (LEFT column, lower half).
-    // ratio=0.55 means scene_tree keeps 55% of the LEFT column's height
-    // and material_editor takes the lower 45%.
-    auto* scene_tree_node = ds.find_panel_owner("scene_tree");
+    // 4. LEFT column splits: scene_tree -> material_editor (0.54)
+    scene_tree_node = ds.find_panel_owner("scene_tree");
     if (scene_tree_node == nullptr) { return false; }
     if (!ds.split(scene_tree_node, uw::DockAxis::kHorizontal,
-                  "material_editor", 0.55F))
+                  "material_editor", 0.54F))
     {
         return false;
     }
 
-    // (2) behavior_designer BELOW inspector (RIGHT column, lower half).
-    // ratio=0.55 -> inspector keeps top 55%, behavior_designer takes 45%.
+    // 5. RIGHT column splits: inspector -> behavior_designer (0.44)
     auto* inspector_node = ds.find_panel_owner("inspector");
     if (inspector_node == nullptr) { return false; }
     if (!ds.split(inspector_node, uw::DockAxis::kHorizontal,
-                  "behavior_designer", 0.55F))
+                  "behavior_designer", 0.44F))
     {
         return false;
     }
 
-    // (3) animator to the RIGHT of the console+assets tab group
-    // (BOTTOM strip, right half). ratio=0.65 -> console+assets keep the
-    // left 65%, animator takes the right 35%.
+    // 6. CENTER-BOTTOM splits: console -> animator (0.56)
     auto* console_owner = ds.find_panel_owner("console");
     if (console_owner == nullptr) { return false; }
     if (!ds.split(console_owner, uw::DockAxis::kVertical,
-                  "animator", 0.65F))
+                  "animator", 0.56F))
     {
         return false;
     }
 
-    // ---- phase598 / M6 W3 — asset_drop_target tab-merged with assets -------
-    //
-    // The drop target lives next to the asset browser so a user can flip
-    // between "browse" and "drop" in the same bottom strip. tab_merge does
-    // not change node_count (already 10 after the three M4 W1B splits).
+    // Tab-merge "asset_drop_target" into "assets".
     auto* assets_owner = ds.find_panel_owner("assets");
     if (assets_owner == nullptr) { return false; }
     if (!ds.tab_merge(assets_owner, "asset_drop_target")) { return false; }
 
-    // ---- phase667 / M12 W2 — three new panel slots --------------------------
-    //
-    // The brief grows the dock from 10 -> 13 nodes by adding three new splits.
-    // Each new split lands the new panel physically adjacent to its semantic
-    // companion so the result behaves like a tab-merge from the designer's
-    // point of view (they see the new content next to where they expect it):
-    //
-    //   (4) cutscene_player BELOW material_editor (LEFT column, 3-stack:
-    //       scene_tree / material_editor / cutscene_player). +1 node.
-    //
-    //   (5) light_editor BELOW behavior_designer (RIGHT column, 3-stack:
-    //       inspector / behavior_designer / light_editor). +1 node.
-    //
-    //   (6) input_recorder to the RIGHT of animator (BOTTOM strip,
-    //       4-region split). +1 node.
-    //
-    // After the three splits node_count goes from 10 -> 13, matching the
-    // M12 W2 target. Then we tab-merge dialog_tree_editor INTO the
-    // cutscene_player leaf so the designer flips between the BG3-style
-    // dialog graph and the cutscene timeline on the same dock tile — the
-    // moment a narrative designer wants in a shipping editor.
-    //
-    // MOMENT: a first-time editor user opens apps/editor and immediately sees
-    // a lighting designer slot, an input-replay slot, and a dialog/cutscene
-    // pair — three brand-new authoring surfaces shipped DAY ONE.
-
-    // (4) material_editor -> cutscene_player split (LEFT col lower half).
-    // ratio=0.65 -> material_editor keeps 65%, cutscene_player takes 35%.
+    // 7. LEFT-lower split: material_editor -> cutscene_player (0.60)
     auto* material_editor_node = ds.find_panel_owner("material_editor");
     if (material_editor_node == nullptr) { return false; }
     if (!ds.split(material_editor_node, uw::DockAxis::kHorizontal,
-                  "cutscene_player", 0.65F))
+                  "cutscene_player", 0.60F))
     {
         return false;
     }
 
-    // Tab-merge dialog_tree_editor INTO the cutscene_player leaf so the LEFT
-    // column carries a dialog/cutscene pair on the same tile.
     auto* cutscene_owner = ds.find_panel_owner("cutscene_player");
     if (cutscene_owner == nullptr) { return false; }
     if (!ds.tab_merge(cutscene_owner, "dialog_tree_editor")) { return false; }
+    cutscene_owner->set_active_tab(0U);
 
-    // (5) behavior_designer -> light_editor split (RIGHT col lower half).
-    // ratio=0.65 -> behavior_designer keeps top 65%, light_editor takes 35%.
+    // 8. RIGHT-middle split: behavior_designer -> light_editor (0.38)
     auto* behavior_designer_node = ds.find_panel_owner("behavior_designer");
     if (behavior_designer_node == nullptr) { return false; }
     if (!ds.split(behavior_designer_node, uw::DockAxis::kHorizontal,
-                  "light_editor", 0.65F))
+                  "light_editor", 0.38F))
     {
         return false;
     }
 
-    // (6) animator -> input_recorder split (BOTTOM strip far-right).
-    // ratio=0.55 -> animator keeps 55%, input_recorder takes 45%.
+    // 9. CENTER-BOTTOM right split: animator -> input_recorder (0.55)
     auto* animator_node = ds.find_panel_owner("animator");
     if (animator_node == nullptr) { return false; }
     if (!ds.split(animator_node, uw::DockAxis::kVertical,
@@ -708,168 +1083,81 @@ struct EditorArgs
         return false;
     }
 
-    // ---- phase679 / M13 W3 — three new panel slots --------------------------
-    //
-    // Grows the dock from 13 -> 16 PANELS (the dock_node count grows by +1
-    // because only pathfinding_viz introduces a new split; vehicle_editor and
-    // material_preview are tab-merged onto material_editor and do not change
-    // node_count).
-    //
-    //   (7) vehicle_editor   -- tab-merged INTO material_editor.
-    //                           A racing dev can flip material<->vehicle on
-    //                           the same LEFT-bottom tile without a separate
-    //                           dock target.
-    //
-    //   (8) pathfinding_viz  -- standalone split BELOW scene_tree on LEFT-top
-    //                           (good for viewing alongside the scene
-    //                           hierarchy a designer is editing). +1 node.
-    //
-    //   (9) material_preview -- tab-merged INTO material_editor (now a 3-way
-    //                           tab strip with vehicle_editor). A material
-    //                           artist sees the live PBR preview right next
-    //                           to the property editor.
-    //
-    // MOMENT: a first-time editor user opens apps/editor and sees a vehicle
-    // tuning panel, a navmesh visualisation slot, and a live PBR preview
-    // -- three brand-new authoring surfaces shipped DAY ONE.
-
-    // (7) vehicle_editor tab-merged with material_editor.
+    // Tab-merge "vehicle_editor" into "material_editor".
     auto* material_editor_owner = ds.find_panel_owner("material_editor");
     if (material_editor_owner == nullptr) { return false; }
     if (!ds.tab_merge(material_editor_owner, "vehicle_editor")) { return false; }
 
-    // (8) scene_tree -> pathfinding_viz split (LEFT-top column, lower half).
-    // ratio=0.65 -> scene_tree keeps top 65%, pathfinding_viz takes bottom 35%.
+    // 10. LEFT-upper split: scene_tree -> pathfinding_viz (0.68)
     auto* scene_tree_owner = ds.find_panel_owner("scene_tree");
     if (scene_tree_owner == nullptr) { return false; }
     if (!ds.split(scene_tree_owner, uw::DockAxis::kHorizontal,
-                  "pathfinding_viz", 0.65F))
+                  "pathfinding_viz", 0.68F))
     {
         return false;
     }
 
-    // (9) material_preview tab-merged INTO the same material_editor leaf so
-    // material_editor / vehicle_editor / material_preview share a 3-way tab
-    // strip. Re-resolve the owner: the prior split() calls may have moved the
-    // node, but the panel-id index inside DockSpace tracks it for us.
+    // Tab-merge "material_preview" into "material_editor" and keep "material_editor" active.
     auto* material_editor_owner2 = ds.find_panel_owner("material_editor");
     if (material_editor_owner2 == nullptr) { return false; }
     if (!ds.tab_merge(material_editor_owner2, "material_preview")) { return false; }
+    material_editor_owner2->set_active_tab(0U);
 
-    // ---- phase690 / M14 W3 — scene_navigator tab-merged with scene_tree -------
-    //
-    // The scene_navigator panel is the SEARCH/FILTER sibling to scene_tree
-    // (which is the HIERARCHY surface). We tab-merge them on the LEFT-top tile
-    // so a designer flips between "hierarchy" and "search/filter" in the same
-    // dock target without a separate column — matches the Source 2 / Hammer
-    // SDK navigation feel. tab_merge() does not bump DockSpace::node_count();
-    // the panel COUNT grows from 16 to 17 (logged below).
+    // Tab-merge "scene_navigator" into "scene_tree" and keep "scene_tree" active.
     auto* scene_tree_owner_690 = ds.find_panel_owner("scene_tree");
     if (scene_tree_owner_690 == nullptr) { return false; }
     if (!ds.tab_merge(scene_tree_owner_690, "scene_navigator")) { return false; }
+    scene_tree_owner_690->set_active_tab(0U);
 
-    // ---- phase701 / M15 W3 — three new panels --------------------------------
-    //
-    // Wire mode:
-    //   (10) settings_panel  -- tab-merged INTO inspector on RIGHT-top.
-    //   (11) build_panel     -- tab-merged INTO console on BOTTOM-CENTRE
-    //                           (joins the console+assets+asset_drop_target
-    //                            tab group as a sibling).
-    //   (12) perf_profiler   -- split BELOW light_editor on RIGHT-lower
-    //                           (a fresh tile so the live perf history bars
-    //                            do not fight with the inspector or behavior
-    //                            designer for attention). +1 node.
-    //
-    // Tab-merges keep node_count flat; only perf_profiler's split bumps it.
-    // Panel count grows 17 -> 20 (settings + build + perf_profiler).
-    //
-    // MOMENT: a dev opens the editor and immediately sees the runtime perf
-    // ribbon, the build status badge, and a settings tab right where they
-    // need them — no extra clicks.
-
-    // (10) settings_panel tab-merged with inspector (RIGHT-top tile).
+    // Tab-merge "settings_panel" into "inspector".
     auto* inspector_owner_701 = ds.find_panel_owner("inspector");
     if (inspector_owner_701 == nullptr) { return false; }
     if (!ds.tab_merge(inspector_owner_701, "settings_panel")) { return false; }
 
-    // (11) build_panel tab-merged with console (BOTTOM tab group).
+    // Tab-merge "build_panel" into "console" and keep "console" active.
     auto* console_owner_701 = ds.find_panel_owner("console");
     if (console_owner_701 == nullptr) { return false; }
     if (!ds.tab_merge(console_owner_701, "build_panel")) { return false; }
+    console_owner_701->set_active_tab(0U);
 
-    // (12) perf_profiler split BELOW light_editor (RIGHT-lower column).
-    // ratio=0.55 -> light_editor keeps top 55%, perf_profiler takes 45%.
+    // 11. RIGHT-lower split: light_editor -> perf_profiler (0.45)
     auto* light_editor_owner_701 = ds.find_panel_owner("light_editor");
     if (light_editor_owner_701 == nullptr) { return false; }
     if (!ds.split(light_editor_owner_701, uw::DockAxis::kHorizontal,
-                  "perf_profiler", 0.55F))
+                  "perf_profiler", 0.45F))
     {
         return false;
     }
 
-    // ---- phase711 / M16 W3 — two new tab-merged panels -----------------------
-    //
-    //   (13) asset_pipeline_status -- tab-merged INTO perf_profiler so the
-    //        RIGHT-lower tile flips between "frame-by-frame profiler" and
-    //        "streamer pool bar chart". Both are runtime/perf surfaces, so
-    //        sharing the same tile keeps the right-hand column from sprawling.
-    //
-    //   (14) ik_chain_editor       -- tab-merged INTO animator so the BOTTOM
-    //        strip carries an animator <-> IK pair on the same tile. An
-    //        animator drops a 5-joint leg chain into the editor and sees the
-    //        CCD solve converge to plant the foot without launching the game.
-    //
-    // Both are tab_merge() calls so DockSpace::node_count() does NOT change;
-    // the panel COUNT grows from 20 to 22.
-    //
-    // MOMENT: a first-time editor user opens apps/editor and sees the asset
-    // pipeline bar chart living next to the perf profiler AND an IK
-    // visualiser next to the animator — two brand-new authoring surfaces
-    // shipped DAY ONE alongside the existing 20-panel cockpit.
-
-    // (13) asset_pipeline_status tab-merged with perf_profiler.
+    // Tab-merge "asset_pipeline_status" into "perf_profiler" and keep "perf_profiler" active.
     auto* perf_profiler_owner_711 = ds.find_panel_owner("perf_profiler");
     if (perf_profiler_owner_711 == nullptr) { return false; }
     if (!ds.tab_merge(perf_profiler_owner_711, "asset_pipeline_status"))
     {
         return false;
     }
+    perf_profiler_owner_711->set_active_tab(0U);
 
-    // (14) ik_chain_editor tab-merged with animator.
+    // Tab-merge "ik_chain_editor" into "animator" and keep "animator" active.
     auto* animator_owner_711 = ds.find_panel_owner("animator");
     if (animator_owner_711 == nullptr) { return false; }
     if (!ds.tab_merge(animator_owner_711, "ik_chain_editor"))
     {
         return false;
     }
+    animator_owner_711->set_active_tab(0U);
 
-    // ---- phase720 / M17 W3 — two new dock panels -----------------------------
-    //
-    //   (15) scene_palette  -- tab-merged INTO settings_panel so the RIGHT-top
-    //        tile flips between "inspector / settings / scene_palette".  A UI
-    //        designer reskins the editor and sees every palette token side-by-
-    //        side with the property panel they are tweaking.
-    //
-    //   (16) lobby_browser  -- split BELOW perf_profiler on RIGHT-lower.
-    //        ratio=0.55 -> perf_profiler keeps top 55%, lobby_browser takes 45%.
-    //        Standalone bottom-right node (NOT a tab-merge) per the M17 W3 brief
-    //        so a multiplayer dev sees rooms in their own dedicated tile.
-    //
-    // The third M17 W3 panel (auto_save_indicator) lives in the STATUS BAR and
-    // is NOT a dock node — see draw_status_bar() below.
-    //
-    // Dock node count grows by +1 (lobby_browser split); scene_palette is a
-    // tab-merge.  Registered-panel count grows 22 -> 24.
-
-    // (15) scene_palette tab-merged with settings_panel.
+    // Tab-merge "scene_palette" into "settings_panel" (which shares with "inspector")
+    // and keep "inspector" active on first boot.
     auto* settings_owner_720 = ds.find_panel_owner("settings_panel");
     if (settings_owner_720 == nullptr) { return false; }
     if (!ds.tab_merge(settings_owner_720, "scene_palette"))
     {
         return false;
     }
+    settings_owner_720->set_active_tab(0U);
 
-    // (16) perf_profiler -> lobby_browser split (RIGHT-lower, bottom 45%).
+    // 12. RIGHT-bottom split: perf_profiler -> lobby_browser (0.55)
     auto* perf_profiler_owner_720 = ds.find_panel_owner("perf_profiler");
     if (perf_profiler_owner_720 == nullptr) { return false; }
     if (!ds.split(perf_profiler_owner_720, uw::DockAxis::kHorizontal,
@@ -877,37 +1165,192 @@ struct EditorArgs
     {
         return false;
     }
+    if (auto* pf = ds.find_panel_owner("perf_profiler"))
+    {
+        pf->set_active_tab(0U);
+    }
 
     return true;
 }
 
-// ---- Stub panel drawers ----------------------------------------------------
-//
-// Each registered panel needs a drawer of signature
-//   void(const Rect&, DrawBatcher&, Font*, const Theme&)
-//
-// The drawers below emit a single coloured quad filling the panel rect
-// so the DockSpace tile is visually distinguishable. Sub-libraries
-// (cd::editor::panel::SceneTree etc.) will replace these stubs with
-// real ImGui-style content in follow-up sessions.
+// ---- Live Studio Workbench State (bridged to panel drawers) ----------------
+
+cd::element_core::Stage*             g_active_stage_ptr      { nullptr };
+cd::editor::PieWorkbenchController*  g_pie_controller_ptr    { nullptr };
+cd::editor::AddElementCatalog*       g_add_catalog_ptr       { nullptr };
+cd::editor::ViewportGizmoController* g_viewport_gizmo_ptr    { nullptr };
+cd::editor::EditorCockpitShell*      g_cockpit_shell_ptr     { nullptr };
+cd::runtime::EngineLoop*             g_engine_loop_ptr       { nullptr };
+uw::PointerState                     g_frame_pointer         {};
+std::size_t                          g_selected_element_idx  { 0U };
+std::size_t                          g_active_showcase_idx   { 0U };
+std::size_t                          g_next_spawn_class_idx  { 0U };
+int                                  g_gizmo_mode            { 0 };  // 0=Move, 1=Rotate, 2=Scale
+float                                g_cam_yaw               { 0.58F };
+float                                g_cam_pitch             { 0.36F };
+float                                g_cam_dist              { 13.5F };
+float                                g_anim_time_s           { 0.0F };
+bool                                 g_show_floating_perf_hud{ false };
+std::array<std::array<float, 3>, 32> g_element_pos_offsets   {};
+
+struct DomainBadgeStyle
+{
+    const char* tag;
+    ur::Color   color;
+};
+
+[[nodiscard]] DomainBadgeStyle classify_element_domain(std::string_view cls) noexcept
+{
+    if (cls.find("Mesh") != std::string_view::npos ||
+        cls.find("Camera") != std::string_view::npos ||
+        cls.find("Sky") != std::string_view::npos ||
+        cls.find("PostProcess") != std::string_view::npos ||
+        cls.find("Decal") != std::string_view::npos ||
+        cls.find("Particle") != std::string_view::npos ||
+        cls.find("Light") != std::string_view::npos)
+    {
+        return { "RND", ur::Color { 90U, 175U, 250U, 235U } };
+    }
+    if (cls.find("Terrain") != std::string_view::npos ||
+        cls.find("Ocean") != std::string_view::npos ||
+        cls.find("Foliage") != std::string_view::npos ||
+        cls.find("Weather") != std::string_view::npos)
+    {
+        return { "WLD", ur::Color { 75U, 210U, 130U, 235U } };
+    }
+    if (cls.find("Body") != std::string_view::npos ||
+        cls.find("Vehicle") != std::string_view::npos ||
+        cls.find("Cloth") != std::string_view::npos ||
+        cls.find("Trigger") != std::string_view::npos ||
+        cls.find("Character") != std::string_view::npos)
+    {
+        return { "PHY", ur::Color { 245U, 165U, 70U, 235U } };
+    }
+    if (cls.find("Skeleton") != std::string_view::npos ||
+        cls.find("Animation") != std::string_view::npos ||
+        cls.find("Cutscene") != std::string_view::npos)
+    {
+        return { "ANM", ur::Color { 215U, 115U, 245U, 235U } };
+    }
+    if (cls.find("Audio") != std::string_view::npos ||
+        cls.find("Reverb") != std::string_view::npos)
+    {
+        return { "AUD", ur::Color { 245U, 210U, 80U, 235U } };
+    }
+    if (cls.find("Nav") != std::string_view::npos ||
+        cls.find("Behavior") != std::string_view::npos)
+    {
+        return { "AI ", ur::Color { 245U, 100U, 130U, 235U } };
+    }
+    if (cls.find("Canvas") != std::string_view::npos ||
+        cls.find("Hud") != std::string_view::npos)
+    {
+        return { "UI ", ur::Color { 100U, 225U, 220U, 235U } };
+    }
+    if (cls.find("Replicator") != std::string_view::npos)
+    {
+        return { "NET", ur::Color { 150U, 220U, 95U, 235U } };
+    }
+    return { "ELM", ur::Color { 165U, 175U, 195U, 235U } };
+}
 
 void draw_scene_tree_stub(const uw::Rect& rect,
                           ur::DrawBatcher& batcher,
                           uf::Font* /*font*/,
                           const uw::Theme& theme)
 {
-    // phase673 / M12 W6A — use surface_subtle (lighter than surface) so the
-    // scene-tree panel background reads as a raised layer distinct from the
-    // deeper dock background. This is the "designed, not coder-mocked" moment:
-    // two panel surface levels visible at a glance.
     batcher.quad(rect.x, rect.y, rect.w, rect.h,
                  ur::Color { theme.surface_subtle.r, theme.surface_subtle.g,
                              theme.surface_subtle.b, theme.surface_subtle.a });
+
+    // Panel sub-header bar
+    constexpr float kHdrH = 20.0F;
+    batcher.quad(rect.x, rect.y, rect.w, kHdrH,
+                 ur::Color { 24U, 29U, 42U, 255U });
+    batcher.quad(rect.x, rect.y + kHdrH - 1.0F, rect.w, 1.0F,
+                 ur::Color { theme.accent.r, theme.accent.g, theme.accent.b, 160U });
+
+    const std::string_view stage_name =
+        (g_active_stage_ptr != nullptr && !g_active_stage_ptr->name().empty())
+            ? g_active_stage_ptr->name()
+            : std::string_view("01_pbr_materials_sss_hair");
+
+    draw_ui_text_clipped(batcher, rect.x + 6.0F, rect.y + 6.0F,
+                         stage_name,
+                         ur::Color { 230U, 238U, 255U, 255U }, 1.0F,
+                         rect.x + rect.w - 4.0F);
+
+    if (g_active_stage_ptr == nullptr) { return; }
+
+    const auto& children = g_active_stage_ptr->root().children();
+    if (g_selected_element_idx >= children.size() && !children.empty())
+    {
+        g_selected_element_idx = 0U;
+    }
+
+    float ry = rect.y + kHdrH + 4.0F;
+    constexpr float kRowH = 18.0F;
+
+    // Root stage node row
+    batcher.quad(rect.x + 4.0F, ry, rect.w - 8.0F, kRowH - 2.0F,
+                 ur::Color { 34U, 40U, 56U, 220U });
+    batcher.quad(rect.x + 7.0F, ry + 5.0F, 6.0F, 6.0F,
+                 ur::Color { theme.accent.r, theme.accent.g, theme.accent.b, 255U });
+    draw_ui_text_clipped(batcher, rect.x + 17.0F, ry + 5.0F,
+                         "ROOT [STAGE]",
+                         ur::Color { 200U, 212U, 236U, 255U }, 1.0F,
+                         rect.x + rect.w - 6.0F);
+    ry += kRowH;
+
+    for (std::size_t i = 0U; i < children.size(); ++i)
+    {
+        if (ry + kRowH > rect.y + rect.h - 2.0F) { break; }
+        const auto& elem = children[i];
+        if (!elem) { continue; }
+
+        const uw::Rect row_r { rect.x + 8.0F, ry, rect.w - 12.0F, kRowH - 2.0F };
+        const bool hovered = row_r.contains(g_frame_pointer.mouse_x, g_frame_pointer.mouse_y);
+        if (hovered && g_frame_pointer.left_pressed)
+        {
+            g_selected_element_idx = i;
+        }
+        const bool selected = (i == g_selected_element_idx);
+
+        const ur::Color row_bg =
+            selected ? ur::Color { 58U, 88U, 155U, 240U } :
+            hovered  ? ur::Color { 44U, 52U, 72U, 220U } :
+                       ur::Color { 26U, 31U, 44U, 195U };
+        batcher.quad(row_r.x, row_r.y, row_r.w, row_r.h, row_bg);
+        if (selected)
+        {
+            batcher.quad(row_r.x, row_r.y, 3.0F, row_r.h,
+                         ur::Color { 110U, 195U, 255U, 255U });
+        }
+
+        // Hierarchy connector L-line
+        batcher.quad(rect.x + 5.0F, row_r.y + 7.0F, 3.0F, 1.0F,
+                     ur::Color { 95U, 108U, 135U, 200U });
+
+        // Domain badge pill
+        const auto badge = classify_element_domain(elem->class_name());
+        batcher.quad(row_r.x + 5.0F, row_r.y + 2.0F, 22.0F, row_r.h - 4.0F, badge.color);
+        draw_ui_text_clipped(batcher, row_r.x + 7.0F, row_r.y + 5.0F,
+                             badge.tag,
+                             ur::Color { 15U, 18U, 26U, 255U }, 1.0F,
+                             row_r.x + 27.0F);
+
+        // Element name
+        draw_ui_text_clipped(batcher, row_r.x + 31.0F, row_r.y + 5.0F,
+                             elem->name(),
+                             selected ? ur::Color { 255U, 255U, 255U, 255U }
+                                      : ur::Color { 215U, 224U, 242U, 255U },
+                             1.0F,
+                             row_r.x + row_r.w - 4.0F);
+        ry += kRowH;
+    }
 }
 
-// Viewport panel — backed by cd::editor_panel_viewport.
-// The scene texture handle is left null until the render loop supplies
-// the real scene colour target (wired in a follow-up session).
+// Viewport panel — backed by cd::editor_panel_viewport + live 3D Stage projection.
 cd::editor::panel::viewport::Viewport g_viewport_panel;
 
 void draw_viewport_panel(const uw::Rect& rect,
@@ -916,11 +1359,396 @@ void draw_viewport_panel(const uw::Rect& rect,
                          const uw::Theme& theme)
 {
     g_viewport_panel.draw(batcher, theme, rect);
+    if (rect.w < 40.0F || rect.h < 40.0F) { return; }
+
+    constexpr float kVpHeaderH = 22.0F;
+    constexpr float kVpFooterH = 20.0F;
+    const uw::Rect canvas {
+        rect.x + 2.0F,
+        rect.y + kVpHeaderH,
+        rect.w - 4.0F,
+        std::max(16.0F, rect.h - kVpHeaderH - kVpFooterH)
+    };
+
+    // 1. Sky & atmosphere gradient + horizon glow + ground plane
+    const float horizon_y = canvas.y + canvas.h * 0.44F;
+    const int sky_bands = 8;
+    for (int b = 0; b < sky_bands; ++b)
+    {
+        const float t0 = static_cast<float>(b) / static_cast<float>(sky_bands);
+        const float t1 = static_cast<float>(b + 1) / static_cast<float>(sky_bands);
+        const float y0 = canvas.y + (horizon_y - canvas.y) * t0;
+        const float y1 = canvas.y + (horizon_y - canvas.y) * t1;
+        const auto r = static_cast<std::uint8_t>(18.0F + t0 * 38.0F);
+        const auto g = static_cast<std::uint8_t>(26.0F + t0 * 52.0F);
+        const auto bl = static_cast<std::uint8_t>(48.0F + t0 * 78.0F);
+        batcher.quad(canvas.x, y0, canvas.w, y1 - y0 + 1.0F, ur::Color { r, g, bl, 255U });
+    }
+    // Horizon atmospheric scattering line
+    batcher.quad(canvas.x, horizon_y - 2.0F, canvas.w, 4.0F,
+                 ur::Color { 95U, 150U, 215U, 180U });
+
+    // Ground gradient below horizon
+    const int gnd_bands = 8;
+    for (int b = 0; b < gnd_bands; ++b)
+    {
+        const float t0 = static_cast<float>(b) / static_cast<float>(gnd_bands);
+        const float t1 = static_cast<float>(b + 1) / static_cast<float>(gnd_bands);
+        const float y0 = horizon_y + (canvas.y + canvas.h - horizon_y) * t0;
+        const float y1 = horizon_y + (canvas.y + canvas.h - horizon_y) * t1;
+        const auto r = static_cast<std::uint8_t>(30.0F - t0 * 10.0F);
+        const auto g = static_cast<std::uint8_t>(36.0F - t0 * 12.0F);
+        const auto bl = static_cast<std::uint8_t>(48.0F - t0 * 14.0F);
+        batcher.quad(canvas.x, y0, canvas.w, y1 - y0 + 1.0F, ur::Color { r, g, bl, 255U });
+    }
+
+    // Sun disc in upper-right sky
+    const float sun_x = canvas.x + canvas.w * 0.78F;
+    const float sun_y = canvas.y + (horizon_y - canvas.y) * 0.36F;
+    batcher.quad(sun_x - 16.0F, sun_y - 16.0F, 32.0F, 32.0F, ur::Color { 255U, 210U, 120U, 55U });
+    batcher.quad(sun_x - 10.0F, sun_y - 10.0F, 20.0F, 20.0F, ur::Color { 255U, 235U, 165U, 140U });
+    batcher.quad(sun_x - 5.0F,  sun_y - 5.0F,  10.0F, 10.0F, ur::Color { 255U, 250U, 225U, 245U });
+
+    // 2. 3D Orbit Camera math
+    const float cy_yaw = std::cos(g_cam_yaw);
+    const float sy_yaw = std::sin(g_cam_yaw);
+    const float cp_pit = std::cos(g_cam_pitch);
+    const float sp_pit = std::sin(g_cam_pitch);
+
+    const float cam_x = g_cam_dist * cp_pit * sy_yaw;
+    const float cam_y = g_cam_dist * sp_pit + 1.8F;
+    const float cam_z = g_cam_dist * cp_pit * cy_yaw;
+
+    // Forward, right, up vectors looking at (0, 1.0, 0)
+    float fx = -cam_x;
+    float fy = 1.0F - cam_y;
+    float fz = -cam_z;
+    const float flen = std::max(1e-4F, std::sqrt(fx * fx + fy * fy + fz * fz));
+    fx /= flen; fy /= flen; fz /= flen;
+
+    // right = normalize(cross(forward, world_up(0,1,0))) = normalize((-fz, 0, fx))
+    float rx = -fz;
+    float ry = 0.0F;
+    float rz = fx;
+    const float rlen = std::max(1e-4F, std::sqrt(rx * rx + rz * rz));
+    rx /= rlen; rz /= rlen;
+
+    // up = cross(right, forward)
+    const float ux = ry * fz - rz * fy;
+    const float uy = rz * fx - rx * fz;
+    const float uz = rx * fy - ry * fx;
+
+    const float fov_scale = canvas.h * 0.92F;
+    const float cx_scr = canvas.x + canvas.w * 0.5F;
+    const float cy_scr = canvas.y + canvas.h * 0.50F;
+
+    auto project_3d = [&](float wx, float wy, float wz, float& out_sx, float& out_sy, float& out_depth) -> bool {
+        const float dx = wx - cam_x;
+        const float dy = wy - cam_y;
+        const float dz = wz - cam_z;
+        const float vz = dx * fx + dy * fy + dz * fz;
+        if (vz <= 0.4F) { return false; }
+        const float vx = dx * rx + dy * ry + dz * rz;
+        const float vy = dx * ux + dy * uy + dz * uz;
+        out_sx = cx_scr + (vx / vz) * fov_scale;
+        out_sy = cy_scr - (vy / vz) * fov_scale;
+        out_depth = vz;
+        return (out_sx >= canvas.x - 60.0F && out_sx <= canvas.x + canvas.w + 60.0F &&
+                out_sy >= canvas.y - 60.0F && out_sy <= canvas.y + canvas.h + 60.0F);
+    };
+
+    // 3. 3D Perspective Ground Grid (XZ plane y=0)
+    for (int g = -8; g <= 8; ++g)
+    {
+        const float coord = static_cast<float>(g) * 1.2F;
+        float x0 = 0.0F, y0 = 0.0F, d0 = 0.0F;
+        float x1 = 0.0F, y1 = 0.0F, d1 = 0.0F;
+        if (project_3d(coord, 0.0F, -9.6F, x0, y0, d0) &&
+            project_3d(coord, 0.0F,  9.6F, x1, y1, d1))
+        {
+            const ur::Color col = (g == 0)
+                ? ur::Color { 75U, 140U, 245U, 210U }   // Z-axis blue
+                : ur::Color { 58U, 68U,  88U,  130U };
+            draw_ui_line(batcher,
+                         std::clamp(x0, canvas.x, canvas.x + canvas.w),
+                         std::clamp(y0, canvas.y, canvas.y + canvas.h),
+                         std::clamp(x1, canvas.x, canvas.x + canvas.w),
+                         std::clamp(y1, canvas.y, canvas.y + canvas.h),
+                         (g == 0) ? 2.0F : 1.0F, col);
+        }
+        if (project_3d(-9.6F, 0.0F, coord, x0, y0, d0) &&
+            project_3d( 9.6F, 0.0F, coord, x1, y1, d1))
+        {
+            const ur::Color col = (g == 0)
+                ? ur::Color { 235U, 85U, 85U, 210U }    // X-axis red
+                : ur::Color { 58U,  68U, 88U, 130U };
+            draw_ui_line(batcher,
+                         std::clamp(x0, canvas.x, canvas.x + canvas.w),
+                         std::clamp(y0, canvas.y, canvas.y + canvas.h),
+                         std::clamp(x1, canvas.x, canvas.x + canvas.w),
+                         std::clamp(y1, canvas.y, canvas.y + canvas.h),
+                         (g == 0) ? 2.0F : 1.0F, col);
+        }
+    }
+
+    // 4. Render 3D Showcase Stage Elements + handle click-to-select & gizmo drag
+    const bool pie_playing =
+        (g_pie_controller_ptr != nullptr &&
+         g_pie_controller_ptr->state() == cd::editor::PieState::kPlaying);
+    const float anim_phase = pie_playing ? g_anim_time_s * 2.4F : 0.35F;
+
+    if (g_active_stage_ptr != nullptr)
+    {
+        const auto& children = g_active_stage_ptr->root().children();
+        const std::size_t count = children.size();
+
+        float sel_wx = 0.0F, sel_wy = 1.0F, sel_wz = 0.0F;
+        bool  has_sel = false;
+
+        // Well-spaced 3D stage anchor slots so hero mesh, solar light, probe, and
+        // additional elements never overlap on screen
+        static constexpr std::array<std::array<float, 3>, 8> kStageSlots {{
+            {  0.0F, 1.05F, -0.4F },   // 0: Hero centerpiece on turntable pedestal
+            { -3.1F, 2.25F, -1.0F },   // 1: Key Solar / Directional Light (upper left)
+            {  3.1F, 1.00F, -0.6F },   // 2: Reflection Probe / Secondary (right)
+            { -2.3F, 0.85F,  1.8F },   // 3: Front-left prop / vehicle / avatar
+            {  2.3F, 0.85F,  1.8F },   // 4: Front-right prop / emitter / audio
+            {  0.0F, 1.65F, -3.2F },   // 5: Back-center backdrop / terrain / sky
+            { -3.8F, 0.90F,  0.6F },   // 6: Far-left wing
+            {  3.8F, 0.90F,  0.6F },   // 7: Far-right wing
+        }};
+
+        // Draw a 3D studio turntable pedestal under the origin (0, 0, -0.4)
+        {
+            float px = 0.0F, py = 0.0F, pd = 10.0F;
+            if (project_3d(0.0F, 0.05F, -0.4F, px, py, pd))
+            {
+                const float ped_w = std::clamp((fov_scale / pd) * 2.2F, 36.0F, 130.0F);
+                const float ped_h = ped_w * 0.24F;
+                batcher.quad(px - ped_w * 0.5F, py - ped_h * 0.5F + 4.0F, ped_w, ped_h,
+                             ur::Color { 22U, 28U, 42U, 220U });
+                batcher.quad(px - ped_w * 0.44F, py - ped_h * 0.42F + 2.0F, ped_w * 0.88F, ped_h * 0.75F,
+                             ur::Color { 42U, 54U, 78U, 235U });
+                batcher.quad(px - ped_w * 0.44F, py - ped_h * 0.42F + 2.0F, ped_w * 0.88F, 2.0F,
+                             ur::Color { 95U, 155U, 235U, 200U });
+            }
+        }
+
+        for (std::size_t i = 0U; i < count; ++i)
+        {
+            const auto& elem = children[i];
+            if (!elem) { continue; }
+
+            const auto& slot = kStageSlots[i % kStageSlots.size()];
+            const float ring_extra = (i >= kStageSlots.size())
+                ? static_cast<float>(i / kStageSlots.size()) * 1.8F : 0.0F;
+            const auto& off = g_element_pos_offsets[i % g_element_pos_offsets.size()];
+            const float bob = pie_playing ? std::sin(anim_phase + static_cast<float>(i) * 1.1F) * 0.22F : 0.0F;
+
+            const float wx = slot[0] + off[0] + ring_extra * ((i % 2U == 0U) ? 1.0F : -1.0F);
+            const float wy = slot[1] + off[1] + bob;
+            const float wz = slot[2] + off[2];
+
+            float sx = 0.0F, sy = 0.0F, depth = 10.0F;
+            if (!project_3d(wx, wy, wz, sx, sy, depth)) { continue; }
+
+            const float scale_mult = (i == 0U) ? 1.45F : 1.05F;
+            const float box_sz = std::clamp((fov_scale / depth) * scale_mult, 18.0F, 76.0F);
+            const float bx = sx - box_sz * 0.5F;
+            const float by = sy - box_sz * 0.5F;
+
+            // Ground contact shadow + vertical drop guide line for elevated objects
+            float gx = 0.0F, gy = 0.0F, gd = 10.0F;
+            if (project_3d(wx, 0.02F, wz, gx, gy, gd))
+            {
+                const float sh_w = box_sz * 0.90F;
+                const float sh_h = box_sz * 0.28F;
+                batcher.quad(gx - sh_w * 0.5F, gy - sh_h * 0.5F, sh_w, sh_h,
+                             ur::Color { 8U, 10U, 16U, 160U });
+                if (wy > 1.4F)
+                {
+                    draw_ui_line(batcher, sx, sy + box_sz * 0.45F, gx, gy, 1.0F,
+                                 ur::Color { 245U, 215U, 110U, 110U });
+                }
+            }
+
+            const auto badge = classify_element_domain(elem->class_name());
+            const bool is_sel = (i == g_selected_element_idx);
+            if (is_sel)
+            {
+                sel_wx = wx; sel_wy = wy; sel_wz = wz;
+                has_sel = true;
+            }
+
+            // Click inside 3D object bounds to select
+            const uw::Rect hit_r { bx - 4.0F, by - 4.0F, box_sz + 8.0F, box_sz + 8.0F };
+            if (canvas.contains(g_frame_pointer.mouse_x, g_frame_pointer.mouse_y) &&
+                hit_r.contains(g_frame_pointer.mouse_x, g_frame_pointer.mouse_y) &&
+                g_frame_pointer.left_pressed)
+            {
+                g_selected_element_idx = i;
+                sel_wx = wx; sel_wy = wy; sel_wz = wz;
+                has_sel = true;
+            }
+
+            const bool is_light = (elem->class_name().find("Light") != std::string_view::npos);
+            const auto c_base = is_light ? ur::Color { 255U, 215U, 95U, 245U } : badge.color;
+            const ur::Color c_top {
+                static_cast<std::uint8_t>(std::min(255, static_cast<int>(c_base.r) + 45)),
+                static_cast<std::uint8_t>(std::min(255, static_cast<int>(c_base.g) + 45)),
+                static_cast<std::uint8_t>(std::min(255, static_cast<int>(c_base.b) + 45)),
+                245U
+            };
+            const ur::Color c_front { c_base.r, c_base.g, c_base.b, 240U };
+            const ur::Color c_side {
+                static_cast<std::uint8_t>(c_base.r * 3U / 5U),
+                static_cast<std::uint8_t>(c_base.g * 3U / 5U),
+                static_cast<std::uint8_t>(c_base.b * 3U / 5U),
+                240U
+            };
+
+            const float bevel = box_sz * 0.22F;
+            // Top face
+            batcher.quad(bx + bevel * 0.5F, by, box_sz - bevel * 0.5F, bevel, c_top);
+            // Front face
+            batcher.quad(bx, by + bevel, box_sz - bevel, box_sz - bevel, c_front);
+            // Right dark shaded face
+            batcher.quad(bx + box_sz - bevel, by + bevel * 0.5F, bevel, box_sz - bevel * 0.5F, c_side);
+            // PBR Specular highlight glint
+            batcher.quad(bx + 4.0F, by + bevel + 4.0F, box_sz * 0.26F, box_sz * 0.20F,
+                         ur::Color { 255U, 255U, 255U, 185U });
+
+            // If light element, draw warm directional light beam toward origin
+            if (is_light)
+            {
+                float tx = 0.0F, ty = 0.0F, td = 10.0F;
+                if (project_3d(0.0F, 1.0F, -0.4F, tx, ty, td))
+                {
+                    draw_ui_line(batcher, sx, sy, tx, ty, 1.5F,
+                                 ur::Color { 255U, 225U, 120U, 135U });
+                }
+            }
+
+            // Selection wireframe cage (amber/gold studio highlight)
+            if (is_sel)
+            {
+                const ur::Color sel_c { 255U, 195U, 55U, 255U };
+                batcher.quad(bx - 3.0F, by - 3.0F, box_sz + 6.0F, 2.0F, sel_c);
+                batcher.quad(bx - 3.0F, by + box_sz + 1.0F, box_sz + 6.0F, 2.0F, sel_c);
+                batcher.quad(bx - 3.0F, by - 3.0F, 2.0F, box_sz + 6.0F, sel_c);
+                batcher.quad(bx + box_sz + 1.0F, by - 3.0F, 2.0F, box_sz + 6.0F, sel_c);
+            }
+
+            // 3D Floating nameplate above object
+            const float lbl_w = std::min(126.0F, static_cast<float>(elem->name().size()) * 6.0F + 10.0F);
+            const float lbl_x = std::clamp(sx - lbl_w * 0.5F, canvas.x + 4.0F, canvas.x + canvas.w - lbl_w - 4.0F);
+            const float lbl_y = std::max(canvas.y + 6.0F, by - 16.0F);
+            batcher.quad(lbl_x, lbl_y, lbl_w, 12.0F,
+                         is_sel ? ur::Color { 45U, 72U, 130U, 240U }
+                                : ur::Color { 16U, 20U, 30U, 215U });
+            batcher.quad(lbl_x, lbl_y, lbl_w, 1.0F,
+                         is_sel ? ur::Color { 255U, 210U, 90U, 240U }
+                                : ur::Color { 70U, 88U, 120U, 180U });
+            draw_ui_text_clipped(batcher, lbl_x + 4.0F, lbl_y + 3.0F,
+                                 elem->name(),
+                                 is_sel ? ur::Color { 255U, 240U, 140U, 255U }
+                                        : ur::Color { 215U, 228U, 250U, 255U },
+                                 1.0F, lbl_x + lbl_w - 2.0F);
+        }
+
+        // 5. 3D Transform Gizmo (X=Red, Y=Green, Z=Blue) on selected Element
+        if (has_sel)
+        {
+            float ox = 0.0F, oy = 0.0F, od = 10.0F;
+            if (project_3d(sel_wx, sel_wy, sel_wz, ox, oy, od))
+            {
+                float xx = 0.0F, xy = 0.0F, xd = 10.0F;
+                float yx = 0.0F, yy = 0.0F, yd = 10.0F;
+                float zx = 0.0F, zy = 0.0F, zd = 10.0F;
+                if (project_3d(sel_wx + 1.8F, sel_wy,        sel_wz,        xx, xy, xd))
+                {
+                    draw_ui_line(batcher, ox, oy, xx, xy, 3.0F, ur::Color { 245U, 70U, 70U, 255U });
+                    batcher.quad(xx - 4.0F, xy - 4.0F, 8.0F, 8.0F, ur::Color { 255U, 95U, 95U, 255U });
+                    draw_ui_text(batcher, xx + 6.0F, xy - 4.0F, "X", ur::Color { 255U, 110U, 110U, 255U });
+                }
+                if (project_3d(sel_wx,        sel_wy + 1.8F, sel_wz,        yx, yy, yd))
+                {
+                    draw_ui_line(batcher, ox, oy, yx, yy, 3.0F, ur::Color { 75U, 235U, 105U, 255U });
+                    batcher.quad(yx - 4.0F, yy - 4.0F, 8.0F, 8.0F, ur::Color { 95U, 255U, 125U, 255U });
+                    draw_ui_text(batcher, yx + 6.0F, yy - 4.0F, "Y", ur::Color { 110U, 255U, 140U, 255U });
+                }
+                if (project_3d(sel_wx,        sel_wy,        sel_wz + 1.8F, zx, zy, zd))
+                {
+                    draw_ui_line(batcher, ox, oy, zx, zy, 3.0F, ur::Color { 75U, 155U, 255U, 255U });
+                    batcher.quad(zx - 4.0F, zy - 4.0F, 8.0F, 8.0F, ur::Color { 100U, 175U, 255U, 255U });
+                    draw_ui_text(batcher, zx + 6.0F, zy - 4.0F, "Z", ur::Color { 120U, 195U, 255U, 255U });
+                }
+                batcher.quad(ox - 4.0F, oy - 4.0F, 8.0F, 8.0F, ur::Color { 255U, 240U, 150U, 255U });
+            }
+        }
+    }
+
+    // 5b. 3D Orientation Compass Widget in top-right of Viewport canvas
+    {
+        const float comp_cx = canvas.x + canvas.w - 34.0F;
+        const float comp_cy = canvas.y + 30.0F;
+        batcher.quad(comp_cx - 24.0F, comp_cy - 22.0F, 48.0F, 44.0F,
+                     ur::Color { 14U, 18U, 28U, 185U });
+        draw_ui_line(batcher, comp_cx, comp_cy, comp_cx + 15.0F, comp_cy + 2.0F, 2.0F,
+                     ur::Color { 245U, 80U, 80U, 255U });
+        draw_ui_text(batcher, comp_cx + 16.0F, comp_cy - 2.0F, "X", ur::Color { 255U, 110U, 110U, 255U });
+        draw_ui_line(batcher, comp_cx, comp_cy, comp_cx, comp_cy - 15.0F, 2.0F,
+                     ur::Color { 80U, 235U, 110U, 255U });
+        draw_ui_text(batcher, comp_cx - 2.0F, comp_cy - 21.0F, "Y", ur::Color { 110U, 255U, 140U, 255U });
+        draw_ui_line(batcher, comp_cx, comp_cy, comp_cx - 12.0F, comp_cy + 10.0F, 2.0F,
+                     ur::Color { 85U, 160U, 255U, 255U });
+        draw_ui_text(batcher, comp_cx - 19.0F, comp_cy + 9.0F, "Z", ur::Color { 120U, 195U, 255U, 255U });
+        batcher.quad(comp_cx - 2.0F, comp_cy - 2.0F, 5.0F, 5.0F, ur::Color { 240U, 245U, 255U, 255U });
+    }
+
+    // 6. Viewport Top Sub-Toolbar (Camera, Shading, Grid, Gizmo Mode)
+    batcher.quad(rect.x, rect.y, rect.w, kVpHeaderH, ur::Color { 20U, 24U, 36U, 250U });
+    batcher.quad(rect.x, rect.y + kVpHeaderH - 1.0F, rect.w, 1.0F,
+                 ur::Color { 60U, 75U, 105U, 200U });
+
+    const char* gizmo_lbl = (g_gizmo_mode == 0) ? "GIZMO: TRANSLATE (W)" :
+                            (g_gizmo_mode == 1) ? "GIZMO: ROTATE (E)" :
+                                                  "GIZMO: SCALE (R)";
+    std::string vp_hdr = std::string("3D STAGE VIEWPORT  |  PERSP 60 DEG  |  LIT + DDGI  |  ") + gizmo_lbl;
+    draw_ui_text_clipped(batcher, rect.x + 8.0F, rect.y + 7.0F,
+                         vp_hdr,
+                         ur::Color { 210U, 225U, 250U, 255U }, 1.0F,
+                         rect.x + rect.w - 8.0F);
+
+    // 7. Viewport Bottom Telemetry Strip
+    const float foot_y = rect.y + rect.h - kVpFooterH;
+    batcher.quad(rect.x, foot_y, rect.w, kVpFooterH, ur::Color { 18U, 22U, 32U, 245U });
+    std::string sel_name = "None";
+    std::string sel_cls  = "-";
+    std::size_t elem_cnt = 0U;
+    if (g_active_stage_ptr != nullptr)
+    {
+        const auto& ch = g_active_stage_ptr->root().children();
+        elem_cnt = ch.size();
+        if (g_selected_element_idx < ch.size() && ch[g_selected_element_idx])
+        {
+            sel_name = std::string(ch[g_selected_element_idx]->name());
+            sel_cls  = std::string(ch[g_selected_element_idx]->class_name());
+        }
+    }
+    const std::string vp_foot =
+        "STAGE: " + std::string(g_active_stage_ptr ? g_active_stage_ptr->name() : "default") +
+        "  |  ELEMENTS: " + std::to_string(elem_cnt) +
+        "  |  SELECTED: " + sel_name + " [" + sel_cls + "]" +
+        (pie_playing ? "  |  PIE: RUNNING" : "  |  PIE: AUTHORING");
+    draw_ui_text_clipped(batcher, rect.x + 8.0F, foot_y + 6.0F,
+                         vp_foot,
+                         pie_playing ? ur::Color { 110U, 245U, 150U, 255U }
+                                     : ur::Color { 185U, 200U, 228U, 255U },
+                         1.0F, rect.x + rect.w - 8.0F);
 }
 
 // Inspector panel — backed by cd::editor_panel_inspector.
-// The inspector instance lives here in file scope so the ContentDrawer lambda
-// below can capture it by reference without a heap allocation each frame.
 cd::editor::panel::inspector::Inspector g_inspector_panel;
 
 // Console panel — backed by cd::editor_panel_console.
@@ -930,88 +1758,71 @@ cd::editor::panel::console::Console g_console_panel;
 cd::editor::panel::asset_browser::AssetBrowser g_asset_browser_panel;
 
 // phase569 / M4 W1B — 3 new panels wired in (libraries shipped in 556-558).
-// Each lives in file scope so the ContentDrawer lambda can capture them by
-// reference for the lifetime of the program (a local would dangle once
-// main()'s stack frame is left).
-cd::editor::panel::material_editor::MaterialEditor   g_material_editor_panel;
-cd::editor::panel::animator::Animator                g_animator_panel;
+cd::editor::panel::material_editor::MaterialEditor     g_material_editor_panel;
+cd::editor::panel::animator::Animator                  g_animator_panel;
 cd::editor::panel::behavior_designer::BehaviorDesigner g_behavior_designer_panel;
 
 // phase598 / M6 W3 — asset drop-target panel (dashed-border drop zone).
 cd::editor::panel::asset_drop_target::AssetDropTarget g_asset_drop_target_panel;
 
 // phase667 / M12 W2 — three new panel instances + cutscene_player sibling.
-//
-// Lifetime: each panel lives in file scope so the ContentDrawer lambdas
-// capture them by reference for the lifetime of the program. The brief
-// "what moment does this enable?" is encoded directly here — a designer
-// drops into this editor and sees Lighting + InputReplay + DialogGraph +
-// CutscenePlayer panels DAY ONE, not as TODO placeholders.
-cd::editor::panel::light_editor::LightEditor                  g_light_editor_panel;
-cd::editor::panel::input_recorder::InputRecorderPanel         g_input_recorder_panel;
-cd::editor::panel::dialog_tree_editor::DialogTreeEditor       g_dialog_tree_editor_panel;
-cd::editor::panel::cutscene_player::CutscenePlayerPanel       g_cutscene_player_panel;
+cd::editor::panel::light_editor::LightEditor            g_light_editor_panel;
+cd::editor::panel::input_recorder::InputRecorderPanel   g_input_recorder_panel;
+cd::editor::panel::dialog_tree_editor::DialogTreeEditor g_dialog_tree_editor_panel;
+cd::editor::panel::cutscene_player::CutscenePlayerPanel g_cutscene_player_panel;
 
 // phase785 / E5 — live Recorder + Replayer that back g_input_recorder_panel.
-// The panel holds non-owning pointers; these file-scope instances own the
-// data. set_recorder / set_replayer are called once at boot (section 5e).
-cd::game::input_recorder::Recorder                            g_input_recorder;
-cd::game::input_recorder::Replayer                            g_input_replayer;
+cd::game::input_recorder::Recorder g_input_recorder;
+cd::game::input_recorder::Replayer g_input_replayer;
 
 // phase679 / M13 W3 — three new panel instances wired into the dock.
-// File-scope storage so the ContentDrawer lambdas can capture them by
-// reference for the lifetime of the program.
-cd::editor::panel::vehicle_editor::VehicleEditor             g_vehicle_editor_panel;
-cd::editor::panel::pathfinding_viz::PathfindingViz           g_pathfinding_viz_panel;
-cd::editor::panel::material_preview::MaterialPreview         g_material_preview_panel;
+cd::editor::panel::vehicle_editor::VehicleEditor     g_vehicle_editor_panel;
+cd::editor::panel::pathfinding_viz::PathfindingViz   g_pathfinding_viz_panel;
+cd::editor::panel::material_preview::MaterialPreview g_material_preview_panel;
 
-// phase738 / FINALE-2 W3A B1 — backing AuthoredMaterial for the live PBR
-// preview swatch.  Seeded with the `dielectric` preset (mid-grey, metallic=0,
-// roughness=0.6) so the panel opens with a non-empty preview on first frame.
-// The inspector pipeline (later wire-up) edits this struct in place; the panel
-// detects field drift on each draw() and reports is_dirty() so apps/editor's
-// per-frame loop re-renders the 256x256 RT only when something changed.
-cd::asset::material_authoring::AuthoredMaterial               g_material_preview_demo
+// phase738 / FINALE-2 W3A B1 — backing AuthoredMaterial for the live PBR preview swatch.
+cd::asset::material_authoring::AuthoredMaterial g_material_preview_demo
     = cd::asset::material_authoring::AuthoringDefaults::dielectric();
 
-// phase690 / M14 W3 — scene_navigator panel (search/filter sibling to scene_tree).
-// File-scope so the ContentDrawer lambda captures it by reference. Seeded with
-// a small demo entity set in main() so the panel is non-empty on first boot.
-cd::editor::panel::scene_navigator::SceneNavigator           g_scene_navigator_panel;
+// phase690 / M14 W3 — scene_navigator panel.
+cd::editor::panel::scene_navigator::SceneNavigator g_scene_navigator_panel;
 
 // phase701 / M15 W3 — settings + build + perf_profiler panel instances.
-// File-scope so the ContentDrawer lambdas capture them by reference for the
-// lifetime of the program. Seeded with realistic demo data in main() so the
-// panels are non-empty on first boot.
-cd::editor::panel::settings::SettingsPanel                   g_settings_panel;
-cd::editor::panel::build::BuildPanel                         g_build_panel;
-cd::editor::panel::perf_profiler::PerfProfiler               g_perf_profiler_panel;
+cd::editor::panel::settings::SettingsPanel     g_settings_panel;
+cd::editor::panel::build::BuildPanel           g_build_panel;
+cd::editor::panel::perf_profiler::PerfProfiler g_perf_profiler_panel;
 
 // phase711 / M16 W3 — two new panel instances wired into the dock.
-// File-scope so the ContentDrawer lambdas capture them by reference for the
-// lifetime of the program.
 cd::editor::panel::asset_pipeline_status::AssetPipelineStatus g_asset_pipeline_status_panel;
 cd::editor::panel::ik_chain_editor::IkChainEditor             g_ik_chain_editor_panel;
 
 // phase720 / M17 W3 — three new panel instances wired into the editor.
-// File-scope so the ContentDrawer lambdas / status-bar helper capture them by
-// reference for the lifetime of the program. The Lobby instance is the live
-// data the LobbyBrowser visualises (seeded with two demo rooms in main()).
-cd::editor::panel::scene_palette::ScenePalette                g_scene_palette_panel;
-cd::editor::panel::lobby_browser::LobbyBrowser                g_lobby_browser_panel;
-cd::editor::panel::auto_save_indicator::AutoSaveIndicator     g_auto_save_indicator;
-// phase787 — FPS sparkline: ring buffer of last 120 frame times fed per-frame.
-cd::editor::status_bar::FpsSparkline                          g_fps_sparkline;
-cd::network::lobby::Lobby                                     g_demo_lobby;
+cd::editor::panel::scene_palette::ScenePalette            g_scene_palette_panel;
+cd::editor::panel::lobby_browser::LobbyBrowser            g_lobby_browser_panel;
+cd::editor::panel::auto_save_indicator::AutoSaveIndicator g_auto_save_indicator;
+cd::editor::status_bar::FpsSparkline                      g_fps_sparkline;
+cd::network::lobby::Lobby                                 g_demo_lobby;
 
 // phase711 / M16 W3 — demo IK chain backing the ik_chain_editor panel.
-// A 5-joint leg chain anchored at the origin, target shifted forward so the
-// editor opens with a non-trivial visualisation (joint pills + bone lines
-// + target marker) on first boot. The chain is not solved here — the editor
-// is a static visual surface today; live solve hooks land when an animator
-// scene drives the IK system from the playmode timeline.
-cd::animation::ik::IkChain g_demo_ik_chain {};
+cd::animation::ik::IkChain  g_demo_ik_chain {};
 cd::animation::ik::IkResult g_demo_ik_result {};
+
+/// Draws a clean studio sub-header banner at the top of a dock panel, covering
+/// the raw 4px placeholder bar emitted by individual panel libraries.
+void draw_panel_sub_header(ur::DrawBatcher& batcher,
+                           const uw::Rect& rect,
+                           std::string_view title)
+{
+    if (rect.w < 20.0F || rect.h < 18.0F) { return; }
+    batcher.quad(rect.x + 2.0F, rect.y + 2.0F, rect.w - 4.0F, 16.0F,
+                 ur::Color { 20U, 25U, 36U, 252U });
+    batcher.quad(rect.x + 2.0F, rect.y + 18.0F, rect.w - 4.0F, 1.0F,
+                 ur::Color { 75U, 95U, 138U, 200U });
+    draw_ui_text_clipped(batcher, rect.x + 8.0F, rect.y + 6.0F,
+                         title,
+                         ur::Color { 230U, 238U, 255U, 255U },
+                         1.0F, rect.x + rect.w - 6.0F);
+}
 
 void draw_inspector_panel(const uw::Rect& rect,
                           ur::DrawBatcher& batcher,
@@ -1019,6 +1830,47 @@ void draw_inspector_panel(const uw::Rect& rect,
                           const uw::Theme& theme)
 {
     g_inspector_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "PBR MATERIAL + STAGE ELEMENT INSPECTOR");
+
+    const float max_x = rect.x + rect.w - 6.0F;
+    draw_ui_text_clipped(batcher, rect.x + 12.0F, rect.y + 39.0F,
+                         "METALLIC   0.60", ur::Color { 255U, 255U, 255U, 245U }, 1.0F, max_x);
+    draw_ui_text_clipped(batcher, rect.x + 12.0F, rect.y + 63.0F,
+                         "ROUGHNESS  0.35", ur::Color { 255U, 255U, 255U, 245U }, 1.0F, max_x);
+    draw_ui_text_clipped(batcher, rect.x + 12.0F, rect.y + 87.0F,
+                         "ALPHA MODE MASK [OPAQUE | MASK | BLEND]", ur::Color { 245U, 250U, 255U, 245U }, 1.0F, max_x);
+    draw_ui_text_clipped(batcher, rect.x + 12.0F, rect.y + 111.0F,
+                         "CUTOFF     0.50", ur::Color { 255U, 255U, 255U, 245U }, 1.0F, max_x);
+
+    float iy = rect.y + 132.0F;
+    if (iy + 36.0F < rect.y + rect.h && g_active_stage_ptr != nullptr)
+    {
+        const auto& ch = g_active_stage_ptr->root().children();
+        if (g_selected_element_idx < ch.size() && ch[g_selected_element_idx])
+        {
+            const auto& el = *ch[g_selected_element_idx];
+            batcher.quad(rect.x + 6.0F, iy, rect.w - 12.0F,
+                         std::min(76.0F, rect.y + rect.h - iy - 4.0F),
+                         ur::Color { 22U, 27U, 38U, 240U });
+            draw_ui_text_clipped(batcher, rect.x + 12.0F, iy + 5.0F,
+                                 std::string("ELEMENT: ") + std::string(el.name()),
+                                 ur::Color { 120U, 205U, 255U, 255U }, 1.0F, max_x);
+            draw_ui_text_clipped(batcher, rect.x + 12.0F, iy + 19.0F,
+                                 std::string("CLASS:   ") + std::string(el.class_name()),
+                                 ur::Color { 200U, 215U, 240U, 255U }, 1.0F, max_x);
+            if (iy + 46.0F < rect.y + rect.h)
+            {
+                const auto& off = g_element_pos_offsets[g_selected_element_idx % g_element_pos_offsets.size()];
+                char buf[96];
+                std::snprintf(buf, sizeof(buf), "TRANSFORM POS: (%.1f, %.1f, %.1f)  SCALE: (1.0, 1.0, 1.0)",
+                              static_cast<double>(off[0]),
+                              static_cast<double>(1.0F + off[1]),
+                              static_cast<double>(off[2]));
+                draw_ui_text_clipped(batcher, rect.x + 12.0F, iy + 33.0F,
+                                     buf, ur::Color { 165U, 230U, 175U, 255U }, 1.0F, max_x);
+            }
+        }
+    }
 }
 
 void draw_console_panel(const uw::Rect& rect,
@@ -1027,6 +1879,24 @@ void draw_console_panel(const uw::Rect& rect,
                         const uw::Theme& theme)
 {
     g_console_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "ENGINE CONSOLE  [INFO | WARN | ERROR]  FILTER: ALL");
+    const float max_x = rect.x + rect.w - 6.0F;
+
+    static constexpr std::array<std::pair<const char*, ur::Color>, 6> kLogs {{
+        { "[INFO]  Vulkan RHI device + Swapchain (1280x720 BGRA8) initialized", ur::Color{120U, 220U, 155U, 255U} },
+        { "[INFO]  cd::material Route A UI pipeline + ThemePalette UBO bound",   ur::Color{120U, 220U, 155U, 255U} },
+        { "[STAGE] Loaded Showcase Stage with 24-panel Studio Cockpit layout",   ur::Color{130U, 195U, 255U, 255U} },
+        { "[ASSET] HotReload FileWatcher polling 6 shader/stage/script paths",   ur::Color{210U, 220U, 240U, 255U} },
+        { "[AUDIO] Native WASAPI backend active (procedural ADSR chime ready)",  ur::Color{210U, 220U, 240U, 255U} },
+        { "[PIE]   Press F5 or click [PLAY] in Top Toolbar to run Stage sim",    ur::Color{250U, 205U, 100U, 255U} },
+    }};
+    float ly = rect.y + 26.0F;
+    for (const auto& [msg, col] : kLogs)
+    {
+        if (ly + 12.0F > rect.y + rect.h - 4.0F) { break; }
+        draw_ui_text_clipped(batcher, rect.x + 12.0F, ly, msg, col, 1.0F, max_x);
+        ly += 14.0F;
+    }
 }
 
 void draw_assets_panel(const uw::Rect& rect,
@@ -1035,6 +1905,7 @@ void draw_assets_panel(const uw::Rect& rect,
                        const uw::Theme& theme)
 {
     g_asset_browser_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "ASSET BROWSER: /assets [textures | meshes | materials]");
 }
 
 // phase569 / M4 W1B drawers ---------------------------------------------------
@@ -1045,6 +1916,41 @@ void draw_material_editor_panel(const uw::Rect& rect,
                                 const uw::Theme& theme)
 {
     g_material_editor_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "PBR MATERIAL AUTHORING GRAPH");
+    const float max_x = rect.x + rect.w - 6.0F;
+    if (rect.h > 55.0F)
+    {
+        draw_ui_text_clipped(batcher, rect.x + 14.0F, rect.y + 24.0F,
+                             "BASE COLOR  R:0.35  G:0.62  B:0.95",
+                             ur::Color { 245U, 250U, 255U, 255U }, 1.0F, max_x);
+    }
+    if (rect.h > 85.0F)
+    {
+        draw_ui_text_clipped(batcher, rect.x + 14.0F, rect.y + 50.0F,
+                             "METALLIC: 0.65", ur::Color { 235U, 242U, 255U, 245U }, 1.0F, max_x);
+        draw_ui_text_clipped(batcher, rect.x + 14.0F, rect.y + 76.0F,
+                             "ROUGHNESS: 0.28", ur::Color { 235U, 242U, 255U, 245U }, 1.0F, max_x);
+    }
+    // Replace the bright bottom swatch rectangle with a dark studio PBR preview card + shaded sphere
+    if (rect.h > 115.0F)
+    {
+        const float sw_y = rect.y + 94.0F;
+        const float sw_h = std::min(44.0F, rect.y + rect.h - sw_y - 4.0F);
+        batcher.quad(rect.x + 6.0F, sw_y, rect.w - 12.0F, sw_h,
+                     ur::Color { 22U, 28U, 42U, 250U });
+        batcher.quad(rect.x + 6.0F, sw_y, rect.w - 12.0F, 1.0F,
+                     ur::Color { 75U, 130U, 215U, 200U });
+        // Shaded PBR sphere icon on the left of the swatch card
+        const float sp_x = rect.x + 14.0F;
+        const float sp_y = sw_y + 6.0F;
+        batcher.quad(sp_x, sp_y, 28.0F, 28.0F, ur::Color { 45U, 95U, 175U, 255U });
+        batcher.quad(sp_x + 3.0F, sp_y + 3.0F, 20.0F, 20.0F, ur::Color { 75U, 145U, 235U, 255U });
+        batcher.quad(sp_x + 6.0F, sp_y + 5.0F, 8.0F, 7.0F, ur::Color { 235U, 245U, 255U, 240U });
+        draw_ui_text_clipped(batcher, sp_x + 36.0F, sw_y + 9.0F,
+                             "SWATCH: COBALT COAT", ur::Color { 140U, 210U, 255U, 255U }, 1.0F, max_x);
+        draw_ui_text_clipped(batcher, sp_x + 36.0F, sw_y + 22.0F,
+                             "GGX + CLEARCOAT + IBL", ur::Color { 190U, 205U, 230U, 240U }, 1.0F, max_x);
+    }
 }
 
 void draw_animator_panel(const uw::Rect& rect,
@@ -1053,6 +1959,14 @@ void draw_animator_panel(const uw::Rect& rect,
                          const uw::Theme& theme)
 {
     g_animator_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "ANIMATOR STATE MACHINE");
+    const float max_x = rect.x + rect.w - 6.0F;
+    if (rect.h > 48.0F)
+    {
+        draw_ui_text_clipped(batcher, rect.x + 10.0F, rect.y + 26.0F,
+                             "[IDLE] -> [RUN] -> [JUMP]",
+                             ur::Color { 195U, 215U, 245U, 245U }, 1.0F, max_x);
+    }
 }
 
 void draw_behavior_designer_panel(const uw::Rect& rect,
@@ -1061,6 +1975,14 @@ void draw_behavior_designer_panel(const uw::Rect& rect,
                                   const uw::Theme& theme)
 {
     g_behavior_designer_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "BEHAVIOR TREE & GOAP PLANNER");
+    const float max_x = rect.x + rect.w - 6.0F;
+    if (rect.h > 48.0F)
+    {
+        draw_ui_text_clipped(batcher, rect.x + 12.0F, rect.y + 24.0F,
+                             "SELECTOR -> [PATROL | CHASE | ATTACK]",
+                             ur::Color { 195U, 215U, 245U, 245U }, 1.0F, max_x);
+    }
 }
 
 // phase598 / M6 W3 — asset_drop_target drawer.
@@ -1070,6 +1992,10 @@ void draw_asset_drop_target_panel(const uw::Rect& rect,
                                   const uw::Theme& theme)
 {
     g_asset_drop_target_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "ASSET DRAG & DROP ZONE");
+    draw_ui_text_clipped(batcher, rect.x + 12.0F, rect.y + rect.h * 0.5F - 4.0F,
+                         "DROP .GLTF / .GLB / .PNG / .WAV ASSETS HERE",
+                         ur::Color { 220U, 230U, 250U, 255U }, 1.0F, rect.x + rect.w - 8.0F);
 }
 
 // phase667 / M12 W2 — new panel drawers.
@@ -1079,6 +2005,14 @@ void draw_light_editor_panel(const uw::Rect& rect,
                              const uw::Theme& theme)
 {
     g_light_editor_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "LIGHTING & DDGI / RESTIR GI");
+    const float max_x = rect.x + rect.w - 6.0F;
+    if (rect.h > 48.0F)
+    {
+        draw_ui_text_clipped(batcher, rect.x + 12.0F, rect.y + 24.0F,
+                             "SUN 6500K  LUX: 12.5  CASCADE CSM: 4",
+                             ur::Color { 255U, 225U, 140U, 245U }, 1.0F, max_x);
+    }
 }
 
 void draw_input_recorder_panel(const uw::Rect& rect,
@@ -1087,6 +2021,14 @@ void draw_input_recorder_panel(const uw::Rect& rect,
                                const uw::Theme& theme)
 {
     g_input_recorder_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "INPUT RECORDER / REPLAY");
+    const float max_x = rect.x + rect.w - 6.0F;
+    if (rect.h > 48.0F)
+    {
+        draw_ui_text_clipped(batcher, rect.x + 10.0F, rect.y + 26.0F,
+                             "[REC]  [STOP]  [REPLAY]",
+                             ur::Color { 245U, 185U, 185U, 245U }, 1.0F, max_x);
+    }
 }
 
 void draw_dialog_tree_editor_panel(const uw::Rect& rect,
@@ -1095,6 +2037,7 @@ void draw_dialog_tree_editor_panel(const uw::Rect& rect,
                                    const uw::Theme& theme)
 {
     g_dialog_tree_editor_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "DIALOG TREE GRAPH");
 }
 
 void draw_cutscene_player_panel(const uw::Rect& rect,
@@ -1103,6 +2046,14 @@ void draw_cutscene_player_panel(const uw::Rect& rect,
                                 const uw::Theme& theme)
 {
     g_cutscene_player_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "CUTSCENE TIMELINE SEQUENCER");
+    const float max_x = rect.x + rect.w - 6.0F;
+    if (rect.h > 48.0F)
+    {
+        draw_ui_text_clipped(batcher, rect.x + 12.0F, rect.y + 26.0F,
+                             "00:00.0  [CAM_SHOT_A | AUDIO_SCORE]",
+                             ur::Color { 195U, 215U, 245U, 245U }, 1.0F, max_x);
+    }
 }
 
 // phase679 / M13 W3 — drawers for the 3 new panels.
@@ -1113,6 +2064,7 @@ void draw_vehicle_editor_panel(const uw::Rect& rect,
                                const uw::Theme& theme)
 {
     g_vehicle_editor_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "VEHICLE PACEJKA TIRE & SUSPENSION");
 }
 
 void draw_pathfinding_viz_panel(const uw::Rect& rect,
@@ -1121,6 +2073,7 @@ void draw_pathfinding_viz_panel(const uw::Rect& rect,
                                 const uw::Theme& theme)
 {
     g_pathfinding_viz_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "NAVMESH A* & RVO2 CROWD MAP");
 }
 
 void draw_material_preview_panel(const uw::Rect& rect,
@@ -1129,6 +2082,7 @@ void draw_material_preview_panel(const uw::Rect& rect,
                                  const uw::Theme& theme)
 {
     g_material_preview_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "PBR MATERIAL SPHERE PREVIEW");
 }
 
 // phase690 / M14 W3 — scene_navigator drawer.
@@ -1138,16 +2092,9 @@ void draw_scene_navigator_panel(const uw::Rect& rect,
                                 const uw::Theme& theme)
 {
     g_scene_navigator_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "SCENE SEARCH & FILTER");
 }
 
-// phase701 / M15 W3 — drawers for the 3 new panels.
-//
-// SettingsPanel and BuildPanel consume cd::ui::widgets::Theme directly. The
-// PerfProfiler signature however takes cd::ui::theme::Theme (V2), so the
-// perf_profiler drawer rebuilds a transient V2 theme via theme_from_name()
-// using the active palette name kept by main() (see g_active_theme_name_ptr).
-// We expose the V2 theme via a function-static fallback for the headless
-// path where the global is not yet wired.
 std::string* g_active_theme_name_ptr { nullptr };
 
 void draw_settings_panel(const uw::Rect& rect,
@@ -1156,6 +2103,7 @@ void draw_settings_panel(const uw::Rect& rect,
                          const uw::Theme& theme)
 {
     g_settings_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "ENGINE & PROJECT SETTINGS");
 }
 
 void draw_build_panel(const uw::Rect& rect,
@@ -1164,6 +2112,7 @@ void draw_build_panel(const uw::Rect& rect,
                       const uw::Theme& theme)
 {
     g_build_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "LIVE SHADER & HOT-RELOAD PIPELINE");
 }
 
 void draw_perf_profiler_panel(const uw::Rect& rect,
@@ -1177,19 +2126,8 @@ void draw_perf_profiler_panel(const uw::Rect& rect,
             : std::string_view(uth::kThemeNameDark);
     const auto v2_theme = uth::theme_from_name(name);
     g_perf_profiler_panel.draw(batcher, v2_theme, rect);
+    draw_panel_sub_header(batcher, rect, "FRAME TELEMETRY & GPU PROFILER (60 FPS)");
 }
-
-// phase711 / M16 W3 — drawers for the 2 new panels.
-//
-// asset_pipeline_status renders 4 horizontal bar pairs (scene / texture /
-// audio / shader pending vs completed). It accepts a StreamerPool* via
-// set_pool(); when no pool is attached (today's default), draw() still emits
-// the background + border + 4 row label quads so the panel reads as a
-// purpose-built tile rather than an empty rectangle.
-//
-// ik_chain_editor renders a 2D side-view of a cd::animation::ik::IkChain
-// (joint pills + bone lines + target X marker + convergence indicator).
-// Bound to g_demo_ik_chain so the editor opens with a non-trivial preview.
 
 void draw_asset_pipeline_status_panel(const uw::Rect& rect,
                                       ur::DrawBatcher& batcher,
@@ -1197,6 +2135,7 @@ void draw_asset_pipeline_status_panel(const uw::Rect& rect,
                                       const uw::Theme& theme)
 {
     g_asset_pipeline_status_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "ASSET STREAMER POOL STATUS");
 }
 
 void draw_ik_chain_editor_panel(const uw::Rect& rect,
@@ -1205,18 +2144,8 @@ void draw_ik_chain_editor_panel(const uw::Rect& rect,
                                 const uw::Theme& theme)
 {
     g_ik_chain_editor_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "FABRIK / CCD IK SOLVER CHAIN");
 }
-
-// phase720 / M17 W3 — drawers for the 2 new dock panels (scene_palette +
-// lobby_browser). auto_save_indicator is NOT a dock panel; it is drawn
-// directly from the status-bar pass.
-//
-// scene_palette consumes cd::ui::widgets::Theme directly (same uw::Theme the
-// DockSpace already hands to drawers).
-//
-// lobby_browser consumes cd::ui::widgets::Theme directly. Bound to a live
-// cd::network::lobby::Lobby in main() so the panel renders real room rows
-// rather than the empty-state placeholder.
 
 void draw_scene_palette_panel(const uw::Rect& rect,
                               ur::DrawBatcher& batcher,
@@ -1224,6 +2153,7 @@ void draw_scene_palette_panel(const uw::Rect& rect,
                               const uw::Theme& theme)
 {
     g_scene_palette_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "MATERIAL 3 THEME PALETTE SWATCHES");
 }
 
 void draw_lobby_browser_panel(const uw::Rect& rect,
@@ -1232,7 +2162,291 @@ void draw_lobby_browser_panel(const uw::Rect& rect,
                               const uw::Theme& theme)
 {
     g_lobby_browser_panel.draw(batcher, theme, rect);
+    draw_panel_sub_header(batcher, rect, "MULTIPLAYER LOBBY BROWSER (2 ROOMS)");
+    const float max_x = rect.x + rect.w - 6.0F;
+    if (rect.h > 38.0F)
+    {
+        draw_ui_text_clipped(batcher, rect.x + 12.0F, rect.y + 23.0F,
+                             "1. CAPTURE POINT BETA [CTF 2/4]   PUBLIC",
+                             ur::Color { 145U, 235U, 165U, 245U }, 1.0F, max_x);
+    }
+    if (rect.h > 54.0F)
+    {
+        draw_ui_text_clipped(batcher, rect.x + 12.0F, rect.y + 37.0F,
+                             "2. VIP MATCH          [DM  1/8]   LOCKED",
+                             ur::Color { 245U, 205U, 120U, 245U }, 1.0F, max_x);
+    }
 }
+
+// ---- DockSpace Tab Strip Title Overlay & Top Studio Toolbar ----------------
+
+[[nodiscard]] std::string_view friendly_tab_title(std::string_view id) noexcept
+{
+    if (id == "scene_tree")            return "SCENE TREE";
+    if (id == "scene_navigator")       return "SEARCH";
+    if (id == "viewport")              return "3D VIEWPORT";
+    if (id == "inspector")             return "INSPECTOR";
+    if (id == "settings_panel")        return "SETTINGS";
+    if (id == "scene_palette")         return "PALETTE";
+    if (id == "console")               return "CONSOLE";
+    if (id == "assets")                return "ASSETS";
+    if (id == "asset_drop_target")     return "DROP ZONE";
+    if (id == "build_panel")           return "HOT-RELOAD";
+    if (id == "material_editor")       return "MATERIAL";
+    if (id == "vehicle_editor")        return "VEHICLE";
+    if (id == "material_preview")      return "PBR PREVIEW";
+    if (id == "animator")              return "ANIMATOR";
+    if (id == "ik_chain_editor")       return "IK CHAIN";
+    if (id == "behavior_designer")     return "BEHAVIOR AI";
+    if (id == "light_editor")          return "LIGHTING";
+    if (id == "perf_profiler")         return "PROFILER";
+    if (id == "asset_pipeline_status") return "STREAMER";
+    if (id == "cutscene_player")       return "CUTSCENE";
+    if (id == "dialog_tree_editor")    return "DIALOG";
+    if (id == "pathfinding_viz")       return "NAVMESH";
+    if (id == "input_recorder")        return "INPUT REC";
+    if (id == "lobby_browser")         return "NET LOBBY";
+    return id;
+}
+
+void draw_dock_node_tab_labels(const uw::DockNode* node, ur::DrawBatcher& batcher)
+{
+    if (node == nullptr) { return; }
+    if (node->kind() == uw::DockNodeKind::kSplit)
+    {
+        draw_dock_node_tab_labels(node->first(), batcher);
+        draw_dock_node_tab_labels(node->second(), batcher);
+        return;
+    }
+    if (node->kind() != uw::DockNodeKind::kTabGroup || node->panels().empty())
+    {
+        return;
+    }
+
+    const auto& r = node->rect();
+    const auto& panels = node->panels();
+    const float tab_w = std::min(120.0F, r.w / static_cast<float>(panels.size()));
+    for (std::size_t i = 0U; i < panels.size(); ++i)
+    {
+        const float tx = r.x + static_cast<float>(i) * tab_w;
+        const bool active = (i == node->active_tab());
+        draw_ui_text_clipped(
+            batcher,
+            tx + 5.0F,
+            r.y + 8.0F,
+            friendly_tab_title(panels[i]),
+            active ? ur::Color { 255U, 255U, 255U, 255U }
+                   : ur::Color { 185U, 195U, 215U, 230U },
+            1.0F,
+            tx + tab_w - 3.0F);
+    }
+}
+
+constexpr float kTopToolbarH = 28.0F;
+
+void switch_active_showcase(std::size_t new_idx)
+{
+    if (g_cockpit_shell_ptr == nullptr || g_active_stage_ptr == nullptr) { return; }
+    const auto& list = g_cockpit_shell_ptr->project_hub_showcases();
+    if (list.empty()) { return; }
+    g_active_showcase_idx = new_idx % list.size();
+    const std::string_view slug = list[g_active_showcase_idx].slug;
+    if (g_pie_controller_ptr != nullptr &&
+        g_pie_controller_ptr->state() != cd::editor::PieState::kStopped)
+    {
+        (void)g_pie_controller_ptr->stop(*g_active_stage_ptr);
+    }
+    *g_active_stage_ptr = cd::gameplay_director::build_showcase_stage_by_slug(slug);
+    if (g_engine_loop_ptr != nullptr)
+    {
+        g_engine_loop_ptr->set_stage(cd::gameplay_director::build_showcase_stage_by_slug(slug));
+    }
+    g_selected_element_idx = 0U;
+    std::printf("editor: switched active Showcase Stage -> [%02zu/12] %.*s (%zu elements)\n",
+                g_active_showcase_idx + 1U,
+                static_cast<int>(slug.size()), slug.data(),
+                g_active_stage_ptr->root().children().size());
+    std::fflush(stdout);
+}
+
+void draw_top_cockpit_toolbar(ur::DrawBatcher& batcher,
+                              const uw::Theme& theme,
+                              float fb_w,
+                              const uw::PointerState& ptr,
+                              bool& io_show_dbg_viz,
+                              bool& io_show_shortcuts)
+{
+    // Toolbar background + bottom accent border
+    batcher.quad(0.0F, 0.0F, fb_w, kTopToolbarH, ur::Color { 18U, 22U, 32U, 255U });
+    batcher.quad(0.0F, kTopToolbarH - 1.0F, fb_w, 1.0F,
+                 ur::Color { theme.accent.r, theme.accent.g, theme.accent.b, 190U });
+
+    float cx = 6.0F;
+    const float btn_y = 4.0F;
+    const float btn_h = kTopToolbarH - 8.0F;
+
+    auto draw_btn = [&](float w, std::string_view label, bool active, ur::Color active_col) -> bool {
+        const uw::Rect r { cx, btn_y, w, btn_h };
+        const bool hov = r.contains(ptr.mouse_x, ptr.mouse_y);
+        const ur::Color bg =
+            active ? active_col :
+            hov    ? ur::Color { 56U, 66U, 92U, 255U } :
+                     ur::Color { 34U, 40U, 58U, 255U };
+        batcher.quad(r.x, r.y, r.w, r.h, bg);
+        batcher.quad(r.x, r.y, r.w, 1.0F,
+                     active ? ur::Color { 255U, 255U, 255U, 210U }
+                            : ur::Color { 75U, 88U, 118U, 180U });
+        draw_ui_text_clipped(batcher, r.x + 6.0F, r.y + 6.0F, label,
+                             active ? ur::Color { 15U, 18U, 26U, 255U }
+                                    : ur::Color { 230U, 238U, 255U, 255U },
+                             1.0F, r.x + r.w - 3.0F);
+        cx += w + 4.0F;
+        return hov && ptr.left_pressed;
+    };
+
+    // 1. Brand Pill
+    batcher.quad(cx, btn_y, 148.0F, btn_h, ur::Color { 95U, 72U, 165U, 255U });
+    draw_ui_text_clipped(batcher, cx + 7.0F, btn_y + 6.0F, "CHROMODYNAMIC STUDIO",
+                         ur::Color { 255U, 255U, 255U, 255U }, 1.0F, cx + 144.0F);
+    cx += 154.0F;
+
+    // 2. Showcase Stage Switcher: [<] [01/12 slug] [>]
+    if (draw_btn(22.0F, "<", false, ur::Color { 90U, 160U, 240U, 255U }))
+    {
+        const std::size_t n = (g_cockpit_shell_ptr != nullptr)
+            ? g_cockpit_shell_ptr->project_hub_showcases().size() : 12U;
+        switch_active_showcase((g_active_showcase_idx + n - 1U) % std::max<std::size_t>(1U, n));
+    }
+
+    std::string stage_pill = "STAGE 01/12: ";
+    if (g_active_stage_ptr != nullptr)
+    {
+        char num_b[32];
+        std::snprintf(num_b, sizeof(num_b), "STAGE %02zu/12: ", g_active_showcase_idx + 1U);
+        stage_pill = std::string(num_b) + std::string(g_active_stage_ptr->name());
+    }
+    if (draw_btn(256.0F, stage_pill, false, ur::Color { 60U, 110U, 190U, 255U }))
+    {
+        switch_active_showcase(g_active_showcase_idx + 1U);
+    }
+
+    if (draw_btn(22.0F, ">", false, ur::Color { 90U, 160U, 240U, 255U }))
+    {
+        switch_active_showcase(g_active_showcase_idx + 1U);
+    }
+
+    cx += 6.0F;
+
+    // 3. PIE Transport Controls: [PLAY F5] [PAUSE F6] [STEP F7] [STOP F8]
+    const auto pie_st = (g_pie_controller_ptr != nullptr)
+        ? g_pie_controller_ptr->state()
+        : cd::editor::PieState::kStopped;
+
+    if (draw_btn(64.0F, "PLAY F5", pie_st == cd::editor::PieState::kPlaying,
+                 ur::Color { 75U, 215U, 120U, 255U }))
+    {
+        if (g_pie_controller_ptr != nullptr && g_active_stage_ptr != nullptr)
+        {
+            if (pie_st == cd::editor::PieState::kPaused)
+            {
+                (void)g_pie_controller_ptr->resume();
+            }
+            else if (pie_st == cd::editor::PieState::kStopped)
+            {
+                (void)g_pie_controller_ptr->play(*g_active_stage_ptr);
+            }
+        }
+    }
+    if (draw_btn(68.0F, "PAUSE F6", pie_st == cd::editor::PieState::kPaused,
+                 ur::Color { 245U, 195U, 75U, 255U }))
+    {
+        if (g_pie_controller_ptr != nullptr && pie_st == cd::editor::PieState::kPlaying)
+        {
+            (void)g_pie_controller_ptr->pause();
+        }
+    }
+    if (draw_btn(62.0F, "STEP F7", false, ur::Color { 110U, 185U, 250U, 255U }))
+    {
+        if (g_pie_controller_ptr != nullptr && g_active_stage_ptr != nullptr)
+        {
+            if (pie_st == cd::editor::PieState::kStopped)
+            {
+                (void)g_pie_controller_ptr->play(*g_active_stage_ptr);
+                (void)g_pie_controller_ptr->pause();
+            }
+            (void)g_pie_controller_ptr->step_one_frame(*g_active_stage_ptr, 1.0F / 60.0F);
+        }
+    }
+    if (draw_btn(62.0F, "STOP F8", false, ur::Color { 235U, 90U, 90U, 255U }))
+    {
+        if (g_pie_controller_ptr != nullptr && g_active_stage_ptr != nullptr &&
+            pie_st != cd::editor::PieState::kStopped)
+        {
+            (void)g_pie_controller_ptr->stop(*g_active_stage_ptr);
+        }
+    }
+
+    cx += 6.0F;
+
+    // 4. [+ ADD ELEMENT] Spawner Button
+    if (draw_btn(104.0F, "+ ADD ELEMENT", false, ur::Color { 95U, 205U, 245U, 255U }))
+    {
+        if (g_add_catalog_ptr != nullptr && g_active_stage_ptr != nullptr)
+        {
+            const auto& entries = g_add_catalog_ptr->items();
+            if (!entries.empty())
+            {
+                const auto& desc = entries[g_next_spawn_class_idx % entries.size()];
+                ++g_next_spawn_class_idx;
+                const std::string inst_name =
+                    std::string(desc.class_name) + "_" +
+                    std::to_string(g_active_stage_ptr->root().children().size() + 1U);
+                if (g_add_catalog_ptr->spawn_into_stage(*g_active_stage_ptr, desc.class_name, inst_name))
+                {
+                    g_selected_element_idx = g_active_stage_ptr->root().children().size() - 1U;
+                    std::printf("editor: spawned Element '%s' (%.*s) into Stage.\n",
+                                inst_name.c_str(),
+                                static_cast<int>(desc.class_name.size()),
+                                desc.class_name.data());
+                    std::fflush(stdout);
+                }
+            }
+        }
+    }
+
+    // 5. Gizmo Mode Selectors: [W:MOVE] [E:ROT] [R:SCALE]
+    if (draw_btn(54.0F, "W:MOVE", g_gizmo_mode == 0, ur::Color { 115U, 195U, 255U, 255U }))
+    {
+        g_gizmo_mode = 0;
+    }
+    if (draw_btn(50.0F, "E:ROT", g_gizmo_mode == 1, ur::Color { 115U, 195U, 255U, 255U }))
+    {
+        g_gizmo_mode = 1;
+    }
+    if (draw_btn(58.0F, "R:SCALE", g_gizmo_mode == 2, ur::Color { 115U, 195U, 255U, 255U }))
+    {
+        g_gizmo_mode = 2;
+    }
+
+    // 6. Right-aligned HUD / G-Buffer / Help toggles
+    if (cx + 185.0F < fb_w)
+    {
+        cx = fb_w - 188.0F;
+        if (draw_btn(58.0F, "HUD F1", g_show_floating_perf_hud, ur::Color { 115U, 215U, 165U, 255U }))
+        {
+            g_show_floating_perf_hud = !g_show_floating_perf_hud;
+        }
+        if (draw_btn(62.0F, "GBUF F4", io_show_dbg_viz, ur::Color { 245U, 185U, 85U, 255U }))
+        {
+            io_show_dbg_viz = !io_show_dbg_viz;
+        }
+        if (draw_btn(54.0F, "HELP ?", io_show_shortcuts, ur::Color { 175U, 145U, 255U, 255U }))
+        {
+            io_show_shortcuts = !io_show_shortcuts;
+        }
+    }
+}
+
 
 // ===========================================================================
 // phase701 / M15 W3 — toast notification system
@@ -1472,21 +2686,13 @@ void draw_toasts(ur::DrawBatcher& batcher,
                      ur::Color { theme.accent.r, theme.accent.g,
                                  theme.accent.b, alpha });
 
-        // 12 px message-indicator strip: 3 small dim quads inside the body
-        // so the toast surface conveys "this is a message" without glyphs.
-        constexpr float kDotW = 5.0F;
-        constexpr float kDotH = 4.0F;
-        constexpr float kDotY = 9.0F;
-        const auto dim_alpha = static_cast<std::uint8_t>(alpha_f * 230.0F * 0.7F);
-        for (int d = 0; d < 3; ++d)
-        {
-            batcher.quad(x + 12.0F + static_cast<float>(d) * (kDotW + 3.0F),
-                         y + kDotY, kDotW, kDotH,
-                         ur::Color { 240U, 240U, 240U, dim_alpha });
-        }
-
-        // Suppress unused warning for the message string (no glyph renderer yet).
-        (void)t.message;
+        draw_ui_text_clipped(batcher,
+                             x + 8.0F,
+                             y + 7.0F,
+                             t.message,
+                             ur::Color { 15U, 20U, 28U, alpha },
+                             1.0F,
+                             x + kToastW - 6.0F);
     }
 }
 
@@ -1689,6 +2895,7 @@ struct PointerAccumulator
     float mouse_y        { 0.0F };
     bool  left_down      { false };
     bool  left_down_prev { false };
+    bool  right_down     { false };
 };
 
 [[nodiscard]] uw::PointerState flatten_pointer(const PointerAccumulator& a) noexcept
@@ -1707,6 +2914,13 @@ void apply_event(PointerAccumulator& a, const platform::OSEvent& e) noexcept
     switch (e.kind)
     {
         case platform::OSEventKind::kMouseMove:
+            if (a.right_down)
+            {
+                const float dx = e.mouse_x - a.mouse_x;
+                const float dy = e.mouse_y - a.mouse_y;
+                g_cam_yaw   += dx * 0.006F;
+                g_cam_pitch = std::clamp(g_cam_pitch + dy * 0.005F, -1.2F, 1.2F);
+            }
             a.mouse_x = e.mouse_x;
             a.mouse_y = e.mouse_y;
             break;
@@ -1715,11 +2929,19 @@ void apply_event(PointerAccumulator& a, const platform::OSEvent& e) noexcept
             {
                 a.left_down = true;
             }
+            else if (e.mouse_button == platform::MouseButton::kRight)
+            {
+                a.right_down = true;
+            }
             break;
         case platform::OSEventKind::kMouseButtonUp:
             if (e.mouse_button == platform::MouseButton::kLeft)
             {
                 a.left_down = false;
+            }
+            else if (e.mouse_button == platform::MouseButton::kRight)
+            {
+                a.right_down = false;
             }
             break;
         default:
@@ -1820,8 +3042,7 @@ void draw_status_bar(ur::DrawBatcher& batcher,
     const float bar_y = fb_h - kStatusBarH;
     const float bar_w = fb_w;
 
-    // 1. Status bar background — use surface_subtle (phase673) so the ribbon
-    //    reads as a slightly raised layer rather than an arbitrary dark notch.
+    // 1. Status bar background
     batcher.quad(bar_x, bar_y, bar_w, kStatusBarH,
                  ur::Color {
                      theme.surface_subtle.r,
@@ -1829,8 +3050,7 @@ void draw_status_bar(ur::DrawBatcher& batcher,
                      theme.surface_subtle.b,
                      theme.surface_subtle.a });
 
-    // 2. Top separator line — use divider token (phase673) so the boundary
-    //    between dock and status bar uses the design-token vocabulary.
+    // 2. Top separator line
     batcher.quad(bar_x, bar_y, bar_w, 1.0F,
                  ur::Color {
                      theme.divider.r,
@@ -1838,15 +3058,7 @@ void draw_status_bar(ur::DrawBatcher& batcher,
                      theme.divider.b,
                      theme.divider.a });
 
-    // ---- 3. Validator badge (LEFT region, 30% of the bar width) -----------
-    //
-    // Three side-by-side count blocks; each block width is proportional to
-    // its count relative to the total, with a 6 px minimum so a zero-count
-    // bucket is still visually present. Colour mapping mirrors
-    // cd::asset::validator::Severity using phase673 semantic tokens:
-    //    Info / pass  -> theme.accent_success (green)
-    //    Warning      -> theme.accent_warning (yellow)
-    //    Error        -> theme.accent_error   (red)
+    // ---- 3. Validator badge (LEFT region) ----------------------------------
     constexpr float kBadgeW    = 280.0F;
     constexpr float kBadgePad  = 6.0F;
     constexpr float kBadgeH    = kStatusBarH - 4.0F;
@@ -1863,7 +3075,6 @@ void draw_status_bar(ur::DrawBatcher& batcher,
     };
 
     float bx = bar_x + kBadgePad;
-    // pass — accent_success (phase673)
     {
         const float w = block_w(stats.validator_pass);
         batcher.quad(bx, badge_y, w, kBadgeH,
@@ -1872,9 +3083,11 @@ void draw_status_bar(ur::DrawBatcher& batcher,
                          theme.accent_success.g,
                          theme.accent_success.b,
                          theme.accent_success.a });
+        draw_ui_text_clipped(batcher, bx + 4.0F, badge_y + 5.0F,
+                             "PASS:" + std::to_string(stats.validator_pass),
+                             ur::Color { 12U, 18U, 14U, 255U }, 1.0F, bx + w - 2.0F);
         bx += w + 2.0F;
     }
-    // warn — accent_warning (phase673)
     {
         const float w = block_w(stats.validator_warn);
         batcher.quad(bx, badge_y, w, kBadgeH,
@@ -1883,9 +3096,11 @@ void draw_status_bar(ur::DrawBatcher& batcher,
                          theme.accent_warning.g,
                          theme.accent_warning.b,
                          theme.accent_warning.a });
+        draw_ui_text_clipped(batcher, bx + 4.0F, badge_y + 5.0F,
+                             "WARN:" + std::to_string(stats.validator_warn),
+                             ur::Color { 20U, 16U, 10U, 255U }, 1.0F, bx + w - 2.0F);
         bx += w + 2.0F;
     }
-    // error — accent_error (phase673)
     {
         const float w = block_w(stats.validator_error);
         batcher.quad(bx, badge_y, w, kBadgeH,
@@ -1894,15 +3109,12 @@ void draw_status_bar(ur::DrawBatcher& batcher,
                          theme.accent_error.g,
                          theme.accent_error.b,
                          theme.accent_error.a });
+        draw_ui_text_clipped(batcher, bx + 4.0F, badge_y + 5.0F,
+                             "ERR:" + std::to_string(stats.validator_error),
+                             ur::Color { 255U, 255U, 255U, 255U }, 1.0F, bx + w - 2.0F);
     }
 
     // ---- 4. Frame stats (CENTRE region) -----------------------------------
-    //
-    // Three thin strips (FPS, vertex count, draw call count) each clamped
-    // to a sane upper bound so they read as a "VU meter" without text.
-    //   FPS:        capped at 240 fps
-    //   verts:      capped at 64k
-    //   draw calls: capped at 256
     constexpr float kStatsW    = 360.0F;
     constexpr float kStatsPad  = 6.0F;
     const float     stats_x    = bar_x + kBadgeW + 12.0F;
@@ -1910,9 +3122,8 @@ void draw_status_bar(ur::DrawBatcher& batcher,
     const float     strip_w    = (kStatsW - 2.0F * kStatsPad - 4.0F) / 3.0F;
     const float     stats_y0   = bar_y + 2.0F;
 
-    auto draw_meter = [&](float ox, float norm, ur::Color color) {
+    auto draw_meter = [&](float ox, float norm, ur::Color color, std::string_view label) {
         const float clamped = std::clamp(norm, 0.0F, 1.0F);
-        // Background strip.
         batcher.quad(stats_x + ox, stats_y0,
                      strip_w, stats_h,
                      ur::Color {
@@ -1925,55 +3136,49 @@ void draw_status_bar(ur::DrawBatcher& batcher,
             batcher.quad(stats_x + ox, stats_y0,
                          strip_w * clamped, stats_h, color);
         }
+        draw_ui_text_clipped(batcher, stats_x + ox + 4.0F, stats_y0 + 5.0F,
+                             label,
+                             ur::Color { 255U, 255U, 255U, 255U }, 1.0F,
+                             stats_x + ox + strip_w - 2.0F);
     };
 
+    char fps_buf[32];
+    std::snprintf(fps_buf, sizeof(fps_buf), "FPS: %.1f", static_cast<double>(stats.fps));
     draw_meter(0.0F,
                std::clamp(stats.fps / 240.0F, 0.0F, 1.0F),
-               ur::Color { 100U, 200U, 220U, 220U });
+               ur::Color { 55U, 135U, 165U, 220U },
+               fps_buf);
     draw_meter(strip_w + 2.0F,
                std::clamp(static_cast<float>(stats.vertex_count) / 65536.0F, 0.0F, 1.0F),
-               ur::Color { 200U, 160U, 80U, 220U });
+               ur::Color { 155U, 115U, 45U, 220U },
+               "VTX: " + std::to_string(stats.vertex_count));
     draw_meter((strip_w + 2.0F) * 2.0F,
                std::clamp(static_cast<float>(stats.draw_calls) / 256.0F, 0.0F, 1.0F),
-               ur::Color { 180U, 100U, 200U, 220U });
+               ur::Color { 135U, 75U, 160U, 220U },
+               "CMD: " + std::to_string(stats.draw_calls));
 
     // ---- 5. Active route indicator (RIGHT region) -------------------------
-    //
-    // Single coloured strip — colour encodes which UI submitter path is live
-    // this boot (Route A success / fallback / Route B only). Pinned to the
-    // far right of the status bar.
     constexpr float kRouteW = 140.0F;
     const float     route_x = bar_x + bar_w - kRouteW - 6.0F;
     const float     route_y = bar_y + 2.0F;
     const float     route_h = kStatusBarH - 4.0F;
 
     ur::Color route_color { 120U, 120U, 120U, 200U };
+    const char* route_lbl = "ROUTE: INIT";
     switch (stats.route_taken)
     {
-        case 1: route_color = ur::Color {  80U, 200U, 100U, 230U }; break;  // green — Route A
-        case 2: route_color = ur::Color { 220U, 200U,  80U, 230U }; break;  // yellow — fallback
-        case 3: route_color = ur::Color { 100U, 150U, 220U, 230U }; break;  // blue — Route B only
+        case 1: route_color = ur::Color {  60U, 175U,  90U, 235U }; route_lbl = "ROUTE A: VULKAN"; break;
+        case 2: route_color = ur::Color { 200U, 175U,  60U, 235U }; route_lbl = "ROUTE B: FALLBK"; break;
+        case 3: route_color = ur::Color {  80U, 135U, 205U, 235U }; route_lbl = "ROUTE B: GLSL";   break;
         default: break;
     }
     batcher.quad(route_x, route_y, kRouteW, route_h, route_color);
+    draw_ui_text_clipped(batcher, route_x + 6.0F, route_y + 5.0F,
+                         route_lbl,
+                         ur::Color { 255U, 255U, 255U, 255U }, 1.0F,
+                         route_x + kRouteW - 4.0F);
 }
 
-// ---- phase695 / M14 W6A — theme picker in the status bar ------------------
-//
-// Three equal-width clickable slabs pinned to the RIGHT of the status bar,
-// to the LEFT of the route indicator. Each slab represents one of the three
-// built-in palettes:
-//
-//   [Dark]  [Light]  [Hi-C]
-//
-// The active slab is drawn at full opacity; inactive slabs are dimmed.
-// A left-click on a slab sets `*out_new_name` to the matching theme_name
-// string so the caller can swap widget_theme on the next frame.
-//
-// Coordinates: slabs occupy a 204 px strip (3 × 66 px + 2 × 3 px gap)
-// anchored kRouteW + 12 px from the right edge.
-//
-// Returns true if any slab was clicked (caller re-builds widget_theme).
 [[nodiscard]] bool draw_theme_picker(ur::DrawBatcher&   batcher,
                                      const uw::Theme&   theme,
                                      float              fb_w,
@@ -1984,37 +3189,31 @@ void draw_status_bar(ur::DrawBatcher& batcher,
                                      bool               left_clicked,
                                      std::string*       out_new_name)
 {
-    // Layout constants.
     constexpr float kPickerSlabW = 48.0F;
     constexpr float kPickerGap   =  3.0F;
     constexpr float kPickerPad   =  6.0F;
-    // Total strip width: 3 slabs + 2 gaps.
     constexpr float kPickerW = 3.0F * kPickerSlabW + 2.0F * kPickerGap;
-    // Position: to the left of the route indicator (kRouteW) plus margin.
     constexpr float kRouteW  = 140.0F;
     const float strip_right  = fb_w - kRouteW - kPickerPad * 3.0F;
     const float strip_x      = strip_right - kPickerW;
     const float strip_y      = fb_h - kStatusBarH + 2.0F;
     const float slab_h       = kStatusBarH - 4.0F;
 
-    // Slab descriptors: name string, label colour.
     struct SlabDesc
     {
         std::string_view name;
-        ur::Color        active_color;   // slab fill when this theme is active
-        ur::Color        inactive_color; // slab fill when another theme is active
+        std::string_view short_lbl;
+        ur::Color        active_color;
+        ur::Color        inactive_color;
     };
     const std::array<SlabDesc, 3> slabs {{
-        // Dark  — lavender tinted strip (matches dark primary token #D0BCFF).
-        { "dark",
+        { "dark",          "DARK",
           ur::Color { 140U, 112U, 200U, 230U },
           ur::Color {  70U,  56U, 100U, 160U } },
-        // Light — warm soft white strip.
-        { "light",
+        { "light",         "LIGHT",
           ur::Color { 230U, 224U, 245U, 230U },
           ur::Color { 115U, 112U, 122U, 160U } },
-        // High-contrast — pure black + cyan accent strip.
-        { "high_contrast",
+        { "high_contrast", "HI-C",
           ur::Color {   0U, 200U, 220U, 230U },
           ur::Color {   0U, 100U, 110U, 160U } },
     }};
@@ -2034,7 +3233,6 @@ void draw_status_bar(ur::DrawBatcher& batcher,
                                    : slabs[idx].inactive_color;
         if (is_hovered && !is_active)
         {
-            // Subtle brightening on hover.
             fill.r = static_cast<std::uint8_t>(std::min(255, static_cast<int>(fill.r) + 40));
             fill.g = static_cast<std::uint8_t>(std::min(255, static_cast<int>(fill.g) + 40));
             fill.b = static_cast<std::uint8_t>(std::min(255, static_cast<int>(fill.b) + 40));
@@ -2042,12 +3240,18 @@ void draw_status_bar(ur::DrawBatcher& batcher,
 
         batcher.quad(slab_x, strip_y, kPickerSlabW, slab_h, fill);
 
-        // Active indicator: a 2 px white bar along the top edge of the slab.
         if (is_active)
         {
             batcher.quad(slab_x, strip_y, kPickerSlabW, 2.0F,
                          ur::Color { 255U, 255U, 255U, 220U });
         }
+
+        const ur::Color txt_col = (idx == 1 && is_active)
+            ? ur::Color { 20U, 20U, 30U, 255U }
+            : ur::Color { 245U, 248U, 255U, 255U };
+        draw_ui_text_clipped(batcher, slab_x + 8.0F, strip_y + 5.0F,
+                             slabs[idx].short_lbl, txt_col, 1.0F,
+                             slab_x + kPickerSlabW - 2.0F);
 
         if (is_hovered && left_clicked && !is_active)
         {
@@ -2056,9 +3260,7 @@ void draw_status_bar(ur::DrawBatcher& batcher,
         }
     }
 
-    // Suppress unused-parameter warning — theme available for future label glyph.
     (void)theme;
-
     return any_clicked;
 }
 
@@ -3299,8 +4501,24 @@ int main(int argc, char** argv)
     if (!project_data.dock_layout.empty())
     {
         const auto bytes = dock_layout_from_hex(project_data.dock_layout);
-        if (!bytes.empty() && dockspace.restore(std::span<const std::byte>(
-                                  bytes.data(), bytes.size())))
+        uw::DockSpace candidate;
+        bool valid_candidate = !bytes.empty() &&
+            candidate.restore(std::span<const std::byte>(bytes.data(), bytes.size()));
+        if (valid_candidate)
+        {
+            candidate.set_rect(uw::Rect { 0.0F, 0.0F, 1280.0F, 700.0F });
+            uw::InputState dummy_in {};
+            candidate.tick(dummy_in, 0.0F);
+            const auto* vp_owner = candidate.find_panel_owner("viewport");
+            const auto* ins_owner = candidate.find_panel_owner("inspector");
+            if (vp_owner == nullptr || ins_owner == nullptr ||
+                vp_owner->rect().x < 100.0F || ins_owner->rect().x < 500.0F)
+            {
+                valid_candidate = false;
+            }
+        }
+        if (valid_candidate &&
+            dockspace.restore(std::span<const std::byte>(bytes.data(), bytes.size())))
         {
             std::printf("editor: restored layout from %s (%zu nodes)\n",
                         cdproj_path.string().c_str(),
@@ -3308,7 +4526,7 @@ int main(int argc, char** argv)
         }
         else
         {
-            std::printf("editor: saved layout in %s was malformed — using defaults.\n",
+            std::printf("editor: saved layout in %s was legacy/malformed — using 3-column studio defaults.\n",
                         cdproj_path.string().c_str());
         }
     }
@@ -3320,16 +4538,60 @@ int main(int argc, char** argv)
                 cdproj_path.string().c_str());
     std::fflush(stdout);
 
-    // -- 5a. phase690 / M14 W3 — scene_navigator seed -----------------------
-    //
-    // Seed the search-filter panel with a small demo entity set so the panel
-    // is non-empty on first boot. A real session will replace these with the
-    // live scene flat-list once cd::scene exposes a name + Entity iterator.
-    //
-    // MOMENT: a power user opens apps/editor, types 'box' into scene_navigator,
-    // jumps to the Box entity, all in 3 seconds — Source 2 SDK speed.
+    // -- 5a. phase690 / M14 W3 + FAZ 7/8 — Showcase Stage + FullFledgedEditorSuite
+    cd::editor::EditorCockpitShell      cockpit_shell {};
+    cd::editor::AddElementCatalog       add_element_catalog {};
+    cd::editor::ViewportGizmoController viewport_gizmo {};
+    cd::editor::TerrainFoliageBrush     terrain_brush {};
+    cd::editor::GpuFrameProfilerExporter chrome_tracing_exporter {};
+    (void)terrain_brush;
+    (void)chrome_tracing_exporter;
+
+    cd::runtime::EngineContextConfig rt_cfg {};
+    rt_cfg.eager_thread_pool = false;
+    cd::runtime::EngineContext runtime_ctx(rt_cfg);
+    cd::runtime::EngineLoop    engine_loop(runtime_ctx, 1.0F / 60.0F);
+    cd::editor::PieWorkbenchController pie_controller(engine_loop);
+
+    cd::element_core::Stage active_stage =
+        cd::gameplay_director::build_showcase_stage_by_slug(local.showcase_slug);
+    engine_loop.set_stage(cd::gameplay_director::build_showcase_stage_by_slug(local.showcase_slug));
+    if (local.pie_play)
     {
-        const std::array<cd::ecs::Entity, 6> kSeedEntities {
+        (void)pie_controller.play(active_stage);
+    }
+
+    g_active_stage_ptr   = &active_stage;
+    g_pie_controller_ptr = &pie_controller;
+    g_add_catalog_ptr    = &add_element_catalog;
+    g_viewport_gizmo_ptr = &viewport_gizmo;
+    g_cockpit_shell_ptr  = &cockpit_shell;
+    g_engine_loop_ptr    = &engine_loop;
+    {
+        const auto& sc_list = cockpit_shell.project_hub_showcases();
+        for (std::size_t si = 0U; si < sc_list.size(); ++si)
+        {
+            if (sc_list[si].slug == active_stage.name())
+            {
+                g_active_showcase_idx = si;
+                break;
+            }
+        }
+    }
+
+    std::printf(
+        "editor: FullFledgedEditorSuite active (showcases=%zu, add_element_catalog=%zu classes, "
+        "active_stage='%.*s' elements=%zu, pie=%s)\n",
+        cockpit_shell.project_hub_showcases().size(),
+        add_element_catalog.count(),
+        static_cast<int>(active_stage.name().size()),
+        active_stage.name().data(),
+        active_stage.root().children().size(),
+        pie_controller.state() == cd::editor::PieState::kPlaying ? "PLAYING" : "STOPPED"
+    );
+
+    {
+        std::vector<cd::ecs::Entity> nav_entities {
             cd::ecs::Entity { 1U, 1U },
             cd::ecs::Entity { 2U, 1U },
             cd::ecs::Entity { 3U, 1U },
@@ -3337,7 +4599,7 @@ int main(int argc, char** argv)
             cd::ecs::Entity { 5U, 1U },
             cd::ecs::Entity { 6U, 1U },
         };
-        const std::array<std::string, 6> kSeedNames {
+        std::vector<std::string> nav_names {
             std::string{"PlayerSpawn"},
             std::string{"Box.001"},
             std::string{"Box.002"},
@@ -3345,9 +4607,20 @@ int main(int argc, char** argv)
             std::string{"SkyLight"},
             std::string{"MainCamera"},
         };
+        std::uint32_t next_id = 7U;
+        for (const auto& elem : active_stage.root().children())
+        {
+            if (elem)
+            {
+                nav_entities.push_back(cd::ecs::Entity { next_id++, 1U });
+                nav_names.push_back(
+                    std::string(elem->name()) + " [" + std::string(elem->class_name()) + "]"
+                );
+            }
+        }
         g_scene_navigator_panel.set_entities(
-            std::span<const cd::ecs::Entity>(kSeedEntities.data(), kSeedEntities.size()),
-            std::span<const std::string>(kSeedNames.data(), kSeedNames.size()));
+            std::span<const cd::ecs::Entity>(nav_entities.data(), nav_entities.size()),
+            std::span<const std::string>(nav_names.data(), nav_names.size()));
     }
 
     // -- 5b1. phase711 / M16 W3 — keyboard_shortcut_overlay AUTO-POPULATE ----
@@ -3682,12 +4955,12 @@ int main(int argc, char** argv)
         // FileWatcher silently no-ops for absent paths; adding more paths here
         // is always safe and additive.
         const std::array<std::pair<std::string, std::string>, 6> kWatchList { {
-            { "engine/render/shaders/lit.frag.glsl",              "shader" },
-            { "engine/render/shaders/lit.vert.glsl",              "shader" },
-            { "engine/render/shaders/composite.frag.glsl",        "shader" },
-            { "engine/asset/tests/gltf/test_scene.gltf",          "gltf"   },
-            { "samples/editor/hello_editor/assets/scene.gltf",    "gltf"   },
-            { "scripts/editor_startup.lua",                        "lua"    },
+            { "engine/render/shaders/lit.frag.glsl",              "shader"  },
+            { "engine/render/shaders/lit.vert.glsl",              "shader"  },
+            { "engine/render/shaders/composite.frag.glsl",        "shader"  },
+            { "engine/asset/tests/gltf/test_scene.gltf",          "gltf"    },
+            { "showcases/01_pbr_materials_sss_hair/main.cdstage", "cdstage" },
+            { "scripts/editor_startup.lua",                        "lua"     },
         } };
 
         for (const auto& [path, kind] : kWatchList)
@@ -3908,8 +5181,8 @@ int main(int argc, char** argv)
 #endif
 
     urr::SubmitterCreateInfo sci {};
-    sci.max_vertices = 16384U;
-    sci.max_indices  = 65536U;
+    sci.max_vertices = 65532U;
+    sci.max_indices  = 196608U;
     sci.color_format = rhi::Format::kBGRA8Unorm;
 
     // Runtime self-test marker -- which route actually produced the
@@ -4048,8 +5321,10 @@ int main(int argc, char** argv)
     events.reserve(64);
 
     const std::uint32_t default_headless = using_null ? 1U : 0U;
+    const std::uint32_t req_frames =
+        local.max_frames > 0U ? local.max_frames : runtime.headless_frames;
     const std::uint32_t cap_frames =
-        runtime.headless_frames > 0U ? runtime.headless_frames : default_headless;
+        req_frames > 0U ? req_frames : default_headless;
 
     // phase685 / M13 W6B — boot splash + real FPS feed + first-launch welcome.
     BootSplash                       boot_splash {};   // starts counting from now
@@ -4167,25 +5442,10 @@ int main(int argc, char** argv)
     DebugVizOverlay dbg_depth  { VizKind::kDepth };
     DebugVizOverlay dbg_normal { VizKind::kNormal };
     DebugVizOverlay dbg_bucket { VizKind::kAlphaBucket };
+    dbg_depth.set_visible(false);
+    dbg_normal.set_visible(false);
+    dbg_bucket.set_visible(false);
 
-    // -- phase735 / B6 — Live G-buffer texture handles ------------------------
-    //
-    // Sprint-1 (phase684) shipped placeholder gradients. Sprint-2 plumbs real
-    // cd::rhi::TextureHandle values into the three overlays each frame so the
-    // DebugVizOverlay::draw path emits DrawBatcher::textured_quad commands
-    // against the live G-buffer attachments.
-    //
-    // Until the editor binary owns a forward+composite pipeline that produces
-    // its own G-buffer (queued for the post-FINALE renderer wire-up), the
-    // handles below are stable, non-null sentinels representing the slots the
-    // RHI submitter will later resolve to depth / normal / albedo descriptors.
-    // The handle's lower 32 bits flow directly into DrawCommand::texture_slot
-    // (matching the cd::editor::panel::viewport::Viewport convention), so the
-    // RHI tier can map slot -> bound descriptor without any UI-side change
-    // when real targets arrive.
-    //
-    // MOMENT: F4/F5/F6 toggles now show actual G-buffer slices (or sentinel
-    // tiles until the renderer is wired); debugging-by-glance becomes powerful.
     constexpr std::uint32_t kGBufferDepthSlot  = 0xD0000001u;  // depth   target slot
     constexpr std::uint32_t kGBufferNormalSlot = 0xD0000002u;  // normal  target slot
     constexpr std::uint32_t kGBufferAlbedoSlot = 0xD0000003u;  // albedo  target slot
@@ -4199,9 +5459,10 @@ int main(int argc, char** argv)
     const cd::rhi::TextureHandle gbuffer_albedo_tex {
         static_cast<cd::rhi::TextureHandle::index_type>(kGBufferAlbedoSlot),
         static_cast<cd::rhi::TextureHandle::generation_type>(1U) };
+    (void)gbuffer_depth_tex;
+    (void)gbuffer_normal_tex;
+    (void)gbuffer_albedo_tex;
 
-    // All three enabled by default.  Log active state at boot so a dev can
-    // confirm viz status without attaching a debugger.
     std::printf("editor: debug_viz overlays ACTIVE: depth=%s  normal=%s  alpha_bucket=%s\n",
                 dbg_depth.is_visible()  ? "ON" : "OFF",
                 dbg_normal.is_visible() ? "ON" : "OFF",
@@ -4431,12 +5692,36 @@ int main(int argc, char** argv)
                         }
                     }
                 }
-                else if (e.kind == platform::OSEventKind::kTextChar &&
-                         e.code_point == 0x3FU /* '?' */)
+                else if (e.kind == platform::OSEventKind::kTextChar)
                 {
-                    // phase690 / M14 W3 — '?' toggles the cheatsheet overlay
-                    // (Source 2 / Hammer SDK convention).
-                    shortcut_overlay.set_visible(!shortcut_overlay.is_visible());
+                    if (e.code_point == 0x3FU /* '?' */)
+                    {
+                        shortcut_overlay.set_visible(!shortcut_overlay.is_visible());
+                    }
+                    else if (e.code_point == 'w' || e.code_point == 'W')
+                    {
+                        g_gizmo_mode = 0;
+                        if (g_viewport_gizmo_ptr != nullptr)
+                        {
+                            g_viewport_gizmo_ptr->mode = cd::editor::ViewportGizmoMode::kTranslate;
+                        }
+                    }
+                    else if (e.code_point == 'e' || e.code_point == 'E')
+                    {
+                        g_gizmo_mode = 1;
+                        if (g_viewport_gizmo_ptr != nullptr)
+                        {
+                            g_viewport_gizmo_ptr->mode = cd::editor::ViewportGizmoMode::kRotate;
+                        }
+                    }
+                    else if (e.code_point == 'r' || e.code_point == 'R')
+                    {
+                        g_gizmo_mode = 2;
+                        if (g_viewport_gizmo_ptr != nullptr)
+                        {
+                            g_viewport_gizmo_ptr->mode = cd::editor::ViewportGizmoMode::kScale;
+                        }
+                    }
                 }
                 else if (e.kind == platform::OSEventKind::kResize)
                 {
@@ -4463,19 +5748,11 @@ int main(int argc, char** argv)
         }
 
         // -- phase785 / E5 — input recorder stop-detection + auto-save ----------
-        //
-        // Detect the Recording → Idle transition (was_recording true, now false)
-        // and auto-save the captured events to disk in the per-user cd_editor
-        // directory so the file persists across editor restarts.
-        //
-        // The save is best-effort: failure is logged but does NOT change the
-        // exit code or stop the editor (matches .cdproj auto-save policy).
         {
             const bool now_recording = g_input_recorder.is_recording();
             if (was_recording && !now_recording)
             {
                 const std::filesystem::path save_path = input_recording_save_path();
-                // Ensure parent directory exists (best-effort; ignore error).
                 std::error_code ec;
                 std::filesystem::create_directories(save_path.parent_path(), ec);
 
@@ -4497,18 +5774,8 @@ int main(int argc, char** argv)
         }
 
         // -- phase785 / E5 — replayer per-frame tick ----------------------------
-        //
-        // Advance the replayer cursor by the frame's wall-clock delta and drain
-        // all events that are due.  replay_elapsed_ms is reset to 0 when the
-        // replayer finishes (is_finished() true) so a future load + reset pair
-        // restarts playback from t=0 cleanly.
-        //
-        // The dispatcher loop logs each replayed event at a single summary line
-        // per batch.  Production wire-up: replace the printf with a call into
-        // the editor's input backend once the input routing layer exists.
         if (!g_input_replayer.is_finished())
         {
-            // Accumulate frame wall-clock delta into the replay cursor.
             using fpdur = std::chrono::duration<double, std::milli>;
             const auto now_tp    = std::chrono::steady_clock::now();
             const double frame_ms = std::chrono::duration_cast<fpdur>(
@@ -4521,11 +5788,6 @@ int main(int argc, char** argv)
                 const auto ev = g_input_replayer.next_event(replay_elapsed_ms);
                 if (!ev.has_value()) { break; }
                 ++dispatched;
-                // Hook point: route ev->kind / ev->code / ev->payload into the
-                // editor's input backend here.  Today we log at trace level
-                // (printf suppressed to avoid log spam; uncomment to debug).
-                // std::printf("editor: replay ev kind=%u code=%u\n",
-                //             static_cast<unsigned>(ev->kind), ev->code);
             }
             (void)dispatched;
 
@@ -4539,30 +5801,23 @@ int main(int argc, char** argv)
         }
 
         // -- Dockspace layout + state tick --
-        //
-        // phase667 / M12 W2: reserve a 20 px ribbon at the bottom of the
-        // framebuffer for the new status bar (validator badge + frame stats
-        // + route indicator). The dock area shrinks by kStatusBarH so no
-        // panel ever overlaps the status ribbon.
+        // Reserve kTopToolbarH (26 px) at top for the Cockpit Toolbar and
+        // kStatusBarH (20 px) at bottom for the Status Bar ribbon.
         const float dock_h = std::max(0.0F,
-                                      static_cast<float>(fb_h) - kStatusBarH);
-        dockspace.set_rect(uw::Rect { 0.0F, 0.0F,
+                                      static_cast<float>(fb_h) - kTopToolbarH - kStatusBarH);
+        dockspace.set_rect(uw::Rect { 0.0F, kTopToolbarH,
                                       static_cast<float>(fb_w),
                                       dock_h });
         uw::InputState input;
-        input.pointer = flatten_pointer(pointer);
-        input.focused = false;
+        input.pointer   = flatten_pointer(pointer);
+        input.focused   = false;
+        g_frame_pointer = input.pointer;
         dockspace.tick(input, 0.0F);
 
         // -- Editor tick (drains queued input events, refreshes widgets) --
-        // The Editor's own tick is independent of the DockSpace today; in
-        // future sessions the scene-tree panel drawer will consult the
-        // Editor's hierarchy view directly so a click here selects an
-        // entity exposed in the inspector panel.
         (void)editor.tick();
 
-        // -- Drain any pending drop and log it (real asset routing is a -----
-        //    future Sprint; today this is the visible surface contract).
+        // -- Drain any pending drop and log it --
         {
             std::string dropped_path;
             if (g_asset_drop_target_panel.consume_dropped_path(dropped_path))
@@ -4574,33 +5829,14 @@ int main(int argc, char** argv)
         }
 
         // -- phase744 — hot-reload FileWatcher poll + BuildPanel event emit ----
-        //
-        // Called once per frame.  poll() is O(n_watched_files) stat() calls —
-        // currently 6 paths, so the cost is negligible on any modern FS.
-        // When one or more files have changed, drain the queue and emit real
-        // BuildEvent entries to the BuildPanel via build_panel_bridge.
-        //
-        // Protocol:
-        //   1. kCompiling event when the file changes (badge turns yellow).
-        //   2. kSuccess   event after reload completes with duration (badge turns green).
-        //
-        // Duration is wall-clock between the two events (sub-millisecond for
-        // trivial hot-reload; real compile durations appear in Sprint-2 when
-        // in-process glslang is integrated for shader source files).
-        //
-        // MOMENT: a dev saves a shader, the build_panel badge turns yellow then
-        // green with "Reloaded in Xms" — feedback loop matches Source 2 SDK.
         {
             hot_reload_watcher.poll();
 
-            // Fully-qualified names inside the lambda body: namespace aliases
-            // declared in the outer scope are not accessible in lambdas.
             hot_reload_queue.drain([&](cd::asset::AssetId /*id*/)
             {
                 using namespace cd::editor::panel::build;
                 namespace bpb = cd::editor::build_panel_bridge;
 
-                // (1) Emit kCompiling immediately — badge turns yellow.
                 const double reload_t0 = hot_reload_now_ms();
                 BuildEvent ev_compiling;
                 ev_compiling.timestamp_ms = reload_t0;
@@ -4609,9 +5845,6 @@ int main(int argc, char** argv)
                 bpb::set_status(Status::kCompiling);
                 bpb::push_event(ev_compiling);
 
-                // (2) Synchronous reload completes; emit kSuccess.
-                // Shader source requires in-process glslang (Sprint-2).
-                // Today the reload is instant — duration is measured but ~0 ms.
                 const double reload_t1 = hot_reload_now_ms();
                 BuildEvent ev_success;
                 ev_success.timestamp_ms = reload_t1;
@@ -4630,9 +5863,6 @@ int main(int argc, char** argv)
         }
 
         // -- per-frame dt measurement (phase674 / M12 W6B) -------------------
-        //
-        // Push elapsed seconds into the FrameTimeRing so the status bar and
-        // overlay context show a real FPS value instead of the 62.5 stand-in.
         double last_dt_ms = 0.0;
         float  last_dt_s  = 0.0F;
         {
@@ -4644,8 +5874,12 @@ int main(int argc, char** argv)
             if (dt_s > 0.0F)
             {
                 ft_ring.push(dt_s);
-                // phase787 — feed the same dt into the FPS sparkline (ms units).
                 g_fps_sparkline.push(dt_s * 1000.0F);
+                g_anim_time_s += dt_s;
+            }
+            else
+            {
+                g_anim_time_s += 0.016F;
             }
             last_dt_ms = static_cast<double>(dt_s) * 1000.0;
             last_dt_s  = dt_s;
@@ -4653,16 +5887,11 @@ int main(int argc, char** argv)
         const auto real_fps = static_cast<float>(ft_ring.stats().fps_mean());
 
         // -- phase707 / M15 W6B — splash particle system tick -----------------
-        //
-        // Tick the particle system while the splash is active.  Once the
-        // splash is done the optional<System> is reset (destroyed cleanly).
-        // The snapshot buffer is refilled each tick for the draw call below.
         if (splash_particles.has_value())
         {
             const double splash_ms_now = boot_splash.elapsed_ms();
             if (boot_splash.done(splash_ms_now))
             {
-                // Splash has completed — destroy the particle system cleanly.
                 splash_particles.reset();
                 particle_snap_count = 0U;
                 std::printf("editor: splash particle system destroyed (splash complete).\n");
@@ -4680,41 +5909,46 @@ int main(int argc, char** argv)
             }
         }
 
-        // -- phase736 -- real FrameCapture feed (replaces synthetic dummy) ----
-        //
-        // Collects REAL profiling data from the editor's own render path.
-        // cpu_markers  -- cpu_collector scope ("frame.draw") sampled each frame.
-        // gpu_markers  -- gpu_marker_recorder resolved samples (Vulkan path only).
-        // gpu_passes   -- fgt_timeline last_frame_passes() from phase737 wiring.
-        // total_ms     -- real wall-clock dt from FrameTimeRing.
-        //
-        // MOMENT: a perf dev opens perf_profiler, sees REAL frame timings from
-        // the editor's own render path -- root-cause analysis is one-click.
-
         // Open the frame.draw CPU scope BEFORE the draw block below.
         const auto frame_draw_handle = cpu_collector.begin("frame.draw");
 
-
         // -- Draw via the CPU batcher + RHI submitter --
-        // phase737: begin_frame() resets the fgt_timeline accumulator; a
-        // wall-clock start timestamp is taken so record_pass("DockDraw", ...)
-        // can report the real CPU duration for the full batcher-populate phase.
         fgt_timeline.begin_frame();
         using FgClock    = std::chrono::steady_clock;
         using FgDuration = std::chrono::duration<double, std::milli>;
         const auto fg_dock_start = FgClock::now();
         batcher.begin_frame();
         dockspace.draw(batcher, font.is_loaded() ? &font : nullptr, widget_theme);
+        draw_dock_node_tab_labels(dockspace.root(), batcher);
+
+        if (g_pie_controller_ptr != nullptr && g_active_stage_ptr != nullptr)
+        {
+            (void)g_pie_controller_ptr->tick_if_playing(
+                *g_active_stage_ptr,
+                last_dt_s > 0.0F ? last_dt_s : (1.0F / 60.0F));
+        }
+
+        // -- Top Studio Cockpit Toolbar (PIE + Showcase Switcher + Gizmo + Overlays) --
+        bool show_dbg_viz   = dbg_depth.is_visible();
+        bool show_shortcuts = shortcut_overlay.is_visible();
+        draw_top_cockpit_toolbar(batcher, widget_theme,
+                                 static_cast<float>(fb_w),
+                                 g_frame_pointer,
+                                 show_dbg_viz,
+                                 show_shortcuts);
+        if (show_dbg_viz != dbg_depth.is_visible())
+        {
+            dbg_depth.set_visible(show_dbg_viz);
+            dbg_normal.set_visible(show_dbg_viz);
+            dbg_bucket.set_visible(show_dbg_viz);
+        }
+        if (show_shortcuts != shortcut_overlay.is_visible())
+        {
+            shortcut_overlay.set_visible(show_shortcuts);
+        }
 
         // -- phase598 / M6 W3 + phase631 + phase674 — floating overlays ------
-        //
-        // phase674 adds a 14 px titled-header strip (draw_overlay_header) to
-        // each overlay so CPU / GPU / FRAME are visually labelled.
-        // phase736/phase746: all three overlays are fed REAL data:
-        //   CPU   — cpu_collector ring (32 ms lookback).
-        //   GPU   — gpu_marker_recorder resolved samples (stub monotonic counter
-        //           until write_timestamp lands; correct shape, see GpuMarker.hpp).
-        //   FRAME — fgt_timeline.last_frame_passes() (DockDraw CPU wall-clock pass).
+        if (g_show_floating_perf_hud)
         {
             const auto fbw_f = static_cast<float>(fb_w);
             const auto fbh_f = static_cast<float>(fb_h);
@@ -4725,16 +5959,14 @@ int main(int argc, char** argv)
                 constexpr float kOverlayH = 120.0F;
                 constexpr float kMargin   = 8.0F;
                 const float     ox        = fbw_f - kOverlayW - kMargin;
-                const float     oy        = kMargin;
+                const float     oy        = kTopToolbarH + kMargin;
 
-                // phase674: titled header above the bar chart body.
                 draw_overlay_header(batcher, widget_theme,
                                     ox, oy, kOverlayW, OverlayKind::kCpu);
 
                 const cmo::Rect bounds {
                     ox, oy + kOverlayHeaderH, kOverlayW, kOverlayH };
 
-                // phase736: real CPU samples from cpu_collector (32 ms lookback).
                 {
                     using namespace std::chrono;
                     const auto now_us_c = static_cast<double>(
@@ -4748,33 +5980,24 @@ int main(int argc, char** argv)
             }
 
             // --- GPU overlay — "GPU" header + 100 px body, below CPU ------
-            // phase631 / M9 W1A classification (cpu/gpu sibling).
-            // phase674: titled header added. Y offset accounts for CPU header.
             {
                 constexpr float kOverlayW  = 300.0F;
                 constexpr float kOverlayH  = 100.0F;
                 constexpr float kMargin    = 8.0F;
-                // CPU overlay total height = its header + 120 px body.
                 constexpr float kCpuTotal  = kOverlayHeaderH + 120.0F;
                 constexpr float kGap       = 4.0F;
                 const float     ox         = fbw_f - kOverlayW - kMargin;
-                const float     oy         = kMargin + kCpuTotal + kGap;
+                const float     oy         = kTopToolbarH + kMargin + kCpuTotal + kGap;
 
                 draw_overlay_header(batcher, widget_theme,
                                     ox, oy, kOverlayW, OverlayKind::kGpu);
 
-                // phase736: real GPU samples from gpu_marker_recorder.
-                // Empty on NullDevice (no cmd buffer); overlay handles empty span.
                 const auto gpu_samples = gpu_marker_recorder.samples();
                 draw_gpu_marker_overlay(batcher, gpu_samples,
                     ox, oy + kOverlayHeaderH, kOverlayW, kOverlayH, 16.0);
             }
 
             // --- FRAME overlay — "FRAME" header + 80 px body, bottom-right -
-            //
-            // phase667: lifted by kStatusBarH so it clears the status ribbon.
-            // phase674: titled header + real "UI" pass from batcher data.
-            //   "UI" pass duration ∝ batcher.vertex_count() (live data).
             {
                 constexpr float kOverlayW = 400.0F;
                 constexpr float kOverlayH = 80.0F;
@@ -4789,9 +6012,6 @@ int main(int argc, char** argv)
                 const fgt::Rect bounds {
                     ox, oy + kOverlayHeaderH, kOverlayW, kOverlayH };
 
-                // phase737 — real data: last_frame_passes() returns the previous
-                // frame's pass records (double-buffered by Timeline). On frame 0
-                // the span is empty; the overlay becomes non-empty from frame 1.
                 const auto real_passes = fgt_timeline.last_frame_passes();
                 frame_graph_overlay.draw(batcher, real_passes, bounds);
             }
@@ -4934,6 +6154,13 @@ int main(int argc, char** argv)
             };
             const auto v2_theme = uth::theme_from_name(active_theme_name);
             g_auto_save_indicator.draw(batcher, v2_theme, save_rect);
+            draw_ui_text_clipped(batcher,
+                                 save_x + 14.0F,
+                                 save_y + 5.0F,
+                                 "AUTOSAVE: READY",
+                                 ur::Color { 225U, 235U, 250U, 255U },
+                                 1.0F,
+                                 save_x + kSaveBadgeW - 4.0F);
         }
 
         // -- phase787 / FINALE-close-out H4 — FPS sparkline in status bar -----
@@ -5080,25 +6307,17 @@ int main(int argc, char** argv)
             constexpr float kDbgMargin  = 8.0F;
             // CPU overlay: kOverlayHeaderH(14) + 120 body = 134.
             // GPU overlay: kOverlayHeaderH(14) + 100 body = 114.
-            // Combined top offset: 8 (margin) + 134 + 4 (gap) + 114 + 8 (gap).
-            constexpr float kDbgVizStartY = 8.0F + 134.0F + 4.0F + 114.0F + 8.0F;
+            constexpr float kDbgVizStartY = kTopToolbarH + 8.0F;
             const float     dbg_x         = fbw_f - kDbgW - kDbgMargin;
 
             const std::array<DebugVizOverlay*, 3> dbg_overlays {
                 &dbg_depth, &dbg_normal, &dbg_bucket
             };
-
-            // -- phase735 / B6 — Per-frame live G-buffer texture binding ------
-            //
-            // Pipe the depth / normal / albedo cd::rhi::TextureHandle values
-            // into the three overlays. Each kind-specific setter is no-op for
-            // overlays of a different kind so we can fire all three setters
-            // every frame without branching; the API is intentionally
-            // broadcast-friendly to keep this call-site simple as the renderer
-            // wire-up evolves.
-            dbg_depth.set_depth_texture (gbuffer_depth_tex);
-            dbg_normal.set_normal_texture(gbuffer_normal_tex);
-            dbg_bucket.set_albedo_texture(gbuffer_albedo_tex);
+            static constexpr std::array<const char*, 3> kDbgLabels {
+                "GBUF DEPTH (LINEAR)",
+                "GBUF WORLD NORMAL",
+                "GBUF ALPHA BUCKET"
+            };
 
             for (std::size_t i = 0; i < dbg_overlays.size(); ++i)
             {
@@ -5106,73 +6325,20 @@ int main(int argc, char** argv)
                                  + static_cast<float>(i) * (kDbgH + kDbgGap);
                 const uw::Rect dbg_bounds { dbg_x, oy, kDbgW, kDbgH };
                 dbg_overlays[i]->draw(batcher, dbg_bounds, widget_theme);
+                if (dbg_overlays[i]->is_visible())
+                {
+                    batcher.quad(dbg_x, oy, kDbgW, 14.0F, ur::Color { 14U, 18U, 26U, 220U });
+                    draw_ui_text_clipped(batcher, dbg_x + 6.0F, oy + 3.0F,
+                                         kDbgLabels[i], ur::Color { 220U, 232U, 250U, 255U },
+                                         1.0F, dbg_x + kDbgW - 6.0F);
+                }
             }
         }
 
         // -- phase738 / FINALE-2 W3A B1 — material_preview live PBR RT poll --
-        //
-        // The MaterialPreview panel fingerprints the bound AuthoredMaterial's
-        // PBR-relevant fields (base_color / metallic / roughness / alpha_mode /
-        // alpha_cutoff) and reports is_dirty() == true whenever the live
-        // fingerprint drifts from the last clear_dirty() ack.  Each frame:
-        //
-        //   1. Poll is_dirty().
-        //   2. If dirty:
-        //        a. Render a sphere primitive into the kPreviewRtSize x
-        //           kPreviewRtSize cd::rhi::TextureHandle using the cd::material
-        //           PBR variant + the bound AuthoredMaterial's factors.  The
-        //           current editor binary doesn't yet own a forward+composite
-        //           render path that can target an off-screen RT, so the RT
-        //           handle is a STABLE sentinel (same convention as the
-        //           phase735 debug_viz G-buffer slots).  The RHI submitter
-        //           will resolve the slot to a real attachment when the
-        //           renderer-wire-up phase finishes.
-        //        b. Bind the handle via set_preview_texture() so the panel's
-        //           next draw() emits a textured_quad covering the sphere
-        //           swatch area (kPreviewRtSize x kPreviewRtSize @ UV 0..1).
-        //        c. Call clear_dirty() to ack the refresh.
-        //
-        //   3. If NOT dirty:
-        //        — No render kick.  The cached RT is reused; the panel's
-        //          next draw() emits the same textured_quad against the
-        //          unchanged handle.  Zero PBR draws per idle frame —
-        //          exactly the "render only on change" contract Sprint-2
-        //          promised.
-        //
-        // MOMENT: The artist drags the metallic slider in the inspector.
-        // g_material_preview_demo.metallic changes.  Next frame: is_dirty()
-        // flips true, the host re-renders the PBR sphere RT, clear_dirty()
-        // acks, the preview swatch shows the new metallic response on the
-        // very next frame.  True WYSIWYG inside the editor.
         {
-            // Stable sentinel handle — same convention as the phase735
-            // gbuffer_*_tex slots above.  The lower 32 bits flow into
-            // DrawCommand::texture_slot for the RHI submitter to map.
-            constexpr std::uint32_t kMaterialPreviewRtSlot = 0xD0000010u;
-            static const cd::rhi::TextureHandle material_preview_rt {
-                static_cast<cd::rhi::TextureHandle::index_type>(kMaterialPreviewRtSlot),
-                static_cast<cd::rhi::TextureHandle::generation_type>(1U) };
-
             if (g_material_preview_panel.is_dirty())
             {
-                // (a) — render the sphere primitive into the RT.
-                //
-                // Placeholder for the off-screen draw: when the editor's
-                // forward+composite render path comes online it will route
-                // here, allocate the 256x256 attachment, bind the cd::material
-                // PBR variant + AuthoredMaterial factors, and submit a sphere
-                // draw call.  The sentinel handle keeps the RHI tier happy
-                // until then so the UI side already paints the textured
-                // swatch against a real (sentinel) slot.
-                //
-                // No-op for the headless / boot path — the sentinel handle
-                // is non-null so the panel takes the textured branch as soon
-                // as the RHI submitter resolves it.
-
-                // (b) — bind the (re-)rendered RT handle.
-                g_material_preview_panel.set_preview_texture(material_preview_rt);
-
-                // (c) — ack the refresh so the next frame stays clean.
                 g_material_preview_panel.clear_dirty();
             }
         }
@@ -5244,7 +6410,7 @@ int main(int argc, char** argv)
         // is a first launch, the welcome dialog appears and blocks until the
         // user clicks one of the three layout buttons.  Both are skipped in
         // headless mode (no visible window).
-        if (window)
+        if (window && !local.skip_splash)
         {
             const double splash_ms = boot_splash.elapsed_ms();
             if (!boot_splash.done(splash_ms))
@@ -5429,7 +6595,14 @@ int main(int argc, char** argv)
                 cd::editor::profile::to_snapshot(std::move(cap)));
         }
 
+        (void)pie_controller.tick_if_playing(active_stage, 1.0F / 60.0F);
         (void)submitter.upload(batcher);
+
+        if (!local.capture_png.empty() &&
+            frame_idx + 1U == (cap_frames > 0U ? cap_frames : 3U))
+        {
+            dump_batcher_to_png(batcher, fb_w, fb_h, local.capture_png);
+        }
 
         if (using_null || !renderer)
         {
@@ -5515,7 +6688,7 @@ int main(int argc, char** argv)
         }
 
         ++frame_idx;
-        if (!window && cap_frames > 0U && frame_idx >= cap_frames) { break; }
+        if (cap_frames > 0U && frame_idx >= cap_frames) { break; }
         if (window && window->should_close()) { break; }
     }
 

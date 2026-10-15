@@ -1,0 +1,7 @@
+# CHROMODYNAMIC .cdstage v1
+stage "03_sponza_clustered_ddgi_restir"
+  element SurfaceMesh3D "SponzaAtriumMesh" { enabled=true mobility=kStatic }
+  element IrradianceField3D "AtriumDdgiRestirField" { enabled=true enable_restir_gi=true enable_nrc_cache=true }
+  element RadialLight3D "TorchClusterLight0" { enabled=true luminous_power_lm=1200.0 }
+  element PanelLight3D "BannerAreaLight" { enabled=true width_m=2.0 height_m=1.0 }
+end_stage

@@ -1043,3 +1043,49 @@ TEST(Font, RasterizeRangeIdempotentForOverlappingRange)
 // written here because there is no observable contract to test in the
 // default build beyond what (7)-(23) already assert.
 // ============================================================================
+
+// (24) Wave 2.2: Turkish & LatinExtended-A rasterization + measure_text + RTL BiDi helpers.
+TEST(Font, TurkishDiacriticsMeasureTextAndRtlBidiHelpers)
+{
+    EXPECT_TRUE(cd::ui::font::Font::is_rtl_locale("ar"));
+    EXPECT_TRUE(cd::ui::font::Font::is_rtl_locale("ar-SA"));
+    EXPECT_TRUE(cd::ui::font::Font::is_rtl_locale("he_IL"));
+    EXPECT_FALSE(cd::ui::font::Font::is_rtl_locale("tr-TR"));
+    EXPECT_FALSE(cd::ui::font::Font::is_rtl_locale("en"));
+
+    // Arabic "salaam" UTF-8: U+0633 U+0644 U+0627 U+0645
+    const char* arabic = "\xD8\xB3\xD9\x84\xD8\xA7\xD9\x85";
+    EXPECT_TRUE(cd::ui::font::Font::contains_rtl_codepoints(arabic));
+    EXPECT_FALSE(cd::ui::font::Font::contains_rtl_codepoints("Merhaba"));
+
+    const auto ttf = find_system_font();
+    if (ttf.empty())
+    {
+        GTEST_SKIP() << "No system TTF found at expected paths";
+    }
+    cd::ui::font::Font f;
+    f.select_backend(cd::ui::font::Backend::kStb);
+    ASSERT_TRUE(f.load_ttf_in_memory(
+        std::span<const std::uint8_t>(ttf.data(), ttf.size())));
+    ASSERT_TRUE(f.rasterize_turkish_and_latin(16.0F, 1024U));
+
+    // Turkish codepoints: ğ(U+011F), ş(U+015F), ı(U+0131), İ(U+0130), ö(U+00F6), ç(U+00E7)
+    EXPECT_TRUE(f.glyph_uv(0x011FU).has_value());
+    EXPECT_TRUE(f.glyph_uv(0x015FU).has_value());
+    EXPECT_TRUE(f.glyph_uv(0x0131U).has_value());
+    EXPECT_TRUE(f.glyph_uv(0x0130U).has_value());
+
+    const auto m = f.measure_text("Satır 1\nSatır 2", "tr-TR");
+    EXPECT_EQ(m.line_count, 2U);
+    EXPECT_GT(m.width, 0.0F);
+    EXPECT_GT(m.height, f.line_height());
+
+    // BiDi visual order reversal on stb fallback when RTL locale is requested
+    const auto ltr_glyphs = f.shape("ABC", "en");
+    const auto rtl_glyphs = f.shape_bidi("ABC", "ar");
+    ASSERT_EQ(ltr_glyphs.size(), 3U);
+    ASSERT_EQ(rtl_glyphs.size(), 3U);
+    EXPECT_EQ(rtl_glyphs[0].glyph_id, ltr_glyphs[2].glyph_id);
+    EXPECT_EQ(rtl_glyphs[2].glyph_id, ltr_glyphs[0].glyph_id);
+}
+

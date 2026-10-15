@@ -722,3 +722,53 @@ TEST(FlexLayout, SingleChildNoGrowNoIntrinsic_ZeroWidth)
     // Assert: child has zero main-axis size.
     EXPECT_NEAR(t.layout(child).width, 0.0F, kEps);
 }
+
+TEST(FlexLayout, SolveRtlMirrorsHorizontalPositions)
+{
+    ll::FlexTree t;
+    ll::FlexStyle root_s;
+    root_s.direction = ll::FlexDirection::kRow;
+    root_s.gap_main  = 10.0F;
+    auto root = t.create_node(root_s);
+
+    ll::FlexStyle c1;
+    c1.width  = 50.0F;
+    c1.height = 30.0F;
+    ll::FlexStyle c2;
+    c2.width  = 80.0F;
+    c2.height = 30.0F;
+    auto a = t.create_node(c1);
+    auto b = t.create_node(c2);
+    t.add_child(root, a);
+    t.add_child(root, b);
+
+    t.solve_rtl(root, 300.0F, 50.0F);
+    // In LTR: a is at x=0 (w=50), b is at x=60 (w=80).
+    // In RTL: a is at x = 300 - 0 - 50 = 250; b is at x = 300 - 60 - 80 = 160.
+    EXPECT_NEAR(t.layout(a).x, 250.0F, kEps);
+    EXPECT_NEAR(t.layout(b).x, 160.0F, kEps);
+}
+
+TEST(FlexLayout, SolveGridLtrAndRtl)
+{
+    ll::Rect bounds { 0.0F, 0.0F, 210.0F, 200.0F };
+    ll::GridSpec spec {};
+    spec.columns    = 2U;
+    spec.row_height = 40.0F;
+    spec.gap_x      = 10.0F;
+    spec.gap_y      = 5.0F;
+
+    const auto cells_ltr = ll::solve_grid(bounds, spec, 3U);
+    ASSERT_EQ(cells_ltr.size(), 3U);
+    EXPECT_NEAR(cells_ltr[0].x, 0.0F, kEps);
+    EXPECT_NEAR(cells_ltr[0].width, 100.0F, kEps);
+    EXPECT_NEAR(cells_ltr[1].x, 110.0F, kEps);
+    EXPECT_NEAR(cells_ltr[2].y, 45.0F, kEps);
+
+    spec.rtl = true;
+    const auto cells_rtl = ll::solve_grid(bounds, spec, 2U);
+    ASSERT_EQ(cells_rtl.size(), 2U);
+    EXPECT_NEAR(cells_rtl[0].x, 110.0F, kEps);
+    EXPECT_NEAR(cells_rtl[1].x, 0.0F, kEps);
+}
+

@@ -130,17 +130,6 @@ void System::tick(float dt)
         }
     }
 
-    // Compact dead emitters lazily after spawning: remove entries that are both
-    // no longer alive AND have no surviving particles (alive_count == 0).
-    // Entries with alive == false but alive_count > 0 must stay in the registry
-    // so erase_particle_() can decrement their counter when those particles die.
-    const auto dead = std::ranges::remove_if(emitters_,
-        [](const EmitterEntry& e) noexcept
-        {
-            return !e.alive && e.alive_count == 0U;
-        });
-    emitters_.erase(dead.begin(), dead.end());
-
     // ------------------------------------------------------------------
     // 2. Integrate + expire live particles (swap-and-pop).
     // ------------------------------------------------------------------
@@ -177,6 +166,21 @@ void System::tick(float dt)
 
         ++i;
     }
+
+    // ------------------------------------------------------------------
+    // 3. Compact dead emitters after particle expiration: remove entries
+    //    that are both no longer alive AND have no surviving particles
+    //    (alive_count == 0). Running this AFTER Step 2 ensures that an
+    //    emitter whose last particle died during this tick is reclaimed
+    //    immediately on the same tick without invalidating emitter indices
+    //    while erase_particle_() is running.
+    // ------------------------------------------------------------------
+    const auto dead = std::ranges::remove_if(emitters_,
+        [](const EmitterEntry& e) noexcept
+        {
+            return !e.alive && e.alive_count == 0U;
+        });
+    emitters_.erase(dead.begin(), dead.end());
 }
 
 // =============================================================================

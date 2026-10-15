@@ -358,19 +358,19 @@ Listed by likelihood of unblocking samples or CI gates:
 ## Recommended Next Phases
 
 ### Phase 467 (1 day) — This Audit + ADRs
-- [ ] **DONE**: Refresh `docs/D3D12_PARITY_AUDIT.md` (this file)
-- [ ] Write `ADR-volumetric-fog.md` (phase469 needs retroactive spec)
-- [ ] Write `ADR-auto-exposure-gpu.md` (phase461 GPU skeleton needs retroactive spec)
+- [x] **DONE**: Refresh `docs/D3D12_PARITY_AUDIT.md` (this file)
+- [x] **DONE**: Write `ADR-volumetric-fog.md` (`docs/ADR/ADR-20260531-volumetric-fog.md`)
+- [x] **DONE**: Write `ADR-auto-exposure-gpu.md` (`docs/ADR/ADR-20260531-auto-exposure-gpu.md`)
 
-### Phase 468 (2-3 days) — Golden Image CI Gate
+### Phase 468 (2-3 days) — Golden Image CI Gate (✅ DONE)
 - Setup `samples/engine/hello_engine` headless camera-script mode
 - Capture 5 fixed Sponza angles on Vulkan (reference)
 - Run FLIP/SSIM diff in CI on hello_d3d12 + hello_opengl paths
 - **Unblocks**: Regression detection across shader/feature changes
 
-### Phase 469+ — RT Pipeline (deferred)
-- Implement `create_rt_pipeline` (VK + DX12)
-- Implement `dispatch_rays` (VK + DX12)
+### Phase 469+ — RT Pipeline (✅ DONE — Phases 1215–1225 & FAZ 9 Wave 9.1)
+- Implement `create_rt_pipeline` (VK + DX12 + Metal)
+- Implement `dispatch_rays` (VK + DX12 + Metal)
 - **Effort**: 4-5 hours per backend
 
 ---

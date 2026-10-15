@@ -13,6 +13,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -26,6 +28,8 @@ namespace cd::vfs
 class VirtualFileSystem
 {
 public:
+    using OverlayChangeCallback = std::function<void(std::string_view virtual_path, std::uint64_t generation)>;
+
     VirtualFileSystem() = default;
     ~VirtualFileSystem() = default;
     VirtualFileSystem(const VirtualFileSystem&) = delete;
@@ -37,12 +41,14 @@ public:
     void mount_front(std::shared_ptr<IFileSource> source)
     {
         layers_.insert(layers_.begin(), std::move(source));
+        ++generation_;
     }
 
     /// Push a layer onto the *back* (lowest priority — typical for base assets).
     void mount_back(std::shared_ptr<IFileSource> source)
     {
         layers_.push_back(std::move(source));
+        ++generation_;
     }
 
     /// Remove the first layer whose name() equals `source_name`.
@@ -54,6 +60,7 @@ public:
         if (it == layers_.end())
             return false;
         layers_.erase(it);
+        ++generation_;
         return true;
     }
 
@@ -111,8 +118,37 @@ public:
         return layers_.size();
     }
 
+    /// Monotonically increasing generation stamp bumped on mount, unmount,
+    /// or `notify_path_changed()`.
+    [[nodiscard]] std::uint64_t mount_generation() const noexcept
+    {
+        return generation_;
+    }
+
+    /// Register a callback invoked whenever `notify_path_changed()` is called.
+    void add_change_listener(OverlayChangeCallback cb)
+    {
+        if (cb)
+            listeners_.push_back(std::move(cb));
+    }
+
+    /// Signal that `virtual_path` was modified in one of the mounted overlay
+    /// sources, bumping `mount_generation()` and notifying all listeners with
+    /// the normalized virtual path.
+    void notify_path_changed(std::string_view virtual_path)
+    {
+        const std::string norm = normalize_path(virtual_path);
+        ++generation_;
+        for (const auto& cb : listeners_)
+        {
+            cb(norm, generation_);
+        }
+    }
+
 private:
     std::vector<std::shared_ptr<IFileSource>> layers_;
+    std::uint64_t generation_ { 0 };
+    std::vector<OverlayChangeCallback> listeners_;
 };
 
 }  // namespace cd::vfs

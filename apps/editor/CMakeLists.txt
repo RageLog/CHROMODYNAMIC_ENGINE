@@ -145,6 +145,11 @@ cd_add_sample(editor
     cd::editor
     cd::editor_ui
     cd::editor_cdproj
+    cd::element_core
+    cd::elements_domain
+    cd::gameplay_framework
+    cd::scene_renderer
+    cd::runtime
     cd::material                        # phase659 / M11 W3B Sprint-4 -- always linked (Route A runtime path)
     cd::frame_timing                    # phase674 / M12 W6B -- header-only FrameTimeRing for real FPS feed
     cd::platform
@@ -168,6 +173,11 @@ set_target_properties(cd_sample_editor PROPERTIES FOLDER "apps")
 # Independent of the Vulkan gate; only needs cd::audio + cd::core.
 if(CD_ENABLE_TESTING)
   add_subdirectory(tests)
+  add_test(
+    NAME cd_editor_headless_pie_smoke
+    COMMAND cd_sample_editor --headless 5 --pie-play --showcase 01_pbr_materials_sss_hair
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  )
 endif()
 
 # Phase 608 / M7 W3 introduced Route A vs Route B as a hard compile-time

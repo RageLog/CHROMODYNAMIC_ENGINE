@@ -8,6 +8,7 @@ cd_add_library(light
     cd::core
     cd::math
     cd::asset
+    cd::cluster
 )
 
 if(CD_ENABLE_TESTING)

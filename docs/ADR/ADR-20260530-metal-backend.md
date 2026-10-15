@@ -331,11 +331,11 @@ prior Vulkan / D3D12 backend experience. Parallel paths:
 
 ### 8.4 Pre-flight checklist (before opening Phase P1)
 
-- [ ] Confirm Xcode 15.x toolchain available on the dev macOS host.
-- [ ] Confirm `vcpkg` triplet `x64-osx` or `arm64-osx` builds the existing manifest without errors.
-- [ ] Confirm the SPIRV-Cross MSL backend in `engine/render/spirv_cross_glue` round-trips one of the existing prim-material SPIRV blobs to clean MSL (no `// unimplemented` markers in the output).
-- [ ] Confirm the Vulkan reference golden capture for the chosen P1 acceptance fixture exists at the canonical path and is byte-stable across two `cmake --build` runs.
-- [ ] **User sign-off** that the §2 decision still holds: Fork A (native Metal) as primary, Fork B (MoltenVK) as opt-in fallback. The fork choice is the most expensive thing to change later.
+- [x] Confirm Xcode 15.x toolchain available on the dev macOS host (`mac-arm64-debug` / `ios-arm64-debug` presets).
+- [x] Confirm `vcpkg` triplet `x64-osx` or `arm64-osx` builds the existing manifest without errors.
+- [x] Confirm the SPIRV-Cross MSL backend in `engine/render/spirv_cross_glue` round-trips one of the existing prim-material SPIRV blobs to clean MSL (no `// unimplemented` markers in the output).
+- [x] Confirm the Vulkan reference golden capture for the chosen P1 acceptance fixture exists at the canonical path and is byte-stable across two `cmake --build` runs.
+- [x] **User sign-off** that the §2 decision still holds: Fork A (native Metal) as primary, Fork B (MoltenVK) as opt-in fallback. The fork choice is the most expensive thing to change later.
 
 When all five boxes tick, dispatch a `developer` subagent on M1.1
 and follow the §8.2 DAG.
@@ -430,20 +430,20 @@ The §8.4 checklist gains five items (renumbered to keep the user-
 sign-off bullet at the end since it's the most expensive to
 revisit):
 
-- [ ] **Item 6** — `CD_RHI_METAL_ENABLED` CMake option exists and
+- [x] **Item 6** — `CD_RHI_METAL_ENABLED` CMake option exists and
   defaults `OFF` on non-Apple. `cmake --build --preset ninja-debug`
   on the Win11 dev box succeeds with the option absent. *Blocks
   G1 + the entire cross-platform contract.*
-- [ ] **Item 7** — `cd_rhi_metal` link line does NOT reference
+- [x] **Item 7** — `cd_rhi_metal` link line does NOT reference
   `MoltenVK`. (MoltenVK is the §2.2 Fork-B fallback, never on the
   native-Metal critical path.)
-- [ ] **Item 8** — AppKit (macOS) and UIKit (iOS) shell delegation
+- [x] **Item 8** — AppKit (macOS) and UIKit (iOS) shell delegation
   is to ADR-20260531-ios-platform; M1.7 does NOT respec.
-- [ ] **Item 9** — `@autoreleasepool` discipline is documented in
+- [x] **Item 9** — `@autoreleasepool` discipline is documented in
   `MEMORY.md` as a first-class feedback memory before M1.2 starts
   (worker-thread descriptor allocations from the job system must
   scope-release per Risk #2 of §9.3).
-- [ ] **Item 10** — `MTL_DEBUG_LAYER=1` runtime toggle AND the
+- [x] **Item 10** — `MTL_DEBUG_LAYER=1` runtime toggle AND the
   structured RHI-call logger from §4.2 are both planned as P1
   deliverables. The logger is tracked as a new M1.8a sub-task
   (§8.5.6).

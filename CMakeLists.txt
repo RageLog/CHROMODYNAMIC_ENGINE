@@ -180,6 +180,7 @@ include(CDSmoke)               # cd_setup_smoke   → `smoke` custom target
 include(CDGolden)              # cd_setup_golden  → `smoke-golden-*` custom targets
 include(CDBench)               # cd_setup_bench   → `smoke-bench*` custom targets
 include(CDInstall)             # cd_finalize_install → CHROMODYNAMICConfig export
+include(CDPack)                # add_cdpack → FAZ 10 Wave 10.1 .cdpak cooker helper
 
 # --- Threads (required by concurrency) ---
 find_package(Threads REQUIRED)
@@ -279,8 +280,8 @@ if(CD_ENABLE_TESTING)
   add_subdirectory(tests)
 endif()
 
-# --- Samples ---
-if(CD_ENABLE_SAMPLES)
+# --- Showcases (FAZ 8 Wave 8.2: samples/ replaced by showcases/*.cdproj) ---
+if(CD_ENABLE_SAMPLES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/samples/CMakeLists.txt")
   add_subdirectory(samples)
 endif()
 

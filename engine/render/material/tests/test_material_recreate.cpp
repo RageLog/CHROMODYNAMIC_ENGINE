@@ -406,3 +406,93 @@ TEST(MaterialRecreate, BrokenEditLeavesOriginalUnchanged)
     fs::remove(vs, ec);
     fs::remove(fs_file, ec);
 }
+
+// ---------------------------------------------------------------------------
+// (E) Wave 3.1: Hitch-free swap_deferred + DeferredDestroyQueue::collect
+// ---------------------------------------------------------------------------
+TEST(MaterialRecreate, SwapDeferredRetiresOnFrameTicketWithoutWaitIdle)
+{
+    LoggingNullDevice dev;
+    cd::material::MaterialDesc desc {};
+    desc.vertex_spirv = kStubSpirv;
+    desc.fragment_spirv = kStubSpirv;
+    desc.color_attachment_formats = kColorFormats;
+    desc.name = "swap_deferred_test";
+
+    auto live = cd::material::Material::create(dev, nullptr, desc);
+    ASSERT_TRUE(live.has_value());
+    const auto old_pipeline = live->pipeline();
+
+    auto fresh = cd::material::Material::create(dev, nullptr, desc);
+    ASSERT_TRUE(fresh.has_value());
+    const auto new_pipeline = fresh->pipeline();
+
+    dev.clear_log();
+    cd::material::DeferredDestroyQueue queue;
+
+    // Swap at frame 100 with 3 frames in flight -> retire at frame 103.
+    live->swap_deferred(std::move(*fresh), queue, 100U, 3U);
+
+    EXPECT_EQ(live->pipeline(), new_pipeline);
+    EXPECT_EQ(queue.pending_count(), 1U);
+    // Neither wait_idle nor destroy_graphics_pipeline has been called yet!
+    EXPECT_TRUE(dev.log().empty());
+
+    // Frame 102: still in flight -> nothing collected.
+    EXPECT_EQ(queue.collect(dev, 102U), 0U);
+    EXPECT_EQ(queue.pending_count(), 1U);
+    EXPECT_TRUE(dev.log().empty());
+
+    // Frame 103: completed -> old pipeline retired without wait_idle!
+    EXPECT_EQ(queue.collect(dev, 103U), 1U);
+    EXPECT_EQ(queue.pending_count(), 0U);
+    ASSERT_EQ(dev.log().size(), 1U);
+    EXPECT_EQ(dev.log()[0].event, LoggingNullDevice::Event::kDestroyPipeline);
+    EXPECT_EQ(dev.log()[0].pipeline_index, old_pipeline.index());
+}
+
+// ---------------------------------------------------------------------------
+// (F) Wave 3.1: IncludeDependencyTracker tracks direct and transitive includes
+// ---------------------------------------------------------------------------
+TEST(MaterialRecreate, IncludeDependencyTrackerFindsDirectAndTransitiveDependents)
+{
+    cd::material::IncludeDependencyTracker tracker;
+
+    // pbr_surface includes <cd/gluon/brdf.glsl>, which transitively includes
+    // <cd/gluon/math_common.glsl>.
+    tracker.register_material(
+        "pbr_surface",
+        "#version 450\nvoid main() {}",
+        "#version 450\n#include <cd/gluon/brdf.glsl>\nvoid main() {}"
+    );
+    // post_tonemap includes <cd/gluon/tonemap.glsl> (which also includes math_common.glsl).
+    tracker.register_material(
+        "post_tonemap",
+        "#version 450\nvoid main() {}",
+        "#version 450\n#include <cd/gluon/tonemap.glsl>\nvoid main() {}"
+    );
+    // flat_unlit has no includes.
+    tracker.register_material(
+        "flat_unlit",
+        "#version 450\nvoid main() {}",
+        "#version 450\nvoid main() {}"
+    );
+
+    EXPECT_EQ(tracker.material_count(), 3U);
+
+    const auto brdf_deps = tracker.dependent_materials("cd/gluon/brdf.glsl");
+    ASSERT_EQ(brdf_deps.size(), 1U);
+    EXPECT_EQ(brdf_deps[0], "pbr_surface");
+
+    // Transitive dependency: editing math_common.glsl invalidates BOTH pbr_surface and post_tonemap.
+    const auto math_deps = tracker.dependent_materials("math_common.glsl");
+    ASSERT_EQ(math_deps.size(), 2U);
+    EXPECT_EQ(math_deps[0], "pbr_surface");
+    EXPECT_EQ(math_deps[1], "post_tonemap");
+
+    tracker.unregister_material("pbr_surface");
+    const auto math_deps_after = tracker.dependent_materials("cd/gluon/math_common.glsl");
+    ASSERT_EQ(math_deps_after.size(), 1U);
+    EXPECT_EQ(math_deps_after[0], "post_tonemap");
+}
+

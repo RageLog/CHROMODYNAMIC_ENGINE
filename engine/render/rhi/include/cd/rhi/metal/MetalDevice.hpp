@@ -58,9 +58,8 @@ struct MetalCreateInfo
 ///   * `MTLCreateSystemDefaultDevice` returns nil (no Metal-capable
 ///     GPU, or the runtime hasn't been initialised).
 ///
-/// The returned device is fully owned by the caller. Wave 97 ships
-/// the stub factory only; Phase 9 Sprint 1 wires the real Metal
-/// implementation.
+/// The returned device is fully owned by the caller. wait_idle() is called on
+/// destruction.
 [[nodiscard]] cd::core::Result<std::unique_ptr<cd::rhi::IDevice>>
 create_metal_device(MetalCreateInfo info = {});
 

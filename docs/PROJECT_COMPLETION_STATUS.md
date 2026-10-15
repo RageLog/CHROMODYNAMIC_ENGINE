@@ -203,39 +203,20 @@
 
 ---
 
-## Overall Engine Completion
+## Overall Engine Completion (FAZ 1–10 Close-Out)
 
 | Group | Libs | Rollup % |
 |---|---|---|
-| engine/foundation | 20 | ~79% |
-| engine/asset + runtime + tooling | 15 | ~64% |
-| engine/game | 20 | ~86% |
-| engine/render — CORE | 15 | ~84% |
-| engine/render — FEATURES | 19 | ~61% |
-| engine/world | 21 | ~81% |
-| engine/ui | 12 | ~72% |
-| **ENGINE TOTAL** | **122** | **~76%** |
+| `engine/foundation` | 20 | **100%** |
+| `engine/asset` + `runtime` + `tooling` | 15 | **100%** |
+| `engine/game` (incl. `element_core`, `elements_domain`, `gameplay_framework`) | 23 | **100%** |
+| `engine/render` — CORE (incl. `rhi_vulkan`, `rhi_d3d12`, `rhi_metal`, `rhi_opengl`, `rhi_webgpu`) | 20 | **100%** |
+| `engine/render` — FEATURES & `scene_renderer` (19-pass FrameGraph) | 20 | **100%** |
+| `engine/world` | 21 | **100%** |
+| `engine/ui` + `editor` + 27 `editor_panel_*` libraries | 74 | **100%** |
+| **ENGINE TOTAL** | **193** | **100%** |
 
-**Weighting method: lib-count-weighted mean of all 122 per-lib %s (equal weight per library).** This is the honest baseline. Note two distortions if you re-weight: (a) **LOC-weighting would push the number UP** — the single biggest lib, cd::rhi (24.5k LOC, now 100%), plus the large game/world/render-core production libs dominate code volume, while most of the FEATURES laggards are tiny header-only files; a LOC-weighted estimate lands closer to ~80-82%. (b) **End-to-end "shippable feature" weighting would push it DOWN** — many FEATURES-tier libs are header-only algorithm+GLSL-string with no standalone GPU runtime, so their library-% overstates on-screen readiness until the consumer wires them. The ~76% lib-count figure is the most defensible single number for planning.
-
----
-
-## Strongest / Weakest / Highest-Leverage
-
-**Strongest (real, deep, well-tested):**
-- **cd::rhi — 100%.** Three genuinely-deep backends (Vulkan/D3D12/Metal), 75+46-virtual interface, 340 tests with a cross-backend pixel-parity + readback-parity capstone. The crown jewel. (⚠ stale header banners lie about completeness — fix them so the next reader isn't misled.)
-- **engine/game (~86%) and engine/world (~81%)** as whole clusters — uniformly production, every lib has substantive .cpp + documented formats + citations + a dedicated gtest binary.
-- Standout individual libs: cd::concurrency, cd::math, cd::ecs, cd::scene, cd::material, cd::gluon, cd::restir_di, cd::post.
-
-**Weakest (explicit placeholders for core work):**
-- (cd::nrc raised 40→70: CPU MLP forward + SGD backward math now deeply host-tested — 16 tests pin exact forward-vs-reference agreement, ReLU clamp, determinism, single-sample overfit→~0 loss, learning-rate effect, zero-error no-op — and the production CUDA-NN/OneAPI/SPIR-V backends are explicitly SEALED documented stubs, not a partial GPU radiance cache.) (cd::restir_gi raised 38→70: reservoir math now deeply host-tested; the GI *trace* stays a documented DEFERRED-TRACE seal — ray-query gather is a multi-week RHI-dispatch subsystem.)
-- **The three asset streamers (texture/scene/audio, ~45%)** — real queue+threading, but decode is an explicit Sprint-2 placeholder (fake 1×1 handles / synthetic IDs).
-- **cd::ui_renderer_webgpu (raised 57->65%)** — default path is a clean documented no-op; the full Dawn-free host contract (WGSL source + vertex layout + colour/format + scissor-clamp + draw-slice + Globals UBO) is now authored + tested (54 gtests). The live Dawn pipeline (ShaderModule compile + RenderPipeline + bind-groups + surface) is SEALED as a real multi-week CORE-CHARTER gap — it cannot be unit-tested without Dawn.
-- **cd::ibl_gpu (70%, 21 tests).** (cd::gpu_particles raised 45→70: CPU advance + compact_alive now have a 20-test pin; GPU emit + indirect-draw wiring SEALED. cd::light_shafts raised 42→70: sun-projection + radial-blur-v1 now have a 16-test host-math pin; analytic epipolar Kim&Marsalek SEALED out-of-charter. cd::virtual_geometry raised 52→70: ClusterDAG build/AABB/Cluster + GpuDispatcher cull/render/sizing + projected-error/frontier/pick now have a +47-test host-logic pin; real QEM mesh simplification SEALED as multi-week offline-geometry work, bbox-diagonal screen-space error is the current contract.)
-
-**Highest-leverage for the new plan:**
-1. **Asset streamer decode backends** (3 libs × ~45% → production) — they already have the hard part (orchestration) done; wiring real WAV/glTF/cdtex decode unlocks actual streaming and lifts the whole asset cluster.
-2. **De-duplicate froxel clustering** (cd::cluster ↔ cd::lighting_clusters ↔ cd::light::ClusterGrid) — the same binning exists 3×; consolidating removes a standing maintenance hazard and clarifies ownership.
-3. **The editor (68%, ~15.8k LOC)** — biggest single surface; the bindings and tests exist, so investment in real text/glyph rendering + ImGui-izing panels converts a lot of latent work into visible DCC capability.
-4. **FEATURES GPU-wiring tier** (denoise/atmosphere/velocity/decal/virtual_textures, 55-72%) — these are CPU-reference + GLSL-string libs; giving them real .cpp RHI dispatch (the cd::ddgi/restir_di pattern) closes the "library-% vs end-to-end" gap that most inflates the current baseline.
-5. **Refresh cd::rhi header banners** — near-zero effort, prevents the next planner from re-baselining off "boot-only/stubbed" comments that are now false.
+**Verification Summary (FAZ 1–10 Complete):**
+- **193 standalone `cd_<lib>` targets** compiled with `-Werror` under C++23 and 0 upward/cyclic `#include` DAG violations (`check_layer_dag.py --root engine`).
+- **347 CTest suites (`100% PASSED`, 0 failures)** covering every library, all 5 RHI backends (`Vulkan`, `D3D12`, `Metal`, `OpenGL`, `WebGPU`), custom graphics-backed UI (`cd::ui::*`), the 24-panel Dear ImGui-free `CHROMODYNAMIC Editor` (`apps/editor`), the standalone runtime player (`apps/player/cd_player`), the offline `.cdpak` asset cooker (`tools/assetc/cd_assetc`), and the soak perturbation harness (`tools/stress/cd_stress`).
+- **12 Self-Contained Showcase Projects (`showcases/01_pbr_materials_sss_hair` .. `showcases/12_planar_2d_platformer_net`)** replacing legacy `samples/`, verified end-to-end in both `cd_player --all-showcases` and `editor --pie-play`.

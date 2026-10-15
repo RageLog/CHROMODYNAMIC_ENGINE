@@ -14,8 +14,10 @@
 #include <cd/platform/SignalHandler.hpp>
 
 #include <atomic>
+#include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace cd::diag
 {
@@ -32,6 +34,14 @@ struct CrashContext
     CrashSeverity severity { CrashSeverity::kFatal };
     int raw_signal { 0 };
     std::string_view label {};  // human-readable signal name (e.g., "SIGSEGV")
+};
+
+struct StackFrameSymbol
+{
+    std::uintptr_t address { 0 };
+    std::string module_name {};
+    std::string symbol_name {};
+    std::uint32_t line { 0 };
 };
 
 /// User-provided reporter. MUST be async-signal-safe when severity == Fatal.
@@ -74,6 +84,18 @@ public:
     /// recoverable rendering failures. Does not terminate the process.
     void capture_non_fatal(std::string_view label) noexcept;
 
+    /// FAZ 10 Wave 10.2 — Capture symbolicated stack backtrace frames.
+    [[nodiscard]] static std::vector<StackFrameSymbol>
+    capture_stack_backtrace(std::size_t max_frames = 32);
+
+    /// FAZ 10 Wave 10.2 — Write a structured .cdcrash minidump & symbolicated
+    /// backtrace report into dump_directory() (or return the formatted report
+    /// payload if dump_directory() is empty).
+    [[nodiscard]] std::string write_minidump_report(
+        std::string_view reason,
+        CrashSeverity severity = CrashSeverity::kFatal
+    ) const;
+
     [[nodiscard]] bool is_installed() const noexcept
     {
         return installed_;
@@ -86,3 +108,4 @@ private:
 };
 
 }  // namespace cd::diag
+

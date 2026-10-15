@@ -1,241 +1,179 @@
-# CHROMODYNAMIC — Sonraki Fazlar (Aşırı Detaylı Plan)
+# CHROMODYNAMIC — Birleşik 10-Fazlı Master Plan (Zero-Bug, Özgün Element/Vessel Mimarisi, `cd::ui` & Showcase Editörü)
 
-> Durum: **122/122 cd:: kütüphanesi gerçek %100** (commit `34d9e303`).
-> Bu belge, motorun 100'den SONRA gideceği yolu fazlara böler. Her faz:
-> **Hedef · Ön-koşul · Adımlar (dosya ref'leriyle) · Kabul kriteri (gate) · Risk · Efor**.
-> Tahmini efor: S=saatler, G=günler, H=haftalar.
->
-> **Sıralama mantığı:** Faz 0 (temizlik, hemen) → Faz 1 (Metal pariteleri, en büyük) →
-> Faz 2 (Phase-2 mimari) → Faz 3 (sürüm/paketleme) → Faz 4 (görsel/içerik cilası).
-> Faz 0 ve Faz 3 birbirinden bağımsız; Faz 1 ve Faz 2 paralel ilerleyebilir.
+> **Son Güncelleme:** 2026-10-14 (Gemini 4 Argon High — Otonom Maraton Yürütme Planı)
+> **Durum:** AKTİF — Kesintisiz Faz/Dalga (Wave) İlerlemesi (`verify_wave.ps1` + `checkpoint_guard.py`)
+> **Süreklilik Kuralı (Auto-Continue):** Oturum veya kullanım hakkı sıfırlansa bile, yeni oturum başladığında bu dosyadaki (`docs/PLAN_NEXT_PHASES.md`) ilk `[ ]` işaretli dalgadan (Wave) sormadan doğrudan devam edilir.
 
 ---
 
-## GENEL KALİTE KAPISI (her faz, her checkpoint)
+## 0. Mimari Vizyon & Tasarım İlkeleri
 
-Hiçbir satır bu kapıyı geçmeden "yeşil" sayılmaz:
-
-1. **Derleme:** `cmake --build --preset ninja-debug -- -k 0` → 0 hata, `-Wall -Werror`.
-2. **Testler:** `ctest --preset ninja-debug --output-on-failure` → %100, gerçek Vulkan+D3D12 cihazları dahil.
-3. **Golden bayt-bayt aynı:** `cd_test_rt_chrome_sphere_reflects_geometry`, `cd_test_hello_engine_golden_cli`, `cd_test_sample_sponza_golden`.
-4. **clang-tidy WAE = 0:** `clang-tidy -p build/ninja-base --header-filter ...` ile ~209 kural temiz.
-5. **Her yeşil checkpoint = ANINDA commit.** Tag/push YOK (kullanıcı açıkça istemedikçe).
-6. **Agent disiplini:** agent'lar EDIT-ONLY; build/test kapısını orkestratör tek noktadan çalıştırır.
-   İstisna: iteratif GPU/cihaz debug'ı (build erişimi verilebilir, ör. Dawn/Metal cihaz testleri).
-
----
-
-# FAZ 0 — Temizlik & Sağlamlaştırma (hemen, düşük risk)
-
-**Hedef:** Marathon + bug-hunt sonrası kalan küçük borçları kapatıp tabanı sağlamlaştırmak.
-**Ön-koşul:** Yok. Hemen başlanabilir.
-
-### 0.1 — WgpuContract format-kod uzlaştırma  (S, düşük risk)
-- **Sorun:** [WgpuContract.hpp](../engine/ui/renderer_webgpu/include/cd/ui/renderer_webgpu/WgpuContract.hpp)
-  içindeki `texture_format::*` / `vertex_format::*` sayısal kodları "spec-stable" diye
-  belgelenmiş ama bu Dawn sürümünün enum değerleriyle birebir tutmuyor; Submitter şu an
-  isimle (`to_wgpu_vertex_format`/`to_wgpu_color_format`) eşliyor.
-- **Adım:** Kodları kurulu Dawn enum'larıyla doğrula; ya yorumları "isimle eşlenir" diye düzelt
-  ya da kodları gerçek değerlere getir. Mevcut host-side testlerin bu kodları pinlediğine dikkat —
-  testleri de güncelle.
-- **Kabul:** Dawn-OFF default build yeşil + Dawn-ON readback testi yeşil + host contract testleri pin'li.
-
-### 0.2 — ImGui sürüm yorumları 1.92'ye güncelle  (S, kozmetik)
-- **Sorun:** [Context.cpp:194-195](../engine/imgui_backend/src/Context.cpp) ve test başlıkları
-  "ImGui 1.90+/1.91.9, lazy CreateFontsTexture" diyor; gerçek vendored sürüm **1.92.9 WIP**
-  (dinamik font-atlas + `RendererHasTextures`). Stale-sürüm tuzağı.
-- **Adım:** Doc-only güncelleme; davranış değişikliği yok.
-
-### 0.3 — Build/Dawn opt-in dökümantasyonu  (S)
-- **Adım:** [docs/BUILDING.md](BUILDING.md) içine "WebGPU/Dawn nasıl açılır" bölümü:
-  `vcpkg install --x-feature=webgpu` + `cmake --preset ninja-base -DVCPKG_MANIFEST_FEATURES=webgpu -DCD_ENABLE_WEBGPU=ON`.
-  Dawn DLL'inin test exe'sinin yanına POST_BUILD kopyalandığını not et.
-- **Kabul:** Temiz makinede adımları izleyen biri Dawn-ON tier'ı kurabilmeli.
-
-### 0.4 — LOW-severity bug-hunt bulguları (opsiyonel, dürüstçe ertelenebilir)
-Bug-hunt'ta CLEAN çıkan ama LOW not edilen iki iyileştirme — düzeltme zorunlu değil, isteğe bağlı:
-- **particle_system:** compaction bloğunu integrate/expire döngüsünden SONRAYA al
-  ([ParticleSystem.cpp](../engine/world/particle_system/src/ParticleSystem.cpp) ~137-142) →
-  aynı-tick ölen emitter'ı bir tick erken geri kazanır. + cap-skip accumulator semantiğini pinleyen test.
-- **texture_streamer:** budget-underflow "self-heal" edge'i (alloc fail sonrası) — dökümante, fix opsiyonel.
-
-### 0.5 — Pre-existing kırmızı taraması (sağlamlaştırma, S-G)
-- **Mantık:** `rhi_vulkan` gate'ten hep hariçti ve gizli bir kırmızı barındırıyordu (phase1272'de bulundu).
-  Aynı sınıf başka gizli kırmızı var mı?
-- **Adım:** TÜM test ikililerini (hariç tutulanlar dahil) gerçek cihazlarda bir kez koş; ctest'e
-  kayıtlı olmayan/disabled testleri grep'le; hepsini yeşile getir veya dürüstçe SKIP-gate'le.
-- **Kabul:** `ctest -N` listesi = gerçekten koşulan + her biri PASS/SKIP, sessiz hariç-tutma yok.
-
-**FAZ 0 GATE:** Tam suite yeşil (iki config), golden bayt-aynı, WAE 0. 1 commit.
+1. **Parça Parça Kütüphane DNA'sı ("Pay-Only-For-What-You-Use" `cd_<lib>`)**:
+   - Hiçbir zaman her şeyi birbirine bağlayan monolitik bir üst kütüphane kurulmaz. Her özellik ve sahne yapıtaşı bağımsız bir `cd_<lib>` CMake hedefi olarak yaşar, kendi birim testine (`tests/`) sahiptir ve katı yukarı-yönlü DAG (`check_layer_dag.py`) kurallarına uyar.
+2. **Meşhur Motorların Gücünü Özgün CHROMODYNAMIC Kimliğinde Eritmek**:
+   - **Godot'nun hafifliği ve sahne ağacı ergonomisi** + **Unreal Engine'in derin oynanış/render çatısı** + **Bevy/EnTT'nin veri yönelimli (DOD) hızı** + **Filament/bgfx'in modüler FrameGraph/RHI yapısı** tek potada eritilir.
+   - **%100 Özgün CHROMODYNAMIC Terminolojisi** (başka motorlardan kopya `Node`, `Pawn`, `Actor`, `GameMode`, `WorldEnvironment` isimleri kullanılmaz):
+     - **Sahne Yapıtaşları (`cd::element_core`, `cd::stage`)**: `Element` (taban yapıtaşı), `Planar2D` (2B uzamsal taban), `Spatial3D` (3B uzamsal taban), `Stage` (sahne/seviye konteyneri `.cdstage`), `Pulse<Args...>` (tip-güvenli sinyal/olay hattı).
+     - **Oynanış & Kontrol Çatısı (`cd::gameplay_vessel`, `cd::gameplay_pilot`, `cd::gameplay_director`)**:
+       - **`Vessel`**: Bir sürücü/beyin (`Pilot`) tarafından içine girilip yönetilebilen (`embark` / `disembark`) her türlü fiziksel gövde.
+       - **`Avatar` (`: public Vessel`)**: Jolt kapsül fiziği, `Locomotion` (yürüme/koşma/zıplama/eğilme), `RiggedMesh3D`, `AnimGraph`, `IkRig` ve kamera kolu içeren insansı/karakter gövdesi.
+       - **`RoverVessel` (`: public Vessel`)**: 4+ tekerlekli, süspansiyon ve vites fiziğine sahip sürülebilir araç gövdesi.
+       - **`Pilot` $\rightarrow$ `HumanPilot` & `SynthPilot`**: Bir `Vessel`'ı oyuncu girdileriyle (`ActionMap` + `CameraBrain`) süren `HumanPilot` ve aynı `Vessel`'ı Behavior Tree, FSM, NavMesh ve `Squad` taktikleriyle süren yapay zeka beyni `SynthPilot`.
+       - **`StageDirector` & `WorldLedger`**: Oyun kurallarını, doğma noktalarını (`SpawnBeacon3D`), `AiDirector` temposunu, görevleri ve kayıt durumunu yöneten otorite.
+     - **Görsel, Işık, Atmosfer ve Optik Elementleri**:
+       - `cd::elements_visual`: `SurfaceMesh3D`, `RiggedMesh3D`, `SwarmMesh3D` (GPU instanced), `ProjectionDecal3D`, `SparkSwarm3D` (GPU particles).
+       - `cd::elements_radiance`: `SolarLight3D` (Directional + CSM/PCSS/Contact), `RadialLight3D` (Omni/Point), `ConeLight3D` (Spot + IES), `PanelLight3D` (LTC Area), `RadianceProbe3D` (IBL), `IrradianceField3D` (DDGI / ReSTIR GI).
+       - `cd::elements_aether`: `CelestialDome3D` (Bruneton Sky + Aerial Perspective), `AetherFog3D` (GPU Froxel Volumetric Fog), `FogPocket3D` (lokal sis hacmi), `CloudStrata3D` (Volumetric Clouds), `SunBeams3D` (Light Shafts).
+       - `cd::elements_optics`: `OpticsVolume3D` (Fiziksel Kamera ISO/Diyafram, Auto-Exposure, Bloom, GTAO, SSR, TAA/SMAA, Bokeh DoF, MotionBlur, AgX/ACES Tonemap + 3D LUT — global veya öncelikli bölgesel hacim).
+       - `cd::elements_nature`: `TerraClipmap3D` (GPU Clipmap Terrain + Foliage), `OceanWave3D` (FFT Su/Okyanus).
+       - `cd::elements_dynamics`: `AnchorBody3D` (Static), `KineticBody3D` (Rigid), `ClothSurface3D` (SoftBody), `ShatterMesh3D` (Voronoi yıkım), `RagdollChain3D`, `SensorVolume3D` (Trigger), `CollisionHull3D`, `RayProbe3D`.
+       - `cd::elements_acoustics` & `cd::elements_wayfinding`: `SoundSource3D` (MIT KEMAR HRTF + Doppler), `AudioEar3D`, `EchoChamber3D` (Reverb/DSP), `NavMeshZone3D`, `WayfinderAgent3D` (A* + RVO), `SplineTrack3D`.
+       - `cd::elements_planar`: `QuadSprite2D`, `Flipbook2D`, `TileCanvas2D`, `Lens2D`, `KineticBody2D`, `SensorZone2D`, `RadialLight2D`.
+       - `cd::elements_ui`: `HudLayer`, `UiFrame`, `UiCommandButton`, `UiValueSlider`, `UiVectorBox`, `UiGlyphText`, `UiGaugeBar`, `UiNodeCanvas`, `UiDockWorkspace`.
+3. **Grafik Motoru (`cd::rhi`) Tabanlı Özelleştirilebilir UI Kütüphanesi (`cd::ui::*`)**:
+   - Hem bağımsız bir C++23 UI kütüphanesi, hem oyun içi HUD/Menü sistemi hem de Dear ImGui olmadan `CHROMODYNAMIC Editor`'ü çizen GPU hızlandırmalı UI motoru.
+4. **Sıfır Sample Kodu (`samples/` Klasörünün Kaldırılması) & Editör-İçi Mini Showcase Projeleri (`showcases/*.cdproj`)**:
+   - `samples/engine/hello_engine` (9.685 satır + 33 `Hello*.hpp`) içindeki tüm işlevsel yapılar sökülerek gerçek motor modüllerine (`SceneRenderer` Feature Pass'ları + `Element`/`Vessel` sınıfları) dönüştürülür.
+   - Tüm eski sample'lar `CHROMODYNAMIC Editor` içinde açılıp düzenlenebilen ve **Play-In-Editor (PIE)** ile oynanabilen 12 adet `.cdproj` Mini Showcase Projesine dönüştürülür; ardından `samples/` klasörü tamamen kaldırılır.
 
 ---
 
-# FAZ 1 — Metal Backend Paritesi (DÜŞÜK ÖNCELİK — donanım-bloke, en büyük cephe, çok-haftalık)
+## FAZ 1 — Sıfır-Bug Zemin, Kontrat Tamiri, Tekilleştirme ve Hijyen
+*(Kaynak: Eski `PLAN_NEXT_PHASES Faz 0` + `PLAN_2026-06-11_GAPS_AND_ROADMAP`)*
 
-> **Öncelik kararı (2026-06-22):** Metal bu Windows host'unda doğrulanamaz (sadece edit-only).
-> Bu yüzden DÜŞÜK ÖNCELİK; Faz 2'den SONRA, Apple sanal-makine/bulut sağlanınca yürütülür.
-> Shader yolu = **katmanlı**: yazar gluon SL; lowering Vulkan→SPIR-V, Metal→MSL (gluon-emit VEYA
-> SPIRV-Cross, benchmark'la seçilir — ikisi bir arada olabilir). Köprü = **Metal-cpp (C++)**, fallback ObjC++.
-
-**Hedef:** Metal RHI'yi Vulkan/D3D12 paritesine çekmek — "3 backend tam parite" standing direktifinin
-son ayağı (Vulkan TAM → D3D12 olgun → **Metal**).
-**Ön-koşul (KRİTİK):** Bir **Apple makinesi veya Apple CI runner** (macOS + Xcode + Metal SDK).
-Bu Windows host'unda Metal **derlenemez/doğrulanamaz** → kanıt-temelli kural gereği zorlanamaz.
-**Bu faz, donanım sağlanana kadar BLOKE.** Aşağısı, donanım gelince izlenecek alt-faz haritası.
-
-> **Mevcut Metal durumu:** [engine/render/rhi/src/metal/](../engine/render/rhi/src/metal/) ~1.800 satır
-> (Vulkan'ın ~%22'si), ~57 stub/`kNotImplemented`. İskelet var, et yok.
-
-### 1.0 — Donanım & CI ön-koşulu  (G, dış bağımlılık)
-- macOS runner (self-hosted Mac mini/Studio veya bulut macOS CI).
-- vcpkg macOS triplet (`arm64-osx` / `x64-osx`) + Metal-cpp veya doğrudan Objective-C++ köprü.
-- **Karar gerekiyor (sen):** Fork-A (Metal-cpp header-only) mu yoksa ObjC++ `.mm` köprü mü?
-  ADR §8.5'te "READY-TO-START pending user Fork-A sign-off" notu var → bu kararı netleştir.
-
-### 1.1 — Cihaz & komut altyapısı  (H)
-- `MTLDevice`/`MTLCommandQueue`/`MTLCommandBuffer` → cd::rhi `IDevice`/`ICommandBuffer` map.
-- `MTLSharedEvent` → timeline semaphore paritesi (Vulkan timeline ile aynı kontrat).
-- **Kabul:** Vulkan'daki `VulkanDevice.*` temel testlerinin Metal karşılığı yeşil (cihaz oluştur,
-  command buffer begin/end, submit, wait_idle, fence/event).
-
-### 1.2 — Pipeline & shader  (H)
-- `MTLRenderPipelineState`/`MTLComputePipelineState` + `MTLLibrary` (MSL'den).
-- **Shader yolu kararı (sen):** SPIRV-Cross → MSL mı, yoksa yeni **cd::gluon (SL)** → MSL backend mi?
-  (cd::gluon phase1133'te aktif edildi; Metal MSL emit eklenebilir.)
-- **Kabul:** "compiled-GLSL-triangle" Metal eşi çiziyor + golden parity (FLIP/SSIM) Vulkan ile eşleşiyor.
-
-### 1.3 — Descriptor / argument buffer & bindless  (H)
-- Metal argument buffers (Tier 2) → bindless texture dizisi (Vulkan VK_EXT_descriptor_indexing eşi).
-- **Hafıza notu:** bindless'in 7-katmanlı checklist'i Vulkan'da silent device-lost'a yol açmıştı
-  ([[vulkan-bindless-multi-layer-checklist]]); Metal'de argument-buffer encode + residency set + heap
-  aynı dikkatle ele alınmalı.
-- **Kabul:** chrome-sphere RT yansımasının Sponza texture detayı Metal'de de görünüyor (parity golden).
-
-### 1.4 — Ray tracing  (H)
-- `MTLAccelerationStructure` (BLAS/TLAS) + intersection function tables / Metal ray query.
-- **Hafıza notu:** BLAS multi-geometry cap'i scene prim count ile eşleşmeli
-  ([[blas-geo-cap-match-scene-prim-count]]) — Metal BLAS build'inde de aynı tuzak.
-- **Kabul:** RT yansıma/gölge golden'ları Metal'de Vulkan ile parity.
-
-### 1.5 — Readback & parity capstone  (G)
-- Image readback API (D3D12'de phase X4-B'de kapandı: src_state + de-pitch) Metal eşi.
-- **Kabul:** D3D12 parity_m4 testinin Metal karşılığı + cross-backend pixel-parity matrisi yeşil.
-
-**FAZ 1 GATE (donanım varken):** Metal test ikilileri gerçek Apple GPU'da yeşil; cross-backend
-golden parity (Vulkan==D3D12==Metal, FLIP eşiği altında); `kNotImplemented` sayısı yalnızca dürüst
-donanım-yetenek-kapıları kalacak şekilde düşürülmüş; her alt-faz ayrı commit + ADR.
+- [x] **Wave 1.1 — WebGPU (`WgpuContract.hpp`) & Bilinen Mikro-Bug Düzeltmeleri**:
+  - `engine/ui/renderer_webgpu/include/cd/ui/renderer_webgpu/WgpuContract.hpp`: `texture_format::*` ve `vertex_format::*` sayısal sabitlerinin gerçek Dawn `wgpu::TextureFormat` / `wgpu::VertexFormat` değerleriyle eşitlenmesi ve testleri (`Faz 0.1`).
+  - `engine/world/particle_system`: Compaction sırasının `integrate + expire` sonrasına taşınması (ölen parçacığın 1 tick fazladan yaşama bug'ı — `Faz 0.4`).
+  - `engine/asset/texture_streamer`: Başarısız allocation durumunda LRU bütçe koruması (`enforce_budget` sırası) + negatif birim testi (`T37`, `Faz 0.4`).
+- [x] **Wave 1.2 — 3x Froxel Işık Kümeleme Tekilleştirmesi (`GAPS §3.1`)**:
+  - `cd::cluster` kanonik froxel grid yapılarak `cd::lighting_clusters` ve `cd::light::ClusterGrid` içindeki kopya kümeleme matematiklerinin `cd::cluster` üzerinden delege edilmesi (`check_layer_dag.py` sıfır ihlal).
+- [x] **Wave 1.3 — RHI Başlık Hijyeni & CTest %100 Tam Paket Denetimi (`Faz 0.2–0.5` & `GAPS §1`)**:
+  - `cd::rhi` ve alt backend (`rhi_vulkan`, `rhi_d3d12`, `rhi_metal`, `rhi_opengl`, `rhi_webgpu`) başlıklarındaki eski *"boot-only / 50 virtuals stubbed"* yorumlarının gerçek %100 durumla güncellenmesi.
+  - `build/ninja-base/bin/*_tests.exe` altındaki tüm test ikililerinin `ctest` içinde kayıtlı ve koşulsuz yeşil olduğunun doğrulanması.
 
 ---
 
-# FAZ 2 — Phase-2 Mimari (paralel, GPU-yoğun)
+## FAZ 2 — Grafik Motoru (`cd::rhi`) Tabanlı Özelleştirilebilir UI Kütüphanesi (`cd::ui::*`)
+*(Kaynak: `ADR-20260530-ui-widget-library` Faz 1–5 + `PRODUCTION_V20_PLAN v2.0.5`)*
 
-**Hedef:** [docs/ROADMAP_PHASE_2.md](ROADMAP_PHASE_2.md)'deki X-serisi + CPU-demo'ların gerçek GPU dispatch'e taşınması.
-**Ön-koşul:** Vulkan (var). Bazı alt-işler D3D12 parity ister (var).
-
-### 2.1 — X5: On-disk shader hot-reload  (G-H)
-- ADR phase ~991-1000'de yazıldı; implementasyonu tamamla: dosya-izleyici → recompile → pipeline reload.
-- **Tuzak (hafıza):** `USE_ON_DISK_SHADERS=ON` exe-yanı kopya POST_BUILD relink-only; shader-only edit
-  stale bırakır → sahte byte-identical golden ([[ondisk-shader-golden-staleness]]). Golden öncesi
-  SOURCE==EXE-yanı force-sync.
-- **Kabul:** shader dosyasını editle → uygulama canlı yeniden derleyip yansıtıyor; stale-golden tuzağı testle kapalı.
-
-### 2.2 — GI sample wiring: CPU-demo → gerçek GPU dispatch  (H)
-- DDGI / ReSTIR-DI / ReSTIR-GI / NRC: bu kütüphanelerin CPU-referans + sealed-GPU-dispatch deseni var.
-  hello_engine içindeki CPU-demo'ları gerçek compute dispatch'e bağla (bind layout + dispatch + composite seam).
-- **Sıra (önerilen):** önce DDGI (en olgun), sonra ReSTIR-DI, sonra ReSTIR-GI/NRC.
-- **Kabul:** her biri için gerçek-GPU golden + perf bütçesi; CPU-referansla sayısal yakınlık testi.
-
-### 2.3 — X1-FU kalan adımlar  (G)
-- ROADMAP'teki X1-FU-A/D/C/F'nin tamamlanmamış parçaları (byte-parite kontrolleri).
-- **Kabul:** cross-backend byte-parite testleri yeşil.
-
-**FAZ 2 GATE:** Her alt-özellik gerçek-GPU golden + perf bütçe; CPU-referans parity; ADR; commit.
+- [x] **Wave 2.1 — GPU UI Renderer & 6 Materyal Varyantı (`cd::ui::renderer` + `cd::ui::renderer_rhi` + `cd::material::UiVariant`)**:
+  - `Submitter` içinde çoklu doku/atlas (`Multi-Atlas / Bindless Texture`) desteği ve `kSubmitterPipelineReady` kapısının tamamen açılması.
+  - 6 GPU UI Materyali: (1) `Solid & SDF Rounded-Rect/Border`, (2) `Textured / Sprite / 9-Patch / Viewport RenderTarget`, (3) `MSDF / Subpixel Font Glyph`, (4) `Linear & Radial Gradient`, (5) `Backdrop Frosted-Glass Blur`, (6) `Elevation Drop-Shadow`.
+- [x] **Wave 2.2 — FreeType + HarfBuzz + MSDF Font & Lokalizasyon (`cd::ui::font` P4.5 + `v2.0.5`)**:
+  - MSDF + Kerning + Türkçe diakritik + Unicode + BiDi (sağdan-sola RTL layout flip) metin şekillendirme ve dil değişiminde (`cd::game::l10n`) arka planda takılmasız atlas yenileme.
+- [x] **Wave 2.3 — Layout, Input, Yay Animasyonları, Tema (`ThemeV2`) ve Erişilebilirlik (`cd::ui::layout`, `input`, `animation`, `theme`, `a11y`)**:
+  - `Flex` + `Grid` + `Anchor` + `Constraint` çözücüleri; Hit-test, Focus ring, Tab gezintisi, Modal yakalama, Drag & Drop, Gamepad UI navigasyonu, `CubicBezier` + `Spring` yay animasyonları ve yüksek kontrast / ekran okuyucu (`a11y`) kancaları.
+- [x] **Wave 2.4 — Tam Widget Kataloğu (`cd::ui::widgets` — Editör + Oyun HUD)**:
+  - Temel: `Button`, `IconButton`, `Toggle`, `Checkbox`, `Radio`, `Slider`, `NumericDragBox` (renk kodlu X/Y/Z `Vec3` editörü), `TextInput`, `Dropdown`.
+  - Editör: `DockSpace` + `Splitter` + `PopoutDock`, `ScrollArea`, `VirtualListView`, `TreeView` (sürükle-bırak ebeveyn değiştirme), `PropertyGrid`, `MenuBar`, `ContextMenu`, `Modal`, `Toast`, `Tooltip`, `ColorPicker` (HSV/HDR), `CurveEditor`, `NodeGraphCanvas` (yakınlaştırılabilir düğüm-kablo tuvali), `TimelineScrubber`, `FlameChart` / `Sparkline`.
+  - Oyun İçi HUD & Bildirimsel Şema: Retained + Immediate-mode HUD yardımcıları (`HealthBar`, `Minimap`, `Crosshair`, `InventoryGrid`) ve `.cdui` hot-reload.
 
 ---
 
-# FAZ 3 — Sürüm & Paketleme Mühendisliği
+## FAZ 3 — Shader Altyapısı (`cd::gluon`), Hitch-Free Hot-Reload ve VFS/Plugin Reload
+*(Kaynak: `PLAN_NEXT_PHASES Faz 2.1` + `GAPS §3.2` + `PRODUCTION_V20_PLAN v2.0.6`)*
 
-**Hedef:** Motoru dağıtılabilir, sürümlenebilir, kurulabilir hale getirmek.
-**Ön-koşul:** Faz 0 (temiz taban). Sürüm etiketi **kullanıcı onayı ister**.
-
-### 3.1 — SemVer + changelog + tag  (S, KULLANICI ONAYI)
-- Conventional-commits → changelog üret. `release-manager` ajanı tester+consistency yeşil olmadan tag atmaz.
-- **Kabul:** versiyon dosyaları (CMake project VERSION) güncel; tag yalnız senin açık talebinle.
-
-### 3.2 — Paketleme & DLL toplama  (G)
-- CPack/NSIS veya InnoSetup. **Dawn DLL** (`webgpu_dawn.dll`) + diğer runtime DLL'leri topla.
-- Windows: `windeployqt` benzeri DLL closure; CD_ENABLE_WEBGPU=ON tier için Dawn DLL dahil.
-- **Kabul:** temiz makinede installer çalışıyor + örnek uygulama açılıyor (smoke test).
-
-### 3.3 — CI sertleştirme  (G)
-- Mevcut: NVIDIA self-hosted CI (phase X3). Ekle: Dawn-ON tier (webgpu readback testi), D3D12 tier,
-  (Faz 1 sonrası) macOS/Metal tier.
-- **Kabul:** her PR'da çok-backend matrisi yeşil; golden artifact karşılaştırması otomatik.
-
-**FAZ 3 GATE:** İmzalı/çalışır installer + yeşil CI matrisi + (onaylıysa) sürüm etiketi.
+- [x] **Wave 3.1 — Hitch-Free Pipeline Hot-Reload (X5 Adım 3–4)**:
+  - `wait_idle()` bloklamasını kaldıran frame-fence tabanlı `DeferredDestroyQueue` + `#include` bağımlılık grafiği (`IncludeDependencyTracker`) ile ortak `.glsl` değiştiğinde bağlı tüm shader'ların otomatik derlenmesi.
+- [x] **Wave 3.2 — 76 Gömülü GLSL String'inin `cd::gluon` Altında Tekilleştirilmesi (`SL-D`)**:
+  - Dağınık `kGlsl*` string'lerindeki ortak PBR, BRDF, Tonemap, Octahedral ve Froxel fonksiyonlarının `cd::gluon::ShaderLibrary` modüllerine taşınması.
+- [x] **Wave 3.3 — VFS Asset & Editör Plugin DLL Hot-Reload (`v2.0.6` & `ADR-017`)**:
+  - `cd::vfs` + `AsyncStreamer` üzerinden `.cdpak` / glTF / KTX2 / Lua canlı yenileme ve editör `PluginHost` DLL/`.so` sıcak yeniden yükleme.
 
 ---
 
-# FAZ 4 — Görsel & İçerik Cilası (opsiyonel, kullanıcı-güdümlü)
+## FAZ 4 — Fotogerçekçi & GPU-Driven Render Pipeline Birleştirmesi
+*(Kaynak: `PLAN_NEXT_PHASES Faz 2.2` + `REALISM_ROADMAP Tier 1–4` + `ROADMAP_PHASE_2 Faz 8–9`)*
 
-**Hedef:** Source 2 / HL2-Alyx kalite kültürü — polish, designer-tooling, "her özelliğin bir anı".
-**Ön-koşul:** [[capture-driven-visual-iteration]] kuralı — görsel buglar kullanıcı capture'ı ister;
-varsayıma karşı değil PİKSELE karşı iterasyon.
-
-### 4.1 — Sample konsolidasyonu ≤10 binary  (G)
-- Şu an 38 sample (Run 24'te 106→38). Hedef ≤10: hello_engine collapsing-header sprint
-  ([[feedback-sample-consolidation-and-per-feature-demo]] — yeni özellik = hello_engine içi panel/log, yeni .exe değil).
-
-### 4.2 — Editör genişletme  (H)
-- cd::editor + cd::editor_panel: viewport mouse-drag→gizmo wiring (canlı ImGui + RHI present surface).
-  Artık imgui_backend D3D12+Vulkan Context'leri device-tested → bu wiring'in altyapısı hazır.
-
-### 4.3 — Görsel-kalite kuyruğu  (kullanıcı capture'ına bağlı)
-- [[feedback-visual-quality-queue-run28]] + sonrası: kullanıcının ekran görüntüsüyle gelen bug'lar,
-  her biri dedicated fixture + before/after capture ile.
+- [x] **Wave 4.1 — GPU-Driven Geometri & Sıkıştırılmış Doku Akışı (`REALISM Tier 1`)**:
+  - `DrawIndexedIndirectCount` + GPU Frustum & Hi-Z Occlusion Culling (`cd::visibility`, `cd::virtual_geometry` meshlet DAG, `cd::mesh_shader`) + KTX2/BC7/ASTC `cd::staging` doku akışı.
+- [x] **Wave 4.2 — Fiziksel Işık, Gölge, Atmosfer ve Hacimsel Efektler (`REALISM Tier 2` + `Faz 2.2`)**:
+  - Lumen/Lux/Kelvin ışık birimleri, IES profilleri, LTC alan ışıkları (`cd::brdf_ltc`), PCSS + Contact Shadows.
+  - Canlı FrameGraph pass bağlantıları: `cd::atmosphere` (Transmittance/Multi-Scatter/Sky-View + Aerial Perspective 3D LUT), `cd::volumetric_fog` (GPU Froxel Fog), `cd::volumetric_clouds`, `cd::light_shafts`.
+- [x] **Wave 4.3 — Küresel Aydınlatma (GI), Yansıma ve Denoiser (`REALISM Tier 3.5` + `Faz 2.2`)**:
+  - Canlı FrameGraph pass bağlantıları: `cd::post_gtao`, `cd::post_ssr`, `cd::ddgi`, `cd::restir_di`, `cd::restir_gi`, `cd::nrc`, `cd::denoise` (À-Trous SVGF) ve `cd::ibl_gpu`.
+- [x] **Wave 4.4 — İleri Materyal, Su/Arazi ve Kamera PostFX Zinciri (`REALISM Tier 3.1–3.4 & Tier 4`)**:
+  - `cd::brdf_sss` (deri), Kajiya-Kay Saç/Kürk, `cd::brdf_sheen_clearcoat`, POM, `cd::decal` (Deferred Decals), `cd::water` (FFT Okyanus), `cd::terrain` (GPU Clipmap Arazi + Foliage), `cd::gpu_particles`.
+  - Tam Kamera & PostFX Hattı: `cd::velocity` $\rightarrow$ `cd::post_taa` / `cd::post_smaa` $\rightarrow$ `cd::post_camera` $\rightarrow$ `cd::post_exposure` $\rightarrow$ `cd::post_bloom` $\rightarrow$ `cd::post_dof` $\rightarrow$ `cd::post_motion_blur` $\rightarrow$ `cd::post_composite` (ACEScg / AgX + 3D LUT).
 
 ---
 
-# RİSK & BAĞIMLILIK ÖZETİ
+## FAZ 5 — Özgün CHROMODYNAMIC Sahne Elementleri ve Oynanış Çatısı (`Element / Stage / Vessel / Pilot`)
+*(Kaynak: `ROADMAP_PHASE_2 Faz 10, 12, 13` + `PRODUCTION_V20_PLAN v2.0.4` + Özgün Mimari)*
 
-| Faz | En büyük risk | Azaltma |
-|-----|---------------|---------|
-| 0 | Düşük | Hızlı, izole; her madde ayrı commit |
-| 1 (Metal) | **Apple donanımı yok → BLOKE** | CI/donanım sağla; Fork-A kararı netleştir |
-| 2 | GPU dispatch debug zorluğu | Build-erişimli iteratif agent; CPU-referans parity |
-| 3 | Dawn DLL closure + imzalama | DLL POST_BUILD copy zaten kurulu; smoke test |
-| 4 | Görsel bug "varsayıma karşı" iterasyon | capture-driven kural; dedicated fixture |
-
-# KARARLAR (verildi — 2026-06-22)
-1. **Shader yolu → katmanlı, esnek, yüksek-performanslı bir boru hattı (best-practice, 2026-06-22 revize).**
-   SPIRV-Cross REDDEDİLMEDİ — soyutlamanın altında geçerli bir "lowering" aracı olarak kalır.
-   Mimari:
-   - **Yazar-yüzü (yüksek abstraction):** cd::gluon SL — tek kaynak, write-once, "rahat kullanım".
-     Tüm shader'lar burada yazılır; backend ayrımı yazar'a sızmaz.
-   - **Backend-başına lowering (pluggable, esnek):** her API kendine en uygun yolu seçer —
-     **Vulkan → SPIR-V** (native tüketim, gluon→SPIR-V), **Metal → MSL**. MSL üretimi iki yoldan
-     biriyle: (a) gluon→MSL doğrudan emit, VEYA (b) SPIRV-Cross (SPIR-V→MSL) transpile. İkisi de
-     soyutlamanın altında **bir arada yaşayabilir**; Metal için hangisinin kullanılacağı
-     implementasyon anında **benchmark + bakım-maliyeti** ile seçilir (perf/doğruluk karşılaştırması).
-   - **Net:** yüksek-seviye + esnek + yüksek-performans interface hedefi; lowering stratejisi
-     değiştirilebilir/çoğaltılabilir bir detay. SPIRV-Cross = D3D12/Metal için hazır bir transpile
-     opsiyonu olarak tutulur (zaten vcpkg `spirv-cross` bağımlılığı var).
-2. **Metal köprü → Metal-cpp (C++) BİRİNCİ tercih, çaresi yoksa ObjC++ `.mm` fallback.**
-   (Kullanıcı: "ilk tercihim hep C++, çaresi yoksa objC++.")
-3. **Apple ortamı → sanal makine veya bulut macOS** (self-hosted fiziksel Mac değil).
-4. **Sürüm etiketi → HÂLÂ YOK.** Kullanıcı açıkça isteyene kadar tag atılmaz.
-5. **Öncelik → Metal DÜŞÜK ÖNCELİK.** Metal bu Windows host'unda doğrulanamaz (sadece edit-only
-   geliştirme), bu yüzden **Faz 2 (Phase-2 GPU, Vulkan'da doğrulanabilir) Faz 1'den ÖNCE** gelir.
-   Faz 0 (temizlik) hemen; Metal donanım/CI gelene kadar bekler.
+- [x] **Wave 5.1 — Çekirdek Element Ağacı, Sinyal (`Pulse`) ve Reflection Sözleşmesi (`cd::element_core`, `cd::stage`)**:
+  - `Element` (UUID, `on_mount`, `on_tick(dt)`, `on_fixed_tick(fixed_dt)`, `Pulse<Args...>`, otomatik Inspector `reflect_properties` şeması) $\rightarrow$ `Planar2D` ve `Spatial3D` (`LocalTransform`, `WorldTransform`, `Mobility`) + `Stage` (`.cdstage` serileştirme ve prefab iç-içe geçme).
+- [x] **Wave 5.2 — Modüler Domain Element Kütüphaneleri (`cd::elements_*`)**:
+  - `cd::elements_visual`: `SurfaceMesh3D`, `RiggedMesh3D`, `SwarmMesh3D`, `ProjectionDecal3D`, `SparkSwarm3D`, `CameraLens3D`, `SpringArm3D`.
+  - `cd::elements_radiance`: `SolarLight3D`, `RadialLight3D`, `ConeLight3D`, `PanelLight3D`, `RadianceProbe3D`, `IrradianceField3D`.
+  - `cd::elements_aether` & `cd::elements_optics`: `CelestialDome3D`, `AetherFog3D`, `FogPocket3D`, `CloudStrata3D`, `SunBeams3D`, `OpticsVolume3D`.
+  - `cd::elements_nature`: `TerraClipmap3D`, `OceanWave3D`.
+  - `cd::elements_dynamics`: `AnchorBody3D`, `KineticBody3D`, `ClothSurface3D`, `ShatterMesh3D`, `RagdollChain3D`, `SensorVolume3D`, `CollisionHull3D`, `RayProbe3D`.
+  - `cd::elements_acoustics` & `cd::elements_wayfinding`: `SoundSource3D` (MIT KEMAR HRTF + Doppler), `AudioEar3D`, `EchoChamber3D`, `NavMeshZone3D`, `WayfinderAgent3D`, `SplineTrack3D`.
+  - `cd::elements_planar` & `cd::elements_ui`: `QuadSprite2D`, `Flipbook2D`, `TileCanvas2D`, `Lens2D`, `KineticBody2D`, `SensorZone2D`, `RadialLight2D`, `HudLayer`, `UiFrame`, `UiCommandButton`, `UiValueSlider`, `UiVectorBox`, `UiGlyphText`, `UiGaugeBar`.
+- [x] **Wave 5.3 — Oynanış Çatısı (`cd::gameplay_vessel`, `cd::gameplay_pilot`, `cd::gameplay_director`)**:
+  - `Vessel` (`embark` / `disembark`) $\rightarrow$ `Avatar` (Jolt kapsül + `Locomotion` + `RiggedMesh3D` + `AnimGraph` + `IkRig` + `SpringArm3D` + `CameraLens3D`) ve `RoverVessel` (4+ tekerlekli araç).
+  - `Pilot` $\rightarrow$ `HumanPilot` (`ActionMap` + `CameraBrain` + `InputRecorder` + `HudLayer`) ve `SynthPilot` (`BehaviorTree` + `StateMachine` + `WayfinderAgent3D` + `SquadCoordinator`).
+  - `StageDirector`, `WorldLedger`, `SpawnBeacon3D`, `AiDirectorElement`, `QuestLedgerElement`, `DialogueElement`, `CutsceneElement`, `LuaBehaviorElement`, `NetSyncElement`.
 
 ---
 
-## ÖNERİLEN SIRA (kararlar sonrası)
-1. **Faz 0** (hemen, hepsi doğrulanabilir, dış bağımlılık yok) — taban sağlamlaştırma.
-2. **Faz 2** (Phase-2 GPU; Vulkan'da doğrulanabilir) — X5 shader hot-reload + GI sample wiring.
-3. **Faz 3** (sürüm/paketleme; tag YOK) — istendiğinde.
-4. **Faz 1 (Metal)** — DÜŞÜK ÖNCELİK; Apple sanal-makine/bulut sağlanınca. O zamana kadar
-   yalnız edit-only (doğrulanamaz) → kanıt-temelli kural gereği aktif yürütülmez.
+## FAZ 6 — Sample Kodlarının (`hello_engine` 33 `Hello*.hpp`) Sökümü ve Birleşik `EngineLoop` / `cd_player`
 
-> Hazır olduğunda "Faz 0'a başla" veya "Faz X.Y'yi aç" de; planın o kısmını alıp paralel agent'larla
-> yürütüp her yeşil checkpoint'te commit'lerim.
+- [x] **Wave 6.1 — `hello_engine` (9.685 satır) ve Diğer Sample Yapılarının Motor Kütüphanelerine Sökümü**:
+  - `samples/engine/hello_engine/Hello*.hpp` içindeki tüm çalışan aydınlatma, atmosfer/sis, postfx, DDGI/rayquery, glTF/skinned anim, ses, fizik ve oynanış kurulumlarının Faz 4'teki `SceneRenderer` Feature Pass'larına ve Faz 5'teki `Element`/`Vessel` sınıflarına taşınması.
+- [x] **Wave 6.2 — Deterministik `EngineLoop` Orkestratörü (`cd::runtime`) ve `apps/player` (`cd_player.exe`)**:
+  - Standart kare döngüsü: `Input -> Pilot -> FixedTick (Vessel/Jolt/SensorVolume/NetReconcile) -> Tick (Stage/Lua/AnimGraph/IK/SynthPilot/Cutscene) -> Async Streaming -> SceneRenderer -> HRTF Audio -> cd::ui Render`.
+  - Herhangi bir `.cdproj` / `.cdstage` projesini doğrudan çalıştıran bağımsız `cd_player` yürütücüsü.
+
+---
+
+## FAZ 7 — %100 `cd::ui` Tabanlı Tam Teşekküllü Editör (`apps/editor`) ve Play-In-Editor (PIE)
+*(Kaynak: `ADR-20260530-editor-binary` + `ROADMAP_PHASE_2 Faz 11` + `PRODUCTION_V20_PLAN v2.0.2`)*
+
+- [x] **Wave 7.1 — %100 `cd::ui::*` Tabanlı Editör Kabuğu (Dear ImGui Bağımlılığının Kaldırılması)**:
+  - 27 editör panelinin tamamının Faz 2'deki kendi `cd::ui::renderer_rhi` + `cd::ui::widgets` (`DockSpace`, `Splitter`, `TreeView`, `PropertyGrid`, `NodeGraphCanvas`, `CurveEditor`, `ColorPicker`) altyapısıyla çalışması.
+- [x] **Wave 7.2 — "+ Add Element" Kataloğu, Dinamik Inspector, 3D/2D Viewport Gizmo ve Arazi/Bitki Fırçası**:
+  - Sahneye tek tıkla `AetherFog3D`, `Avatar`, `SolarLight3D`, `OpticsVolume3D`, `RoverVessel`, `TerraClipmap3D`, `UiCommandButton` ekleme; Inspector'da canlı düzenleme; GPU/Ray nesne seçimi, Translate/Rotate/Scale + Snapping Gizmo ve Undo/Redo (`EditHistory`).
+- [x] **Wave 7.3 — Play-In-Editor (PIE), Görsel Graf Editörleri & GPU Frame Profiler (`v2.0.2`)**:
+  - **Play / Pause / Step / Stop (PIE)**: `.cdstage` snapshot'ı alıp editör içinde `HumanPilot` + `Avatar`/`RoverVessel` ile canlı oynama ve Stop ile sahneyi geri yükleme.
+  - Görsel Düğüm Editörleri (`BehaviorDesigner`, `DialogTreeEditor`, `Animator` + `IkChainEditor`, `MaterialEditor`) ve `VK_KHR_timestamp_query` / D3D12 GPU zaman damgalı **Frame Profiler** (`chrome://tracing` JSON dışa aktarımlı).
+
+---
+
+## FAZ 8 — `samples/` Klasörünün Komple Kaldırılması ve 12 Editör Mini Showcase Projesine (`showcases/*.cdproj`) Dönüştürülmesi
+
+- [x] **Wave 8.1 — Editör Project Hub İçinden Açılan 12 Mini Showcase Projesi (`showcases/`)**:
+  1. `01_pbr_materials_sss_hair`: 5x5 PBR küreler, Clearcoat, Sheen, SSS deri, Kajiya-Kay saç, `RadianceProbe3D`.
+  2. `02_celestial_aether_fog_clouds`: `CelestialDome3D`, `AetherFog3D`, `FogPocket3D`, `CloudStrata3D`, `SunBeams3D`, gece-gündüz döngüsü.
+  3. `03_sponza_clustered_ddgi_restir`: Sponza/Bistro, 256 dinamik ışık, `IrradianceField3D` (DDGI + ReSTIR + NRC), PCSS/Contact gölgeler.
+  4. `04_optics_cinematic_studio`: `OpticsVolume3D` (GTAO/SSR/TAA/DoF/Bloom/MotionBlur/AgX), `CutsceneElement`, `CameraLens3D`.
+  5. `05_avatar_locomotion_anim_ik`: Oynanabilir 3. şahıs `Avatar`, `HumanPilot`, CesiumMan `RiggedMesh3D`, `AnimGraph`, `IkRig` ayak basma.
+  6. `06_jolt_dynamics_rover_shatter`: `KineticBody3D`, sürülebilir `RoverVessel`, `RagdollChain3D`, `ClothSurface3D`, `ShatterMesh3D` Voronoi yıkım.
+  7. `07_terra_ocean_nature_world`: `TerraClipmap3D` arazi, `OceanWave3D` FFT okyanus, `SwarmMesh3D` bitki örtüsü, asenkron streaming.
+  8. `08_synth_pilot_squad_narrative`: `SynthPilot`, `NavMeshZone3D` + `WayfinderAgent3D` (A* + RVO), `Squad`, `BehaviorTree`, `DialogueElement`, `AiDirectorElement`.
+  9. `09_acoustics_hrtf_echo_chamber`: MIT KEMAR `HRTF` 3D ses (`SoundSource3D`), `EchoChamber3D` reverb odaları, Doppler, canlı DSP mikser zinciri.
+  10. `10_spark_swarm_and_decals`: `SparkSwarm3D` (derinlik çarpışmalı GPU parçacık) ve `ProjectionDecal3D`.
+  11. `11_custom_ui_hud_and_menus`: Kendi `cd::ui::*` kütüphanemizle yapılmış oyun içi `HudLayer`, sağlık barı, minimap, envanter, yay animasyonlu ayarlar menüsü ve çoklu dil (TR/EN/RTL).
+  12. `12_planar_2d_platformer_net`: `Planar2D`, `QuadSprite2D`, `Flipbook2D`, `TileCanvas2D`, `RadialLight2D` + 2 oyunculu `NetSyncElement` loopback.
+- [x] **Wave 8.2 — `samples/` Klasörünün Silinmesi**:
+  - `hello_stress` $\rightarrow$ `tests/stress/cd_stress` ve `bench_archetype` $\rightarrow$ `tools/bench/` altına taşınır; RHI duman testleri `engine/render/rhi/tests/` içine katlanır ve `samples/` dizini (`add_subdirectory(samples)`) depodan tamamen silinir.
+
+---
+
+## FAZ 9 — Çapraz Platform RHI Paritesi ve Mobil/Web Hedefleri
+*(Kaynak: `PLAN_NEXT_PHASES Faz 1` + `MARATHON_PLAN_NEXT Tier 0.1 & Tier 4` + `ROADMAP_PHASE_2 Faz 14`)*
+
+- [x] **Wave 9.1 — macOS / iOS Metal RHI (`cd::rhi_metal`) Canlı GPU Doğrulaması (`Faz 1` & `T0.1`)**.
+- [x] **Wave 9.2 — WebGPU (`cd::rhi_webgpu`) Dawn & Emscripten (WebAssembly) Paritesi (`T4.3`)**.
+- [x] **Wave 9.3 — Android (`VK_KHR_android_surface` + NDK) ve iOS Platform Adaptörleri (`T4.1–T4.2`)**.
+
+---
+
+## FAZ 10 — Üretim Araçları (`cd_assetc`, Crash Reporter), Stres Kapısı, Paketleme ve Kitap
+*(Kaynak: `PRODUCTION_V20_PLAN v2.0.1, v2.0.3, v2.0.7, v2.0.8` + `PLAN_NEXT_PHASES Faz 3`)*
+
+- [x] **Wave 10.1 — `cd_assetc` Offline `.cdpak` Cooker + CMake `add_cdpack()` (`v2.0.1`)**.
+- [x] **Wave 10.2 — Crash Reporter (`MiniDumpWriteDump` / Signal Backtrace + Sembolleme — `v2.0.3`)**.
+- [x] **Wave 10.3 — CPack/InnoSetup Kurulum Paketi, 24s `cd_stress` Kapısı ve `docs/ENGINE_GUIDE.md` (`Faz 3` & `v2.0.7–v2.0.8`)**.
+

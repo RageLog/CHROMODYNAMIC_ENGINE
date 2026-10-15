@@ -35,7 +35,9 @@
 
 #include <cstdint>
 #include <span>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace cd::rhi
 {
@@ -211,6 +213,18 @@ public:
     /// ICommandBuffer binds implicitly (it IS an IDrawRecorder).
     void apply(cd::rhi::IDrawRecorder& cmd) const;
 
+    /// Wave 3.1: Hitch-free pipeline hot-reload swap.
+    /// Instead of calling synchronous destroy_graphics_pipeline() or blocking
+    /// the GPU via wait_idle(), moves the old RHI handles into `queue` tagged
+    /// for retirement at `current_frame + frames_in_flight`, then steals the
+    /// handles from `fresh`.
+    void swap_deferred(
+        Material&& fresh,
+        class DeferredDestroyQueue& queue,
+        std::uint64_t current_frame,
+        std::uint64_t frames_in_flight = 3
+    ) noexcept;
+
 private:
     void release() noexcept;
     void steal(Material&& other) noexcept;
@@ -222,6 +236,85 @@ private:
     cd::rhi::PipelineLayoutHandle pipeline_layout_ {};
     cd::rhi::GraphicsPipelineHandle pipeline_ {};
     bool has_descriptors_ { false };
+};
+
+// ---- Wave 3.1: DeferredDestroyQueue & IncludeDependencyTracker --------------
+
+/// Frame-ticket-gated deferred retirement queue for hot-reloaded Material RHI
+/// handles. Eliminates the synchronous `IDevice::wait_idle()` hitch during
+/// live shader/material hot-reload while preserving strict reverse-creation
+/// destruction order once in-flight command buffers have completed.
+class DeferredDestroyQueue
+{
+public:
+    struct Entry
+    {
+        std::uint64_t retire_frame { 0 };
+        cd::rhi::GraphicsPipelineHandle pipeline {};
+        cd::rhi::PipelineLayoutHandle pipeline_layout {};
+        cd::rhi::DescriptorSetLayoutHandle desc_layout {};
+        cd::rhi::ShaderModuleHandle fs {};
+        cd::rhi::ShaderModuleHandle vs {};
+    };
+
+    void enqueue(Entry entry);
+
+    /// Destroy all entries whose `retire_frame <= completed_frame` in LIFO
+    /// handle order (`pipeline` -> `pipeline_layout` -> `desc_layout` -> `fs` -> `vs`).
+    /// Returns the number of entries retired in this call.
+    std::size_t collect(cd::rhi::IDevice& device, std::uint64_t completed_frame);
+
+    /// Immediately destroy all remaining queued entries (for device shutdown).
+    std::size_t flush_all(cd::rhi::IDevice& device);
+
+    [[nodiscard]] std::size_t pending_count() const noexcept
+    {
+        return entries_.size();
+    }
+
+private:
+    static void destroy_entry(cd::rhi::IDevice& device, const Entry& e) noexcept;
+    std::vector<Entry> entries_;
+};
+
+/// Parses `#include <...>` and `#include "..."` directives from GLSL source text.
+[[nodiscard]] std::vector<std::string> extract_glsl_includes(std::string_view glsl_source);
+
+/// Tracks `#include` dependencies between shared GLSL module headers and
+/// Materials so editing a shared `.glsl` header can automatically trigger
+/// hot-reload of all dependent Materials.
+class IncludeDependencyTracker
+{
+public:
+    /// Register or update a material's GLSL sources (and optional transitive
+    /// `#include` closure resolved via `resolver`).
+    void register_material(
+        std::string_view material_name,
+        std::string_view vs_source,
+        std::string_view fs_source,
+        cd::shader::IIncludeResolver* resolver = nullptr
+    );
+
+    /// Remove a material from tracking.
+    void unregister_material(std::string_view material_name);
+
+    /// Return a sorted list of material names that directly or transitively
+    /// include `header_path` (matches both canonical `"cd/gluon/foo.glsl"` and
+    /// bare `"foo.glsl"`).
+    [[nodiscard]] std::vector<std::string> dependent_materials(std::string_view header_path) const;
+
+    [[nodiscard]] std::size_t material_count() const noexcept
+    {
+        return materials_.size();
+    }
+
+private:
+    struct MaterialRecord
+    {
+        std::string name;
+        std::vector<std::string> included_headers;
+    };
+    std::vector<MaterialRecord> materials_;
 };
 
 // ---- Material instance ------------------------------------------------------

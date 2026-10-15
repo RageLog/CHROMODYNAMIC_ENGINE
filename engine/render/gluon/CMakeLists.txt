@@ -26,6 +26,8 @@ set(CD_GLUON_MODULES
   tonemap
   tonemap_ext       # P1 wave2: AgX display transform + punchy variant (Sobotka/Blender minimal fit) — prim.frag op=3 target
   color_grading     # P1 wave2: lift-gamma-gain/contrast/saturation/white-balance(CAT02)/channel-mixer (Lagarde/Frostbite, ASC-CDL)
+  froxel_cluster    # Wave 3.2: canonical 3D froxel cluster indexing & logarithmic depth slice math
+  atmosphere_fog    # Wave 3.2: Rayleigh/Mie phase functions, Beer-Lambert transmittance, and exponential height fog
 )
 
 set(_cd_gluon_gen_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")

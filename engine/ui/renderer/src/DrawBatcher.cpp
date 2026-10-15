@@ -61,11 +61,14 @@ namespace
 }
 }  // namespace
 
-void DrawBatcher::emit_quad(float x, float y, float w, float h,
-                             std::uint8_t variant,
-                             std::uint32_t texture_slot,
-                             const AtlasUv& uv,
-                             Color color)
+void DrawBatcher::emit_quad_ex(float x, float y, float w, float h,
+                                std::uint8_t variant,
+                                std::uint32_t texture_slot,
+                                const AtlasUv& uv,
+                                Color c0, Color c1, Color c2, Color c3,
+                                std::uint8_t pad0,
+                                std::uint8_t pad1,
+                                std::uint8_t pad2)
 {
     // Reject empty quads up-front so the batch + index buffers stay tight.
     if (w <= 0.0F || h <= 0.0F) return;
@@ -77,10 +80,10 @@ void DrawBatcher::emit_quad(float x, float y, float w, float h,
 
     const auto base = static_cast<std::uint16_t>(vertices_.size());
     // top-left, top-right, bottom-right, bottom-left
-    Vertex v0 { x,     y,     uv.u0, uv.v0, color.r, color.g, color.b, color.a, variant, 0U, 0U, 0U };
-    Vertex v1 { x + w, y,     uv.u1, uv.v0, color.r, color.g, color.b, color.a, variant, 0U, 0U, 0U };
-    Vertex v2 { x + w, y + h, uv.u1, uv.v1, color.r, color.g, color.b, color.a, variant, 0U, 0U, 0U };
-    Vertex v3 { x,     y + h, uv.u0, uv.v1, color.r, color.g, color.b, color.a, variant, 0U, 0U, 0U };
+    Vertex v0 { x,     y,     uv.u0, uv.v0, c0.r, c0.g, c0.b, c0.a, variant, pad0, pad1, pad2 };
+    Vertex v1 { x + w, y,     uv.u1, uv.v0, c1.r, c1.g, c1.b, c1.a, variant, pad0, pad1, pad2 };
+    Vertex v2 { x + w, y + h, uv.u1, uv.v1, c2.r, c2.g, c2.b, c2.a, variant, pad0, pad1, pad2 };
+    Vertex v3 { x,     y + h, uv.u0, uv.v1, c3.r, c3.g, c3.b, c3.a, variant, pad0, pad1, pad2 };
     vertices_.emplace_back(v0);
     vertices_.emplace_back(v1);
     vertices_.emplace_back(v2);
@@ -115,6 +118,15 @@ void DrawBatcher::emit_quad(float x, float y, float w, float h,
     }
 }
 
+void DrawBatcher::emit_quad(float x, float y, float w, float h,
+                             std::uint8_t variant,
+                             std::uint32_t texture_slot,
+                             const AtlasUv& uv,
+                             Color color)
+{
+    emit_quad_ex(x, y, w, h, variant, texture_slot, uv, color, color, color, color);
+}
+
 void DrawBatcher::quad(float x, float y, float w, float h, Color c)
 {
     AtlasUv unused {};
@@ -135,6 +147,117 @@ void DrawBatcher::glyph(float x, float y, float w, float h,
                         Color tint)
 {
     emit_quad(x, y, w, h, material::kGlyph, texture_slot, uv, tint);
+}
+
+void DrawBatcher::nine_patch(float x, float y, float w, float h,
+                             std::uint32_t texture_slot,
+                             const NinePatchDesc& desc,
+                             Color tint)
+{
+    if (w <= 0.0F || h <= 0.0F) return;
+
+    const float l = std::clamp(desc.left,   0.0F, w * 0.5F);
+    const float r = std::clamp(desc.right,  0.0F, w * 0.5F);
+    const float t = std::clamp(desc.top,    0.0F, h * 0.5F);
+    const float b = std::clamp(desc.bottom, 0.0F, h * 0.5F);
+
+    const float x0 = x;
+    const float x1 = x + l;
+    const float x2 = x + w - r;
+    const float x3 = x + w;
+
+    const float y0 = y;
+    const float y1 = y + t;
+    const float y2 = y + h - b;
+    const float y3 = y + h;
+
+    const float du = desc.outer_uv.u1 - desc.outer_uv.u0;
+    const float dv = desc.outer_uv.v1 - desc.outer_uv.v0;
+
+    const float u0 = desc.outer_uv.u0;
+    const float u1 = desc.outer_uv.u0 + du * std::clamp(desc.uv_left,   0.0F, 0.5F);
+    const float u2 = desc.outer_uv.u1 - du * std::clamp(desc.uv_right,  0.0F, 0.5F);
+    const float u3 = desc.outer_uv.u1;
+
+    const float v0 = desc.outer_uv.v0;
+    const float v1 = desc.outer_uv.v0 + dv * std::clamp(desc.uv_top,    0.0F, 0.5F);
+    const float v2 = desc.outer_uv.v1 - dv * std::clamp(desc.uv_bottom, 0.0F, 0.5F);
+    const float v3 = desc.outer_uv.v1;
+
+    const float xs[4] = { x0, x1, x2, x3 };
+    const float ys[4] = { y0, y1, y2, y3 };
+    const float us[4] = { u0, u1, u2, u3 };
+    const float vs[4] = { v0, v1, v2, v3 };
+
+    for (int row = 0; row < 3; ++row)
+    {
+        for (int col = 0; col < 3; ++col)
+        {
+            const float cw = xs[col + 1] - xs[col];
+            const float ch = ys[row + 1] - ys[row];
+            if (cw > 0.0F && ch > 0.0F)
+            {
+                const AtlasUv slice_uv { us[col], vs[row], us[col + 1], vs[row + 1] };
+                emit_quad(xs[col], ys[row], cw, ch, material::kNinePatch, texture_slot, slice_uv, tint);
+            }
+        }
+    }
+}
+
+void DrawBatcher::linear_gradient(float x, float y, float w, float h,
+                                  Color start_color,
+                                  Color end_color,
+                                  bool horizontal)
+{
+    const AtlasUv uv { 0.0F, 0.0F, 1.0F, 1.0F };
+    if (horizontal)
+    {
+        emit_quad_ex(x, y, w, h, material::kLinearGrad, 0xFFFFFFFFu, uv,
+                     start_color, end_color, end_color, start_color, 1U, 0U, 0U);
+    }
+    else
+    {
+        emit_quad_ex(x, y, w, h, material::kLinearGrad, 0xFFFFFFFFu, uv,
+                     start_color, start_color, end_color, end_color, 0U, 0U, 0U);
+    }
+}
+
+void DrawBatcher::backdrop_blur(float x, float y, float w, float h,
+                                float blur_radius,
+                                Color tint)
+{
+    const AtlasUv uv { 0.0F, 0.0F, 1.0F, 1.0F };
+    const auto r_byte = static_cast<std::uint8_t>(std::clamp(blur_radius, 0.0F, 255.0F));
+    emit_quad_ex(x, y, w, h, material::kBlur, 0xFFFFFFFFu, uv,
+                 tint, tint, tint, tint, r_byte, 0U, 0U);
+}
+
+void DrawBatcher::drop_shadow(float x, float y, float w, float h,
+                              float blur_radius,
+                              float spread,
+                              Color shadow_color)
+{
+    if (w <= 0.0F || h <= 0.0F) return;
+    const float expand = std::max(0.0F, blur_radius + spread);
+    const AtlasUv uv { 0.0F, 0.0F, 1.0F, 1.0F };
+    const auto r_byte = static_cast<std::uint8_t>(std::clamp(blur_radius, 0.0F, 255.0F));
+    const auto s_byte = static_cast<std::uint8_t>(std::clamp(spread, 0.0F, 255.0F));
+    emit_quad_ex(x - expand, y - expand, w + 2.0F * expand, h + 2.0F * expand,
+                 material::kShadow, 0xFFFFFFFFu, uv,
+                 shadow_color, shadow_color, shadow_color, shadow_color,
+                 r_byte, s_byte, 0U);
+}
+
+void DrawBatcher::rounded_rect(float x, float y, float w, float h,
+                               float corner_radius,
+                               Color c,
+                               float border_thickness)
+{
+    const AtlasUv uv { 0.0F, 0.0F, 1.0F, 1.0F };
+    const auto r_byte = static_cast<std::uint8_t>(std::clamp(corner_radius, 0.0F, 255.0F));
+    const auto b_byte = static_cast<std::uint8_t>(std::clamp(border_thickness, 0.0F, 255.0F));
+    emit_quad_ex(x, y, w, h, material::kRoundedRect, 0xFFFFFFFFu, uv,
+                 c, c, c, c, r_byte, b_byte, 0U);
 }
 
 }  // namespace cd::ui::renderer

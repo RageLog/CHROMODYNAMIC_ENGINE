@@ -1,0 +1,11 @@
+{
+  "stage": "12_planar_2d_platformer_net",
+  "elements": [
+    {"class": "CelSprite2D", "name": "HeroRunnerSprite"},
+    {"class": "Flipbook2D", "name": "RunCycleFlipbook"},
+    {"class": "TileGrid2D", "name": "PlatformerLevelTiles"},
+    {"class": "ParallaxLayer2D", "name": "CyberpunkBackdrop"},
+    {"class": "Lamp2D", "name": "NeonSignShadowLamp"},
+    {"class": "OrthoLens2D", "name": "PixelPerfectCamera"}
+  ]
+}

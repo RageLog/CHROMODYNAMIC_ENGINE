@@ -1,11 +1,11 @@
-# v1.9 Physics + Gameplay Plan
+# v1.9 Physics + Gameplay Plan — ✅ 100% COMPLETED (FAZ 5 & FAZ 6 Close-Out)
+
+> **Status**: All 5 sub-units (`v1.9.1` Jolt 5.x rigid-body integration, `v1.9.2` CCD `kLinearCast`, `v1.9.3` PBD cloth & soft-body simulation, `v1.9.4` capsule character controller + `Avatar` vessel, `v1.9.5` Lua 5.4 scripting + AI behavior trees + `SynthPilot`) are **implemented and verified in CTest**.
 
 The current physics layer (engine/world/physics/) exposes an abstract
 collision-primitive API: Aabb, Sphere, Capsule, Obb, Ray, Triangle,
 SpringJoint, SoftBodyParams, IPhysicsWorld, plus narrow-phase helpers
-(CapsuleSphere, RaySphere, SweepResult). There is no rigid-body
-dynamics integrator yet — IPhysicsWorld is an interface awaiting a
-concrete implementation.
+(CapsuleSphere, RaySphere, SweepResult).
 
 v1.9 ships are split into five sub-units:
 

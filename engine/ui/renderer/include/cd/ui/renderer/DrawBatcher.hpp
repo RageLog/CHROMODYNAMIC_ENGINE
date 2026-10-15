@@ -69,6 +69,8 @@ inline constexpr std::uint8_t kGlyph       = 2U;
 inline constexpr std::uint8_t kNinePatch   = 3U;
 inline constexpr std::uint8_t kLinearGrad  = 4U;
 inline constexpr std::uint8_t kBlur        = 5U;
+inline constexpr std::uint8_t kShadow      = 6U;
+inline constexpr std::uint8_t kRoundedRect = 7U;
 }  // namespace material
 
 /// One scissor rectangle. Pixel coordinates relative to the framebuffer
@@ -121,6 +123,23 @@ struct AtlasUv
     float v1 { 1.0F };
 };
 
+/// 9-patch stretchable border slicing descriptor.
+/// `left`, `right`, `top`, `bottom` are border widths in pixels;
+/// `uv_left`, `uv_right`, `uv_top`, `uv_bottom` are normalized UV inset
+/// fractions within `outer_uv` (`[0..0.5]`).
+struct NinePatchDesc
+{
+    float   left      { 4.0F };
+    float   right     { 4.0F };
+    float   top       { 4.0F };
+    float   bottom    { 4.0F };
+    AtlasUv outer_uv  { 0.0F, 0.0F, 1.0F, 1.0F };
+    float   uv_left   { 0.25F };
+    float   uv_right  { 0.25F };
+    float   uv_top    { 0.25F };
+    float   uv_bottom { 0.25F };
+};
+
 // ---- Batcher limits -------------------------------------------------------
 
 /// Maximum number of vertices the batcher accepts per frame.
@@ -165,6 +184,39 @@ public:
                std::uint32_t texture_slot,
                const AtlasUv& uv,
                Color tint = Color::white());
+
+    /// Emit a 9-patch stretchable border + center panel (up to 9 quads
+    /// merged under `material::kNinePatch`).
+    void nine_patch(float x, float y, float w, float h,
+                    std::uint32_t texture_slot,
+                    const NinePatchDesc& desc,
+                    Color tint = Color::white());
+
+    /// Emit a two-stop linear gradient quad (`material::kLinearGrad`).
+    /// When `horizontal == false`, interpolates top (`start_color`) to
+    /// bottom (`end_color`); when `true`, left to right.
+    void linear_gradient(float x, float y, float w, float h,
+                         Color start_color,
+                         Color end_color,
+                         bool horizontal = false);
+
+    /// Emit a frosted-glass backdrop blur quad (`material::kBlur`).
+    void backdrop_blur(float x, float y, float w, float h,
+                       float blur_radius,
+                       Color tint = Color::white());
+
+    /// Emit an elevation drop-shadow quad (`material::kShadow`) expanded
+    /// around `[x, y, w, h]` by `blur_radius + spread`.
+    void drop_shadow(float x, float y, float w, float h,
+                     float blur_radius,
+                     float spread = 0.0F,
+                     Color shadow_color = { 0U, 0U, 0U, 128U });
+
+    /// Emit a procedural SDF rounded rectangle (`material::kRoundedRect`).
+    void rounded_rect(float x, float y, float w, float h,
+                      float corner_radius,
+                      Color c,
+                      float border_thickness = 0.0F);
 
     /// Vertex buffer ready for upload.
     [[nodiscard]] std::span<const Vertex> vertices() const noexcept
@@ -215,6 +267,15 @@ private:
                     std::uint32_t texture_slot,
                     const AtlasUv& uv,
                     Color color);
+
+    void emit_quad_ex(float x, float y, float w, float h,
+                      std::uint8_t variant,
+                      std::uint32_t texture_slot,
+                      const AtlasUv& uv,
+                      Color c0, Color c1, Color c2, Color c3,
+                      std::uint8_t pad0 = 0U,
+                      std::uint8_t pad1 = 0U,
+                      std::uint8_t pad2 = 0U);
 };
 
 }  // namespace cd::ui::renderer

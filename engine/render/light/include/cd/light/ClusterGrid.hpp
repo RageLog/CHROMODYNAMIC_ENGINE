@@ -27,6 +27,7 @@
 #include <cd/core/Defines.hpp>
 #include <cd/light/Light.hpp>
 #include <cd/math/Vector.hpp>
+#include <cd/render/cluster/ClusterGrid.hpp>
 
 #include <algorithm>
 #include <array>
@@ -76,29 +77,20 @@ public:
     }
 
     /// Map a view-space Z to its logarithmic slice index. Used by
-    /// both the CPU assignment pass and the GPU shader. Identical
-    /// formula:  slice = floor(log(z/near) / log(far/near) * slices).
+    /// both the CPU assignment pass and the GPU shader. Delegates to
+    /// canonical cd::render::cluster::depth_to_log_z_slice.
     [[nodiscard]] std::uint32_t slice_of(float view_z) const noexcept
     {
-        view_z = std::max(view_z, desc_.near_z);
-        if (view_z >= desc_.far_z) return desc_.slices_z - 1;
-        const float t = std::log(view_z / desc_.near_z) /
-                        std::log(desc_.far_z / desc_.near_z);
-        const auto s = static_cast<std::uint32_t>(t * static_cast<float>(desc_.slices_z));
-        return std::min(s, desc_.slices_z - 1);
+        return cd::render::cluster::depth_to_log_z_slice(
+            view_z, desc_.near_z, desc_.far_z, desc_.slices_z);
     }
 
     /// Compute the inverse mapping (slice → z range) for the GPU
     /// reconstruction shader. Returns [z_near_of_slice, z_far_of_slice].
     [[nodiscard]] std::pair<float, float> slice_z_range(std::uint32_t slice) const noexcept
     {
-        const float t0 = static_cast<float>(slice)       / static_cast<float>(desc_.slices_z);
-        const float t1 = static_cast<float>(slice + 1)   / static_cast<float>(desc_.slices_z);
-        const float ratio = desc_.far_z / desc_.near_z;
-        return {
-            desc_.near_z * std::pow(ratio, t0),
-            desc_.near_z * std::pow(ratio, t1),
-        };
+        return cd::render::cluster::log_z_slice_range(
+            slice, desc_.near_z, desc_.far_z, desc_.slices_z);
     }
 
     /// Clear every cell's light list. Call once per frame before
@@ -149,7 +141,8 @@ public:
 
     [[nodiscard]] std::uint32_t index_(std::uint32_t x, std::uint32_t y, std::uint32_t z) const noexcept
     {
-        return (z * desc_.tiles_y + y) * desc_.tiles_x + x;
+        return cd::render::cluster::linear_cluster_index(
+            x, y, z, desc_.tiles_x, desc_.tiles_y);
     }
 
 private:

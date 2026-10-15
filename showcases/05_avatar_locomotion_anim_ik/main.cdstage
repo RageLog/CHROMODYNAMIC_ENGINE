@@ -1,0 +1,7 @@
+# CHROMODYNAMIC .cdstage v1
+stage "05_avatar_locomotion_anim_ik"
+  element SpawnBeacon3D "HeroSpawnBeacon" { enabled=true team_tag="Default" }
+  element StageDirector "LocomotionDirector" { enabled=true }
+  element HumanPilot "LocalHumanPilot" { enabled=true player_index=0 }
+  element Avatar "LocalHumanPilot_Avatar" { enabled=true walk_speed_mps=5.5 sprint_speed_mps=8.5 enable_foot_ik=true }
+end_stage

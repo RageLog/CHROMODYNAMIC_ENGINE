@@ -11,3 +11,5 @@ cd_add_test(restir_math
     cd::restir_di
     cd::restir_gi
 )
+
+add_subdirectory(stress)

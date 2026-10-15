@@ -129,6 +129,15 @@ struct Submitter::Impl
     bool                                          has_theme_ubo { false };
     bool                                          has_sdf_sampler { false };
 
+    struct TextureSlotEntry
+    {
+        std::uint32_t                                   slot { 0U };
+        cd::rhi::TextureViewHandle                      view {};
+        cd::rhi::SamplerHandle                          sampler {};
+        std::unique_ptr<cd::material::MaterialInstance> instance {};
+    };
+    std::vector<TextureSlotEntry> texture_slots {};
+
     // Frame-local snapshot from `upload`.
     std::uint32_t               vertex_count { 0U };
     std::uint32_t               index_count  { 0U };
@@ -188,6 +197,7 @@ void Submitter::destroy() noexcept
         // Phase 648 / M10 W3A Sprint-3: release the MaterialInstance and
         // the theme UBO buffer (if any) BEFORE the variant so the descriptor
         // set goes back to the pool while its layout is still alive.
+        impl_->texture_slots.clear();
         if (impl_->material_pipeline_owned)
         {
             impl_->material_instance.reset();
@@ -577,6 +587,88 @@ bool Submitter::set_sdf_atlas(cd::rhi::TextureViewHandle view,
     return upd.has_value();
 }
 
+bool Submitter::set_texture_slot(std::uint32_t              slot,
+                                 cd::rhi::TextureViewHandle view,
+                                 cd::rhi::SamplerHandle     sampler)
+{
+    if (!impl_ || impl_->device == nullptr)      return false;
+    if (!view.is_valid() || !sampler.is_valid()) return false;
+
+    Impl::TextureSlotEntry* entry = nullptr;
+    for (auto& existing : impl_->texture_slots)
+    {
+        if (existing.slot == slot)
+        {
+            entry = &existing;
+            break;
+        }
+    }
+    if (entry == nullptr)
+    {
+        impl_->texture_slots.push_back(Impl::TextureSlotEntry { slot, view, sampler, nullptr });
+        entry = &impl_->texture_slots.back();
+    }
+    else
+    {
+        entry->view    = view;
+        entry->sampler = sampler;
+    }
+
+    if (impl_->material_pipeline_owned && impl_->material_variant && impl_->has_sdf_sampler)
+    {
+        if (!entry->instance)
+        {
+            auto inst_r = cd::material::MaterialInstance::create(
+                *impl_->device, impl_->material_variant->material());
+            if (!inst_r.has_value())
+            {
+                return false;
+            }
+            entry->instance = std::make_unique<cd::material::MaterialInstance>(std::move(*inst_r));
+            if (impl_->has_theme_ubo && impl_->theme_ubo.is_valid())
+            {
+                cd::rhi::DescriptorWrite ubo_w {};
+                ubo_w.binding       = impl_->theme_ubo_slot;
+                ubo_w.array_element = 0U;
+                ubo_w.type          = cd::rhi::DescriptorType::kUniformBuffer;
+                ubo_w.buffer        = impl_->theme_ubo;
+                ubo_w.buffer_offset = 0U;
+                ubo_w.buffer_range  = sizeof(cd::material::UiThemePaletteUbo);
+                const std::array<cd::rhi::DescriptorWrite, 1> ubo_writes { ubo_w };
+                (void)entry->instance->update(
+                    std::span<const cd::rhi::DescriptorWrite>(ubo_writes.data(), ubo_writes.size()));
+            }
+        }
+        cd::rhi::DescriptorWrite tex_w {};
+        tex_w.binding       = impl_->sdf_sampler_slot;
+        tex_w.array_element = 0U;
+        tex_w.type          = cd::rhi::DescriptorType::kCombinedImageSampler;
+        tex_w.view          = view;
+        tex_w.sampler       = sampler;
+        const std::array<cd::rhi::DescriptorWrite, 1> tex_writes { tex_w };
+        auto upd = entry->instance->update(
+            std::span<const cd::rhi::DescriptorWrite>(tex_writes.data(), tex_writes.size()));
+        if (!upd.has_value()) return false;
+    }
+
+    return true;
+}
+
+bool Submitter::has_texture_slot(std::uint32_t slot) const noexcept
+{
+    if (!impl_) return false;
+    for (const auto& entry : impl_->texture_slots)
+    {
+        if (entry.slot == slot) return true;
+    }
+    return false;
+}
+
+std::uint32_t Submitter::texture_slot_count() const noexcept
+{
+    return impl_ ? static_cast<std::uint32_t>(impl_->texture_slots.size()) : 0U;
+}
+
 // ---- upload ---------------------------------------------------------------
 
 bool Submitter::upload(const cd::ui::renderer::DrawBatcher& batcher)
@@ -681,6 +773,20 @@ void Submitter::record(cd::rhi::ICommandBuffer& cmd,
 
     for (const auto& dc : impl_->commands)
     {
+        if (impl_->material_pipeline_owned && impl_->material_variant &&
+            dc.texture_slot != 0xFFFFFFFFu)
+        {
+            for (const auto& entry : impl_->texture_slots)
+            {
+                if (entry.slot == dc.texture_slot && entry.instance &&
+                    entry.instance->is_valid() &&
+                    entry.instance->descriptor_set().is_valid())
+                {
+                    entry.instance->bind(cmd, /*set_index=*/0U);
+                    break;
+                }
+            }
+        }
         cd::rhi::Rect2D s {};
         if (dc.scissor.width == 0xFFFFFFFFu && dc.scissor.height == 0xFFFFFFFFu)
         {

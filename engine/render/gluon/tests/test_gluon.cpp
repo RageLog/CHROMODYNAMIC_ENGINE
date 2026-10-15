@@ -1141,7 +1141,69 @@ TEST(VariantDomain, PreambleCompilesWithModules)
 // module deleted but still referenced) regresses here, not downstream.
 TEST(ShaderLibRegistry, CatalogueCountMatchesManifest)
 {
-    EXPECT_EQ(cd::gluon::modules().size(), 21u);
+    EXPECT_EQ(cd::gluon::modules().size(), 23u);
+}
+
+TEST(ShaderLibCompile, FroxelClusterCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/froxel_cluster.glsl>\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    uvec3 dims = uvec3(16u, 9u, 24u);\n"
+        "    uvec3 tile = cd_cluster_coord_from_frag(gl_FragCoord.xy, vec2(1920.0, 1080.0), 10.0, 0.1, 1000.0, dims);\n"
+        "    uint idx = cd_cluster_flat_index(tile, dims);\n"
+        "    o = vec4(float(idx), float(tile.x), float(tile.y), float(tile.z));\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
+TEST(ShaderLibCompile, AtmosphereFogCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/atmosphere_fog.glsl>\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    float pr = cd_phase_rayleigh(0.5);\n"
+        "    float pm = cd_phase_henyey_greenstein(0.5, 0.8);\n"
+        "    float pcs = cd_phase_cornette_shanks(0.5, 0.8);\n"
+        "    float od = cd_exponential_height_fog_optical_depth(vec3(0.0, 2.0, 0.0), vec3(0.0, 10.0, 50.0), 0.02, 0.0, 0.1);\n"
+        "    vec3 tr = cd_beer_lambert(vec3(0.01, 0.02, 0.03), od);\n"
+        "    o = vec4(tr * (pr + pm + pcs), 1.0);\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
 }
 
 // Every canonical virtual_path carries the "cd/gluon/" prefix and the ".glsl"

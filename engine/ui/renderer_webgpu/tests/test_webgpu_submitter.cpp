@@ -894,10 +894,11 @@ TEST(WgpuContract, SupportedColorFormatsAcceptedAndUndefinedRejected)
 
 TEST(WgpuContract, DefaultCreateInfoFormatIsSupported)
 {
-    // The SubmitterCreateInfo default (0x12 = BGRA8? — actually RGBA8Unorm)
+    // The SubmitterCreateInfo default (0x16U = WGPUTextureFormat_RGBA8Unorm)
     // must be one the host contract accepts so create() and the Dawn pipeline
     // agree on a valid target.
     const rw::SubmitterCreateInfo defaults {};
+    EXPECT_EQ(defaults.color_format, rw::texture_format::kRgba8Unorm);
     EXPECT_TRUE(rw::is_supported_color_format(defaults.color_format));
 }
 
@@ -944,6 +945,11 @@ TEST(WgpuContract, VertexAttributeFormatsAreCorrect)
     EXPECT_EQ(attrs[1].format, rw::vertex_format::kFloat32x2);  // uv
     EXPECT_EQ(attrs[2].format, rw::vertex_format::kUnorm8x4);   // rgba
     EXPECT_EQ(attrs[3].format, rw::vertex_format::kUint8x4);    // variant
+    for (const auto& a : attrs)
+    {
+        EXPECT_TRUE(rw::is_valid_vertex_format(a.format));
+    }
+    EXPECT_FALSE(rw::is_valid_vertex_format(0U));
 }
 
 TEST(WgpuContract, IndexSizeIsTwoBytesMatchingBatcherU16)

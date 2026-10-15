@@ -417,4 +417,27 @@ TEST_F(VfsFilesystemTest, ListWithPrefix)
     EXPECT_NE(std::ranges::find(shaders, "shaders/vertex.glsl"), shaders.end());
 }
 
+TEST(VfsOverlay, GenerationAndChangeListeners)
+{
+    cd::vfs::VirtualFileSystem vfs;
+    EXPECT_EQ(vfs.mount_generation(), 0u);
+
+    auto base = std::make_shared<cd::vfs::MemorySource>("base");
+    vfs.mount_back(base);
+    EXPECT_EQ(vfs.mount_generation(), 1u);
+
+    std::string notified_path;
+    std::uint64_t notified_gen = 0;
+    vfs.add_change_listener([&](std::string_view p, std::uint64_t g) {
+        notified_path = std::string { p };
+        notified_gen = g;
+    });
+
+    base->put_text("shaders/lit.frag", "// updated");
+    vfs.notify_path_changed("shaders//sub/../lit.frag");
+    EXPECT_EQ(notified_path, "shaders/lit.frag");
+    EXPECT_EQ(notified_gen, 2u);
+    EXPECT_EQ(vfs.mount_generation(), 2u);
+}
+
 }  // namespace

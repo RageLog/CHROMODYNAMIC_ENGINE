@@ -1,0 +1,6 @@
+# CHROMODYNAMIC .cdstage v1
+stage "01_pbr_materials_sss_hair"
+  element SurfaceMesh3D "PbrSphereGrid5x5" { enabled=true mobility=kStatic brdf="clearcoat+sheen+sss+kajiya_kay_hair" }
+  element SolarLight3D "KeySolarLight" { enabled=true illuminance_lux=100000.0 temperature_kelvin=5800.0 }
+  element RadianceProbe3D "StudioReflectionProbe" { enabled=true box_parallax=true }
+end_stage

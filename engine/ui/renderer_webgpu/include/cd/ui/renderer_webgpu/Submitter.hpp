@@ -96,10 +96,9 @@ struct Extent2D
 struct SubmitterCreateInfo
 {
     /// WebGPU texture format enum value used for the color attachment.
-    /// The default (0x12 = WGPUTextureFormat_BGRA8Unorm) is the common
-    /// surface format on Windows/macOS.  Pass the correct value from
-    /// wgpu::TextureFormat when Dawn is available.
-    std::uint32_t color_format { 0x12U };
+    /// Defaults to WGPUTextureFormat_RGBA8Unorm (0x16U = texture_format::kRgba8Unorm).
+    /// Pass texture_format::k* or static_cast<std::uint32_t>(wgpu::TextureFormat::*).
+    std::uint32_t color_format { 0x16U };
 
     /// Maximum vertex + index counts per frame (same semantics as the RHI
     /// submitter).  A GPU vertex buffer of

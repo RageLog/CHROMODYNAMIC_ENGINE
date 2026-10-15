@@ -1,0 +1,6 @@
+# CHROMODYNAMIC .cdstage v1
+stage "04_optics_cinematic_studio"
+  element OpticsVolume3D "CinematicOpticsVolume" { enabled=true enable_gtao=true enable_ssr=true enable_taa=true enable_bloom=true enable_dof=true enable_motion_blur=true tonemap="AgX" }
+  element CutsceneElement "OpeningCameraSequence" { enabled=true duration_seconds=12.0 }
+  element CameraLens3D "CinemaAnamorphicLens" { enabled=true aperture_fstop=2.0 focal_distance_m=8.0 }
+end_stage

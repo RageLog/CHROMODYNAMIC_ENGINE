@@ -1,0 +1,9 @@
+# CHROMODYNAMIC .cdstage v1
+stage "08_synth_pilot_squad_narrative"
+  element NavMeshZone3D "TacticalNavZone" { enabled=true agent_radius_m=0.4 max_slope_deg=42.0 }
+  element WayfinderAgent3D "SquadPointmanAgent" { enabled=true max_speed_mps=4.5 }
+  element SynthPilot "SquadLeaderSynth" { enabled=true role=kPointman }
+  element DialogueElement "CommanderDialogueTree" { enabled=true }
+  element QuestLedgerElement "MainObjectiveLedger" { enabled=true }
+  element AiDirectorElement "PacingDirector" { enabled=true tension_score=0.35 }
+end_stage

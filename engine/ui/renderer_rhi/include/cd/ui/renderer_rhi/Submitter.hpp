@@ -215,6 +215,17 @@ public:
     bool set_sdf_atlas(cd::rhi::TextureViewHandle view,
                        cd::rhi::SamplerHandle     sampler);
 
+    /// Bind an arbitrary UI texture slot (`texture_slot` in DrawCommand)
+    /// to a texture view + sampler pair. Allows widgets, 9-patches, icons,
+    /// and viewport previews to use distinct texture slots within a single
+    /// frame's DrawBatcher output.
+    bool set_texture_slot(std::uint32_t              slot,
+                          cd::rhi::TextureViewHandle view,
+                          cd::rhi::SamplerHandle     sampler);
+
+    [[nodiscard]] bool has_texture_slot(std::uint32_t slot) const noexcept;
+    [[nodiscard]] std::uint32_t texture_slot_count() const noexcept;
+
     /// Free GPU resources. Idempotent. Called automatically on destruction.
     void destroy() noexcept;
 

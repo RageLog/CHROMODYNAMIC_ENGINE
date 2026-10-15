@@ -1,0 +1,8 @@
+# CHROMODYNAMIC .cdstage v1
+stage "02_celestial_aether_fog_clouds"
+  element CelestialDome3D "SkyAtmosphereDome" { enabled=true rayleigh_scale=1.0 mie_scale=1.0 }
+  element AetherFog3D "GlobalFroxelFog" { enabled=true base_density=0.025 anisotropy_g=0.6 }
+  element FogPocket3D "ValleyFogPocket" { enabled=true local_density=0.20 }
+  element CloudStrata3D "CumulusStrata" { enabled=true coverage=0.55 bottom_altitude_m=1500.0 top_altitude_m=4200.0 }
+  element SunBeams3D "CrepuscularBeams" { enabled=true bloom_scale=0.65 }
+end_stage

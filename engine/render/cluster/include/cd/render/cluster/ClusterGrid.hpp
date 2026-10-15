@@ -38,10 +38,90 @@
 #include <cmath>
 #include <cstdint>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace cd::render::cluster
 {
+
+// -----------------------------------------------------------------------------
+// Canonical Froxel / Clustered-Shading Math Primitives (Wave 1.2 Deduplication)
+// Shared by cd::render::cluster, cd::light, and cd::render::lighting_clusters.
+// -----------------------------------------------------------------------------
+
+/// Row-major 3D froxel linear index: ((z * cells_y + y) * cells_x + x).
+[[nodiscard]] constexpr std::uint32_t linear_cluster_index(
+    std::uint32_t x,
+    std::uint32_t y,
+    std::uint32_t z,
+    std::uint32_t cells_x,
+    std::uint32_t cells_y) noexcept
+{
+    return (z * cells_y + y) * cells_x + x;
+}
+
+/// Logarithmic Z partition: maps view-space depth in [near_plane, far_plane]
+/// to slice index in [0, slices_z).
+[[nodiscard]] inline std::uint32_t depth_to_log_z_slice(
+    float         depth,
+    float         near_plane,
+    float         far_plane,
+    std::uint32_t slices_z) noexcept
+{
+    if (slices_z == 0U)
+    {
+        return 0U;
+    }
+    const float clamped = std::clamp(depth, near_plane, far_plane);
+    if (clamped >= far_plane)
+    {
+        return slices_z - 1U;
+    }
+    const float t = std::log(clamped / near_plane)
+                  / std::log(far_plane / near_plane);
+    const auto z = static_cast<std::uint32_t>(
+        std::floor(t * static_cast<float>(slices_z)));
+    return std::min(z, slices_z - 1U);
+}
+
+/// View-space depth of the near boundary of logarithmic slice `slice`.
+[[nodiscard]] inline float log_z_slice_near_depth(
+    std::uint32_t slice,
+    float         near_plane,
+    float         far_plane,
+    std::uint32_t slices_z) noexcept
+{
+    const float t = static_cast<float>(slice) / static_cast<float>(slices_z);
+    return near_plane * std::pow(far_plane / near_plane, t);
+}
+
+/// Near and far view-space depths [z_near, z_far] of logarithmic slice `slice`.
+[[nodiscard]] inline std::pair<float, float> log_z_slice_range(
+    std::uint32_t slice,
+    float         near_plane,
+    float         far_plane,
+    std::uint32_t slices_z) noexcept
+{
+    return {
+        log_z_slice_near_depth(slice,      near_plane, far_plane, slices_z),
+        log_z_slice_near_depth(slice + 1U, near_plane, far_plane, slices_z),
+    };
+}
+
+/// Map normalized device coordinate (NDC in [-1, +1]) to tile index in [0, tiles).
+[[nodiscard]] inline std::uint32_t ndc_to_tile_index(
+    float         ndc,
+    std::uint32_t tiles) noexcept
+{
+    if (tiles == 0U)
+    {
+        return 0U;
+    }
+    const float u = (ndc + 1.0F) * 0.5F * static_cast<float>(tiles);
+    const auto  t = static_cast<std::int32_t>(std::floor(u));
+    return static_cast<std::uint32_t>(
+        std::clamp(t, 0, static_cast<std::int32_t>(tiles) - 1));
+}
 
 struct ClusterConfig
 {
@@ -197,18 +277,13 @@ private:
     [[nodiscard]] std::uint32_t cluster_index_(std::uint32_t x, std::uint32_t y,
                                                 std::uint32_t z) const noexcept
     {
-        return (z * cfg_.cells_y + y) * cfg_.cells_x + x;
+        return linear_cluster_index(x, y, z, cfg_.cells_x, cfg_.cells_y);
     }
 
     /// Log-z partition: depth ∈ [near, far] → cluster_z ∈ [0, cells_z).
     [[nodiscard]] std::uint32_t depth_to_cluster_z_(float depth) const noexcept
     {
-        const float clamped = std::clamp(depth, cfg_.near_plane, cfg_.far_plane);
-        const float t = std::log(clamped / cfg_.near_plane)
-                      / std::log(cfg_.far_plane / cfg_.near_plane);
-        const auto z = static_cast<std::uint32_t>(
-            std::floor(t * static_cast<float>(cfg_.cells_z)));
-        return std::min(z, cfg_.cells_z - 1U);
+        return depth_to_log_z_slice(depth, cfg_.near_plane, cfg_.far_plane, cfg_.cells_z);
     }
 
     /// Map a horizontal angle (radians) to a cluster_x in [0, cells_x).
@@ -217,19 +292,13 @@ private:
     [[nodiscard]] std::uint32_t angle_to_cluster_x_(float angle, float tan_half) const noexcept
     {
         const float t = std::clamp(std::tan(angle) / tan_half, -1.0F, 1.0F);
-        const float u = (t + 1.0F) * 0.5F * static_cast<float>(cfg_.cells_x);
-        const auto x = static_cast<std::uint32_t>(std::clamp(
-            std::floor(u), 0.0F, static_cast<float>(cfg_.cells_x - 1)));
-        return x;
+        return ndc_to_tile_index(t, cfg_.cells_x);
     }
 
     [[nodiscard]] std::uint32_t angle_to_cluster_y_(float angle, float tan_half) const noexcept
     {
         const float t = std::clamp(std::tan(angle) / tan_half, -1.0F, 1.0F);
-        const float u = (t + 1.0F) * 0.5F * static_cast<float>(cfg_.cells_y);
-        const auto y = static_cast<std::uint32_t>(std::clamp(
-            std::floor(u), 0.0F, static_cast<float>(cfg_.cells_y - 1)));
-        return y;
+        return ndc_to_tile_index(t, cfg_.cells_y);
     }
 
     ClusterConfig cfg_;

@@ -7,7 +7,9 @@
 #include <cd/diag/DeadlineMonitor.hpp>
 #include <cd/log/ConsoleLogger.hpp>
 #include <cd/log/ILogger.hpp>
+#include <cd/rhi/NullDevice.hpp>
 #include <cd/runtime/EngineContext.hpp>
+#include <cd/runtime/EngineLoop.hpp>
 #include <cd/vfs/MemorySource.hpp>
 #include <gtest/gtest.h>
 
@@ -869,6 +871,52 @@ TEST(EngineContextIntegration, ShutdownDoesNotCorruptNewServices)
     EXPECT_EQ(ctx.ref_count().count_of(id), 1);
     EXPECT_EQ(ctx.dep_graph().edge_node_count(), 1u);
     EXPECT_TRUE(ctx.hot_reload().is_pending(id));
+}
+
+TEST(EngineLoopWave6, All12ShowcasesStepThroughEngineLoopAndPieRestoresSnapshot)
+{
+    cd::runtime::EngineContextConfig cfg;
+    cfg.eager_thread_pool = false;
+    cd::runtime::EngineContext ctx(cfg);
+    cd::runtime::EngineLoop loop(ctx, 1.0F / 60.0F);
+
+    cd::rhi::NullDevice dev;
+    cd::rhi::TextureDesc back_desc {};
+    back_desc.extent = { 640U, 360U, 1U };
+    back_desc.format = cd::rhi::Format::kRGBA8Unorm;
+    back_desc.usage = cd::rhi::TextureUsage::kColorAttachment;
+    auto back_tex = dev.create_texture(back_desc);
+    ASSERT_TRUE(back_tex.has_value());
+
+    for (std::size_t i = 0; i < cd::gameplay_director::kShowcaseCount; ++i)
+    {
+        const auto id = static_cast<cd::gameplay_director::ShowcaseId>(i);
+        loop.set_stage(cd::gameplay_director::build_showcase_stage(id));
+        const auto rep = loop.step_frame(1.0F / 60.0F, &dev, *back_tex);
+        EXPECT_EQ(rep.fixed_steps_executed, 1U);
+        EXPECT_GT(rep.framegraph_passes_compiled, 10U);
+    }
+
+    // Play-In-Editor (PIE) snapshot & restore verification on Showcase 05 (Avatar Locomotion)
+    loop.set_stage(cd::gameplay_director::build_showcase_stage(
+        cd::gameplay_director::ShowcaseId::kAvatarLocomotionAnimIk));
+    loop.begin_pie_session();
+    EXPECT_TRUE(loop.is_pie_active());
+    EXPECT_FALSE(loop.pie_snapshot_cdstage().empty());
+
+    auto avatars = loop.stage().find_all<cd::gameplay_vessel::Avatar>();
+    ASSERT_EQ(avatars.size(), 1U);
+    const float initial_x = avatars[0]->world_position()[0];
+    avatars[0]->apply_movement_input({ 1.0F, 0.0F, 0.0F });
+
+    (void)loop.step_frame(0.1F, &dev, *back_tex);
+    EXPECT_GT(avatars[0]->world_position()[0], initial_x);
+
+    loop.stop_pie_session();
+    EXPECT_FALSE(loop.is_pie_active());
+    auto restored_avatars = loop.stage().find_all<cd::gameplay_vessel::Avatar>();
+    ASSERT_EQ(restored_avatars.size(), 1U);
+    EXPECT_FLOAT_EQ(restored_avatars[0]->world_position()[0], initial_x);
 }
 
 }  // namespace

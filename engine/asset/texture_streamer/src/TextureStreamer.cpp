@@ -227,10 +227,6 @@ void TextureStreamer::create_gpu_record(const std::string&    path,
                                         const DecodedTexture& decoded,
                                         cd::rhi::IDevice&     device)
 {
-    // Enforce budget BEFORE allocating the new handle so that, if the pool is
-    // already at capacity, we free one slot first.
-    enforce_budget(device);
-
     // GPU texture sized to the REAL decoded dimensions. Block-compressed cdtex
     // payloads upload as BC7; image payloads as RGBA8. (The actual staged copy
     // of `decoded.blocks` / `decoded.rgba` is the renderer-consumer's job; the
@@ -247,9 +243,14 @@ void TextureStreamer::create_gpu_record(const std::string&    path,
     auto result = device.create_texture(desc);
     if (!result.has_value())
     {
-        // Device allocation failed — silently drop.
+        // Device allocation failed — silently drop WITHOUT evicting existing
+        // resident textures from the LRU pool.
         return;
     }
+
+    // Enforce budget ONLY after the new GPU handle is successfully created, so
+    // a failed allocation never drops resident count below budget.
+    enforce_budget(device);
 
     loaded_map_.emplace(path, LoadedRecord{ *result, mip_target, decoded.width, decoded.height });
 

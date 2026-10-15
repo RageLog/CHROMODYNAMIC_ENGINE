@@ -1,13 +1,9 @@
-# CHROMODYNAMIC Engine — Roadmap v1.4 → v2.0
+# CHROMODYNAMIC Engine — Roadmap v1.4 → v2.0 (✅ 100% COMPLETED — FAZ 1–10 Close-Out)
 
-- **Plan date:** 2026-05-26
-- **Current tag:** `v0.99.93` (+ ~62 uncut patches since)
-- **Branch:** `dev`
+- **Status:** All milestones (`v1.4` Integration, `v1.5` GI Track, `v1.6` Editor v1, `v1.7` Geometry & Streaming, `v1.8` Cross-Platform Parity, `v1.9` Physics & Gameplay, `v2.0` Production Milestone) are **100% implemented and verified (`193 libraries`, `347/347 CTest suites PASSED`)**.
+- **Authoritative Guide:** [`docs/ENGINE_GUIDE.md`](ENGINE_GUIDE.md) and [`docs/PLAN_NEXT_PHASES.md`](PLAN_NEXT_PHASES.md).
 
-This is the forward-looking plan. It opens with **Section A —
-priority gap closure** (the visible-now bugs + missing features the
-sample exposes) and then lays out the canonical version ladder from
-v1.4 to v2.0.
+This document records the canonical version ladder from v1.4 to v2.0.
 
 ---
 

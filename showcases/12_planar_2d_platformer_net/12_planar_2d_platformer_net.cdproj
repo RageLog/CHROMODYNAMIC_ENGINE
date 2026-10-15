@@ -1,0 +1,11 @@
+[project]
+name = "12_planar_2d_platformer_net"
+engine_version = "0.10.0"
+default_stage = "main.cdstage"
+
+[render]
+backend = "vulkan"
+gi_mode = "none"
+
+[physics]
+fixed_hz = 60

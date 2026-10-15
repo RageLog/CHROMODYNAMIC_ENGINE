@@ -1,0 +1,9 @@
+# CHROMODYNAMIC .cdstage v1
+stage "06_jolt_dynamics_rover_shatter"
+  element AnchorBody3D "ArenaFloorAnchor" { enabled=true }
+  element KineticBody3D "DynamicBoulder" { enabled=true mass_kg=250.0 }
+  element RoverVessel "OffroadRover4x4" { enabled=true wheel_count=4 engine_peak_torque_nm=480.0 }
+  element ClothSurface3D "WindBannerCloth" { enabled=true solver_substeps=8 }
+  element ShatterMesh3D "FracturablePillar" { enabled=true voronoi_cell_count=24 fracture_impulse_threshold=120.0 }
+  element RagdollChain3D "TestDummyRagdoll" { enabled=true joint_count=15 }
+end_stage

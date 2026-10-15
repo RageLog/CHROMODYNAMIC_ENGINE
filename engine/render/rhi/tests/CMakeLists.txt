@@ -857,3 +857,10 @@ if(WIN32)
     endforeach()
   endif()
 endif()
+
+# FAZ 9 Waves 9.1 & 9.2 — Metal MSL Argument Buffer / Gluon compute toolchain
+# + WebGPU (Dawn & Emscripten) RHI backend + WGSL translation parity.
+cd_add_test(cross_platform_rhi_faz9
+  SOURCES test_cross_platform_rhi_faz9.cpp
+  DEPS    cd::rhi_webgpu cd::rhi_metal cd::rhi_metal_shader cd::shader cd::gluon cd::rhi cd::core
+)

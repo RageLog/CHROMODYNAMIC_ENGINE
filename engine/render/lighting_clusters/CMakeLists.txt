@@ -29,6 +29,7 @@ cd_add_library(lighting_clusters
   PUBLIC_DEPS
     cd::core
     cd::rhi
+    cd::cluster
   PRIVATE_DEPS
     cd::shader
 )

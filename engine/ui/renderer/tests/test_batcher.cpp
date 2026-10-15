@@ -436,3 +436,81 @@ TEST(DrawBatcher, U16VertexLimitDropsExcessQuads)
     b.quad(0.0F, 0.0F, 5.0F, 5.0F, ur::Color::white());
     EXPECT_EQ(b.vertex_count(), 4U);
 }
+
+// 21. NinePatch emits 9 slices merged into a single kNinePatch command.
+TEST(DrawBatcher, NinePatchEmitsNineMergedQuads)
+{
+    ur::DrawBatcher b;
+    b.begin_frame();
+    ur::NinePatchDesc desc {};
+    desc.left   = 4.0F;
+    desc.right  = 4.0F;
+    desc.top    = 4.0F;
+    desc.bottom = 4.0F;
+
+    b.nine_patch(10.0F, 20.0F, 100.0F, 60.0F, 2U, desc);
+
+    EXPECT_EQ(b.vertex_count(), 36U);  // 9 quads * 4 verts
+    EXPECT_EQ(b.index_count(),  54U);  // 9 quads * 6 indices
+    ASSERT_EQ(b.command_count(), 1U);
+    EXPECT_EQ(b.commands()[0].variant, ur::material::kNinePatch);
+    EXPECT_EQ(b.commands()[0].texture_slot, 2U);
+    EXPECT_EQ(b.commands()[0].index_count, 54U);
+}
+
+// 22. LinearGradient emits vertical and horizontal per-vertex corner colors.
+TEST(DrawBatcher, LinearGradientVerticalAndHorizontalCornerColors)
+{
+    ur::DrawBatcher b;
+    b.begin_frame();
+    const ur::Color c_start { 10U, 20U, 30U, 255U };
+    const ur::Color c_end   { 200U, 210U, 220U, 255U };
+
+    b.linear_gradient(0.0F, 0.0F, 50.0F, 20.0F, c_start, c_end, /*horizontal=*/false);
+    b.linear_gradient(0.0F, 30.0F, 50.0F, 20.0F, c_start, c_end, /*horizontal=*/true);
+
+    ASSERT_EQ(b.vertex_count(), 8U);
+    ASSERT_EQ(b.command_count(), 1U);
+    EXPECT_EQ(b.commands()[0].variant, ur::material::kLinearGrad);
+
+    const auto v = b.vertices();
+    // Vertical: TL(0), TR(1) have c_start; BR(2), BL(3) have c_end
+    EXPECT_EQ(v[0].r, 10U);
+    EXPECT_EQ(v[1].r, 10U);
+    EXPECT_EQ(v[2].r, 200U);
+    EXPECT_EQ(v[3].r, 200U);
+
+    // Horizontal: TL(4), BL(7) have c_start; TR(5), BR(6) have c_end
+    EXPECT_EQ(v[4].r, 10U);
+    EXPECT_EQ(v[5].r, 200U);
+    EXPECT_EQ(v[6].r, 200U);
+    EXPECT_EQ(v[7].r, 10U);
+}
+
+// 23. BackdropBlur, DropShadow, and RoundedRect emit their distinct variants and payload bytes.
+TEST(DrawBatcher, BlurShadowAndRoundedRectVariants)
+{
+    ur::DrawBatcher b;
+    b.begin_frame();
+
+    b.backdrop_blur(10.0F, 10.0F, 80.0F, 40.0F, 12.0F, ur::Color { 40U, 40U, 50U, 180U });
+    b.drop_shadow(10.0F, 10.0F, 80.0F, 40.0F, 8.0F, 2.0F, ur::Color { 0U, 0U, 0U, 128U });
+    b.rounded_rect(10.0F, 10.0F, 80.0F, 40.0F, 6.0F, ur::Color::white(), 1.0F);
+
+    ASSERT_EQ(b.command_count(), 3U);
+    EXPECT_EQ(b.commands()[0].variant, ur::material::kBlur);
+    EXPECT_EQ(b.commands()[1].variant, ur::material::kShadow);
+    EXPECT_EQ(b.commands()[2].variant, ur::material::kRoundedRect);
+
+    const auto v = b.vertices();
+    EXPECT_EQ(v[0].pad0, 12U);  // blur_radius
+    // drop_shadow expands by blur_radius(8) + spread(2) = 10 on each side
+    EXPECT_FLOAT_EQ(v[4].pos_x, 0.0F);
+    EXPECT_FLOAT_EQ(v[6].pos_x, 100.0F);
+    EXPECT_EQ(v[4].pad0, 8U);
+    EXPECT_EQ(v[4].pad1, 2U);
+    // rounded_rect stores corner_radius(6) and border_thickness(1)
+    EXPECT_EQ(v[8].pad0, 6U);
+    EXPECT_EQ(v[8].pad1, 1U);
+}
+

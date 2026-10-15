@@ -174,27 +174,33 @@ set. They are intentionally narrow-scope and depend only on
 
 ---
 
-## Library count
+## Library count (FAZ 1–10 Close-Out: 193 Libraries)
 
-15 (foundation) + 10 (asset) + 16 (render) + 7 (world) + 13 (game) + 3
-(ui) + 1 (runtime) + 2 (cross-cutting) = **67 engine libraries**, plus
-`cd_lua_internal` (internal-only — a vendored Lua build linked
-privately by `cd::script`) brings the actual `cd_add_library()` call
-count to **68**.
-
-The 67-count is the public-API surface; the 68-count is the literal
-CMake target count and what `grep -rl cd_add_library engine/` returns.
+CHROMODYNAMIC declares **193 modular `cd_<lib>` targets** across 7 strictly ordered DAG tiers (`foundation`, `asset`, `render`, `world`, `game`, `ui`, `runtime`), including:
+- **Foundation & Profiling (20)**: `cd::core`, `cd::math`, `cd::mem`, `cd::concurrency`, `cd::time`, `cd::frame_timing`, `cd::io`, `cd::log`, `cd::events`, `cd::diag` (with `CrashReporter` minidump + stack symbolizer), `cd::profile`, `cd::profile_cpu_marker_overlay`, `cd::profile_frame_graph_timeline`, `cd::profile_gpu_marker`, `cd::platform` (Win32, X11, Cocoa, `AndroidSurfaceAdapter`, `IosMetalLayerAdapter`), `cd::plugin`, `cd::config`, `cd::vfs`, `cd::bench`, `cd::foundation_utils`.
+- **Asset & Authoring (15)**: `cd::asset`, `cd::asset_image`, `cd::asset_obj`, `cd::asset_gltf`, `cd::asset_cdmesh`, `cd::asset_cdtex`, `cd::asset_ktx2`, `cd::asset_wav`, `cd::asset_json`, `cd::asset_pak`, `cd::asset_streaming`, `cd::asset_texture_compress`, `cd::asset_material_authoring`, `cd::asset_shader_cache`, `cd::asset_vfx_authoring`, `cd::asset_streamer_pool`, `cd::asset_validator`, `cd::asset_texture_streamer`, `cd::asset_scene_streamer`, `cd::asset_audio_streamer`.
+- **Render & RHI (40)**: `cd::rhi`, `cd::rhi_vulkan`, `cd::rhi_d3d12`, `cd::rhi_metal`, `cd::rhi_opengl`, `cd::rhi_webgpu`, `cd::rhi_native`, `cd::gluon` (27 shader modules), `cd::shader`, `cd::spirv_cross_glue`, `cd::material`, `cd::brdf` (`ltc`, `sheen_clearcoat`, `sss`), `cd::framegraph`, `cd::scene_renderer` (`SurfaceAndPostFxPipeline` 19-pass orchestrator), `cd::ddgi`, `cd::restir_di`, `cd::restir_gi`, `cd::nrc`, `cd::virtual_geometry`, `cd::virtual_textures`, `cd::atmosphere`, `cd::volumetric`, `cd::light_shafts`, `cd::post`, `cd::denoise`, `cd::decal`, `cd::velocity`, `cd::gpu_particles`, `cd::hdr_display`, `cd::debug_line`, `cd::debug_draw`, etc.
+- **World & Simulation (21)**: `cd::ecs`, `cd::scene`, `cd::world_container`, `cd::physics`, `cd::physics_jolt`, `cd::physics_soft_body`, `cd::physics_vehicle`, `cd::anim`, `cd::anim_ik`, `cd::audio`, `cd::audio_spatial` (`HrtfMixer`), `cd::audio_dsp_fx`, `cd::input`, `cd::gameplay_input_binding`, `cd::gameplay_time`, `cd::net`, `cd::net_lobby`, `cd::net_matchmaker`, `cd::net_session_replay`, `cd::particle_system`.
+- **Game & Original CHROMODYNAMIC Element Architecture (23)**: `cd::element_core` (`Element`, `Planar2D`, `Spatial3D`, `Stage`, `Pulse<Args...>`), `cd::elements_domain` (20+ concrete 2D/3D Elements), `cd::gameplay_framework` (`Vessel`, `Avatar`, `RoverVessel`, `Pilot`, `HumanPilot`, `SynthPilot`, `StageDirector`, `WorldLedger`, `SpawnBeacon3D` + 12 Showcase Stage builders), plus `cd::game::*` (`save`, `save_compression`, `settings`, `fsm`, `ai_bt`, `ai_director`, `ai_pathfinding`, `ai_squad`, `anim_graph`, `query`, `trigger`, `camera`, `dialogue`, `dialog_tree`, `quest`, `l10n`, `particles_event`, `asset_hot_reload`, `cutscene_player`, `input_recorder`).
+- **Custom Graphics-Backed UI & Editor (74)**: `cd::ui`, `cd::ui_layout`, `cd::ui_font`, `cd::ui_renderer`, `cd::ui_renderer_rhi`, `cd::ui_renderer_webgpu`, `cd::ui_input`, `cd::ui_animation`, `cd::ui_widgets` (`DockSpace`, `Splitter`, `ColorPicker`, `CurveEditor`, `Table`, `TreeView`, `PopoutDock`, `EditorAndHudWidgets`, `HudLayer`), `cd::ui_theme`, `cd::ui_a11y`, `cd::editor` (`FullFledgedEditorSuite`), `cd::editor_ui`, `cd::editor_cdproj`, and 27 `cd::editor_panel_*` libraries.
+- **Runtime (1)**: `cd::runtime` (`EngineContext` + `EngineLoop` + PIE snapshot/restore).
 
 ---
 
-## Tools (2)
+## Shipping Applications (2) & Offline Tools (8)
 
-Offline cookers; not part of the runtime DAG.
-
-| Binary           | Purpose |
-|------------------|---------|
-| `cd_cook_mesh`   | OBJ / glTF → `.cdmesh` (engine binary mesh layout). |
-| `cd_cook_texture`| PNG/JPG/HDR → `.cdtex` (BC7 blocks + optional mip chain via `--mips`). |
+| Binary | Category | Purpose |
+|---|---|---|
+| `editor` (`cd_sample_editor`) | Shipping App (`apps/editor`) | 24-panel Dear ImGui-free CHROMODYNAMIC Editor with Project Hub, Add Element Catalog (60 classes), Viewport Gizmo, Terrain/Foliage Brush, Live PIE (`Play/Pause/Stop`), and Chrome Tracing export. |
+| `cd_player` | Shipping App (`apps/player`) | Standalone game runtime player (`--showcase <slug>` or `--all-showcases`). |
+| `cd_assetc` | Tool (`tools/assetc`) | Offline `.cdpak` asset cooker, directory bundler, and TOC verifier (`add_cdpack()` CMake macro). |
+| `cd_stress` | Tool (`tools/stress`) | 24-hour / deterministic soak & scene perturbation harness (`v2.0.7`). |
+| `cd_cook_mesh` | Tool (`tools/cook_mesh`) | OBJ / glTF → `.cdmesh` binary mesh cooker. |
+| `cd_cook_texture` | Tool (`tools/cook_texture`) | PNG/JPG/HDR → `.cdtex` BC7 texture & mip-chain cooker. |
+| `cd_bench_compare` | Tool (`tools/bench_compare`) | Benchmark regression comparator. |
+| `cd_bench_archetype` | Tool (`tools/bench_archetype`) | ECS archetype vs sparse-set throughput benchmark. |
+| `cd_render_thread_soak` | Tool (`tools/render_thread_soak`) | Multi-threaded `AsyncSubmitN` render-thread soak verifier. |
+| `cd_changelog_gen` | Tool (`tools/changelog_gen`) | Conventional-commit release changelog generator. |
 
 ---
 

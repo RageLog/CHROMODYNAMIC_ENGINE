@@ -12,8 +12,6 @@
 #include <cd/math/Vector.hpp>
 #include <cd/scene/Scene.hpp>
 
-#include <imgui.h>
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -348,186 +346,24 @@ bool Inspector::draw_imgui(cd::scene::Scene&      scene,
                            cd::ecs::Entity&       rot_slider_entity) const
 {
     if (!target_.is_valid())
-    {
-        ImGui::TextDisabled("no selection — click an entity in Scene Tree");
         return false;
-    }
 
     auto* lt = scene.local(target_);
     if (lt == nullptr)
-    {
-        ImGui::TextDisabled("selected entity has no LocalTransform");
         return false;
-    }
 
-    // Entity header.
-    ImGui::Text("Entity id=%u", target_.id);
-    ImGui::Separator();
-
-    ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.60F);
-
-    // ---- Position ----------------------------------------------------------
-    ImGui::SeparatorText("Position");
+    if (rot_slider_entity.id != target_.id)
     {
-        static cd::math::Vec3f pre_pos {};
-        float xyz[3] {
-            lt->value.position.x,
-            lt->value.position.y,
-            lt->value.position.z };
-        ImGui::Text("X Y Z");
-        ImGui::SameLine();
-        const bool changed = ImGui::DragFloat3("##insp_pos", xyz, 0.05F,
-                                               -20.0F, 20.0F, "%.3f");
-        if (ImGui::IsItemActivated())  pre_pos = lt->value.position;
-        if (changed) lt->value.position = { xyz[0], xyz[1], xyz[2] };
-        if (ImGui::IsItemDeactivatedAfterEdit())
-        {
-            const cd::math::Vec3f delta {
-                lt->value.position.x - pre_pos.x,
-                lt->value.position.y - pre_pos.y,
-                lt->value.position.z - pre_pos.z };
-            if (delta.x != 0.0F || delta.y != 0.0F || delta.z != 0.0F)
-            {
-                lt->value.position = pre_pos;
-                history.push(std::make_unique<cd::editor::TranslateCommand>(
-                    scene, target_, delta));
-            }
-        }
+        rot_slider_deg    = 0.0F;
+        rot_slider_entity = target_;
     }
 
-    // ---- Scale -------------------------------------------------------------
-    ImGui::SeparatorText("Scale");
+    if (std::abs(rot_slider_deg) > 1e-4F)
     {
-        static cd::math::Vec3f pre_scale { 1.0F, 1.0F, 1.0F };
-        float xyz[3] {
-            lt->value.scale.x,
-            lt->value.scale.y,
-            lt->value.scale.z };
-        ImGui::Text("X Y Z");
-        ImGui::SameLine();
-        const bool changed = ImGui::DragFloat3("##insp_scale", xyz, 0.02F,
-                                               0.01F, 10.0F, "%.3f");
-        if (ImGui::IsItemActivated())  pre_scale = lt->value.scale;
-        if (changed) lt->value.scale = { xyz[0], xyz[1], xyz[2] };
-        if (ImGui::IsItemDeactivatedAfterEdit())
-        {
-            const cd::math::Vec3f factor {
-                (pre_scale.x != 0.0F) ? (lt->value.scale.x / pre_scale.x) : 1.0F,
-                (pre_scale.y != 0.0F) ? (lt->value.scale.y / pre_scale.y) : 1.0F,
-                (pre_scale.z != 0.0F) ? (lt->value.scale.z / pre_scale.z) : 1.0F };
-            if (factor.x != 1.0F || factor.y != 1.0F || factor.z != 1.0F)
-            {
-                lt->value.scale = pre_scale;
-                history.push(std::make_unique<cd::editor::ScaleCommand>(
-                    scene, target_, factor));
-            }
-        }
+        const float half = rot_slider_deg * (std::numbers::pi_v<float> / 180.0F) * 0.5F;
+        const cd::math::Quatf qy { 0.0F, std::sin(half), 0.0F, std::cos(half) };
+        history.push(std::make_unique<cd::editor::RotateCommand>(scene, target_, qy));
     }
-
-    // ---- Rotation (Euler ZYX, degrees) -------------------------------------
-    ImGui::SeparatorText("Rotation (Euler, deg)");
-    {
-        constexpr float kRad2Deg = 180.0F / std::numbers::pi_v<float>;
-        constexpr float kDeg2Rad = std::numbers::pi_v<float> / 180.0F;
-        static cd::math::Quatf pre_rot { 0.0F, 0.0F, 0.0F, 1.0F };
-        static float           editor_euler[3] { 0.0F, 0.0F, 0.0F };
-        static bool            editing = false;
-
-        auto quat_to_euler = [](const cd::math::Quatf& q) {
-            const float sx = 2.0F * (q.w * q.x + q.y * q.z);
-            const float cx = 1.0F - 2.0F * (q.x * q.x + q.y * q.y);
-            const float roll  = std::atan2(sx, cx);
-            float sy = 2.0F * (q.w * q.y - q.z * q.x);
-            sy = std::clamp(sy, -1.0F, 1.0F);
-            const float pitch = std::asin(sy);
-            const float sz = 2.0F * (q.w * q.z + q.x * q.y);
-            const float cz = 1.0F - 2.0F * (q.y * q.y + q.z * q.z);
-            const float yaw   = std::atan2(sz, cz);
-            return std::array<float, 3> { roll, pitch, yaw };
-        };
-        auto euler_to_quat = [](float ex, float ey, float ez) {
-            const float hx = ex * 0.5F;
-            const float hy = ey * 0.5F;
-            const float hz = ez * 0.5F;
-            const float cx = std::cos(hx);
-            const float sx = std::sin(hx);
-            const float cy = std::cos(hy);
-            const float sy = std::sin(hy);
-            const float cz = std::cos(hz);
-            const float szl = std::sin(hz);
-            cd::math::Quatf q;
-            q.w = cz * cy * cx + szl * sy * sx;
-            q.x = cz * cy * sx - szl * sy * cx;
-            q.y = cz * sy * cx + szl * cy * sx;
-            q.z = szl * cy * cx - cz * sy * sx;
-            return q;
-        };
-
-        if (!editing)
-        {
-            const auto e = quat_to_euler(lt->value.rotation);
-            editor_euler[0] = e[0] * kRad2Deg;
-            editor_euler[1] = e[1] * kRad2Deg;
-            editor_euler[2] = e[2] * kRad2Deg;
-        }
-        ImGui::Text("X Y Z");
-        ImGui::SameLine();
-        const bool changed = ImGui::DragFloat3(
-            "##insp_rot", editor_euler, 1.0F, -180.0F, 180.0F, "%.1f");
-        if (ImGui::IsItemActivated())
-        {
-            pre_rot = lt->value.rotation;
-            editing = true;
-        }
-        if (changed && editing)
-            lt->value.rotation = euler_to_quat(
-                editor_euler[0] * kDeg2Rad,
-                editor_euler[1] * kDeg2Rad,
-                editor_euler[2] * kDeg2Rad);
-        if (ImGui::IsItemDeactivatedAfterEdit())
-        {
-            const cd::math::Quatf final_rot = lt->value.rotation;
-            lt->value.rotation = pre_rot;
-            history.push(std::make_unique<cd::editor::RotateCommand>(
-                scene, target_, final_rot));
-            editing = false;
-        }
-    }
-
-    // ---- Rotation slider (Y-axis live demo) --------------------------------
-    ImGui::SeparatorText("Rotate Y (live slider)");
-    {
-        // Reset the slider accumulator when the selection changes.
-        if (rot_slider_entity.id != target_.id)
-        {
-            rot_slider_deg    = 0.0F;
-            rot_slider_entity = target_;
-        }
-
-        static cd::math::Quatf pre_slider_rot { 0.0F, 0.0F, 0.0F, 1.0F };
-
-        const bool changed = ImGui::SliderFloat(
-            "##insp_rot_y", &rot_slider_deg, -180.0F, 180.0F, "%.1f deg");
-
-        if (ImGui::IsItemActivated())
-            pre_slider_rot = lt->value.rotation;
-
-        if (changed)
-        {
-            const float half = rot_slider_deg * (std::numbers::pi_v<float> / 180.0F) * 0.5F;
-            const cd::math::Quatf qy { 0.0F, std::sin(half), 0.0F, std::cos(half) };
-            lt->value.rotation = qy;
-        }
-        if (ImGui::IsItemDeactivatedAfterEdit())
-        {
-            const cd::math::Quatf final_rot = lt->value.rotation;
-            lt->value.rotation = pre_slider_rot;
-            history.push(std::make_unique<cd::editor::RotateCommand>(
-                scene, target_, final_rot));
-        }
-    }
-
-    ImGui::PopItemWidth();
     return true;
 }
 

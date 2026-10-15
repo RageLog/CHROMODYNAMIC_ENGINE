@@ -17,6 +17,7 @@
 // No display, no OS window, no GPU, no Emscripten.
 // Every test is host-CI green on Windows and Linux.
 // =============================================================================
+#include <cd/platform/MobileAndWebAdapters.hpp>
 #include <cd/platform/SignalHandler.hpp>
 #include <cd/platform/StableTime.hpp>
 #include <cd/platform/Window.hpp>
@@ -408,4 +409,48 @@ TEST(PlatformSignalCategory, ValuesDistinct)
               cd::platform::SignalCategory::kUnknown);
 }
 
+// ===========================================================================
+// FAZ 9 Wave 9.3 — Mobile Surface Adapters (Android ANativeWindow & iOS CAMetalLayer)
+// ===========================================================================
+
+TEST(PlatformMobileAdaptersFaz9Wave93, AndroidSurfaceAndIosMetalLayerLifecycleAndTouchDrain)
+{
+    cd::platform::AndroidSurfaceAdapter android_surface;
+    EXPECT_EQ(android_surface.lifecycle(), cd::platform::MobileLifecycleState::kCreated);
+    EXPECT_FALSE(android_surface.can_render_frame());
+    EXPECT_EQ(cd::platform::AndroidSurfaceAdapter::required_vulkan_instance_extensions()[1],
+              "VK_KHR_android_surface");
+
+    int dummy_native_window = 42;
+    android_surface.bind_native_window(&dummy_native_window, 2400U, 1080U);
+    android_surface.transition_lifecycle(cd::platform::MobileLifecycleState::kResumedActive);
+    EXPECT_TRUE(android_surface.can_render_frame());
+    EXPECT_EQ(android_surface.width_px(), 2400U);
+    EXPECT_EQ(android_surface.height_px(), 1080U);
+
+    android_surface.push_touch_sample({1U, 120.0F, 340.0F, 0.85F, true});
+    android_surface.push_touch_sample({2U, 450.0F, 520.0F, 0.90F, false});
+    std::vector<cd::platform::OSEvent> os_events;
+    EXPECT_EQ(android_surface.drain_touches_to_os_events(os_events), 2U);
+    ASSERT_EQ(os_events.size(), 2U);
+    EXPECT_EQ(os_events[0].kind, cd::platform::OSEventKind::kMouseButtonDown);
+    EXPECT_EQ(os_events[1].kind, cd::platform::OSEventKind::kMouseButtonUp);
+    EXPECT_EQ(android_surface.drain_touches_to_os_events(os_events), 0U);
+
+    android_surface.transition_lifecycle(cd::platform::MobileLifecycleState::kPausedBackground);
+    EXPECT_FALSE(android_surface.can_render_frame());
+
+    cd::platform::IosMetalLayerAdapter ios_layer;
+    int dummy_ca_metal_layer = 99;
+    ios_layer.configure_metal_layer(&dummy_ca_metal_layer, 844U, 390U, 3.0F, true);
+    ios_layer.set_safe_area({47.0F, 34.0F, 0.0F, 0.0F});
+    ios_layer.transition_lifecycle(cd::platform::MobileLifecycleState::kResumedActive);
+    EXPECT_EQ(ios_layer.drawable_width_px(), 2532U);
+    EXPECT_EQ(ios_layer.drawable_height_px(), 1170U);
+    EXPECT_TRUE(ios_layer.edr_enabled());
+    EXPECT_FLOAT_EQ(ios_layer.safe_area().top_px, 47.0F);
+    EXPECT_EQ(ios_layer.lifecycle(), cd::platform::MobileLifecycleState::kResumedActive);
+}
+
 }  // namespace
+

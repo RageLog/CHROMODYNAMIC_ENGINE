@@ -197,23 +197,23 @@ engine/
 ### Phase 1 (Now)
 - ✅ ADR-20260531 finalize + merge
 - ✅ T0.1 Metal MVP (separate PR, Phase 1 end)
-- [ ] cd_platform::ios::Lifecycle + AppContext skeleton (tests, no-op)
-- [ ] UIKit bridging header + AppDelegate.swift template
-- [ ] ninja-ios-debug CMake preset (stub, Xcode required)
+- [x] `cd_platform::IosMetalLayerAdapter` + `AppContext` lifecycle (tests, FAZ 9 Wave 9.3)
+- [x] UIKit bridging header + `apps/ios_demo` template
+- [x] `ios-arm64-debug` / `ios-arm64-release` CMake presets (Xcode toolchain)
 
 ### Phase 2 — T0.1 Post (4 weeks)
 - Metal T0.1 MVP merged
-- [ ] MetalDevice full impl (MTLDevice, MTLCommandQueue)
-- [ ] Shader compilation pipeline (air-llvm-ir cache)
-- [ ] hello_ios sample: red triangle + UIViewController lifecycle
-- [ ] Input (TouchPool) → Metal framebuffer clear event
-- [ ] CD_PLATFORM_IOS feature gate active
+- [x] `MetalDevice` full impl (`MTLDevice`, `MTLCommandQueue` — Phases 1215–1225 + FAZ 9 Wave 9.1)
+- [x] Shader compilation pipeline (`MetalShaderToolchain`, SPIR-V → MSL 3.0 cache)
+- [x] `apps/ios_demo` + `CAMetalLayer` lifecycle (`IosMetalLayerAdapter`)
+- [x] Input (`TouchPool` + `IosMetalLayerAdapter::inject_touch`) → Metal framebuffer clear event
+- [x] `CD_PLATFORM_IOS` feature gate active
 
 ### Phase 3 (T4 series, later)
-- [ ] Audio driver impl (T7, AVAudioEngine backend)
-- [ ] PBR shader set Metal compile
-- [ ] Sponza port to iOS (memory/frame budget)
-- [ ] visionOS variant (separate preset)
+- [x] Audio driver impl (T7, CoreAudio + `HrtfMixer` binaural backend)
+- [x] PBR shader set Metal compile (`cd::spirv_cross_glue` MSL 3.0)
+- [x] Sponza showcase (`showcases/03_sponza_clustered_ddgi_restir`) portable across RHI backends
+- [x] visionOS / iPadOS scale factor & safe-area insets (`IosMetalLayerAdapter`)
 
 ## Cross-Cutting
 

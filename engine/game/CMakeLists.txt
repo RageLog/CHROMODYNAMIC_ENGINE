@@ -141,3 +141,9 @@ add_subdirectory(ai_pathfinding)
 #              Moment: 4-agent enemy squad coordinates in formation with
 #              role-specific behaviors without hand-rolled per-agent logic.
 add_subdirectory(ai_squad)
+
+# FAZ 5 — Original CHROMODYNAMIC Scene Elements & Gameplay Framework
+add_subdirectory(element_core)
+add_subdirectory(elements_domain)
+add_subdirectory(gameplay_framework)
+

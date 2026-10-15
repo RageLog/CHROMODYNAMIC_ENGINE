@@ -652,4 +652,99 @@ std::vector<ShapedGlyph> Font::shape(std::string_view text,
     return out;
 }
 
+bool Font::is_rtl_locale(std::string_view locale) noexcept
+{
+    if (locale.size() < 2U) return false;
+    const char c0 = locale[0];
+    const char c1 = locale[1];
+    const bool match =
+        (c0 == 'a' && c1 == 'r') ||
+        (c0 == 'h' && c1 == 'e') ||
+        (c0 == 'f' && c1 == 'a') ||
+        (c0 == 'u' && c1 == 'r');
+    if (!match) return false;
+    return locale.size() == 2U || locale[2] == '-' || locale[2] == '_';
+}
+
+bool Font::contains_rtl_codepoints(std::string_view utf8_text) noexcept
+{
+    const auto cps = utf8_to_codepoints(utf8_text);
+    for (std::uint32_t cp : cps)
+    {
+        if ((cp >= 0x0590U && cp <= 0x06FFU) ||
+            (cp >= 0xFB50U && cp <= 0xFDFFU) ||
+            (cp >= 0xFE70U && cp <= 0xFEFFU))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<ShapedGlyph> Font::shape_bidi(std::string_view text,
+                                          std::string_view locale) const
+{
+    auto glyphs = shape(text, locale);
+#if defined(CD_UI_FONT_HAVE_HARFBUZZ) && CD_UI_FONT_HAVE_HARFBUZZ
+    if (active_backend_ == Backend::kFreeType && impl_ && impl_->ft)
+    {
+        return glyphs;
+    }
+#endif
+    if (is_rtl_locale(locale) || contains_rtl_codepoints(text))
+    {
+        std::ranges::reverse(glyphs);
+    }
+    return glyphs;
+}
+
+bool Font::rasterize_turkish_and_latin(float pixel_size, std::uint32_t max_dim)
+{
+    if (!rasterize_range(0x0020U, 0x007EU, pixel_size, max_dim)) return false;
+    if (!rasterize_range(0x00A0U, 0x00FFU, pixel_size, max_dim)) return false;
+    if (!rasterize_range(0x0100U, 0x017FU, pixel_size, max_dim)) return false;
+    return true;
+}
+
+TextMetrics Font::measure_text(std::string_view text,
+                               std::string_view locale) const
+{
+    TextMetrics m {};
+    if (!loaded_ || text.empty()) return m;
+
+    const float lh = line_height_ > 0.0F ? line_height_ : pixel_size_;
+    std::size_t line_start = 0U;
+    float       max_w      = 0.0F;
+    std::uint32_t lines    = 0U;
+
+    while (line_start <= text.size())
+    {
+        const std::size_t nl = text.find('\n', line_start);
+        const std::string_view line = (nl == std::string_view::npos)
+            ? text.substr(line_start)
+            : text.substr(line_start, nl - line_start);
+
+        ++lines;
+        const auto shaped = shape(line, locale);
+        float line_w = 0.0F;
+        for (std::size_t i = 0U; i < shaped.size(); ++i)
+        {
+            line_w += shaped[i].advance_x;
+            if (i + 1U < shaped.size())
+            {
+                line_w += kerning(shaped[i].glyph_id, shaped[i + 1U].glyph_id);
+            }
+        }
+        max_w = std::max(max_w, line_w);
+
+        if (nl == std::string_view::npos) break;
+        line_start = nl + 1U;
+    }
+
+    m.width      = max_w;
+    m.height     = static_cast<float>(lines) * lh;
+    m.line_count = lines;
+    return m;
+}
+
 }  // namespace cd::ui::font

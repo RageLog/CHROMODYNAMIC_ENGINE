@@ -582,3 +582,34 @@ TEST(Timeline, OverlappingChannelsAreIndependent)
     EXPECT_NEAR(tl.value_for(ch2),   0.0F, kEps);
     EXPECT_TRUE(tl.done());
 }
+
+TEST(CubicBezier, PresetsAreMonotonicAndRespectEndpoints)
+{
+    const auto cb = ani::CubicBezier::ease_in_out();
+    EXPECT_NEAR(cb.evaluate(0.0F), 0.0F, kEps);
+    EXPECT_NEAR(cb.evaluate(0.5F), 0.5F, 1e-3F);
+    EXPECT_NEAR(cb.evaluate(1.0F), 1.0F, kEps);
+
+    float prev = 0.0F;
+    for (int i = 1; i <= 50; ++i)
+    {
+        const float cur = cb.evaluate(static_cast<float>(i) / 50.0F);
+        EXPECT_GE(cur, prev - kEps);
+        prev = cur;
+    }
+}
+
+TEST(SpringDamper, ConvergesSmoothlyToTarget)
+{
+    ani::SpringDamper sp(0.0F, 200.0F, 28.0F);
+    sp.set_target(100.0F);
+    EXPECT_FALSE(sp.at_rest());
+
+    for (int i = 0; i < 60; ++i)
+    {
+        (void)sp.step(1.0F / 60.0F);
+    }
+    EXPECT_NEAR(sp.value(), 100.0F, 0.5F);
+    EXPECT_TRUE(sp.at_rest(1.0F));
+}
+

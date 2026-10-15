@@ -93,6 +93,11 @@ public:
 
     [[nodiscard]] cd::core::Result<TextureHandle> create_texture(const TextureDesc& desc) override
     {
+        if (fail_texture_creation_)
+        {
+            return std::unexpected(
+                rhi_errors::make(rhi_errors::Code::kResourceCreationFailed, "simulated texture creation failure"));
+        }
         if (desc.extent.width == 0 || desc.extent.height == 0)
         {
             return std::unexpected(rhi_errors::make(rhi_errors::Code::kInvalidArgument, "texture extent == 0"));
@@ -100,6 +105,11 @@ public:
         const auto id = next_id_++;
         textures_.emplace(id, desc);
         return TextureHandle { id, 1u };
+    }
+
+    void set_fail_texture_creation(bool fail) noexcept
+    {
+        fail_texture_creation_ = fail;
     }
 
     void destroy_texture(TextureHandle h) override
@@ -575,6 +585,7 @@ private:
     std::unordered_map<std::uint32_t, bool> fence_signaled_;
     std::unordered_map<std::uint32_t, std::uint64_t> timeline_value_;
     std::uint32_t submit_count_ { 0 };
+    bool fail_texture_creation_ { false };
 };
 
 }  // namespace cd::rhi

@@ -1,0 +1,9 @@
+{
+  "stage": "09_acoustics_hrtf_echo_chamber",
+  "elements": [
+    {"class": "AcousticEmitter3D", "name": "HrtfVoiceSource"},
+    {"class": "AcousticListener3D", "name": "MainEarListener"},
+    {"class": "EchoChamberZone3D", "name": "CathedralReverbHall"},
+    {"class": "CineLens3D", "name": "StudioCamera"}
+  ]
+}

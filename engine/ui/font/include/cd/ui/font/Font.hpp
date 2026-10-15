@@ -101,6 +101,14 @@ struct ShapedGlyph
     float         offset_y  { 0.0F };
 };
 
+/// Measured pixel bounds for a single- or multi-line UTF-8 string.
+struct TextMetrics
+{
+    float         width      { 0.0F };
+    float         height     { 0.0F };
+    std::uint32_t line_count { 0U };
+};
+
 /// Selects how `rasterize_range` populates the atlas bitmap. Switch
 /// before the first rasterize_range() call. Switching after rasterization
 /// has begun is a no-op.
@@ -222,6 +230,33 @@ public:
     /// compiling on minimal builds.
     [[nodiscard]] std::vector<ShapedGlyph> shape(std::string_view text,
                                                  std::string_view locale = "en") const;
+
+    /// BiDi-aware shaping helper: delegates to `shape(text, locale)` and,
+    /// when HarfBuzz is unavailable (`!has_harfbuzz()`) and the locale or
+    /// codepoints are RTL (Arabic / Hebrew), reverses RTL glyph runs into
+    /// visual left-to-right order.
+    [[nodiscard]] std::vector<ShapedGlyph> shape_bidi(std::string_view text,
+                                                      std::string_view locale = "en") const;
+
+    /// Rasterize ASCII (`0x0020..0x007E`), Latin-1 Supplement (`0x00A0..0x00FF`),
+    /// and Latin Extended-A (`0x0100..0x017F`, covering Turkish `ğüşıöçĞÜŞİÖÇ`)
+    /// into the atlas in one call.
+    [[nodiscard]] bool rasterize_turkish_and_latin(float         pixel_size,
+                                                   std::uint32_t max_dim = 1024U);
+
+    /// Measure the bounding box (`width`, `height`, `line_count`) of a
+    /// UTF-8 string (supports `\n` multi-line splits and kerning).
+    [[nodiscard]] TextMetrics measure_text(std::string_view text,
+                                           std::string_view locale = "en") const;
+
+    /// True when `locale` starts with a known right-to-left language tag
+    /// (`"ar"`, `"he"`, `"fa"`, `"ur"`).
+    [[nodiscard]] static bool is_rtl_locale(std::string_view locale) noexcept;
+
+    /// True when `utf8_text` contains any Unicode codepoint in the Hebrew
+    /// (`0x0590..0x05FF`) or Arabic (`0x0600..0x06FF`, `0xFB50..0xFDFF`,
+    /// `0xFE70..0xFEFF`) blocks.
+    [[nodiscard]] static bool contains_rtl_codepoints(std::string_view utf8_text) noexcept;
 
     /// Compile-time feature probe — useful for tests + selecting code
     /// paths that assume HarfBuzz exists.

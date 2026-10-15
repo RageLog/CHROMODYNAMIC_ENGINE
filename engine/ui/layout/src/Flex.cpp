@@ -575,4 +575,53 @@ void FlexTree::position_children(NodeId node_id, const SolveContext& ctx)
     }
 }
 
+void FlexTree::solve_rtl(NodeId root, float available_width, float available_height)
+{
+    if (root.value >= nodes_.size())
+    {
+        return;
+    }
+    solve(root, available_width, available_height);
+    const float root_w = node(root).computed_rect.width;
+    for (std::size_t i = 0U; i < nodes_.size(); ++i)
+    {
+        if (i == root.value) continue;
+        auto& r = nodes_[i].computed_rect;
+        if (r.width > 0.0F || r.height > 0.0F || r.x != 0.0F)
+        {
+            r.x = root_w - r.x - r.width;
+        }
+    }
+}
+
+std::vector<Rect> solve_grid(const Rect&     bounds,
+                             const GridSpec& spec,
+                             std::size_t     cell_count)
+{
+    std::vector<Rect> out;
+    if (cell_count == 0U || spec.columns == 0U) return out;
+    out.reserve(cell_count);
+
+    const float inner_x = bounds.x + spec.padding.left;
+    const float inner_y = bounds.y + spec.padding.top;
+    const float inner_w = std::max(0.0F, bounds.width - (spec.padding.left + spec.padding.right));
+    const float total_gap_x = (spec.columns > 1U)
+        ? spec.gap_x * static_cast<float>(spec.columns - 1U)
+        : 0.0F;
+    const float cell_w = std::max(0.0F, (inner_w - total_gap_x) / static_cast<float>(spec.columns));
+    const float cell_h = std::max(0.0F, spec.row_height);
+
+    for (std::size_t i = 0U; i < cell_count; ++i)
+    {
+        const auto col = static_cast<std::uint32_t>(i % spec.columns);
+        const auto row = static_cast<std::uint32_t>(i / spec.columns);
+        const std::uint32_t vis_col = spec.rtl ? (spec.columns - 1U - col) : col;
+
+        const float cx = inner_x + static_cast<float>(vis_col) * (cell_w + spec.gap_x);
+        const float cy = inner_y + static_cast<float>(row) * (cell_h + spec.gap_y);
+        out.push_back(Rect { cx, cy, cell_w, cell_h });
+    }
+    return out;
+}
+
 }  // namespace cd::ui::layout

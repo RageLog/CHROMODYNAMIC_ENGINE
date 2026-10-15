@@ -10,9 +10,23 @@
 # cd::rhi_vulkan + cd::render. CD_ENABLE_VULKAN is defined by
 # engine/rhi/vulkan/CMakeLists.txt and propagated as a CACHE BOOL.
 
+if(NOT TARGET cd::sample_common)
+  add_library(cd_sample_common INTERFACE)
+  target_include_directories(cd_sample_common INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/common
+  )
+  target_link_libraries(cd_sample_common INTERFACE
+    cd::asset_image
+    cd::imgdiff
+    cd::rhi
+  )
+  add_library(cd::sample_common ALIAS cd_sample_common)
+endif()
+
 if(CD_ENABLE_VULKAN)
   add_subdirectory(editor)
 endif()
+add_subdirectory(player)
 
 # Phase 771 — iOS demo application (Sprint-1 scaffold).
 # ios_demo directory only exists when committed; guard at parent level so

@@ -1,0 +1,11 @@
+[project]
+name = "11_custom_ui_hud_and_menus"
+engine_version = "0.10.0"
+default_stage = "main.cdstage"
+
+[render]
+backend = "vulkan"
+gi_mode = "ddgi"
+
+[physics]
+fixed_hz = 60

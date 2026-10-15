@@ -118,15 +118,14 @@ using SemaphoreHandle = cd::core::Handle<SemaphoreTag>;
 using TimelineSemaphoreHandle = cd::core::Handle<TimelineSemaphoreTag>;
 using FenceHandle = cd::core::Handle<FenceTag>;
 using QueryPoolHandle = cd::core::Handle<QueryPoolTag>;
-/// Acceleration structure (BLAS or TLAS). Phase 14.G shipped the
-/// handle + descriptor surface; backend implementations are queued
-/// for a follow-up wave (Vulkan VK_KHR_acceleration_structure +
-/// VK_KHR_ray_tracing_pipeline / D3D12 DXR Tier 1.1).
+/// Acceleration structure (BLAS or TLAS). Implemented across Vulkan
+/// (VK_KHR_acceleration_structure), D3D12 (DXR Tier 1.1), and Metal
+/// (MTLAccelerationStructure).
 using AccelStructureHandle = cd::core::Handle<AccelStructureTag>;
 
-/// Phase 134 — ray-tracing pipeline (raygen + miss + hit groups
-/// bound together via VkPipelineLayout + an SBT). Vulkan backend
-/// implementation arrives with Phase 135.
+/// Ray-tracing pipeline (raygen + miss + hit groups bound together via
+/// PipelineLayout + SBT). Implemented across Vulkan (VK_KHR_ray_tracing_pipeline),
+/// D3D12 (DXR StateObject), and Metal (intersection / visible function tables).
 using RtPipelineHandle = cd::core::Handle<RtPipelineTag>;
 
 /// phase837-W8-BE-rt-bindless-texture-sampling: runtime-indexed

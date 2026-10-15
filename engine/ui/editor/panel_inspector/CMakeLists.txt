@@ -9,7 +9,7 @@
 
 cd_add_library(editor_panel_inspector
   TYPE STATIC
-  EXCLUDE_FROM_INSTALL       # cd::imgui_backend leaks vendored headers
+  EXCLUDE_FROM_INSTALL
   SOURCES
     src/Inspector.cpp
   PUBLIC_DEPS
@@ -21,8 +21,6 @@ cd_add_library(editor_panel_inspector
     cd::editor          # TransformCommands, EditHistory, ICommand
     cd::ui_renderer     # DrawBatcher
     cd::ui_widgets      # Theme + Rect
-  PRIVATE_DEPS
-    cd::imgui_backend   # imgui.h used only in Inspector.cpp (draw_imgui path)
 )
 
 if(CD_ENABLE_TESTING)

@@ -1,0 +1,9 @@
+{
+  "stage": "10_spark_swarm_and_decals",
+  "elements": [
+    {"class": "SparkSwarm3D", "name": "GpuMillionsParticleSwarm"},
+    {"class": "DecalStamp3D", "name": "ScorchImpactDecal"},
+    {"class": "OmniLamp3D", "name": "SparkGlowLamp"},
+    {"class": "CineLens3D", "name": "VfxCamera"}
+  ]
+}

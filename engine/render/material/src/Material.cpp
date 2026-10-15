@@ -652,4 +652,264 @@ void MaterialInstance::bind(cd::rhi::IDrawRecorder& cmd, std::uint32_t set_index
     cmd.bind_descriptor_set(set_index, desc_set_);
 }
 
+// ---- Wave 3.1: DeferredDestroyQueue & IncludeDependencyTracker --------------
+
+void Material::swap_deferred(
+    Material&& fresh,
+    DeferredDestroyQueue& queue,
+    std::uint64_t current_frame,
+    std::uint64_t frames_in_flight
+) noexcept
+{
+    if (this == &fresh)
+        return;
+
+    if (device_ != nullptr)
+    {
+        DeferredDestroyQueue::Entry entry {};
+        entry.retire_frame = current_frame + frames_in_flight;
+        entry.pipeline = pipeline_;
+        entry.pipeline_layout = pipeline_layout_;
+        entry.desc_layout = desc_layout_;
+        entry.fs = fs_;
+        entry.vs = vs_;
+        queue.enqueue(entry);
+
+        device_ = nullptr;
+        pipeline_ = {};
+        pipeline_layout_ = {};
+        desc_layout_ = {};
+        vs_ = {};
+        fs_ = {};
+        has_descriptors_ = false;
+    }
+
+    steal(std::move(fresh));
+}
+
+void DeferredDestroyQueue::enqueue(Entry entry)
+{
+    entries_.push_back(entry);
+}
+
+void DeferredDestroyQueue::destroy_entry(cd::rhi::IDevice& device, const Entry& e) noexcept
+{
+    if (e.pipeline.is_valid())
+        device.destroy_graphics_pipeline(e.pipeline);
+    if (e.pipeline_layout.is_valid())
+        device.destroy_pipeline_layout(e.pipeline_layout);
+    if (e.desc_layout.is_valid())
+        device.destroy_descriptor_set_layout(e.desc_layout);
+    if (e.fs.is_valid())
+        device.destroy_shader_module(e.fs);
+    if (e.vs.is_valid())
+        device.destroy_shader_module(e.vs);
+}
+
+std::size_t DeferredDestroyQueue::collect(cd::rhi::IDevice& device, std::uint64_t completed_frame)
+{
+    std::size_t retired = 0;
+    std::vector<Entry> remaining;
+    remaining.reserve(entries_.size());
+
+    for (const auto& e : entries_)
+    {
+        if (e.retire_frame <= completed_frame)
+        {
+            destroy_entry(device, e);
+            ++retired;
+        }
+        else
+        {
+            remaining.push_back(e);
+        }
+    }
+
+    entries_ = std::move(remaining);
+    return retired;
+}
+
+std::size_t DeferredDestroyQueue::flush_all(cd::rhi::IDevice& device)
+{
+    const std::size_t count = entries_.size();
+    for (const auto& e : entries_)
+    {
+        destroy_entry(device, e);
+    }
+    entries_.clear();
+    return count;
+}
+
+std::vector<std::string> extract_glsl_includes(std::string_view glsl_source)
+{
+    std::vector<std::string> includes;
+    std::size_t pos = 0;
+
+    while (pos < glsl_source.size())
+    {
+        std::size_t line_end = glsl_source.find('\n', pos);
+        if (line_end == std::string_view::npos)
+            line_end = glsl_source.size();
+
+        std::string_view line = glsl_source.substr(pos, line_end - pos);
+        pos = (line_end < glsl_source.size()) ? (line_end + 1) : glsl_source.size();
+
+        // Trim leading whitespace
+        while (!line.empty() && (line.front() == ' ' || line.front() == '\t'))
+            line.remove_prefix(1);
+
+        if (!line.starts_with("#include"))
+            continue;
+
+        line.remove_prefix(8);
+        while (!line.empty() && (line.front() == ' ' || line.front() == '\t'))
+            line.remove_prefix(1);
+
+        if (line.empty())
+            continue;
+
+        const char open_delim = line.front();
+        char close_delim = '\0';
+        if (open_delim == '<')
+            close_delim = '>';
+        else if (open_delim == '"')
+            close_delim = '"';
+        else
+            continue;
+
+        line.remove_prefix(1);
+        const std::size_t close_pos = line.find(close_delim);
+        if (close_pos == std::string_view::npos || close_pos == 0)
+            continue;
+
+        std::string inc_path { line.substr(0, close_pos) };
+        if (std::find(includes.begin(), includes.end(), inc_path) == includes.end())
+        {
+            includes.push_back(std::move(inc_path));
+        }
+    }
+
+    return includes;
+}
+
+namespace
+{
+
+[[nodiscard]] bool header_paths_match(std::string_view recorded, std::string_view query) noexcept
+{
+    if (recorded == query)
+        return true;
+
+    constexpr std::string_view kPrefix { "cd/gluon/" };
+    const std::string_view rec_bare =
+        recorded.starts_with(kPrefix) ? recorded.substr(kPrefix.size()) : recorded;
+    const std::string_view qry_bare =
+        query.starts_with(kPrefix) ? query.substr(kPrefix.size()) : query;
+
+    return !rec_bare.empty() && rec_bare == qry_bare;
+}
+
+void collect_transitive_includes(
+    std::string_view source,
+    cd::shader::IIncludeResolver* resolver,
+    std::vector<std::string>& out_headers,
+    std::uint32_t depth = 0
+)
+{
+    if (depth > 16U)
+        return;
+
+    const auto direct = extract_glsl_includes(source);
+    for (const auto& inc : direct)
+    {
+        std::string canonical = inc;
+        std::string nested_content;
+        if (resolver != nullptr)
+        {
+            auto resolved = resolver->resolve(inc, "", true);
+            if (resolved.has_value())
+            {
+                if (!resolved->virtual_path.empty())
+                    canonical = resolved->virtual_path;
+                nested_content = std::string { resolved->content };
+            }
+        }
+
+        if (std::find(out_headers.begin(), out_headers.end(), canonical) == out_headers.end())
+        {
+            out_headers.push_back(canonical);
+            if (!nested_content.empty())
+            {
+                collect_transitive_includes(nested_content, resolver, out_headers, depth + 1U);
+            }
+        }
+    }
+}
+
+}  // namespace
+
+void IncludeDependencyTracker::register_material(
+    std::string_view material_name,
+    std::string_view vs_source,
+    std::string_view fs_source,
+    cd::shader::IIncludeResolver* resolver
+)
+{
+    cd::gluon::ModuleResolver default_resolver {};
+    cd::shader::IIncludeResolver* const active_resolver =
+        (resolver != nullptr) ? resolver : &default_resolver;
+
+    std::vector<std::string> headers;
+    collect_transitive_includes(vs_source, active_resolver, headers);
+    collect_transitive_includes(fs_source, active_resolver, headers);
+
+    for (auto& rec : materials_)
+    {
+        if (rec.name == material_name)
+        {
+            rec.included_headers = std::move(headers);
+            return;
+        }
+    }
+
+    materials_.push_back(MaterialRecord {
+        std::string { material_name },
+        std::move(headers),
+    });
+}
+
+void IncludeDependencyTracker::unregister_material(std::string_view material_name)
+{
+    materials_.erase(
+        std::remove_if(
+            materials_.begin(),
+            materials_.end(),
+            [material_name](const MaterialRecord& r) { return r.name == material_name; }
+        ),
+        materials_.end()
+    );
+}
+
+std::vector<std::string> IncludeDependencyTracker::dependent_materials(std::string_view header_path) const
+{
+    std::vector<std::string> result;
+    if (header_path.empty())
+        return result;
+
+    for (const auto& rec : materials_)
+    {
+        for (const auto& h : rec.included_headers)
+        {
+            if (header_paths_match(h, header_path))
+            {
+                result.push_back(rec.name);
+                break;
+            }
+        }
+    }
+
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
 }  // namespace cd::material

@@ -28,11 +28,10 @@ cd_add_library(rhi
 )
 
 # ── cd::rhi_d3d12 ──────────────────────────────────────────────────────────
-# Windows D3D12 backend. Phase 12.B boot-only (device + adapter + queue +
-# swapchain + clear-color present). v0.27.x patches add PSO, draw, upload.
+# Windows D3D12 backend (Phases 1215–1225 + FAZ 9 Wave 9.1 — IMPL-100%).
 cd_add_library(rhi_d3d12
   TYPE STATIC
-  EXCLUDE_FROM_INSTALL  # boot-only; v0.27.x patches complete the surface
+  EXCLUDE_FROM_INSTALL  # internal backend library; consumed via cd::rhi_native / cd::rhi_d3d12
   SOURCES
     src/d3d12/D3D12Device.cpp
     src/d3d12/D3D12ShaderCompile.cpp
@@ -270,10 +269,10 @@ cd_add_library(rhi_metal_shader
 )
 
 # ── cd::rhi_opengl ─────────────────────────────────────────────────────────
-# OpenGL 4.6 backend. Phase 18.B boot-only. 3rd API priority.
+# OpenGL 4.6 DSA + compute fallback backend (FAZ 9 Wave 9.2).
 cd_add_library(rhi_opengl
   TYPE STATIC
-  EXCLUDE_FROM_INSTALL  # boot-only; promotes to install when complete
+  EXCLUDE_FROM_INSTALL  # internal fallback backend; consumed via cd::rhi_opengl
   SOURCES
     src/opengl/OpenGLDevice.cpp
   PUBLIC_DEPS
@@ -292,10 +291,21 @@ elseif(UNIX)
   target_link_libraries(cd_rhi_opengl PRIVATE GL)
 endif()
 
+# ── cd::rhi_webgpu ─────────────────────────────────────────────────────────
+# FAZ 9 Wave 9.2 — WebGPU (Dawn & Emscripten) RHI backend + WGSL translation.
+cd_add_library(rhi_webgpu
+  TYPE STATIC
+  SOURCES
+    src/webgpu/WebGpuDevice.cpp
+  PUBLIC_DEPS
+    cd::core
+    cd::rhi
+)
+
 # ── cd::rhi_native ─────────────────────────────────────────────────────────
 # Unified GPU backend dispatcher (Wave 97). Links available concrete backends
 # and exposes cd::rhi::make_native_device() selecting the best for the host.
-set(_RHI_NATIVE_DEPS cd::core cd::rhi cd::rhi_metal cd::rhi_d3d12)
+set(_RHI_NATIVE_DEPS cd::core cd::rhi cd::rhi_metal cd::rhi_d3d12 cd::rhi_webgpu)
 if(CD_ENABLE_VULKAN AND TARGET cd_rhi_vulkan)
   list(APPEND _RHI_NATIVE_DEPS cd::rhi_vulkan)
 endif()

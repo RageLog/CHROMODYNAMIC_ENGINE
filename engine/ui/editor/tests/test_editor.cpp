@@ -839,3 +839,131 @@ TEST(HierarchyView, DepthThreeNestedStructure)
 }
 
 }  // namespace
+
+#include <cd/editor/FullFledgedEditorSuite.hpp>
+
+namespace
+{
+
+TEST(EditorFaz7Wave71, CockpitShellRegisters27PanelsAnd12ShowcasesWithZeroImGui)
+{
+    cd::editor::EditorCockpitShell shell;
+    EXPECT_FALSE(shell.uses_dear_imgui());
+    EXPECT_EQ(shell.registered_panel_count(), 27U);
+    ASSERT_EQ(shell.project_hub_showcases().size(), 12U);
+    EXPECT_EQ(shell.project_hub_showcases()[0].slug, "01_pbr_materials_sss_hair");
+    EXPECT_EQ(shell.project_hub_showcases()[11].slug, "12_planar_2d_platformer_net");
+
+    auto stage = shell.open_showcase_in_editor(cd::gameplay_director::ShowcaseId::kCelestialAetherFogClouds);
+    EXPECT_NE(stage.find_by_name("GlobalFroxelFog"), nullptr);
+}
+
+TEST(EditorFaz7Wave72, AddElementCatalogSpawnsWithUndoAndBindsInspectorAndGizmoAndTerrainBrush)
+{
+    cd::element_core::Stage stage("EditorAuthoringStage");
+    cd::editor::EditHistory history;
+    cd::editor::AddElementCatalog catalog;
+    EXPECT_GE(catalog.count(), 48U);
+
+    auto* fog = catalog.spawn_with_undo(stage, history, "AetherFog3D", "CanyonFog");
+    ASSERT_NE(fog, nullptr);
+    EXPECT_NE(stage.find_by_name("CanyonFog"), nullptr);
+    EXPECT_TRUE(history.undo());
+    EXPECT_EQ(stage.find_by_name("CanyonFog"), nullptr);
+    EXPECT_TRUE(history.redo());
+    ASSERT_NE(stage.find_by_name("CanyonFog"), nullptr);
+
+    auto* avatar = dynamic_cast<cd::gameplay_vessel::Avatar*>(
+        catalog.spawn_into_stage(stage, "Avatar", "HeroAvatar")
+    );
+    ASSERT_NE(avatar, nullptr);
+    cd::ui::widgets::Table grid;
+    const std::size_t bound_rows = cd::editor::ElementInspectorBinder::bind_element_to_grid(*avatar, grid);
+    EXPECT_GE(bound_rows, 5U);
+    EXPECT_EQ(grid.row_count(), bound_rows);
+
+    cd::editor::ViewportGizmoController gizmo;
+    gizmo.mode = cd::editor::ViewportGizmoMode::kTranslate;
+    gizmo.snap.enable_snap = true;
+    gizmo.snap.translate_step_m = 0.5F;
+    gizmo.apply_gizmo_manipulation(*avatar, history, { 1.24F, 0.0F, -2.49F });
+    EXPECT_FLOAT_EQ(avatar->local_position()[0], 1.0F);
+    EXPECT_FLOAT_EQ(avatar->local_position()[2], -2.5F);
+
+    auto* picked = cd::editor::ViewportGizmoController::pick_spatial_element(
+        stage, { 1.0F, 0.0F, 5.0F }, { 0.0F, 0.0F, -1.0F }, 0.75F
+    );
+    EXPECT_EQ(picked, avatar);
+
+    EXPECT_TRUE(history.undo());
+    EXPECT_FLOAT_EQ(avatar->local_position()[0], 0.0F);
+
+    std::vector<float> heights(16U * 16U, 0.0F);
+    cd::editor::TerrainFoliageBrush brush;
+    brush.op = cd::editor::TerrainFoliageBrush::SculptOp::kRaise;
+    brush.brush_radius_cells = 3.0F;
+    brush.brush_strength = 4.0F;
+    EXPECT_GT(brush.apply_heightfield_stroke(heights, 16U, 16U, 8.0F, 8.0F), 0U);
+    EXPECT_GT(heights[8U * 16U + 8U], 3.5F);
+}
+
+TEST(EditorFaz7Wave73, PieWorkbenchRestoresStageAndExportsChromeTracingJson)
+{
+    cd::element_core::Stage stage("PieTestStage");
+    auto& rover = stage.root().emplace_child<cd::gameplay_vessel::RoverVessel>("TestRover");
+    rover.set_local_position(5.0F, 0.0F, 10.0F);
+    rover.set_vehicle_controls(1.0F, 0.0F, 0.0F);
+    stage.mount();
+
+    cd::runtime::EngineContext ctx;
+    cd::runtime::EngineLoop loop(ctx);
+    cd::editor::PieWorkbenchController pie(loop);
+    EXPECT_TRUE(pie.play(stage));
+    EXPECT_EQ(pie.state(), cd::editor::PieState::kPlaying);
+    EXPECT_TRUE(pie.tick_if_playing(stage, 0.5F));
+    EXPECT_GT(rover.local_position()[2], 10.0F);
+
+    EXPECT_TRUE(pie.pause());
+    EXPECT_TRUE(pie.step_one_frame(stage, 0.1F));
+    EXPECT_EQ(pie.pie_frames_executed(), 2U);
+
+    EXPECT_TRUE(pie.stop(stage));
+    EXPECT_EQ(pie.state(), cd::editor::PieState::kStopped);
+    EXPECT_FLOAT_EQ(rover.local_position()[0], 5.0F);
+    EXPECT_FLOAT_EQ(rover.local_position()[2], 10.0F);
+
+    cd::ui::widgets::NodeGraphCanvas bt_canvas;
+    cd::editor::VisualGraphWorkbench::populate_domain_graph(
+        cd::editor::VisualGraphWorkbench::GraphDomain::kBehaviorTree, bt_canvas
+    );
+    EXPECT_EQ(bt_canvas.nodes().size(), 3U);
+    EXPECT_EQ(bt_canvas.wires().size(), 2U);
+
+    cd::editor::GpuFrameProfilerExporter profiler;
+    profiler.record_pass("gpu_cull_and_gbuffer", "GPU", 100U, 420U);
+    profiler.record_pass("volumetric_froxel_fog", "GPU", 520U, 310U);
+    const std::string json = profiler.export_chrome_tracing_json();
+    EXPECT_NE(json.find("\"traceEvents\""), std::string::npos);
+    EXPECT_NE(json.find("gpu_cull_and_gbuffer"), std::string::npos);
+}
+
+TEST(EditorFaz8Wave81, AllTwelveShowcaseProjectsAndStagesAreValidAndOpenInCockpitShell)
+{
+    cd::editor::EditorCockpitShell shell;
+    ASSERT_EQ(shell.project_hub_showcases().size(), 12U);
+
+    for (const auto& entry : shell.project_hub_showcases())
+    {
+        EXPECT_FALSE(entry.slug.empty());
+        EXPECT_NE(entry.cdproj_relative_path.find(".cdproj"), std::string::npos);
+        EXPECT_NE(entry.cdstage_relative_path.find("main.cdstage"), std::string::npos);
+
+        auto stage = shell.open_showcase_in_editor(entry.id);
+        EXPECT_EQ(stage.name(), entry.slug);
+        EXPECT_GE(stage.root().children().size(), 1U);
+        const std::string serialized = stage.serialize_cdstage();
+        EXPECT_NE(serialized.find("cdstage v1"), std::string::npos);
+    }
+}
+
+}  // namespace
