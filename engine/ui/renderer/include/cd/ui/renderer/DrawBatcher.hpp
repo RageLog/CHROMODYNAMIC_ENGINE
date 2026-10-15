@@ -171,6 +171,24 @@ public:
     /// Emit a solid-color filled rectangle.
     void quad(float x, float y, float w, float h, Color c);
 
+    /// Emit a solid-color arbitrary triangle (`material::kSolid`).
+    void triangle(float x0, float y0,
+                  float x1, float y1,
+                  float x2, float y2,
+                  Color c);
+
+    /// Emit a vertex-colored arbitrary triangle (`material::kSolid`).
+    void triangle_grad(float x0, float y0, Color c0,
+                       float x1, float y1, Color c1,
+                       float x2, float y2, Color c2);
+
+    /// Emit a solid-color arbitrary 4-point convex polygon (`material::kSolid`).
+    void quad_poly(float x0, float y0,
+                   float x1, float y1,
+                   float x2, float y2,
+                   float x3, float y3,
+                   Color c);
+
     /// Emit a textured rectangle. `texture_slot` is opaque to the
     /// batcher; the RHI tier maps it to a bound descriptor index.
     void textured_quad(float x, float y, float w, float h,

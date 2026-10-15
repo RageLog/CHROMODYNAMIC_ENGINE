@@ -219,9 +219,8 @@ layout(location = 2) flat out uint v_variant;
 
 void main()
 {
-    // Map [0..viewport] -> NDC [-1..+1]. Y is flipped to match UI top-left.
+    // Map [0..viewport] -> NDC [-1..+1]. Y stays top-down (Vulkan NDC).
     vec2 ndc = in_pos * u_push.inv_viewport * 2.0 - 1.0;
-    ndc.y = -ndc.y;
     gl_Position = vec4(ndc, 0.0, 1.0);
     v_uv = in_uv;
     v_color = in_color;

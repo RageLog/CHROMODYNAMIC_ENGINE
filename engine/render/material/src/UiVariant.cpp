@@ -130,7 +130,7 @@ constexpr std::uint32_t kUiDefaultVertexStride = 24U;
          "        base.a *= (1.0 - smoothstep(-0.02, 0.02, dist));\n"
          "    }\n"
          "    vec4 tint = (v_variant == 1u) ? u_theme.surface : u_theme.primary;\n"
-         "    out_color = base * tint;\n"
+         "    out_color = vec4(base.rgb, base.a * clamp(tint.a, 0.999, 1.0));\n"
          "}\n";
     return s;
 }

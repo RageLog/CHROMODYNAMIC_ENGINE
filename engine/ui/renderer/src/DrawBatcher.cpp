@@ -133,6 +133,84 @@ void DrawBatcher::quad(float x, float y, float w, float h, Color c)
     emit_quad(x, y, w, h, material::kSolid, 0xFFFFFFFFu, unused, c);
 }
 
+void DrawBatcher::triangle_grad(float x0, float y0, Color c0,
+                                float x1, float y1, Color c1,
+                                float x2, float y2, Color c2)
+{
+    if (vertices_.size() + 3U > static_cast<std::size_t>(kMaxVertices)) return;
+
+    const auto base = static_cast<std::uint16_t>(vertices_.size());
+    vertices_.emplace_back(Vertex { x0, y0, 0.0F, 0.0F, c0.r, c0.g, c0.b, c0.a, material::kSolid, 0U, 0U, 0U });
+    vertices_.emplace_back(Vertex { x1, y1, 0.0F, 0.0F, c1.r, c1.g, c1.b, c1.a, material::kSolid, 0U, 0U, 0U });
+    vertices_.emplace_back(Vertex { x2, y2, 0.0F, 0.0F, c2.r, c2.g, c2.b, c2.a, material::kSolid, 0U, 0U, 0U });
+
+    indices_.push_back(base);
+    indices_.push_back(static_cast<std::uint16_t>(base + 1U));
+    indices_.push_back(static_cast<std::uint16_t>(base + 2U));
+
+    DrawCommand prospective {};
+    prospective.variant      = material::kSolid;
+    prospective.texture_slot = 0xFFFFFFFFu;
+    prospective.scissor      = current_scissor();
+    prospective.index_offset = static_cast<std::uint32_t>(indices_.size() - 3U);
+    prospective.index_count  = 3U;
+
+    if (!commands_.empty() && same_command(commands_.back(), prospective))
+    {
+        commands_.back().index_count += 3U;
+    }
+    else
+    {
+        commands_.push_back(prospective);
+    }
+}
+
+void DrawBatcher::triangle(float x0, float y0,
+                           float x1, float y1,
+                           float x2, float y2,
+                           Color c)
+{
+    triangle_grad(x0, y0, c, x1, y1, c, x2, y2, c);
+}
+
+void DrawBatcher::quad_poly(float x0, float y0,
+                            float x1, float y1,
+                            float x2, float y2,
+                            float x3, float y3,
+                            Color c)
+{
+    if (vertices_.size() + 4U > static_cast<std::size_t>(kMaxVertices)) return;
+
+    const auto base = static_cast<std::uint16_t>(vertices_.size());
+    vertices_.emplace_back(Vertex { x0, y0, 0.0F, 0.0F, c.r, c.g, c.b, c.a, material::kSolid, 0U, 0U, 0U });
+    vertices_.emplace_back(Vertex { x1, y1, 0.0F, 0.0F, c.r, c.g, c.b, c.a, material::kSolid, 0U, 0U, 0U });
+    vertices_.emplace_back(Vertex { x2, y2, 0.0F, 0.0F, c.r, c.g, c.b, c.a, material::kSolid, 0U, 0U, 0U });
+    vertices_.emplace_back(Vertex { x3, y3, 0.0F, 0.0F, c.r, c.g, c.b, c.a, material::kSolid, 0U, 0U, 0U });
+
+    indices_.push_back(base);
+    indices_.push_back(static_cast<std::uint16_t>(base + 1U));
+    indices_.push_back(static_cast<std::uint16_t>(base + 2U));
+    indices_.push_back(base);
+    indices_.push_back(static_cast<std::uint16_t>(base + 2U));
+    indices_.push_back(static_cast<std::uint16_t>(base + 3U));
+
+    DrawCommand prospective {};
+    prospective.variant      = material::kSolid;
+    prospective.texture_slot = 0xFFFFFFFFu;
+    prospective.scissor      = current_scissor();
+    prospective.index_offset = static_cast<std::uint32_t>(indices_.size() - 6U);
+    prospective.index_count  = 6U;
+
+    if (!commands_.empty() && same_command(commands_.back(), prospective))
+    {
+        commands_.back().index_count += 6U;
+    }
+    else
+    {
+        commands_.push_back(prospective);
+    }
+}
+
 void DrawBatcher::textured_quad(float x, float y, float w, float h,
                                 std::uint32_t texture_slot,
                                 const AtlasUv& uv,
