@@ -3,7 +3,7 @@
 // =============================================================================
 #pragma once
 
-#include "SampleRuntime.hpp"
+#include "AppRuntime.hpp"
 
 #include <cd/asset/image/Image.hpp>
 #include <cd/imgdiff/ImageDiff.hpp>
@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-namespace cd::sample
+namespace cd::app_runtime
 {
 
 struct GoldenState
@@ -210,4 +210,4 @@ struct GoldenState
     return 0;
 }
 
-}  // namespace cd::sample
+}  // namespace cd::app_runtime

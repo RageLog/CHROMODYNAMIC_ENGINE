@@ -1,16 +1,6 @@
 // =============================================================================
-// CHROMODYNAMIC -- cd/sample/App.hpp
-// Mega-Marathon M2A skeleton (Run 29 / phase373).
-//
-// Per ADR-20260529-M2-sample-framework: every sample inherits from
-// cd::sample::App and overrides on_boot / on_frame / on_shutdown. The App
-// owns the lifecycle (window, device, swapchain, IBL bake, ImGui, frame
-// timing, shader hot-reload) so each sample writes a ~200-line main()
-// instead of duplicating the 6000-line hello_engine main() body.
-//
-// This M2A slice ships ONLY the virtual interface + a no-op Impl that
-// drives the on_boot -> on_frame -> on_shutdown handshake without
-// allocating any RHI objects. M2B brings real window + device boot.
+// CHROMODYNAMIC -- cd/app/App.hpp
+// Application lifecycle module (cd::app_framework).
 // =============================================================================
 #pragma once
 
@@ -20,16 +10,12 @@
 #include <memory>
 #include <string>
 
-namespace cd::sample
+namespace cd::app
 {
 
-/// Configures App lifecycle. M2A surface is intentionally narrow; M2B/M2C
-/// extend with require_ray_query, require_acceleration_structure,
-/// enable_imgui_dockspace, enable_shader_hot_reload, backend selector,
-/// etc. (see ADR-20260529-M2 sketch).
 struct AppConfig
 {
-    std::string title { "cd::sample" };
+    std::string title { "cd::app" };
     std::uint32_t window_width { 1920 };
     std::uint32_t window_height { 1080 };
     bool start_maximized { false };
@@ -128,4 +114,4 @@ private:
     std::unique_ptr<Impl> p_;
 };
 
-}  // namespace cd::sample
+}  // namespace cd::app

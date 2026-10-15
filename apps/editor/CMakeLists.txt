@@ -52,12 +52,12 @@
 #   cd::scene                           -- scene graph (transitive via editor)
 #   cd::ecs                             -- ECS world (transitive via editor)
 #
-# Uses cd_add_sample(...) so the binary picks up the same warnings /
-# sanitizer / smoke-target wiring every cd_sample_* target gets. The
-# resulting executable name is "editor" (cd_add_sample sets OUTPUT_NAME
+# Uses cd_add_app(...) so the binary picks up the same warnings /
+# sanitizer / smoke-target wiring every cd_* app target gets. The
+# resulting executable name is "editor" (cd_add_app sets OUTPUT_NAME
 # to the short_name argument).
 
-cd_add_sample(editor
+cd_add_app(editor
   SOURCES main.cpp
   DEPS
     cd::ui
@@ -73,74 +73,36 @@ cd_add_sample(editor
     cd::editor_panel_console
     cd::editor_panel_asset_browser
     cd::editor_panel_viewport
-    cd::editor_panel_material_editor    # phase569 / M4 W1B
-    cd::editor_panel_animator           # phase569 / M4 W1B
-    cd::editor_panel_behavior_designer  # phase569 / M4 W1B
-    cd::editor_panel_asset_drop_target  # phase598 / M6 W3
-    cd::profile_cpu_marker_overlay      # phase598 / M6 W3
-    cd::profile_frame_graph_timeline    # phase598 / M6 W3
-    cd::framegraph                      # phase737 — InstrumentationCallback for real pass timing
-    cd::profile_gpu_marker              # phase631 / M9 W1A (cpu/gpu sibling; backfills phase618 slot)
-    cd::asset_validator                 # phase631 / M9 W1A — wired into status bar badge in phase667
-    # phase667 / M12 W2 — three new panels + cutscene_player sibling for the
-    # LEFT-column tab pair (dialog_tree_editor + cutscene_player).
+    cd::editor_panel_material_editor
+    cd::editor_panel_animator
+    cd::editor_panel_behavior_designer
+    cd::editor_panel_asset_drop_target
+    cd::profile_cpu_marker_overlay
+    cd::profile_frame_graph_timeline
+    cd::framegraph
+    cd::profile_gpu_marker
+    cd::asset_validator
     cd::editor_panel_light_editor
     cd::editor_panel_input_recorder
     cd::editor_panel_dialog_tree_editor
     cd::editor_panel_cutscene_player
-    # phase679 / M13 W3 — three new authoring panels:
-    #   vehicle_editor (tab-merged with material_editor),
-    #   pathfinding_viz (standalone bottom-left split),
-    #   material_preview (3-way tab strip with material_editor + vehicle_editor).
     cd::editor_panel_vehicle_editor
     cd::editor_panel_pathfinding_viz
     cd::editor_panel_material_preview
-    # phase684 / M13 W6A — 3 debug-viz thumbnails (depth / normal / alpha-bucket).
     cd::editor_panel_debug_viz
-    # phase690 / M14 W3 — three NEW M14 surfaces wired into apps/editor:
-    #   * scene_navigator           — search-filter sibling to scene_tree (LEFT, tab-merged).
-    #   * keyboard_shortcut_overlay — '?' toggle full-screen cheatsheet (15 default shortcuts).
-    #   * PopoutDock (in cd::ui_widgets) — state-machine for detach/reattach (Sprint-1 internal,
-    #                                       native multi-window = Sprint-2). NOT a separate dep
-    #                                       (already pulled in via cd::ui_widgets).
     cd::editor_panel_scene_navigator
     cd::editor_panel_keyboard_shortcut_overlay
-    # phase701 / M15 W3 — three NEW M15 W3 surfaces wired into apps/editor:
-    #   * settings_panel  — tab-merged with inspector on RIGHT-top.
-    #   * build_panel     — tab-merged with console on BOTTOM.
-    #   * perf_profiler   — split below light_editor on RIGHT-lower (+1 node).
-    # Dock panel count grows 17 -> 20 (settings + build are tab-merges;
-    # perf_profiler introduces the only new split this phase).
     cd::editor_panel_settings
     cd::editor_panel_build
     cd::editor_panel_perf_profiler
-    # phase711 / M16 W3 — two NEW M16 surfaces wired into apps/editor:
-    #   * asset_pipeline_status — tab-merged with perf_profiler on RIGHT-lower.
-    #   * ik_chain_editor       — tab-merged with animator on BOTTOM strip.
-    # Both are tab-merges so dockspace.node_count() stays at 14; only the panel
-    # count grows 20 -> 22. Also drives shortcut-overlay auto-population: each
-    # panel registers its focus hotkey (Ctrl+1..Ctrl+22) into the overlay so a
-    # first-time user pressing '?' sees every shortcut DAY ONE.
     cd::editor_panel_asset_pipeline_status
     cd::editor_panel_ik_chain_editor
-    # phase720 / M17 W3 — three new M17 surfaces wired into apps/editor:
-    #   * scene_palette        — tab-merged with settings_panel on RIGHT-top.
-    #   * lobby_browser        — standalone split below perf_profiler RIGHT-lower.
-    #   * auto_save_indicator  — status-bar widget (NOT a dock panel); driven
-    #                            by a 30 s auto-save timer + dirty-flag walker.
-    # Dock panel count grows 22 -> 24; node_count grows by +1 (lobby_browser
-    # split; scene_palette is a tab-merge; auto_save_indicator is outside the
-    # dock entirely).
     cd::editor_panel_scene_palette
     cd::editor_panel_lobby_browser
     cd::editor_panel_auto_save_indicator
-    cd::editor_panel_status_bar_fps_sparkline   # phase787 — FPS sparkline in status bar
-    cd::net_lobby                       # phase720 — Lobby instance for the LobbyBrowser seed.
-    # phase707 / M15 W6B — particle system for the cinematic boot splash
-    # background (20 particles/sec, 4s life, accent_success green glow).
+    cd::editor_panel_status_bar_fps_sparkline
+    cd::net_lobby
     cd::particle_system
-    # phase775 / FINALE-8 W1B H2 — 500 ms oscillator-generated boot chime.
-    # Uses native audio backend (WASAPI -> null fallback); no sample asset required.
     cd::audio
     cd::editor
     cd::editor_ui
@@ -150,8 +112,8 @@ cd_add_sample(editor
     cd::gameplay_framework
     cd::scene_renderer
     cd::runtime
-    cd::material                        # phase659 / M11 W3B Sprint-4 -- always linked (Route A runtime path)
-    cd::frame_timing                    # phase674 / M12 W6B -- header-only FrameTimeRing for real FPS feed
+    cd::material
+    cd::frame_timing
     cd::platform
     cd::rhi
     cd::rhi_vulkan
@@ -161,58 +123,21 @@ cd_add_sample(editor
     cd::scene
     cd::ecs
     cd::core
-    cd::sample_common
+    cd::app_common
 )
 
-# Override the FOLDER property -- cd_add_sample defaults to "samples".
-# The editor lives in its own "apps" IDE folder so VS / Xcode group it
-# separately from the demo collection.
-set_target_properties(cd_sample_editor PROPERTIES FOLDER "apps")
-
-# phase775 / FINALE-8 W1B H2 — splash audio cue unit tests.
-# Independent of the Vulkan gate; only needs cd::audio + cd::core.
 if(CD_ENABLE_TESTING)
   add_subdirectory(tests)
   add_test(
     NAME cd_editor_headless_pie_smoke
-    COMMAND cd_sample_editor --headless 5 --pie-play --showcase 01_pbr_materials_sss_hair
+    COMMAND cd_app_editor --headless 5 --pie-play --showcase 01_pbr_materials_sss_hair
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   )
 endif()
 
-# Phase 608 / M7 W3 introduced Route A vs Route B as a hard compile-time
-# split. Phase 659 / M11 W3B Sprint-4 turned the flag into a PREFERRED-PATH
-# selector with graceful runtime fallback. Phase 731 / FINALE-1 W2C A7
-# audited the path end-to-end (`apps/editor --headless 5`) and confirmed:
-#
-#   * Submitter::create_with_material_ui_variant returns a valid handle.
-#   * Theme palette UBO uploads OK on the variant's descriptor set.
-#   * All 24 dock panels render through the cd::material UI pipeline
-#     (vertex-color + theme UBO), NOT a clear-color placeholder.
-#
-# CD_USE_MATERIAL_UI_ROUTE_A (default ON since phase659; ship default
-# re-confirmed in phase731):
-#   * ON  -- main.cpp tries Route A (cd::material::UiVariant +
-#            Submitter::create_with_material_ui_variant) first; on the
-#            success case the boot log prints the single-line marker
-#            "editor: Route A active." On any factory or descriptor
-#            error main.cpp logs a diagnostic warning and falls back to
-#            Route B (Submitter::create_with_inline_shader) so the
-#            editor still opens with a live swapchain.
-#   * OFF -- main.cpp never attempts Route A; it goes straight to
-#            Route B. Boot prints "submitter route = Route B only".
-#
-# Both Submitter factories are linked into the binary regardless of the
-# flag value (cd::material is an unconditional dependency above); the
-# flag only chooses whether to even try Route A at runtime. Default is
-# ON because the runtime fallback makes the strategic path safe to ship
-# as the visible default; OFF stays available for hosts where attempting
-# Route A is undesirable (e.g. CI bots with no glslang).
-#
-# Override via:   cmake -B build -DCD_USE_MATERIAL_UI_ROUTE_A=OFF ...
 option(CD_USE_MATERIAL_UI_ROUTE_A
        "Editor prefers Route A (cd::material UI variant) at runtime, with safety fallback to Route B (inline GLSL). Default ON (ship path)."
        ON)
 if(CD_USE_MATERIAL_UI_ROUTE_A)
-  target_compile_definitions(cd_sample_editor PRIVATE CD_USE_MATERIAL_UI_ROUTE_A=1)
+  target_compile_definitions(cd_app_editor PRIVATE CD_USE_MATERIAL_UI_ROUTE_A=1)
 endif()

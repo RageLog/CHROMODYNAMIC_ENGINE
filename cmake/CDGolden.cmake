@@ -22,7 +22,7 @@ function(cd_setup_golden)
     set(_script_ps1 "${CMAKE_SOURCE_DIR}/scripts/run_golden.ps1")
     set(_script_sh  "${CMAKE_SOURCE_DIR}/scripts/run_golden.sh")
 
-    get_property(_cd_samples GLOBAL PROPERTY CD_ALL_SAMPLES)
+    get_property(_cd_apps GLOBAL PROPERTY CD_ALL_APPS)
 
     if(WIN32)
         if(NOT EXISTS "${_script_ps1}")
@@ -54,15 +54,12 @@ function(cd_setup_golden)
             VERBATIM
             USES_TERMINAL
         )
-        if(_cd_samples)
-            add_dependencies(smoke-golden-capture ${_cd_samples})
-            add_dependencies(smoke-golden-compare ${_cd_samples})
+        if(_cd_apps)
+            add_dependencies(smoke-golden-capture ${_cd_apps})
+            add_dependencies(smoke-golden-compare ${_cd_apps})
         endif()
         message(STATUS "[cd-golden] golden targets installed: smoke-golden-capture / smoke-golden-compare")
     else()
-        # POSIX: the same dispatch via scripts/run_golden.sh. Linux CI
-        # runs this under xvfb-run + lavapipe so the Vulkan path is
-        # exercised on a software renderer (Track B Part 1).
         if(NOT EXISTS "${_script_sh}")
             message(STATUS "[cd-golden] scripts/run_golden.sh missing; targets disabled on POSIX.")
             return()
@@ -93,9 +90,9 @@ function(cd_setup_golden)
             VERBATIM
             USES_TERMINAL
         )
-        if(_cd_samples)
-            add_dependencies(smoke-golden-capture ${_cd_samples})
-            add_dependencies(smoke-golden-compare ${_cd_samples})
+        if(_cd_apps)
+            add_dependencies(smoke-golden-capture ${_cd_apps})
+            add_dependencies(smoke-golden-compare ${_cd_apps})
         endif()
         message(STATUS "[cd-golden] golden targets installed (POSIX): smoke-golden-capture / smoke-golden-compare")
     endif()

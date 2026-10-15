@@ -5,7 +5,7 @@
 #   cd_add_library(<short_name> ...)       — Library + alias + export header
 #   cd_add_plugin(<short_name> ...)        — Plugin (always SHARED)
 #   cd_add_test(<short_name> ...)          — gtest binary + ctest registration
-#   cd_add_sample(<short_name> ...)        — Sample executable
+#   cd_add_app(<short_name> ...)           — Application executable
 #   cd_apply_warnings(<target>)            — `-Wall -Werror -Wextra ...`
 #   cd_apply_sanitizers(<target>)          — ASan/UBSan/TSan/MSan via CD_SANITIZER
 #
@@ -208,20 +208,20 @@ function(cd_add_test short_name)
 endfunction()
 
 #-------------------------------------------------------------------------------
-# cd_add_sample(<short_name>
+# cd_add_app(<short_name>
 #   SOURCES <file>...
 #   DEPS <target>...
 # )
 #-------------------------------------------------------------------------------
-function(cd_add_sample short_name)
+function(cd_add_app short_name)
   set(options "")
   set(oneValueArgs "")
   set(multiValueArgs SOURCES DEPS)
-  cmake_parse_arguments(CDS "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+  cmake_parse_arguments(CDA "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
-  set(target_name "cd_sample_${short_name}")
-  add_executable(${target_name} ${CDS_SOURCES})
-  target_link_libraries(${target_name} PRIVATE ${CDS_DEPS})
+  set(target_name "cd_app_${short_name}")
+  add_executable(${target_name} ${CDA_SOURCES})
+  target_link_libraries(${target_name} PRIVATE ${CDA_DEPS})
   target_compile_features(${target_name} PUBLIC cxx_std_23)
 
   cd_apply_warnings(${target_name})
@@ -229,16 +229,13 @@ function(cd_add_sample short_name)
   cd_apply_coverage(${target_name})
 
   set_target_properties(${target_name} PROPERTIES
-    FOLDER "samples"
+    FOLDER "apps"
     OUTPUT_NAME "${short_name}"
   )
 
-  # Register the sample with a global property so cd_setup_smoke() can
-  # add it as a dependency of the `smoke` target — that way
-  # `cmake --build --target smoke` always tests fresh binaries.
-  set_property(GLOBAL APPEND PROPERTY CD_ALL_SAMPLES "${target_name}")
+  set_property(GLOBAL APPEND PROPERTY CD_ALL_APPS "${target_name}")
 
   if(NOT CD_QUIET)
-    message(STATUS "[cd] sample ${target_name}")
+    message(STATUS "[cd] app ${target_name}")
   endif()
 endfunction()

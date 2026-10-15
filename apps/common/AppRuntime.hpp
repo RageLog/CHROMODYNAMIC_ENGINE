@@ -1,8 +1,8 @@
 // =============================================================================
-// CHROMODYNAMIC — apps/common/SampleRuntime.hpp
+// CHROMODYNAMIC — apps/common/AppRuntime.hpp
 //
-// Tiny header-only helpers for headless CI smoke-testing and golden-image
-// capture/compare across CHROMODYNAMIC shipping apps and showcase runners.
+// Header-only helpers for headless CI smoke-testing and golden-image
+// capture/compare across CHROMODYNAMIC shipping applications.
 // =============================================================================
 #pragma once
 
@@ -13,7 +13,7 @@
 #include <string>
 #include <string_view>
 
-namespace cd::sample
+namespace cd::app_runtime
 {
 
 enum class GoldenMode : std::uint8_t
@@ -116,4 +116,4 @@ struct Runtime
     return rt;
 }
 
-}  // namespace cd::sample
+}  // namespace cd::app_runtime

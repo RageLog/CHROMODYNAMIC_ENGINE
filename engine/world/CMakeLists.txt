@@ -16,7 +16,7 @@
 #   net_lobby        — Phase 713 / Sprint W5A: cd::network::lobby Sprint-1 (room-state).
 #   net_session_replay — Phase 600 / M6 W4B: cd::net::session_replay (record + replay).
 #   world_container  — gap #18 — World / Project / Level / Layer foundation.
-#   sample_framework — Mega-Marathon M2: cd::sample::App lifecycle library.
+#   app_framework    — Application lifecycle library (cd::app::App).
 #   gameplay_time    — Phase 459: cd::gameplay::time::TimeKeeper multi-channel clock.
 #   gameplay_input_binding — Phase 462: cd::gameplay::input_binding::ActionMap (action-mapping layer).
 #   particle_system        — Phase 564/M3 W5C + Phase 583 rename: cd::particle::system (was particle_system_v2; no v1 ever existed).
@@ -41,7 +41,7 @@ add_subdirectory(net_matchmaker)
 add_subdirectory(net_lobby)
 add_subdirectory(net_session_replay)
 add_subdirectory(world_container)
-add_subdirectory(sample_framework)
+add_subdirectory(app_framework)
 add_subdirectory(gameplay_time)
 add_subdirectory(gameplay_input_binding)
 add_subdirectory(particle_system)

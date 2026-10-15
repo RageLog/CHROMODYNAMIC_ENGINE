@@ -853,6 +853,8 @@ public:
             for (auto img_id : sc.image_ids)
             {
                 images_.erase(img_id);
+                image_meta_.erase(img_id);
+                image_formats_.erase(img_id);
             }
             for (auto view_id : sc.view_ids)
             {
@@ -3273,7 +3275,8 @@ public:
             .imageColorSpace = chosen_format.colorSpace,
             .imageExtent = extent,
             .imageArrayLayers = 1,
-            .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                          (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT),
             .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
             .queueFamilyIndexCount = 0,
             .pQueueFamilyIndices = nullptr,
@@ -3329,6 +3332,13 @@ public:
         {
             const auto img_id = next_id_++;
             images_.emplace(img_id, img);
+            TextureMeta meta;
+            meta.format = desc.format;
+            meta.type = cd::rhi::TextureType::k2D;
+            meta.mip_levels = 1;
+            meta.array_layers = 1;
+            image_meta_.emplace(img_id, meta);
+            image_formats_.emplace(img_id, desc.format);
             image_ids.push_back(img_id);
         }
 
@@ -3385,6 +3395,8 @@ public:
         for (auto img_id : it->second.image_ids)
         {
             images_.erase(img_id);
+            image_meta_.erase(img_id);
+            image_formats_.erase(img_id);
         }
         for (auto view_id : it->second.view_ids)
         {

@@ -132,7 +132,6 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # --- Options (ADR-005 §A + ADR-016) ---
 option(CD_BUILD_SHARED_LIBS  "Build engine libraries as shared (default static)" OFF)
 option(CD_ENABLE_TESTING     "Enable unit tests (GoogleTest)"                    ON)
-option(CD_ENABLE_SAMPLES     "Build sample applications"                         ON)
 option(CD_ENABLE_WARNINGS    "Apply zero-warning compiler flags"                 ON)
 option(CD_WARNINGS_AS_ERRORS "Treat warnings as errors"                          ON)
 option(CD_ENABLE_PCH         "Enable Pre-Compiled Headers"                       ON)
@@ -169,7 +168,7 @@ endif()
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules")
 
-include(CDProject)             # cd_add_library, cd_add_test, cd_add_sample
+include(CDProject)             # cd_add_library, cd_add_test, cd_add_app
 include(CDWarnings)            # cd_apply_warnings
 include(CDSanitizers)          # cd_apply_sanitizers + CD_SANITIZER var
 include(CDCoverage)            # cd_apply_coverage + CD_ENABLE_COVERAGE
@@ -280,16 +279,8 @@ if(CD_ENABLE_TESTING)
   add_subdirectory(tests)
 endif()
 
-# --- Showcases (FAZ 8 Wave 8.2: samples/ replaced by showcases/*.cdproj) ---
-if(CD_ENABLE_SAMPLES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/samples/CMakeLists.txt")
-  add_subdirectory(samples)
-endif()
-
 # --- Apps (end-user shipping binaries: editor, runtime player, etc.) ---
-# Phase 524 / T0.2: split from samples/ to distinguish shipping tools
-# from pedagogical demos. Defaults ON; gate per-app cmake handles
-# backend-specific availability (Vulkan / D3D12 / Metal).
-option(CD_ENABLE_APPS "Build end-user application binaries (cd::editor, ...)" ON)
+option(CD_ENABLE_APPS "Build end-user application binaries (cd_editor, cd_player)" ON)
 if(CD_ENABLE_APPS)
   add_subdirectory(apps)
 endif()
@@ -333,7 +324,8 @@ message(STATUS "[cd] ====== CHROMODYNAMIC ${PROJECT_VERSION} configuration =====
 message(STATUS "[cd] Build type        : ${CMAKE_BUILD_TYPE}")
 message(STATUS "[cd] Shared libs       : ${CD_BUILD_SHARED_LIBS}")
 message(STATUS "[cd] Testing           : ${CD_ENABLE_TESTING}")
-message(STATUS "[cd] Samples           : ${CD_ENABLE_SAMPLES}")
+message(STATUS "[cd] Apps              : ${CD_ENABLE_APPS}")
+message(STATUS "[cd] Tools             : ${CD_ENABLE_TOOLS}")
 message(STATUS "[cd] Warnings as error : ${CD_WARNINGS_AS_ERRORS}")
 message(STATUS "[cd] PCH               : ${CD_ENABLE_PCH}")
 message(STATUS "[cd] LTO               : ${CD_ENABLE_LTO}")

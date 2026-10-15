@@ -1,4 +1,4 @@
-# cd::sample_framework (M2A skeleton)
+# cd::app_framework (M2A skeleton)
 
 Mega-Marathon Milestone M2 — sample-app lifecycle library. Inherit from
 `cd::sample::App`, override `on_boot` / `on_frame` / `on_shutdown`, and
@@ -60,12 +60,12 @@ M2B/M2C will add `cd::rhi`, `cd::window`, `cd::shader`, `cd::ibl`,
 
 ## Tests
 
-`cd_test_sample_framework` exercises the lifecycle contract WITHOUT a
+`cd_test_app_framework` exercises the lifecycle contract WITHOUT a
 real RHI / window: boot/frame/shutdown order, multi-frame pump, early
 shutdown via `request_shutdown`, boot-failure path, and the `run<App>`
 template entry point.
 
 Run:
 
-    cmake --build --preset ninja-debug --target cd_test_sample_framework
-    ctest --preset ninja-debug --output-on-failure -R sample_framework
+    cmake --build --preset ninja-debug --target cd_test_app_framework
+    ctest --preset ninja-debug --output-on-failure -R app_framework

@@ -22,40 +22,32 @@
 include_guard(GLOBAL)
 
 function(cd_setup_bench)
-    if(NOT TARGET cd_sample_hello_bench OR NOT TARGET cd_bench_compare)
-        # Either samples or the bench-compare tool is disabled; quietly
-        # skip — same pattern CDSmoke / CDGolden use.
+    if(NOT TARGET cd_bench_runner OR NOT TARGET cd_bench_compare)
         return()
     endif()
 
     set(_baseline "${CMAKE_SOURCE_DIR}/tests/bench/baseline-debug-nvidia.json")
 
     add_custom_target(smoke-bench-capture
-        COMMAND $<TARGET_FILE:cd_sample_hello_bench> --json=${_baseline}
+        COMMAND $<TARGET_FILE:cd_bench_runner> --json=${_baseline}
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         COMMENT "[cd-bench] Capturing fresh baseline → ${_baseline}"
-        DEPENDS cd_sample_hello_bench
+        DEPENDS cd_bench_runner
         VERBATIM
         USES_TERMINAL
     )
 
     add_custom_target(smoke-bench
-        # Two-step: 1) run bench, 2) compare against committed baseline.
-        COMMAND ${CMAKE_COMMAND} -E echo "[cd-bench] Running hello_bench → current.json"
-        COMMAND $<TARGET_FILE:cd_sample_hello_bench> --json=${CMAKE_BINARY_DIR}/bench-current.json
+        COMMAND ${CMAKE_COMMAND} -E echo "[cd-bench] Running bench_runner → current.json"
+        COMMAND $<TARGET_FILE:cd_bench_runner> --json=${CMAKE_BINARY_DIR}/bench-current.json
         COMMAND ${CMAKE_COMMAND} -E echo "[cd-bench] Comparing against ${_baseline}"
-        # Threshold is 25% for Debug builds. Debug allocators + ASan-style
-        # instrumentation make Debug run-to-run variance noisy; observed
-        # noise on this surface peaks around 15-20% for low-ns benches.
-        # A tighter threshold would false-trip on noise. Release builds
-        # land a second baseline + a tighter gate as a follow-up wave.
         COMMAND $<TARGET_FILE:cd_bench_compare>
                 ${_baseline}
                 ${CMAKE_BINARY_DIR}/bench-current.json
                 --threshold=25
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        COMMENT "[cd-bench] hello_bench + regression gate against committed baseline"
-        DEPENDS cd_sample_hello_bench cd_bench_compare
+        COMMENT "[cd-bench] bench_runner + regression gate against committed baseline"
+        DEPENDS cd_bench_runner cd_bench_compare
         VERBATIM
         USES_TERMINAL
     )

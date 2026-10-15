@@ -62,9 +62,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     )
 endif()
 
-# ===== Web Sample Application (stub) =====
-# Post-T4.5: Integrate with cd::sample framework (hello_webgpu target)
-if(CD_ENABLE_SAMPLES AND CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+# ===== Web Application (stub) =====
+if(CD_ENABLE_APPS AND CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     add_executable(chromodynamic_web)
 
     target_sources(
@@ -85,8 +84,6 @@ if(CD_ENABLE_SAMPLES AND CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
             cd::core
             cd::math
             cd::platform
-            # Post-T4.5: cd::rhi::webgpu (when T2.7 lands)
-            # Post-T4.5: cd::sample (framework)
     )
 
     # Emscripten linker settings for executable

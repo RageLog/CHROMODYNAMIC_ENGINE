@@ -242,7 +242,29 @@
 //                    path; full .cdproj plumbing lands in T0.3.
 // =============================================================================
 
-#include "SampleRuntime.hpp"
+#include "AppRuntime.hpp"
+#include "StudioGameWorkbench.hpp"
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#ifdef DrawText
+#undef DrawText
+#endif
+#ifdef near
+#undef near
+#endif
+#ifdef far
+#undef far
+#endif
+#ifdef ERROR
+#undef ERROR
+#endif
+#endif
 
 #include <cd/platform/Window.hpp>
 #include <cd/render/Renderer.hpp>
@@ -471,11 +493,13 @@ struct EditorArgs
 {
     bool          force_null { false };
     bool          pie_play { false };
-    bool          skip_splash { false };
+    bool          skip_splash { true };
+    bool          legacy_dock { false };
     std::uint32_t max_frames { 0U };
     std::string   project_path;
     std::string   showcase_slug { "01_pbr_materials_sss_hair" };
     std::string   capture_png;
+    std::string   capture_window_png;
 };
 
 [[nodiscard]] EditorArgs parse_editor_args(int argc, char** argv)
@@ -495,6 +519,14 @@ struct EditorArgs
         else if (s == "--skip-splash")
         {
             a.skip_splash = true;
+        }
+        else if (s == "--with-splash")
+        {
+            a.skip_splash = false;
+        }
+        else if (s == "--legacy-dock")
+        {
+            a.legacy_dock = true;
         }
         else if ((s == "--frames" || s == "--smoke-frames" || s == "--headless-frames") && i + 1 < argc)
         {
@@ -517,6 +549,16 @@ struct EditorArgs
             if (a.max_frames == 0U)
             {
                 a.max_frames = 4U;
+            }
+            ++i;
+        }
+        else if (s == "--capture-window-png" && i + 1 < argc)
+        {
+            a.capture_window_png = argv[i + 1];
+            a.skip_splash = true;
+            if (a.max_frames == 0U)
+            {
+                a.max_frames = 12U;
             }
             ++i;
         }
@@ -724,6 +766,60 @@ void dump_batcher_to_png(const ur::DrawBatcher& batcher, std::uint32_t w, std::u
         std::printf("editor: captured frame PNG (%ux%u) -> %s\n", w, h, path.string().c_str());
         std::fflush(stdout);
     }
+}
+
+void capture_gpu_swapchain_to_png(rhi::IDevice& device,
+                                  rhi::TextureHandle swapchain_image,
+                                  std::uint32_t w,
+                                  std::uint32_t h,
+                                  const std::filesystem::path& path)
+{
+    if (!swapchain_image.is_valid() || w == 0U || h == 0U) { return; }
+    const std::size_t byte_count = static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4U;
+
+    rhi::BufferDesc bd {};
+    bd.size       = byte_count;
+    bd.usage      = rhi::BufferUsage::kTransferDst;
+    bd.memory     = rhi::MemoryUsage::kGpuToCpu;
+    bd.debug_name = "editor.swapchain_readback";
+    auto buf_r = device.create_buffer(bd);
+    if (!buf_r.has_value()) { return; }
+    const auto readback_buf = *buf_r;
+
+    rhi::IDevice::ImageRegion region {};
+    region.x          = 0U;
+    region.y          = 0U;
+    region.width      = w;
+    region.height     = h;
+    region.mip_level  = 0U;
+    region.base_layer = 0U;
+    region.src_state  = rhi::ResourceState::kPresent;
+
+    auto copy_r = device.copy_image_to_buffer(swapchain_image, readback_buf, 0U, region);
+    if (copy_r.has_value())
+    {
+        std::vector<std::uint8_t> bgra(byte_count, 0U);
+        auto dl_r = device.download_buffer(
+            readback_buf, 0U,
+            std::span<std::byte>(reinterpret_cast<std::byte*>(bgra.data()), bgra.size()));
+        if (dl_r.has_value())
+        {
+            std::vector<std::uint8_t> rgba(byte_count, 0U);
+            for (std::size_t i = 0U; i < byte_count; i += 4U)
+            {
+                rgba[i + 0U] = bgra[i + 2U];
+                rgba[i + 1U] = bgra[i + 1U];
+                rgba[i + 2U] = bgra[i + 0U];
+                rgba[i + 3U] = 255U;
+            }
+            if (write_rgba_png(path, w, h, rgba))
+            {
+                std::printf("editor: captured GPU swapchain PNG (%ux%u) -> %s\n", w, h, path.string().c_str());
+                std::fflush(stdout);
+            }
+        }
+    }
+    device.destroy_buffer(readback_buf);
 }
 
 
@@ -4175,8 +4271,8 @@ void report_headless_frame(const ur::DrawBatcher& batcher,
 
 int main(int argc, char** argv)
 {
-    const cd::sample::Runtime runtime = cd::sample::parse_runtime(argc, argv);
-    const EditorArgs          local   = parse_editor_args(argc, argv);
+    const cd::app_runtime::Runtime runtime = cd::app_runtime::parse_runtime(argc, argv);
+    const EditorArgs               local   = parse_editor_args(argc, argv);
 
     // -- 0. .cdproj restore — read last.cdproj (or explicit --project path) ----
     //
@@ -4903,7 +4999,7 @@ int main(int argc, char** argv)
             BuildEvent {  812.5, "compiling cd::editor_panel_settings...","", 0U,    Status::kCompiling },
             BuildEvent { 1502.0, "warning: unused parameter 'flags'",
                          "engine/render/Material.cpp",                    142U,  Status::kSuccess   },
-            BuildEvent { 1820.0, "linked cd_sample_editor.exe",           "", 0U,    Status::kSuccess   },
+            BuildEvent { 1820.0, "linked editor.exe",                     "", 0U,    Status::kSuccess   },
         };
         for (const auto& ev : kSeedEvents) { g_build_panel.push_event(ev); }
         cd::editor::build_panel_bridge::register_target(&g_build_panel);
@@ -5087,9 +5183,9 @@ int main(int argc, char** argv)
     if (!using_null)
     {
         platform::WindowDesc wd {};
-        wd.title  = "CHROMODYNAMIC -- editor";
-        wd.width  = 1280;
-        wd.height = 720;
+        wd.title  = "CHROMODYNAMIC ENGINE STUDIO v1.0";
+        wd.width  = 1600;
+        wd.height = 900;
         auto wr   = platform::create_window(wd);
         if (!wr.has_value())
         {
@@ -5147,33 +5243,6 @@ int main(int argc, char** argv)
     }
     std::fflush(stdout);
 
-    // -- 7. UI submitter ----------------------------------------------------
-    //
-    // Phase 608 / M7 W3 introduced Route A vs Route B as a compile-time
-    // gate. Phase 659 / M11 W3B Sprint-4 flips that to a RUNTIME selection
-    // with graceful fallback, so default-on Route A becomes safe to ship:
-    //
-    //   Route A (PREFERRED when CD_USE_MATERIAL_UI_ROUTE_A is defined --
-    //   default ON after Sprint-4): build a cd::material::UiVariant via
-    //   cd::material::create_ui_variant and hand it to
-    //   Submitter::create_with_material_ui_variant. The variant carries
-    //   the Sprint-1/Sprint-2 UI pipeline (vertex-color baseline + theme
-    //   UBO; SDF sampler stays off until ui_font is wired to a sample-able
-    //   TextureView). If anything in this pipeline returns an error -- the
-    //   factory itself, descriptor allocation, glslang missing -- the
-    //   editor logs a clear warning and immediately retries Route B so
-    //   the user still sees a live window. The boot log line "editor:
-    //   submitter route = ..." records which path actually succeeded.
-    //
-    //   Route B (FALLBACK when Route A errors, or PRIMARY when the flag is
-    //   compiled off): cd::ui_renderer_rhi compiles a minimal inline GLSL
-    //   pipeline at boot (solid quads only, no sampler). That's enough to
-    //   render every panel rect + theme palette so the editor's window
-    //   shows DockSpace tiles.
-    //
-    // The compile-time flag now only chooses between "prefer A, accept B
-    // on failure" (ON) and "B only, never try A" (OFF) -- both Submitter
-    // factories are linked into the binary either way.
 #if defined(CD_USE_MATERIAL_UI_ROUTE_A)
     constexpr bool kEditorPreferRouteA = true;
 #else
@@ -5181,8 +5250,8 @@ int main(int argc, char** argv)
 #endif
 
     urr::SubmitterCreateInfo sci {};
-    sci.max_vertices = 65532U;
-    sci.max_indices  = 196608U;
+    sci.max_vertices = 262144U;
+    sci.max_indices  = 786432U;
     sci.color_format = rhi::Format::kBGRA8Unorm;
 
     // Runtime self-test marker -- which route actually produced the
@@ -5546,10 +5615,17 @@ int main(int argc, char** argv)
     // the replayer is active, used to gate next_event() delivery.
     bool   was_recording      { false };
     double replay_elapsed_ms  { 0.0 };
+
+    cd::editor::studio::StudioWorkbench studio_workbench {};
+    if (local.pie_play)
+    {
+        studio_workbench.start_play(active_stage, pie_controller);
+    }
+
     while (true)
     {
-        std::uint32_t fb_w { 1280U };
-        std::uint32_t fb_h { 720U };
+        std::uint32_t fb_w { 1600U };
+        std::uint32_t fb_h { 900U };
         if (window)
         {
             fb_w = window->width()  > 0U ? window->width()  : fb_w;
@@ -5560,6 +5636,8 @@ int main(int argc, char** argv)
             for (const auto& e : events)
             {
                 apply_event(pointer, e);
+                const bool was_pie_playing = studio_workbench.pie_playing();
+                studio_workbench.on_event(e);
 
                 // phase785 / E5 — feed live input events into the Recorder.
                 // Translate OSEvent to InputEvent when a recording is active.
@@ -5633,9 +5711,11 @@ int main(int argc, char** argv)
                 if (e.kind == platform::OSEventKind::kKeyDown &&
                     e.key  == platform::KeyCode::kEscape)
                 {
-                    // phase690 / M14 W3: Esc first closes the shortcut overlay
-                    // (if visible); only then does it request window close.
-                    if (shortcut_overlay.is_visible())
+                    if (was_pie_playing)
+                    {
+                        // Escape stopped PIE via studio_workbench.on_event(e) above.
+                    }
+                    else if (shortcut_overlay.is_visible())
                     {
                         shortcut_overlay.set_visible(false);
                     }
@@ -5918,6 +5998,35 @@ int main(int argc, char** argv)
         using FgDuration = std::chrono::duration<double, std::milli>;
         const auto fg_dock_start = FgClock::now();
         batcher.begin_frame();
+
+        if (!local.legacy_dock)
+        {
+            studio_workbench.tick_and_draw(
+                batcher,
+                widget_theme,
+                fb_w,
+                fb_h,
+                flatten_pointer(pointer),
+                pointer.right_down,
+                last_dt_s > 0.0F ? last_dt_s : (1.0F / 60.0F),
+                real_fps > 0.0F ? real_fps : 60.0F,
+                route_taken,
+                active_stage,
+                pie_controller,
+                add_element_catalog,
+                cockpit_shell,
+                g_gizmo_mode,
+                g_cam_yaw,
+                g_cam_pitch,
+                &draw_ui_text_clipped,
+                &draw_ui_line);
+            const uw::Rect fb_rect {
+                0.0F, 0.0F,
+                static_cast<float>(fb_w), static_cast<float>(fb_h) };
+            shortcut_overlay.draw(batcher, widget_theme, fb_rect);
+        }
+        else
+        {
         dockspace.draw(batcher, font.is_loaded() ? &font : nullptr, widget_theme);
         draw_dock_node_tab_labels(dockspace.root(), batcher);
 
@@ -6551,6 +6660,7 @@ int main(int argc, char** argv)
                 }
             }
         }
+        } // end else (local.legacy_dock)
 
         // phase737 — record real DockDraw CPU duration then freeze the frame.
         // phase736 — close frame.draw CPU scope + build FrameCapture.
@@ -6625,6 +6735,8 @@ int main(int argc, char** argv)
             }
             auto& frame = *frame_r;
             auto& cmd   = *frame.command_buffer;
+            const rhi::TextureHandle captured_sc_image = frame.swapchain_image;
+            const rhi::Extent2D      captured_extent   = frame.extent;
 
             std::array<rhi::ColorAttachmentInfo, 1> color_attach { rhi::ColorAttachmentInfo {
                 .view        = frame.swapchain_image_view,
@@ -6684,6 +6796,16 @@ int main(int argc, char** argv)
                              static_cast<int>(end_r.error().message.size()),
                              end_r.error().message.data());
                 return 6;
+            }
+            if (!local.capture_window_png.empty() &&
+                frame_idx + 1U == (cap_frames > 0U ? cap_frames : 12U))
+            {
+                renderer->wait_idle();
+                capture_gpu_swapchain_to_png(*device,
+                                             captured_sc_image,
+                                             captured_extent.width,
+                                             captured_extent.height,
+                                             local.capture_window_png);
             }
         }
 

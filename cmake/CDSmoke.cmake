@@ -16,33 +16,28 @@ function(cd_setup_smoke)
     set(_script_ps1 "${CMAKE_SOURCE_DIR}/scripts/run_all_samples.ps1")
     set(_script_sh  "${CMAKE_SOURCE_DIR}/scripts/run_all_samples.sh")
 
-    # Collect every sample target that cd_add_sample() registered. The
-    # smoke target depends on these so `cmake --build --target smoke`
-    # always rebuilds stale binaries before running the harness.
-    get_property(_cd_samples GLOBAL PROPERTY CD_ALL_SAMPLES)
+    get_property(_cd_apps GLOBAL PROPERTY CD_ALL_APPS)
 
     if(WIN32)
         if(NOT EXISTS "${_script_ps1}")
             return()
         endif()
-        # PowerShell 7 (`pwsh`) if available, else Windows PowerShell 5.1.
         find_program(_pwsh NAMES pwsh powershell DOC "PowerShell host for smoke harness")
         if(NOT _pwsh)
             message(STATUS "[cd-smoke] No PowerShell host found; `smoke` target disabled.")
             return()
         endif()
-        # Generator-expression for Debug/Release picks the right bin/<cfg>.
         add_custom_target(smoke
             COMMAND ${_pwsh} -NoProfile -File "${_script_ps1}"
                 -BuildDir "${CMAKE_BINARY_DIR}"
                 -Config "$<CONFIG>"
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            COMMENT "[cd-smoke] Running every hello_*.exe with --headless"
+            COMMENT "[cd-smoke] Running application smoke harness"
             VERBATIM
             USES_TERMINAL
         )
-        if(_cd_samples)
-            add_dependencies(smoke ${_cd_samples})
+        if(_cd_apps)
+            add_dependencies(smoke ${_cd_apps})
         endif()
     else()
         if(NOT EXISTS "${_script_sh}")
@@ -59,12 +54,12 @@ function(cd_setup_smoke)
                     CONFIG=$<CONFIG>
                     ${_bash} "${_script_sh}"
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            COMMENT "[cd-smoke] Running every hello_* with --headless"
+            COMMENT "[cd-smoke] Running application smoke harness"
             VERBATIM
             USES_TERMINAL
         )
-        if(_cd_samples)
-            add_dependencies(smoke ${_cd_samples})
+        if(_cd_apps)
+            add_dependencies(smoke ${_cd_apps})
         endif()
     endif()
     message(STATUS "[cd-smoke] `smoke` target installed (cmake --build . --target smoke)")

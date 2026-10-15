@@ -4,16 +4,16 @@
 // Extended to 100% coverage: lifecycle, edge cases, negative paths, new API.
 //
 // Test groups:
-//   SampleFramework_M2A  -- original 5 tests (kept verbatim)
-//   SampleFramework_Lifecycle -- ordering, double-init guard, dtor-safety
-//   SampleFramework_FrameContext -- dt/total_time monotonicity, frame_index
-//   SampleFramework_Accessors -- frames_pumped(), has_run(), config(), etc.
-//   SampleFramework_Config -- AppConfig defaults, zero max_frames contract
-//   SampleFramework_Run -- run<T> template forwarding, multi-arg ctor
-//   SampleFramework_Hooks -- request_shutdown idempotency, ordering edge cases
+//   AppFramework_M2A  -- original 5 tests (kept verbatim)
+//   AppFramework_Lifecycle -- ordering, double-init guard, dtor-safety
+//   AppFramework_FrameContext -- dt/total_time monotonicity, frame_index
+//   AppFramework_Accessors -- frames_pumped(), has_run(), config(), etc.
+//   AppFramework_Config -- AppConfig defaults, zero max_frames contract
+//   AppFramework_Run -- run<T> template forwarding, multi-arg ctor
+//   AppFramework_Hooks -- request_shutdown idempotency, ordering edge cases
 // =============================================================================
-#include <cd/sample/App.hpp>
-#include <cd/sample/run.hpp>
+#include <cd/app/App.hpp>
+#include <cd/app/run.hpp>
 
 #include <cd/core/Result.hpp>
 
@@ -30,10 +30,10 @@ namespace
 // ---------------------------------------------------------------------------
 // TrackingApp: records every lifecycle event + FrameContext snapshot
 // ---------------------------------------------------------------------------
-class TrackingApp final : public cd::sample::App
+class TrackingApp final : public cd::app::App
 {
 public:
-    using cd::sample::App::App;
+    using cd::app::App::App;
 
     int boot_calls { 0 };
     int frame_calls { 0 };
@@ -60,7 +60,7 @@ protected:
         return {};
     }
 
-    void on_frame(const cd::sample::FrameContext& fc) override
+    void on_frame(const cd::app::FrameContext& fc) override
     {
         ++frame_calls;
         last_frame_index = fc.frame_index;
@@ -84,11 +84,11 @@ protected:
 // ---------------------------------------------------------------------------
 // MultiArgApp: tests that run<T> forwards constructor args correctly
 // ---------------------------------------------------------------------------
-class MultiArgApp final : public cd::sample::App
+class MultiArgApp final : public cd::app::App
 {
 public:
-    explicit MultiArgApp(cd::sample::AppConfig cfg, int sentinel)
-        : cd::sample::App(std::move(cfg))
+    explicit MultiArgApp(cd::app::AppConfig cfg, int sentinel)
+        : cd::app::App(std::move(cfg))
         , sentinel_(sentinel)
     {
     }
@@ -97,7 +97,7 @@ public:
 
 protected:
     cd::core::Result<void> on_boot() override { return {}; }
-    void on_frame(const cd::sample::FrameContext& /*fc*/) override {}
+    void on_frame(const cd::app::FrameContext& /*fc*/) override {}
     void on_shutdown() noexcept override {}
 
 private:
@@ -108,10 +108,10 @@ private:
 // ShutdownDuringBootApp: on_boot calls request_shutdown (should not skip
 // on_shutdown and should break the frame loop immediately)
 // ---------------------------------------------------------------------------
-class ShutdownDuringBootApp final : public cd::sample::App
+class ShutdownDuringBootApp final : public cd::app::App
 {
 public:
-    using cd::sample::App::App;
+    using cd::app::App::App;
     int boot_calls { 0 };
     int frame_calls { 0 };
     int shutdown_calls { 0 };
@@ -123,7 +123,7 @@ protected:
         request_shutdown();   // signal during boot — frame loop must not run
         return {};
     }
-    void on_frame(const cd::sample::FrameContext& /*fc*/) override { ++frame_calls; }
+    void on_frame(const cd::app::FrameContext& /*fc*/) override { ++frame_calls; }
     void on_shutdown() noexcept override { ++shutdown_calls; }
 };
 
@@ -131,16 +131,16 @@ protected:
 // DoubleShutdownApp: calls request_shutdown twice in consecutive on_frame
 // calls (idempotency test)
 // ---------------------------------------------------------------------------
-class DoubleRequestShutdownApp final : public cd::sample::App
+class DoubleRequestShutdownApp final : public cd::app::App
 {
 public:
-    using cd::sample::App::App;
+    using cd::app::App::App;
     int shutdown_flag_count { 0 };   // incremented each time the flag is true at frame entry
     int frame_calls { 0 };
 
 protected:
     cd::core::Result<void> on_boot() override { return {}; }
-    void on_frame(const cd::sample::FrameContext& fc) override
+    void on_frame(const cd::app::FrameContext& fc) override
     {
         ++frame_calls;
         // On frame 0 and frame 1 call request_shutdown — second call is a no-op
@@ -162,9 +162,9 @@ protected:
 // Group 1 — Original M2A tests (kept verbatim for regression)
 // ==========================================================================
 
-TEST(SampleFramework_M2A, BootFrameShutdownSingleFramePath)
+TEST(AppFramework_M2A, BootFrameShutdownSingleFramePath)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 1u;
     TrackingApp app { cfg };
     const int rc = app.run();
@@ -175,9 +175,9 @@ TEST(SampleFramework_M2A, BootFrameShutdownSingleFramePath)
     EXPECT_EQ(app.last_frame_index, 0u);
 }
 
-TEST(SampleFramework_M2A, MultiFramePumpAdvancesFrameIndex)
+TEST(AppFramework_M2A, MultiFramePumpAdvancesFrameIndex)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 8u;
     TrackingApp app { cfg };
     EXPECT_EQ(app.run(), 0);
@@ -186,9 +186,9 @@ TEST(SampleFramework_M2A, MultiFramePumpAdvancesFrameIndex)
     EXPECT_NEAR(app.last_total_time, 7.0 / 60.0, 1e-6);
 }
 
-TEST(SampleFramework_M2A, RequestShutdownBreaksLoopEarly)
+TEST(AppFramework_M2A, RequestShutdownBreaksLoopEarly)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 100u;
     TrackingApp app { cfg };
     app.request_shutdown_at_frame = 3;
@@ -198,9 +198,9 @@ TEST(SampleFramework_M2A, RequestShutdownBreaksLoopEarly)
     EXPECT_EQ(app.shutdown_calls, 1);
 }
 
-TEST(SampleFramework_M2A, BootFailureSkipsFramePumpAndStillShutsDown)
+TEST(AppFramework_M2A, BootFailureSkipsFramePumpAndStillShutsDown)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 5u;
     TrackingApp app { cfg };
     app.boot_should_fail = true;
@@ -211,12 +211,12 @@ TEST(SampleFramework_M2A, BootFailureSkipsFramePumpAndStillShutsDown)
     EXPECT_EQ(app.shutdown_calls, 1);
 }
 
-TEST(SampleFramework_M2A, RunTemplateEntryPointDrivesApp)
+TEST(AppFramework_M2A, RunTemplateEntryPointDrivesApp)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 2u;
     // The template entry point is the canonical sample main() shape.
-    const int rc = cd::sample::run<TrackingApp>(0, nullptr, cfg);
+    const int rc = cd::app::run<TrackingApp>(0, nullptr, cfg);
     EXPECT_EQ(rc, 0);
 }
 
@@ -224,10 +224,10 @@ TEST(SampleFramework_M2A, RunTemplateEntryPointDrivesApp)
 // Group 2 — Lifecycle ordering and guard tests
 // ==========================================================================
 
-TEST(SampleFramework_Lifecycle, BootCalledExactlyOnce)
+TEST(AppFramework_Lifecycle, BootCalledExactlyOnce)
 {
     // Arrange
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 10u;
     TrackingApp app { cfg };
 
@@ -238,18 +238,18 @@ TEST(SampleFramework_Lifecycle, BootCalledExactlyOnce)
     EXPECT_EQ(app.boot_calls, 1);
 }
 
-TEST(SampleFramework_Lifecycle, ShutdownCalledExactlyOnceOnSuccess)
+TEST(AppFramework_Lifecycle, ShutdownCalledExactlyOnceOnSuccess)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 3u;
     TrackingApp app { cfg };
     static_cast<void>(app.run());
     EXPECT_EQ(app.shutdown_calls, 1);
 }
 
-TEST(SampleFramework_Lifecycle, ShutdownCalledExactlyOnceOnBootFailure)
+TEST(AppFramework_Lifecycle, ShutdownCalledExactlyOnceOnBootFailure)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 3u;
     TrackingApp app { cfg };
     app.boot_should_fail = true;
@@ -257,12 +257,12 @@ TEST(SampleFramework_Lifecycle, ShutdownCalledExactlyOnceOnBootFailure)
     EXPECT_EQ(app.shutdown_calls, 1);
 }
 
-TEST(SampleFramework_Lifecycle, BootAlwaysBeforeFirstFrame)
+TEST(AppFramework_Lifecycle, BootAlwaysBeforeFirstFrame)
 {
     // Verify: on_boot recorded as called before the first frame_index appears.
     // We confirm boot_calls == 1 when the first frame executes.
     // (frame_indices_seen[0] being present means frame ran after boot.)
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 4u;
     TrackingApp app { cfg };
     static_cast<void>(app.run());
@@ -271,11 +271,11 @@ TEST(SampleFramework_Lifecycle, BootAlwaysBeforeFirstFrame)
     EXPECT_EQ(app.frame_indices_seen.front(), 0u);
 }
 
-TEST(SampleFramework_Lifecycle, ShutdownAlwaysAfterLastFrame)
+TEST(AppFramework_Lifecycle, ShutdownAlwaysAfterLastFrame)
 {
     // on_shutdown increments shutdown_calls; on_frame records how many
     // calls happened. After run() returns, shutdown must have been called.
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 5u;
     TrackingApp app { cfg };
     static_cast<void>(app.run());
@@ -283,11 +283,11 @@ TEST(SampleFramework_Lifecycle, ShutdownAlwaysAfterLastFrame)
     EXPECT_EQ(app.shutdown_calls, 1);
 }
 
-TEST(SampleFramework_Lifecycle, DoubleRunReturnsErrorWithoutCallingBootAgain)
+TEST(AppFramework_Lifecycle, DoubleRunReturnsErrorWithoutCallingBootAgain)
 {
     // Calling run() a second time must return non-zero and must NOT
     // invoke on_boot / on_frame / on_shutdown a second time.
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 2u;
     TrackingApp app { cfg };
 
@@ -305,9 +305,9 @@ TEST(SampleFramework_Lifecycle, DoubleRunReturnsErrorWithoutCallingBootAgain)
     EXPECT_EQ(app.shutdown_calls, 1);
 }
 
-TEST(SampleFramework_Lifecycle, HasRunFlagSetAfterCompletion)
+TEST(AppFramework_Lifecycle, HasRunFlagSetAfterCompletion)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 1u;
     TrackingApp app { cfg };
     EXPECT_FALSE(app.has_run());
@@ -315,9 +315,9 @@ TEST(SampleFramework_Lifecycle, HasRunFlagSetAfterCompletion)
     EXPECT_TRUE(app.has_run());
 }
 
-TEST(SampleFramework_Lifecycle, HasRunFlagSetEvenAfterBootFailure)
+TEST(AppFramework_Lifecycle, HasRunFlagSetEvenAfterBootFailure)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 1u;
     TrackingApp app { cfg };
     app.boot_should_fail = true;
@@ -325,11 +325,11 @@ TEST(SampleFramework_Lifecycle, HasRunFlagSetEvenAfterBootFailure)
     EXPECT_TRUE(app.has_run());
 }
 
-TEST(SampleFramework_Lifecycle, DestroyWithoutRunIsSafe)
+TEST(AppFramework_Lifecycle, DestroyWithoutRunIsSafe)
 {
     // App dtor must be safe even if run() was never called (no on_shutdown
     // invoked from dtor in this design — purely passive cleanup).
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 1u;
     {
         TrackingApp app { cfg };
@@ -341,11 +341,11 @@ TEST(SampleFramework_Lifecycle, DestroyWithoutRunIsSafe)
     SUCCEED();
 }
 
-TEST(SampleFramework_Lifecycle, ShutdownDuringBootHaltsFrameLoop)
+TEST(AppFramework_Lifecycle, ShutdownDuringBootHaltsFrameLoop)
 {
     // request_shutdown() called inside on_boot must cause the frame loop to
     // exit immediately after boot (zero on_frame calls).
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 50u;
     ShutdownDuringBootApp app { cfg };
     const int rc = app.run();
@@ -360,9 +360,9 @@ TEST(SampleFramework_Lifecycle, ShutdownDuringBootHaltsFrameLoop)
 // Group 3 — FrameContext correctness
 // ==========================================================================
 
-TEST(SampleFramework_FrameContext, FirstFrameHasTotalTimeZero)
+TEST(AppFramework_FrameContext, FirstFrameHasTotalTimeZero)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 1u;
     TrackingApp app { cfg };
     static_cast<void>(app.run());
@@ -370,9 +370,9 @@ TEST(SampleFramework_FrameContext, FirstFrameHasTotalTimeZero)
     EXPECT_DOUBLE_EQ(app.total_times_seen[0], 0.0);
 }
 
-TEST(SampleFramework_FrameContext, TotalTimeMonotonicallyIncreasing)
+TEST(AppFramework_FrameContext, TotalTimeMonotonicallyIncreasing)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 16u;
     TrackingApp app { cfg };
     static_cast<void>(app.run());
@@ -386,9 +386,9 @@ TEST(SampleFramework_FrameContext, TotalTimeMonotonicallyIncreasing)
     }
 }
 
-TEST(SampleFramework_FrameContext, FrameIndexMonotonicallyIncreasing)
+TEST(AppFramework_FrameContext, FrameIndexMonotonicallyIncreasing)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 16u;
     TrackingApp app { cfg };
     static_cast<void>(app.run());
@@ -401,9 +401,9 @@ TEST(SampleFramework_FrameContext, FrameIndexMonotonicallyIncreasing)
     }
 }
 
-TEST(SampleFramework_FrameContext, DtIsPositiveForAllFrames)
+TEST(AppFramework_FrameContext, DtIsPositiveForAllFrames)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 8u;
     TrackingApp app { cfg };
     static_cast<void>(app.run());
@@ -413,7 +413,7 @@ TEST(SampleFramework_FrameContext, DtIsPositiveForAllFrames)
     }
 }
 
-TEST(SampleFramework_FrameContext, TotalTimeAfterNFramesMatchesDtAccumulation)
+TEST(AppFramework_FrameContext, TotalTimeAfterNFramesMatchesDtAccumulation)
 {
     // After N frames the total_time handed to frame N-1 should be (N-1)*(1/60).
     // The fixed dt is float-seeded (1/60 has no exact binary form) and summed
@@ -421,7 +421,7 @@ TEST(SampleFramework_FrameContext, TotalTimeAfterNFramesMatchesDtAccumulation)
     // with N — allow a float-epsilon band, not a double-exact one (a real
     // off-by-one-frame bug would be ~0.0166, far outside this).
     constexpr std::uint64_t kN = 60u;
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = kN;
     TrackingApp app { cfg };
     static_cast<void>(app.run());
@@ -429,9 +429,9 @@ TEST(SampleFramework_FrameContext, TotalTimeAfterNFramesMatchesDtAccumulation)
     EXPECT_NEAR(app.last_total_time, expected_last, 1e-6);
 }
 
-TEST(SampleFramework_FrameContext, FrameIndexStartsAtZero)
+TEST(AppFramework_FrameContext, FrameIndexStartsAtZero)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 5u;
     TrackingApp app { cfg };
     static_cast<void>(app.run());
@@ -439,10 +439,10 @@ TEST(SampleFramework_FrameContext, FrameIndexStartsAtZero)
     EXPECT_EQ(app.frame_indices_seen.front(), 0u);
 }
 
-TEST(SampleFramework_FrameContext, LastFrameIndexIsCapMinusOne)
+TEST(AppFramework_FrameContext, LastFrameIndexIsCapMinusOne)
 {
     constexpr std::uint64_t kCap = 12u;
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = kCap;
     TrackingApp app { cfg };
     static_cast<void>(app.run());
@@ -453,26 +453,26 @@ TEST(SampleFramework_FrameContext, LastFrameIndexIsCapMinusOne)
 // Group 4 — Accessor correctness
 // ==========================================================================
 
-TEST(SampleFramework_Accessors, FramesPumpedZeroBeforeRun)
+TEST(AppFramework_Accessors, FramesPumpedZeroBeforeRun)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 5u;
     TrackingApp app { cfg };
     EXPECT_EQ(app.frames_pumped(), 0u);
 }
 
-TEST(SampleFramework_Accessors, FramesPumpedEqualsMaxFramesAfterFullRun)
+TEST(AppFramework_Accessors, FramesPumpedEqualsMaxFramesAfterFullRun)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 7u;
     TrackingApp app { cfg };
     static_cast<void>(app.run());
     EXPECT_EQ(app.frames_pumped(), 7u);
 }
 
-TEST(SampleFramework_Accessors, FramesPumpedZeroAfterBootFailure)
+TEST(AppFramework_Accessors, FramesPumpedZeroAfterBootFailure)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 5u;
     TrackingApp app { cfg };
     app.boot_should_fail = true;
@@ -480,9 +480,9 @@ TEST(SampleFramework_Accessors, FramesPumpedZeroAfterBootFailure)
     EXPECT_EQ(app.frames_pumped(), 0u);
 }
 
-TEST(SampleFramework_Accessors, FramesPumpedReflectsEarlyShutdown)
+TEST(AppFramework_Accessors, FramesPumpedReflectsEarlyShutdown)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 100u;
     TrackingApp app { cfg };
     app.request_shutdown_at_frame = 5;   // shutdown during frame 5 → 6 frames total
@@ -490,26 +490,26 @@ TEST(SampleFramework_Accessors, FramesPumpedReflectsEarlyShutdown)
     EXPECT_EQ(app.frames_pumped(), 6u);
 }
 
-TEST(SampleFramework_Accessors, ShutdownRequestedFalseInitially)
+TEST(AppFramework_Accessors, ShutdownRequestedFalseInitially)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 3u;
     TrackingApp app { cfg };
     EXPECT_FALSE(app.shutdown_requested());
 }
 
-TEST(SampleFramework_Accessors, ConfigTitlePreserved)
+TEST(AppFramework_Accessors, ConfigTitlePreserved)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.title = "TestTitle_XYZ";
     cfg.max_frames = 1u;
     TrackingApp app { cfg };
     EXPECT_EQ(app.config().title, "TestTitle_XYZ");
 }
 
-TEST(SampleFramework_Accessors, ConfigDimensionsPreserved)
+TEST(AppFramework_Accessors, ConfigDimensionsPreserved)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.window_width  = 800u;
     cfg.window_height = 600u;
     cfg.max_frames    = 1u;
@@ -522,56 +522,56 @@ TEST(SampleFramework_Accessors, ConfigDimensionsPreserved)
 // Group 5 — AppConfig defaults
 // ==========================================================================
 
-TEST(SampleFramework_Config, DefaultTitleIsNonEmpty)
+TEST(AppFramework_Config, DefaultTitleIsNonEmpty)
 {
-    const cd::sample::AppConfig cfg {};
+    const cd::app::AppConfig cfg {};
     EXPECT_FALSE(cfg.title.empty());
 }
 
-TEST(SampleFramework_Config, DefaultWindowWidthPositive)
+TEST(AppFramework_Config, DefaultWindowWidthPositive)
 {
-    const cd::sample::AppConfig cfg {};
+    const cd::app::AppConfig cfg {};
     EXPECT_GT(cfg.window_width, 0u);
 }
 
-TEST(SampleFramework_Config, DefaultWindowHeightPositive)
+TEST(AppFramework_Config, DefaultWindowHeightPositive)
 {
-    const cd::sample::AppConfig cfg {};
+    const cd::app::AppConfig cfg {};
     EXPECT_GT(cfg.window_height, 0u);
 }
 
-TEST(SampleFramework_Config, DefaultMaxFramesIsOne)
+TEST(AppFramework_Config, DefaultMaxFramesIsOne)
 {
-    const cd::sample::AppConfig cfg {};
+    const cd::app::AppConfig cfg {};
     EXPECT_EQ(cfg.max_frames, 1u);
 }
 
-TEST(SampleFramework_Config, DefaultStartMaximizedFalse)
+TEST(AppFramework_Config, DefaultStartMaximizedFalse)
 {
-    const cd::sample::AppConfig cfg {};
+    const cd::app::AppConfig cfg {};
     EXPECT_FALSE(cfg.start_maximized);
 }
 
-TEST(SampleFramework_Config, DefaultEnableValidationTrue)
+TEST(AppFramework_Config, DefaultEnableValidationTrue)
 {
-    const cd::sample::AppConfig cfg {};
+    const cd::app::AppConfig cfg {};
     EXPECT_TRUE(cfg.enable_validation);
 }
 
-TEST(SampleFramework_Config, ZeroMaxFramesRunsExactlyOneFrame)
+TEST(AppFramework_Config, ZeroMaxFramesRunsExactlyOneFrame)
 {
     // M2A contract: max_frames=0 is treated as 1 so the gtest path is bounded.
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 0u;
     TrackingApp app { cfg };
     static_cast<void>(app.run());
     EXPECT_EQ(app.frame_calls, 1);
 }
 
-TEST(SampleFramework_Config, LargeMaxFramesPumpsExactCount)
+TEST(AppFramework_Config, LargeMaxFramesPumpsExactCount)
 {
     constexpr std::uint64_t kLarge = 1024u;
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = kLarge;
     TrackingApp app { cfg };
     static_cast<void>(app.run());
@@ -583,26 +583,26 @@ TEST(SampleFramework_Config, LargeMaxFramesPumpsExactCount)
 // Group 6 — run<T> template
 // ==========================================================================
 
-TEST(SampleFramework_Run, TemplateForwardsMultipleCtorArgs)
+TEST(AppFramework_Run, TemplateForwardsMultipleCtorArgs)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 1u;
     const int sentinel = 42;
-    const int rc = cd::sample::run<MultiArgApp>(0, nullptr, cfg, sentinel);
+    const int rc = cd::app::run<MultiArgApp>(0, nullptr, cfg, sentinel);
     EXPECT_EQ(rc, 0);
 }
 
-TEST(SampleFramework_Run, TemplateAcceptsNullArgv)
+TEST(AppFramework_Run, TemplateAcceptsNullArgv)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 1u;
-    const int rc = cd::sample::run<TrackingApp>(0, nullptr, cfg);
+    const int rc = cd::app::run<TrackingApp>(0, nullptr, cfg);
     EXPECT_EQ(rc, 0);
 }
 
-TEST(SampleFramework_Run, TemplateReturnsNonZeroOnBootFailure)
+TEST(AppFramework_Run, TemplateReturnsNonZeroOnBootFailure)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 1u;
     TrackingApp app { cfg };
     app.boot_should_fail = true;
@@ -614,11 +614,11 @@ TEST(SampleFramework_Run, TemplateReturnsNonZeroOnBootFailure)
 // Group 7 — request_shutdown edge cases
 // ==========================================================================
 
-TEST(SampleFramework_Hooks, RequestShutdownBeforeRunIsIdempotent)
+TEST(AppFramework_Hooks, RequestShutdownBeforeRunIsIdempotent)
 {
     // Calling request_shutdown before run() means the loop exits on
     // its very first iteration check (no frames pumped).
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 50u;
     TrackingApp app { cfg };
     app.request_shutdown();  // set flag before run
@@ -628,9 +628,9 @@ TEST(SampleFramework_Hooks, RequestShutdownBeforeRunIsIdempotent)
     EXPECT_TRUE(app.shutdown_requested());
 }
 
-TEST(SampleFramework_Hooks, RequestShutdownCalledTwiceIsIdempotent)
+TEST(AppFramework_Hooks, RequestShutdownCalledTwiceIsIdempotent)
 {
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 100u;
     DoubleRequestShutdownApp app { cfg };
     static_cast<void>(app.run());
@@ -640,12 +640,12 @@ TEST(SampleFramework_Hooks, RequestShutdownCalledTwiceIsIdempotent)
     EXPECT_TRUE(app.shutdown_requested());
 }
 
-TEST(SampleFramework_Hooks, RequestShutdownAtLastFrameDoesNotExtraFrame)
+TEST(AppFramework_Hooks, RequestShutdownAtLastFrameDoesNotExtraFrame)
 {
     // If request_shutdown is called in on_frame(frame_index == cap-1),
     // the loop still runs exactly cap frames (current frame completes first).
     constexpr std::uint64_t kCap = 5u;
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = kCap;
     TrackingApp app { cfg };
     app.request_shutdown_at_frame = static_cast<int>(kCap - 1u);
@@ -653,10 +653,10 @@ TEST(SampleFramework_Hooks, RequestShutdownAtLastFrameDoesNotExtraFrame)
     EXPECT_EQ(static_cast<std::uint64_t>(app.frame_calls), kCap);
 }
 
-TEST(SampleFramework_Hooks, EmptyMaxFrameCapPumpsOneFrameOnlyM2AContract)
+TEST(AppFramework_Hooks, EmptyMaxFrameCapPumpsOneFrameOnlyM2AContract)
 {
     // Already covered in Config group; also verify via hooks path.
-    cd::sample::AppConfig cfg;
+    cd::app::AppConfig cfg;
     cfg.max_frames = 0u;
     TrackingApp app { cfg };
     static_cast<void>(app.run());
