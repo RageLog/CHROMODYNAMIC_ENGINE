@@ -1,833 +1,465 @@
 // =============================================================================
-// CHROMODYNAMIC -- apps/editor/main.cpp
+// CHROMODYNAMIC - samples/chromodynamic_studio
 //
-// Phase 744 / FINALE-2 W4D B10 -- hot-reload + shader compile events wired
-// into BuildPanel via the build_panel_bridge.
+// Phase 138 / v0.99.64 - mega-showcase: a single ImGui-docked window
+// running every major marathon subsystem live so a fresh observer can
+// see "what does this engine do today?" in one place.
 //
-// Changes vs phase707:
-//   * cd::asset::FileWatcher watches 6 canonical asset paths (3 GLSL shaders,
-//     2 glTF scenes, 1 Lua script) — silently no-ops for absent paths.
-//   * cd::asset::HotReloadQueue coalesces rapid OS churn (save-file storms)
-//     into at-most-one notification per asset per frame-boundary.
-//   * Per-frame poll() drains the queue; each changed asset emits two events
-//     into the BuildPanel via cd::editor::build_panel_bridge:
-//       kCompiling — asset changed, processing (badge turns yellow).
-//       kSuccess   — reload complete with wall-clock duration (badge turns green).
-//   * The bridge public API (push_event / set_status / register_target) is
-//     the documented registration point for any subsystem that wants to report
-//     compile progress without linking apps/editor directly.
+// Panels rendered (DockSpace, all visible at once):
+//   * 3D Viewport - analytical-sky skybox + 5x5 PBR sphere sweep +
+//     procedural primitive entities (cube / sphere / cone / cylinder /
+//     torus from cd::asset::Primitives) + ECS-driven orbit camera.
+//   * Scene tree - entity list, click to select.
+//   * Inspector - DragFloat3 live-edit transform; EditHistory
+//     captures drag-release as a single command.
+//   * Audio meter - Mixer ??' Compressor ??' SimpleReverb ??' LowPass ??'
+//     Limiter chain running continuously on a synthetic source;
+//     panel shows comp gain reduction (dB), limiter activity, peak.
+//   * Net sim ticker - SnapshotBuffer + DeltaWriter + LatencyStats +
+//     Throttle simulating client/server traffic at 60 Hz, ASCII
+//     table per second of stats.
+//   * Random viz - PCG32 + Box-Muller histograms refreshed every
+//     ~2 s.
+//   * Counters - CounterTable snapshot (frames, draws, commands).
+//   * History log - EditHistory + palette + sample-side events.
+//   * Command Palette popup (Ctrl+Shift+P) - 15+ registered
+//     commands including all four "Select primitive" entries,
+//     transform resets, history clear, audio mute, net sim toggle,
+//     random reseed, save/load.
 //
-// MOMENT: A dev hot-reloads a shader, build_panel turns green "Reloaded in 0ms"
-// immediately — feedback loop matches Source 2 SDK.
-//
-// Phase 707 / M15 W6B -- cinematic boot splash: slow particle field behind title.
-//
-// Adds a cd::particle::system::System to the boot splash.  A single emitter
-// spawns 20 particles/sec.  Each particle drifts upward with random horizontal
-// velocity and fades out over 4 seconds.  Color is PaletteV2::accent_success
-// (muted green, #50C864).  Particles are rendered FIRST in draw_boot_splash so
-// they appear behind the title + subtitle + progress strip.  The particle
-// system is destroyed when the splash completes (optional.reset()).
-//
-// MOMENT: A user launches editor.exe, sees the CHROMODYNAMIC title over a slow
-// upward-drifting particle field — the engine has presence the moment it boots.
-//
-// Phase 690 / M14 W3 -- wire 3 new M14 surfaces into apps/editor in one commit.
-//
-// Three surface additions (one commit, single moment):
-//   1. scene_navigator           — Tab-merged INTO scene_tree on the LEFT
-//                                  column (no new dock node — tab_merges do
-//                                  not bump node_count). Search box + live-
-//                                  filtered entity list seeded with a small
-//                                  demo entity set so the panel is non-empty.
-//   2. keyboard_shortcut_overlay — OVERLAY (NOT a dock node) toggled with '?'.
-//                                  Pre-registers 15 default shortcuts at boot:
-//                                    Ctrl+S       Save Layout
-//                                    Ctrl+L       Load Layout
-//                                    ?            Toggle Shortcut Help
-//                                    F1           CPU Stats
-//                                    F2           GPU Stats
-//                                    F3           Frame Graph Timeline
-//                                    Ctrl+1..9    Switch panel focus by index
-//                                    Ctrl+F       Focus Scene Navigator search
-//                                    Esc          Close overlay / clear filter
-//                                  Painted full-window when visible; ignored
-//                                  otherwise.
-//   3. PopoutDock                — Sprint-1 STATE MACHINE for tear-off panels.
-//                                  Iterated each frame: when is_detached(id)
-//                                  is true, the corresponding panel is drawn
-//                                  as a floating-internal rectangle at the
-//                                  PopoutWindow::position top-left instead of
-//                                  inside the main dock. Borders use the
-//                                  palette accent_warning so the detached
-//                                  state reads at a glance. Native multi-
-//                                  window promotion = Sprint-2 (gated on
-//                                  cd::platform multi-window support).
-//
-// Dock PANEL count: 16 -> 17 (scene_navigator added; overlay + popouts are NOT
-// dock nodes). scene_navigator is tab-merged with scene_tree, so the underlying
-// DockSpace::node_count() (splits + tab groups) does NOT change — only the
-// registered-panel count does. The boot log line records the registered-panel
-// count ("17 dock nodes") to match the M14 W3 smoke target.
-//
-// MOMENT: A power user opens the editor, presses '?', sees all 15 shortcuts,
-// types 'box' in scene_navigator, jumps to a Box entity, all in 3 seconds —
-// Source 2 SDK speed.
-//
-// Phase 685 / M13 W6B -- boot splash polish + first-time-user welcome flow.
-//
-// Changes vs phase679:
-//   * Boot splash extended from 2.0 s to 2.5 s (opaque) + 0.3 s fade = 2.8 s
-//     total. Three animation stages:
-//       [0, 500ms)    'CHROMODYNAMIC' title quads fade in (alpha 0 -> 1).
-//       [500, 1500ms) subtitle bar reveals: 'A library-oriented game engine'.
-//       [1500, 2500ms) scrolling hints: four strings cycle vertically
-//                      (Booting Vulkan... / Loading panels... /
-//                       Restoring layout... / Ready).
-//     Elapsed time is tracked via cd::frame_timing::FrameTimeRing push data
-//     (using the same steady_clock measurement already in the frame loop).
-//   * First-time-user welcome: if no .cdproj existed when the editor started
-//     (first_launch flag), and the splash has finished, a centred one-shot
-//     dialog offers three layout presets:
-//       'Default Layout'  -- keeps the existing 16-panel default.
-//       'Compact Layout'  -- collapses all panel content to 3 key tiles:
-//                            viewport + console + inspector.
-//       'Full Layout'     -- all 15 panels at equal weight visible.
-//     The user's choice is written as a starter .cdproj (dock_layout +
-//     layout_preset field) so the next launch skips the dialog immediately.
-//
-//   MOMENT: a first-time user opens editor.exe, sees a polished 2.5 s branded
-//   splash, then a friendly welcome dialog asking how they want their
-//   workspace — not dumped into a 13-panel cockpit cold.
-//
-// Phase 679 / M13 W3 -- wire 3 new panels + .cdproj layout round-trip.
-//
-// Changes vs phase674:
-//   * Three brand-new panels are registered with the DockSpace shell:
-//       vehicle_editor    -- tab-merged with material_editor on LEFT-lower.
-//       pathfinding_viz   -- standalone split BELOW scene_tree on LEFT-top.
-//       material_preview  -- tab-merged with material_editor + vehicle_editor
-//                            so material_editor's leaf becomes a 3-way tab
-//                            strip (Material / Vehicle / Preview).
-//     The dock panel count grows 13 -> 16; node_count grows by exactly +1
-//     (only pathfinding_viz adds a split; tab-merges keep node_count flat).
-//   * .cdproj layout round-trip: on boot, dock_layout (hex-encoded byte
-//     stream from DockSpace::serialize) is fed through DockSpace::restore so
-//     the user sees the EXACT layout they left behind (active tab indices
-//     included).  Log line "restored layout from <path>" (or "no saved
-//     layout, using defaults") records which path was taken.  On exit the
-//     live DockSpace is serialized + hex-encoded + written back to the same
-//     %APPDATA%\cd_editor\last.cdproj file.  Save is best-effort; failure
-//     does not change the exit code.
-//   * "File > Save Layout" menu hint is printed at boot (real menubar lives
-//     in a future Sprint).
-//
-//   MOMENT: a user closes the editor mid-task, reopens it, the layout is
-//   EXACTLY as they left it — including which tab in each tab strip was
-//   active.  Source 2 SDK feel.
-//
-// Phase 674 / M12 W6B -- frame stats overlay polish + boot splash.
-//
-// Changes vs phase667:
-//   * Three floating overlays (CPU / GPU / FRAME) now carry a titled header
-//     strip (small tinted label quad: "CPU" / "GPU" / "FRAME") rendered via
-//     cd::ui::theme::text_dim colour.  Each header sits in a 14 px band
-//     above the bar-chart body so the overlays are visually distinct.
-//   * Real data feeds: FPS from cd::frame_timing::FrameTimeRing<120>;
-//     draw_calls and vertex_count from DrawBatcher per-frame; GPU overlay
-//     retains synthetic timing bars (write_timestamp not yet shipped) but
-//     labels + window match the real frame budget read from the ring.
-//   * Boot splash: for the first 2 seconds the full framebuffer is covered
-//     with a PaletteV2::surface fill + "CHROMODYNAMIC" quad branding text
-//     (two stacked quads) + a loading-hint progress strip.  At 2 s the
-//     splash fades out (alpha lerp over 300 ms) and the normal dock appears.
-//     Uses std::chrono::steady_clock for wall-clock timing.
-//
-// Phase 524 / T0.2 -- cd::editor binary application shell.
-//
-// Boots the cd::editor stack on top of:
-//   * cd::platform               -- OS window
-//   * cd::rhi + cd::rhi_vulkan   -- GPU device + command queue
-//   * cd::render                 -- swapchain Renderer (begin_frame / end_frame)
-//   * cd::ui_widgets::DockSpace  -- T2.1 panel layout solver
-//   * cd::ui_renderer (+_rhi)    -- CPU draw batcher + RHI submitter pair
-//   * cd::ui_font                -- TTF glyph atlas (optional; gated on TTF probe)
-//   * cd::ui::theme              -- design-token theme (V2)
-//   * cd::ui::a11y               -- accessibility focus chain hook
-//   * cd::editor::Editor         -- authoritative World + Scene + scene-tree state
-//
-// Layout the binary boots with (phase569 / M4 W1B — 8-panel default):
-//
-//      +-----------------------------------------------------------------------+
-//      |                                                                       |
-//      |  Scene Tree    |          Viewport          |    Inspector            |
-//      |    (LEFT-T)    |          (CENTER-T)        |    (RIGHT-T)            |
-//      |                |                            |                         |
-//      +----------------+----------------------------+-------------------------+
-//      |  Material      |  Console | Assets |  Anim  |    Behavior Designer    |
-//      |  Editor        |  (BOTTOM-CENTER tabs)  |   |    (RIGHT-B)            |
-//      |  (LEFT-B)      |                        |   |                         |
-//      +-----------------------------------------------------------------------+
-//
-// Three new panels (phase569 / M4 W1B):
-//   * material_editor    -- LEFT column, BOTTOM split (below scene_tree)
-//   * animator           -- BOTTOM strip, RIGHT split (next to console+assets)
-//   * behavior_designer  -- RIGHT column, BOTTOM split (below inspector)
-//
-// One new panel + two floating overlays (phase598 / M6 W3):
-//   * asset_drop_target  -- tab-merged with `assets` in the BOTTOM strip;
-//                           accepts {.gltf .glb .png .jpg .wav .ogg}, logs
-//                           dropped paths to console.
-//   * cpu_marker_overlay -- floating top-right (~300x120 px), fed synthetic
-//                           samples until real instrumentation lands.
-//   * frame_graph_timeline -- floating bottom-right (~400x80 px), fed
-//                             synthetic GPU pass records.
-//
-// New overlay (phase631 / M9 W1A — phase618 slot backfilled):
-//   * gpu_marker_overlay -- floating top-right below cpu_marker (~300x100 px);
-//                           cpu/gpu sibling classification, NOT a v1/v2 rename.
-//                           Synthetic GpuMarkerSample data per frame (real GPU
-//                           timestamps = future Sprint, ICommandBuffer::write_timestamp).
-//   * asset::validator   -- Wired into the bottom status bar via phase667 /
-//                           M12 W2. Validator badge shows green/yellow/red
-//                           counts (pass / warn / error) seeded by three
-//                           synthetic blob validations at boot.
-//
-// Four new panels (phase667 / M12 W2 — 10 -> 13 dock nodes):
-//   * light_editor       -- RIGHT column, BOTTOM split below behavior_designer.
-//   * input_recorder     -- BOTTOM strip, right split alongside animator.
-//   * dialog_tree_editor -- tab-merged INTO the new cutscene_player leaf on
-//                           the LEFT column.
-//   * cutscene_player    -- LEFT column, BOTTOM split below material_editor.
-//                           Sits alongside dialog_tree_editor as a 2-tab pair.
-//
-// Three new panels (phase679 / M13 W3 — 13 -> 16 panels; +1 dock node):
-//   * vehicle_editor     -- LEFT-lower; tab-merged INTO material_editor.
-//   * pathfinding_viz    -- LEFT-top; standalone split BELOW scene_tree.
-//   * material_preview   -- LEFT-lower; tab-merged INTO material_editor so
-//                           the leaf becomes a 3-way Material/Vehicle/Preview
-//                           tab strip.
-//
-// Status bar (phase667 / M12 W2 — pinned to the BOTTOM 20 px of the framebuffer):
-//   * asset_validator badge -- pass / warn / error count blocks.
-//   * frame stats meters    -- FPS / vertex count / draw call count.
-//   * route indicator       -- which UI submitter route is live (A / fallback / B).
-//
-// The LEFT and RIGHT columns now each carry TWO stacked panels (vertically),
-// and the BOTTOM strip carries the existing console+assets tab group plus
-// the new animator as a horizontal sibling.
-//
-// SCOPE-DOWN DECISION (per T0.2 deliverable contract): the editor.exe
-// app boots the FULL DockSpace shell with all eight panels registered
-// (scene tree / viewport / inspector / console / assets / material_editor /
-// animator / behavior_designer) and wires the scene-tree panel to a live
-// cd::editor::Editor instance. The follow-up sessions extract richer
-// content into reusable panel libraries (phases 556-558 shipped the 3
-// M4 W1B panel libraries; phase569 wires them into apps/editor).
-//
-// Per the T0.2 brief: "If too big for one agent, SCOPE DOWN to:
-// Editor binary with DockSpace shell + 1 panel (scene tree)" -- this
-// implementation goes beyond the scope-down floor (it lays down all 5
-// panel slots with real DockSpace layout serialization wired in) but
-// stops short of porting in the inspector/console/assets panel content.
-//
-// Runtime flags (delegated to cd::sample::Runtime):
-//   --headless [N]   Run N frames then exit. CI uses this.
-//   --null           Force NullDevice fallback (no real swapchain).
-//                    Useful on hosts without a GPU.
-//   --no-spin        Reserved; the editor has no time-driven animation
-//                    today, so this is a no-op.
-//   --project <path> Parse a .cdproj file and use it to seed the
-//                    Editor. Today the parser stub just stashes the
-//                    path; full .cdproj plumbing lands in T0.3.
+// Stays at marathon discipline (sample pattern, single main.cpp,
+// no engine apps-layer mimicry; that lands at v1.0+ time).
 // =============================================================================
+#include <cd/anim/Animation.hpp>
+#include <cd/anim/GpuSkinning.hpp>
+#include <cd/anim/Skeleton.hpp>
+#include <cd/asset/AssetId.hpp>
+#include <cd/asset/AssetRegistry.hpp>
+#include <cd/asset/AsyncStreamer.hpp>
+#include <cd/asset/Primitives.hpp>
+#include <cd/asset/image/Image.hpp>
+#include <cd/asset/StreamRequest.hpp>
+#include <cd/asset/gltf/GltfLoader.hpp>
+#include <cd/asset/gltf/SkinnedMeshBridge.hpp>
+#include <cd/asset/json/Json.hpp>
+#include <cd/atmosphere/Atmosphere.hpp>
+#include <cd/audio/Compressor.hpp>
+#include <cd/audio/IAudioBackend.hpp>
+#include <cd/audio/Limiter.hpp>
+#include <cd/audio/LowPass.hpp>
+#include <cd/audio/Mixer.hpp>
+#include <cd/audio/SimpleReverb.hpp>
+#include <cd/audio/WasapiBackend.hpp>
+#include <cd/brdf/ltc/Ltc.hpp>
+#include <cd/brdf/sheen_clearcoat/SheenClearcoat.hpp>
+#include <cd/brdf/sss/Sss.hpp>
+#include <cd/camera/Camera.hpp>
+#include <cd/camera/Frustum.hpp>
+#include <cd/concurrency/JobGraph.hpp>
+#include <cd/concurrency/ParallelFor.hpp>
+#include <cd/concurrency/WorkStealingThreadPool.hpp>
+#include <cd/core/CounterTable.hpp>
+#include <cd/ddgi/Ddgi.hpp>
+#include <cd/debug_draw/DebugDraw.hpp>
+#include <cd/debug_line/DebugLine.hpp>
+#include <cd/decal/Decal.hpp>
+#include <cd/ecs/Entity.hpp>
+#include <cd/ecs/World.hpp>
+#include <cd/editor/AxisGizmo.hpp>
+#include <cd/editor/CommandPalette.hpp>
+#include <cd/editor/EditHistory.hpp>
+#include <cd/editor/SelectionOutline.hpp>
+#include <cd/editor/TransformCommands.hpp>
+#include <cd/editor/panel/CompositeFxBinding.hpp>
+#include <cd/frame_timing/FrameTimeRing.hpp>
+#include <cd/gpu_particles/GpuParticles.hpp>
+#include <cd/input/Axis.hpp>
+// phase927 deps wired: cd::mesh_shader / cd::virtual_geometry /
+// cd::virtual_textures added to CMakeLists DEPS so the live demos
+// below can call into their public CPU APIs.
+#include <cd/mesh_shader/Meshlet.hpp>
+#include <cd/virtual_geometry/VirtualGeometry.hpp>
+#include <cd/virtual_textures/VirtualTextures.hpp>
+#include <cd/ibl/BrdfLut.hpp>
+#include <cd/ibl/Cubemap.hpp>
+#include <cd/ibl/IrradianceConvolution.hpp>
+#include <cd/ibl/PrefilteredSpecular.hpp>
+#include <cd/ibl_gpu/Upload.hpp>
+#include <cd/light/Attenuation.hpp>
+#include <cd/light/CascadedShadow.hpp>
+#include <cd/light/ClusterGrid.hpp>
+#include <cd/light/ColorTemperature.hpp>
+#include <cd/light/Light.hpp>
+#include <cd/light_shafts/LightShafts.hpp>
+#include <cd/material/AnalyticalSkyMaterial.hpp>
+#include <cd/material/Material.hpp>
+#include <cd/nrc/Nrc.hpp>
+#include <cd/restir_di/Reservoir.hpp>
+#include <cd/restir_gi/GiReservoir.hpp>
+#include <cd/texture_synth/Earth.hpp>
+#include <cd/texture_synth/Noise.hpp>
 
-#include "AppRuntime.hpp"
-#include "StudioGameWorkbench.hpp"
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#ifdef DrawText
-#undef DrawText
-#endif
-#ifdef near
-#undef near
-#endif
-#ifdef far
-#undef far
-#endif
-#ifdef ERROR
-#undef ERROR
-#endif
-#endif
-
+// W8-AR: <cd/material/StandardPbrMaterial.hpp> include REMOVED.
+// chromodynamic_studio no longer uses the dedicated StandardPbr pipeline;
+// the PBR demo spheres are unified into the kPrimFS path. The
+// library header stays available for studio_pbr and external samples.
+#include <cd/framegraph/Targets.hpp>
+#include <cd/math/Matrix.hpp>
+#include <cd/math/CubicBezier.hpp>
+#include <cd/math/QuatSlerp.hpp>
+#include <cd/math/Quaternion.hpp>
+#include <cd/math/Random.hpp>
+#include <cd/math/Transform.hpp>
+#include <cd/math/Vector.hpp>
+#include <cd/net/DeltaWriter.hpp>
+#include <cd/net/LatencyStats.hpp>
+#include <cd/net/SnapshotBuffer.hpp>
+#include <cd/net/Throttle.hpp>
 #include <cd/platform/Window.hpp>
+#include <cd/post/bloom/Bloom.hpp>
+#include <cd/post/composite/Composite.hpp>
+#include <cd/post/dof/Dof.hpp>
+#include <cd/post/exposure/Setup.hpp>
+#include <cd/post/gtao/Gtao.hpp>
+#include <cd/post/motion_blur/MotionBlur.hpp>
+#include <cd/post/smaa/Smaa.hpp>
+#include <cd/post/ssr/Ssr.hpp>
+#include <cd/post/taa/Taa.hpp>
+#include <cd/render/MeshUpload.hpp>
+#include <cd/render/PlanarShadow.hpp>
 #include <cd/render/Renderer.hpp>
 #include <cd/rhi/Barriers.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
-#include <cd/rhi/NullDevice.hpp>
 #include <cd/rhi/vulkan/VulkanDevice.hpp>
-#include <cd/ui/a11y/A11y.hpp>
+#include <cd/scene/Scene.hpp>
+#include <cd/scene/SceneCameraController.hpp>
+#include <cd/scene/Serializer.hpp>
+#include <cd/shader/Compiler.hpp>
+// phase1174 — behavior_designer fold (ADR-20260614). cd::ui_* overlay
+// stack: a cd::ui::renderer_rhi::Submitter (Route B inline GLSL) +
+// DrawBatcher render the library BehaviorDesigner panel as a golden-gated
+// ImGui-coexisting overlay. See the boot/record blocks below.
 #include <cd/ui/font/Font.hpp>
-#include <cd/ui/input/Input.hpp>
+#include <cd/ui/layout/Flex.hpp>  // phase1177 — studio_ui fold (Flex demo tree)
 #include <cd/ui/renderer/DrawBatcher.hpp>
 #include <cd/ui/renderer_rhi/Submitter.hpp>
 #include <cd/ui/theme/Theme.hpp>
-#include <cd/ui/ToastAnim.hpp>
-#include <cd/ui/widgets/DockSpace.hpp>
 #include <cd/ui/widgets/Widgets.hpp>
-
-// Phase 608 / M7 W3 — Route A path. As of phase659 / M11 W3B Sprint-4 the
-// cd::material UI variant header is included UNCONDITIONALLY so the editor
-// can attempt Route A at runtime and gracefully fall back to Route B when
-// the cd::material::create_ui_variant factory returns an error (e.g. the
-// host lacks glslang or the descriptor layout cannot be allocated). The
-// compile-time `CD_USE_MATERIAL_UI_ROUTE_A` flag now controls the
-// PREFERRED route -- ON (default) = "try A first, fall back to B on error",
-// OFF = "only ever build with B". Both Submitter factories are linked into
-// the binary either way; the runtime self-test below logs which one
-// succeeded so the user sees the active path on every boot.
-#include <cd/material/UiVariant.hpp>
-
-// phase667 / M12 W2 — Material + MaterialInstance used by the Inspector PBR
-// section. The editor seeds an inert MaterialInstance so the round-trip
-// surface (metallic / roughness / alpha_mode / alpha_cutoff sliders) is
-// non-empty on first boot.
-#include <cd/material/Material.hpp>
-
-#include <cd/editor/Editor.hpp>
-#include <cd/editor/FullFledgedEditorSuite.hpp>
-#include <cd/editor/HierarchyView.hpp>
-#include <cd/runtime/EngineContext.hpp>
-#include <cd/runtime/EngineLoop.hpp>
-#include <cd/editor/panel_inspector/Inspector.hpp>
-#include <cd/editor/panel_console/Console.hpp>
-#include <cd/editor/panel_asset_browser/AssetBrowser.hpp>
-#include <cd/editor/panel_viewport/Viewport.hpp>
-#include <cd/editor/panel_material_editor/MaterialEditor.hpp>
-#include <cd/editor/panel_animator/Animator.hpp>
 #include <cd/editor/panel_behavior_designer/BehaviorDesigner.hpp>
-#include <cd/editor/panel_asset_drop_target/AssetDropTarget.hpp>
-// phase667 / M12 W2 — three new panels wired into the dock + cutscene_player
-// joined alongside dialog_tree_editor on the LEFT column.
-#include <cd/editor/panel_light_editor/LightEditor.hpp>
-#include <cd/editor/panel_input_recorder/InputRecorderPanel.hpp>
-#include <cd/editor/panel_dialog_tree_editor/DialogTreeEditor.hpp>
-#include <cd/editor/panel_cutscene_player/CutscenePlayerPanel.hpp>
-// phase785 / E5 — input recorder editor binding: Recorder + Replayer live
-// instances that back the InputRecorderPanel in apps/editor. The panel holds
-// non-owning pointers; the real objects live here in the compilation unit.
-#include <cd/game/input_recorder/InputRecorder.hpp>
-// phase679 / M13 W3 — three brand-new authoring panels wired into the dock:
-//   * vehicle_editor    -- tab-merged with material_editor on LEFT-lower
-//   * pathfinding_viz   -- standalone split beneath scene_tree on LEFT-top
-//   * material_preview  -- tab-merged with material_editor + vehicle_editor
-//                          (3-way tab strip on LEFT-lower)
-#include <cd/editor/panel_vehicle_editor/VehicleEditor.hpp>
-#include <cd/editor/panel_pathfinding_viz/PathfindingViz.hpp>
-#include <cd/editor/panel_material_preview/MaterialPreview.hpp>
-// phase738 / FINALE-2 W3A B1 — demo AuthoredMaterial seed for the live PBR
-// preview swatch. The material_preview panel re-renders its 256x256 RT every
-// time this material's fingerprint drifts (slider edits in the inspector).
-#include <cd/asset/material_authoring/MaterialAuthoring.hpp>
-#include <cd/editor/cdproj/CdprojFile.hpp>
-
-// phase667 / M12 W2 — asset_validator (status badge in the new status bar) +
-// cd::asset::validator::Severity for green/yellow/red counts.
-#include <cd/asset/validator/Validator.hpp>
-
-// phase598 / M6 W3 — overlays (CPU marker bar chart + frame-graph Gantt).
-#include <cd/profile/cpu_marker_overlay/CpuMarkerOverlay.hpp>
-#include <cd/profile/frame_graph_timeline/FrameGraphTimeline.hpp>
-// phase737 — real cd::framegraph pass timing.
-#include <cd/framegraph/FrameGraph.hpp>
-
-// phase631 / M9 W1A — GPU marker overlay (sibling to cpu_marker_overlay;
-// cpu/gpu classification, NOT a v1/v2 version rename). Synthetic samples per
-// frame — real GPU timestamps land when ICommandBuffer::write_timestamp ships.
-// (phase618 slot was planned but not delivered as a standalone commit; this
-// phase631 commit is the official delivery.)
-#include <cd/profile/gpu_marker/GpuMarker.hpp>
-
-// phase674 / M12 W6B — FrameTimeRing for real FPS feed in the overlay headers.
-// Header-only; no extra link target (cd::frame_timing is INTERFACE).
-#include <cd/frame_timing/FrameTimeRing.hpp>
-
-// phase684 / M13 W6A — Debug Visualization overlays: depth / normal /
-// alpha-bucket thumbnails in a top-right vertical stack. Three instances each
-// carry a separate VizKind. Sprint-1 renders coloured placeholder gradients;
-// Sprint-2 wires real G-buffer textures once framegraph exposes them cleanly.
-#include <cd/editor/panel_debug_viz/DebugViz.hpp>
-
-// phase690 / M14 W3 — three new M14 surfaces wired into apps/editor:
-//   * scene_navigator           — search-filter sibling to scene_tree, tab-merged
-//                                  with it on the LEFT column (no new dock node;
-//                                  tab_merge does not bump node_count).
-//   * keyboard_shortcut_overlay — full-screen '?' cheatsheet; 15 default shortcuts
-//                                  pre-registered. Rendered as an overlay, NOT a
-//                                  dock node, so it never collides with panel rects.
-//   * PopoutDock                — Sprint-1 state machine that tracks panels the
-//                                  user has "torn off" from the dock. apps/editor
-//                                  renders each detached panel as a floating-internal
-//                                  rectangle (top-left from PopoutWindow::position).
-//                                  Border drawn in palette accent_warning so the
-//                                  detached state is visually distinct.
-#include <cd/editor/panel_scene_navigator/SceneNavigator.hpp>
-#include <cd/editor/panel_keyboard_shortcut_overlay/KeyboardShortcutOverlay.hpp>
-#include <cd/ui/widgets/PopoutDock.hpp>
-
-// phase701 / M15 W3 — three new panels wired into apps/editor:
-//   * settings_panel      — tab-merged with inspector on RIGHT-top.
-//   * build_panel         — tab-merged with console on BOTTOM-CENTRE.
-//   * perf_profiler       — tab-merged with the debug_viz overlay area
-//                           (RIGHT-lower; split below light_editor so
-//                           perf data lives next to runtime debug overlays).
-//
-// All three are tab-merges + one new split for perf_profiler. The toast
-// notification queue + the build-panel global registration helper are
-// declared in a small editor::toast namespace below.
-#include <cd/editor/panel_settings/SettingsPanel.hpp>
-#include <cd/editor/panel_build/BuildPanel.hpp>
-#include <cd/editor/panel_perf_profiler/PerfProfiler.hpp>
-
-// phase711 / M16 W3 — two new panels wired into apps/editor:
-//   * asset_pipeline_status — tab-merged with perf_profiler on RIGHT-lower.
-//                              StreamerPool pending/completed bar chart.
-//   * ik_chain_editor       — tab-merged with animator on BOTTOM strip.
-//                              2D side-view IK chain visualiser + convergence
-//                              indicator.
-// Both are tab-merges so dockspace.node_count() stays at 14 (no new splits).
-// Panel count grows 20 -> 22.
-#include <cd/editor/panel_asset_pipeline_status/AssetPipelineStatus.hpp>
-#include <cd/editor/panel_ik_chain_editor/IkChainEditor.hpp>
-
-// phase720 / M17 W3 — three new panels wired into apps/editor:
-//   * scene_palette        — tab-merged with settings_panel on RIGHT-top.
-//                            Live theme token preview grid (15 swatch cells).
-//   * lobby_browser        — standalone bottom-right node (split alongside
-//                            perf_profiler / asset_pipeline_status).
-//                            Visualises cd::network::lobby active rooms.
-//   * auto_save_indicator  — NOT a dock node; rendered in the STATUS BAR
-//                            (~150 px wide strip pinned left of the theme picker).
-// Dock panel count grows 22 -> 24 (scene_palette is a tab-merge, lobby_browser
-// is a fresh split; auto_save_indicator lives outside the dock entirely).
-#include <cd/editor/panel_scene_palette/ScenePalette.hpp>
-#include <cd/editor/panel_lobby_browser/LobbyBrowser.hpp>
-#include <cd/editor/panel_auto_save_indicator/AutoSaveIndicator.hpp>
-
-// phase787 / FINALE-close-out H4 — FPS sparkline status-bar widget.
-// Ring buffer of 120 frame times; colour-coded waveform (green/amber/red).
-// Width = FpsSparkline::kWidth (200 px), slotted between the frame-stats
-// meters and the auto-save indicator.
-// MOMENT: FPS history at a glance — dev spots hitches without the profiler.
-#include <cd/editor/panel_status_bar_fps_sparkline/FpsSparkline.hpp>
-
-// phase720 / M17 W3 — Lobby instance for the LobbyBrowser panel seed.
-#include <cd/network/lobby/Lobby.hpp>
-
-// phase707 / M15 W6B — cd::particle::system::System drives the slow upward-
-// drifting particle field rendered behind the boot splash title.
-#include <cd/particle/system/ParticleSystem.hpp>
-
-// phase775 / FINALE-8 W1B H2 — 500 ms oscillator-generated boot chime.
-// Fires once at splash t=300 ms via the native audio backend; gracefully
-// skips if no device is available (null fallback).
-#include "SplashAudioCue.hpp"
-#include <cd/audio/IAudioBackend.hpp>
-#include <cd/audio/NativeBackend.hpp>
-
-// phase631 / M9 W1A — asset::validator for status badge.
-// TODO(phase631): No status bar exists yet in apps/editor. When a status bar
-// is added, wire a cd::asset::validator::Validator instance here and display
-// a pass/warn/error badge from the latest validate call results.
-// #include <cd/asset/validator/Validator.hpp>  // linked but include deferred
-
-// phase744 / FINALE-2 W4D B10 — hot-reload pipeline integration.
-// FileWatcher polls shader / glTF / Lua paths; HotReloadQueue coalesces
-// rapid OS churn into one notification per asset per frame-boundary.
-// When a watched file changes the bridge emits real BuildEvent entries:
-//   kCompiling  immediately (the file changed — processing is in flight)
-//   kSuccess    after processing completes
-//   kFailed     if the extension suggests a compile step that failed
-// This gives the Source 2 SDK moment: build_panel turns green immediately.
-#include <cd/asset/FileWatcher.hpp>
-#include <cd/asset/HotReloadQueue.hpp>
+#include <cd/velocity/Velocity.hpp>
+#include <cd/volumetric/clouds/Clouds.hpp>
+#include <cd/volumetric/fog/Fog.hpp>
+// phase512-volumetric-fog-wire: phase 469 froxel grid + GLSL kernel
+// strings + Wronski quadratic warp helpers. The CPU FroxelGrid stays
+// on the host until the 3D LUT GPU compute path lands; the symbols
+// from this header are exercised below so the wire-up is one #include
+// away from the GPU dispatch.
+#include <cd/volumetric/VolumetricFog.hpp>
+#include <cd/world_container/ProjectIo.hpp>
+#include <cd/world_container/World.hpp>
+#include <cd/ui/ChromaUi.hpp>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>   // _dupenv_s (MSVC) / std::getenv (POSIX) in input_recording_save_path()
-#include <filesystem>
+#include <cstdlib>
+#include <cd/core/Compat.hpp>  // compat::read_env_var (CD_HDR_LANES)
+#include <cstring>
+#include <deque>
 #include <fstream>
-#include <memory>
+#include <functional>
+#include <ios>
+#include <numbers>
 #include <optional>
+#include <random>
+#include <ranges>
 #include <span>
 #include <string>
-#include <string_view>
+#include <thread>
+#include <utility>
 #include <vector>
+
+#include "PrimShader.hpp"
+#include "StudioLighting.hpp"
+#include "StudioRayTracingTypes.hpp"
+#include "StudioPbrSphereGrid.hpp"
+#include "StudioRenderFxState.hpp"
+#include "StudioDdgiPipeline.hpp"
+#include "StudioDiagnosticOverlays.hpp"
+#include "StudioSkinnedMesh.hpp"
+#include "StudioTlasRing.hpp"
+#include "StudioViewportOverlays.hpp"
+#include "StudioTlasBuilder.hpp"
+#include "StudioSkinnedAnimator.hpp"
+#include "StudioBootBindless.hpp"
+#include "StudioBootGpu.hpp"
+#include "StudioBootProject.hpp"
+#include "StudioBootPostFx.hpp"
+#include "StudioBootScene.hpp"
+#include "StudioAudio.hpp"
+#include "StudioIblBaker.hpp"
+#include "StudioAppState.hpp"
+#include "StudioRenderTargets.hpp"
+#include "StudioMaterialPipeline.hpp"
+#include "StudioShaderWatch.hpp"
+#include "StudioGltfLoader.hpp"
+#include "StudioSceneAssetIngest.hpp"
+#include "StudioMeshRegistry.hpp"
+#include "StudioEngineCommands.hpp"
+#include "StudioViewportPicker.hpp"
+#include "StudioFxCommands.hpp"
+#include "SponzaFixtures.hpp"
+#include "StudioCliOptions.hpp"
+
+#include <cd/app/run.hpp>
+
+// ============================================================================
+// T1.7 phase543 -- Sponza golden-image readback wiring.
+//
+// CLI flag parsed in main() before cd::app::run<>:
+//   --golden-fixture N            ; N in 0..4 selects cd::studio_rt::
+//                                   sponza_fixtures::kFixtures[N].
+//   --golden-out <path.png>       ; PNG file written via the GoldenCapture
+//                                   helper after one full rendered frame.
+//   --golden-frames N             ; capture happens on frame N-1 (default 3).
+//
+// Effect when --golden-fixture is set:
+//   * Camera eye/target/fov_y are overridden in on_boot from kFixtures[N].
+//   * scene_cam auto-spin + free-look update are skipped so the captured
+//     frame is byte-deterministic for the chosen fixture.
+//   * After end_frame on the configured "golden frame", the swapchain is
+//     copied to a host-visible buffer and dumped to --golden-out as PNG.
+//   * The app then requests shutdown and exits 0 on success / non-zero
+//     on capture failure.
+//
+// Without --golden-fixture the runtime path is unchanged.
+//
+// phase825-rt-chrome-sponza-golden-cli-extract: the parser implementation
+// lives in StudioCliOptions.hpp so a unit test can exercise it without
+// bringing up Vulkan + the App lifecycle. See test_chromodynamic_studio_golden_cli.cpp.
+// ============================================================================
+// (golden::CliOptions / options() / parse() / enabled() declared in
+// StudioCliOptions.hpp included above with the other Studio* sample headers.)
+
+// ============================================================================
+// File-scope types needed by StudioApp::EngineState + the three lifecycle
+// overrides.  They were previously in the anonymous namespace; moving them
+// here makes them visible to StudioApp.hpp (included above) and to the
+// post-namespace implementation block (on_boot / on_frame / on_shutdown).
+// ============================================================================
+
+// ---- Per-entity 3D draw data -----------------------------------------------
+enum class PrimitiveKind : std::uint8_t
+{
+    kCube,
+    kSphere,
+    kCone,
+    kCylinder,
+    kTorus,
+    kGltf,    ///< CesiumMan / animated character
+    kSponza,  ///< Sponza atrium static scene — separate from kGltf so
+              ///  the turntable + Z-up correction never touch it
+};
+
+struct SceneEntity
+{
+    cd::ecs::Entity handle {};
+    std::string name;
+    cd::math::Vec3f tint { 1.0F, 1.0F, 1.0F };
+    float metallic { 0.0F };
+    float roughness { 0.5F };
+    PrimitiveKind kind { PrimitiveKind::kCube };
+    bool is_pbr { false };
+    // phase983-pbr-texture-fix: per-entity opt-in for albedo texture
+    // sampling on PBR entities. The PBR grid path used to hard-gate
+    // fx_params[1] = 0 for is_pbr=true draws, which silently disabled
+    // texture sampling for every PBR sphere. Setting use_texture=true
+    // (via the R-Showcase R2 panel or default for designated spheres)
+    // flips fx_params[1] to 1.0 so the shader samples cd_albedo_tex
+    // and multiplies by tint instead of using the vertex-coloured
+    // procedural path.
+    bool use_texture { false };
+    cd::math::Mat4f prev_model { cd::math::Mat4f::identity() };
+    bool prev_model_valid { false };
+};
+
+[[maybe_unused]] [[nodiscard]] static inline PrimitiveKind kind_from_name(std::string_view n) noexcept
+{
+    if (n == "Sphere")   return PrimitiveKind::kSphere;
+    if (n == "Cone")     return PrimitiveKind::kCone;
+    if (n == "Cylinder") return PrimitiveKind::kCylinder;
+    if (n == "Torus")    return PrimitiveKind::kTorus;
+    if (n == "Gltf")     return PrimitiveKind::kGltf;
+    if (n == "Sponza")   return PrimitiveKind::kSponza;
+    return PrimitiveKind::kCube;
+}
+
+// phase1140 (on_boot extraction batch 6 prep): GpuTexture2D +
+// create_texture_rgba8 moved to StudioRenderTargets.hpp (cd_studio) so
+// boot helpers in headers can create procedural textures. Using-decls
+// keep every existing unqualified reference compiling unchanged.
+using cd_studio::GpuTexture2D;
+using cd_studio::create_texture_rgba8;
+
+// phase1146 (on_boot extraction batch 7): setup_world_container moved to
+// StudioBootProject.hpp (cd_studio). The only remaining unqualified callsite
+// sits inside the #if 0 M2E legacy block, so no using-decl is needed
+// (misc-unused-using-decls).
+
+// ---- Random viz histogram --------------------------------------------------
+struct Histogram
+{
+    std::vector<std::size_t> bins;
+    float lo { 0 };
+    float hi { 1 };
+
+    void rebuild(std::span<const float> samples, float lo_, float hi_, int n_bins)
+    {
+        lo = lo_; hi = hi_;
+        bins.assign(static_cast<std::size_t>(n_bins), 0);
+        const float inv = static_cast<float>(n_bins) / (hi - lo);
+        for (float s : samples)
+        {
+            if (s < lo || s >= hi) continue;
+            int idx = static_cast<int>((s - lo) * inv);
+            if (idx >= 0 && idx < n_bins) ++bins[static_cast<std::size_t>(idx)];
+        }
+    }
+};
+
+// ---- Selection + light row -------------------------------------------------
+enum class SelKind : std::uint8_t { kEntity = 0, kLight = 1 };
+
+struct LightRow
+{
+    std::string name;
+    cd::light::Light light;
+    bool  enabled { true };
+    float kelvin  { 6500.0F };
+};
+
+// ---- Editor gizmo state ----------------------------------------------------
+enum class GizmoMode : std::uint8_t { kTranslate = 0, kRotate = 1, kScale = 2 };
+
+struct GizmoState
+{
+    bool      visible                   { true };
+    GizmoMode mode                      { GizmoMode::kTranslate };
+    ImVec2    drag_anchor               { 0, 0 };
+    cd::math::Vec3f drag_world_start    {};
+    cd::math::Vec3f drag_scale_start    { 1.0F, 1.0F, 1.0F };
+    cd::math::Quatf drag_rot_start      {};
+    cd::math::Vec3f light_drag_dir_start     { 0.0F, -1.0F, 0.0F };
+    cd::math::Vec3f light_drag_tangent_start { 1.0F,  0.0F, 0.0F };
+    float light_drag_range_start  { 0.0F };
+    float light_drag_area_w_start { 1.0F };
+    float light_drag_area_h_start { 1.0F };
+    float drag_initial_offset     { 0.0F };
+    bool  drag_use_ray_plane      { false };
+    bool  was_hovered             { false };
+};
+
+// ---- Camera motion-blur basis snapshot -------------------------------------
+struct PrevCamBasis
+{
+    cd::math::Vec3f right { 1.0F, 0.0F,  0.0F };
+    cd::math::Vec3f up    { 0.0F, 1.0F,  0.0F };
+    cd::math::Vec3f fwd   { 0.0F, 0.0F, -1.0F };
+    cd::math::Vec3f pos   { 0.0F, 0.0F,  0.0F };
+    float half_w { 1.0F };
+    float half_h { 1.0F };
+    bool  valid  { false };
+};
+
+// ============================================================================
+// StudioApp class + EngineState + lifecycle implementations.
+// Included HERE (after file-scope types above) so the implementations have
+// access to PrimitiveKind, SceneEntity, GizmoState, SelKind, LightRow, etc.
+// ============================================================================
+#include "StudioApp.hpp"
+#include "StudioToolbar.hpp"
 
 namespace
 {
+std::string   g_studio_capture_png     {};
+std::uint32_t g_studio_capture_frame   { 8U };
+bool          g_studio_start_pie       { false };
+bool          g_studio_demo_all_phases { false };
 
-namespace platform = cd::platform;
-namespace rhi      = cd::rhi;
-namespace render   = cd::render;
-namespace uf       = cd::ui::font;
-namespace ur       = cd::ui::renderer;
-namespace urr      = cd::ui::renderer_rhi;
-namespace uw       = cd::ui::widgets;
-namespace uth      = cd::ui::theme;
 
-// ---- Editor-specific argv flags --------------------------------------------
+// ============================================================================
+// Synthetic audio source (drives the DSP chain continuously).
+// ============================================================================
 
-struct EditorArgs
+constexpr std::uint32_t kAudioSampleRate = 48000;
+constexpr std::size_t kAudioBufferLen = 512;  // samples per tick
+
+[[nodiscard]] float square_wave(std::uint64_t i, float hz) noexcept
 {
-    bool          force_null { false };
-    bool          pie_play { false };
-    bool          skip_splash { true };
-    bool          legacy_dock { false };
-    std::uint32_t max_frames { 0U };
-    std::string   project_path;
-    std::string   showcase_slug { "01_pbr_materials_sss_hair" };
-    std::string   capture_png;
-    std::string   capture_window_png;
-};
-
-[[nodiscard]] EditorArgs parse_editor_args(int argc, char** argv)
-{
-    EditorArgs a {};
-    for (int i = 1; i < argc; ++i)
-    {
-        const std::string_view s { argv[i] };
-        if (s == "--null")
-        {
-            a.force_null = true;
-        }
-        else if (s == "--pie-play")
-        {
-            a.pie_play = true;
-        }
-        else if (s == "--skip-splash")
-        {
-            a.skip_splash = true;
-        }
-        else if (s == "--with-splash")
-        {
-            a.skip_splash = false;
-        }
-        else if (s == "--legacy-dock")
-        {
-            a.legacy_dock = true;
-        }
-        else if ((s == "--frames" || s == "--smoke-frames" || s == "--headless-frames") && i + 1 < argc)
-        {
-            const long v = std::strtol(argv[i + 1], nullptr, 10);
-            if (v > 0)
-            {
-                a.max_frames = static_cast<std::uint32_t>(v);
-            }
-            ++i;
-        }
-        else if (s == "--showcase" && i + 1 < argc)
-        {
-            a.showcase_slug = argv[i + 1];
-            ++i;
-        }
-        else if (s == "--capture-png" && i + 1 < argc)
-        {
-            a.capture_png = argv[i + 1];
-            a.skip_splash = true;
-            if (a.max_frames == 0U)
-            {
-                a.max_frames = 4U;
-            }
-            ++i;
-        }
-        else if (s == "--capture-window-png" && i + 1 < argc)
-        {
-            a.capture_window_png = argv[i + 1];
-            a.skip_splash = true;
-            if (a.max_frames == 0U)
-            {
-                a.max_frames = 12U;
-            }
-            ++i;
-        }
-        else if (s == "--project" && i + 1 < argc)
-        {
-            a.project_path = argv[i + 1];
-            ++i;
-        }
-    }
-    // Fallback: if argv[1] is a non-flag positional, treat as .cdproj.
-    if (a.project_path.empty() && argc >= 2 && argv[1][0] != '-')
-    {
-        a.project_path = argv[1];
-    }
-    return a;
+    const float phase = static_cast<float>(i) * hz / static_cast<float>(kAudioSampleRate);
+    const float frac = phase - std::floor(phase);
+    return (frac < 0.5F) ? 0.55F : -0.55F;
 }
 
-// ---- Deterministic PNG Frame Capture for Visual Quality Loop ----------------
-
-[[nodiscard]] std::uint32_t png_crc32(std::span<const std::uint8_t> data) noexcept
+[[nodiscard]] float burst_noise(std::uint64_t i) noexcept
 {
-    std::uint32_t crc = 0xFFFFFFFFU;
-    for (const std::uint8_t b : data)
-    {
-        crc ^= static_cast<std::uint32_t>(b);
-        for (int k = 0; k < 8; ++k)
-        {
-            crc = (crc & 1U) != 0U ? ((crc >> 1U) ^ 0xEDB88320U) : (crc >> 1U);
-        }
-    }
-    return ~crc;
+    const auto cycle = static_cast<std::uint64_t>(kAudioSampleRate / 4);       // 250 ms
+    const auto burst_len = static_cast<std::uint64_t>(kAudioSampleRate / 30);  // 33 ms
+    if ((i % cycle) >= burst_len)
+        return 0.0F;
+    std::uint64_t x = i * 2654435761ULL + 0xC0FFEEULL;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    const float n = (static_cast<float>(x & 0xFFFFFFFFu) / static_cast<float>(0xFFFFFFFFu)) * 2.0F - 1.0F;
+    return n * 0.7F;
 }
 
-void write_be32(std::vector<std::uint8_t>& out, std::uint32_t v)
+// PrimitiveKind, SceneEntity, kind_from_name moved to file scope (before namespace {}).
+
+// ============================================================================
+// phase1174 — behavior_designer fold (ADR-20260614).
+//
+// Theme bridge + font probe ported VERBATIM from the now-deleted
+// samples/editor/studio_behavior_designer/main.cpp. They feed the
+// cd::ui::renderer_rhi::Submitter overlay that renders the library
+// BehaviorDesigner panel. The font is optional (Route B inline shader
+// does not sample the atlas today); kept for parity with the source sample.
+// ============================================================================
+
+[[nodiscard]] cd::ui::widgets::Color to_widget_color(cd::ui::theme::ColorToken c) noexcept
 {
-    out.push_back(static_cast<std::uint8_t>((v >> 24U) & 0xFFU));
-    out.push_back(static_cast<std::uint8_t>((v >> 16U) & 0xFFU));
-    out.push_back(static_cast<std::uint8_t>((v >> 8U) & 0xFFU));
-    out.push_back(static_cast<std::uint8_t>(v & 0xFFU));
+    auto pack = [](float v) noexcept -> std::uint8_t {
+        const float clamped = std::clamp(v, 0.0F, 1.0F);
+        return static_cast<std::uint8_t>(std::lround(clamped * 255.0F));
+    };
+    return cd::ui::widgets::Color { pack(c.r), pack(c.g), pack(c.b), pack(c.a) };
 }
 
-void write_png_chunk(std::vector<std::uint8_t>& out, const char type[4], std::span<const std::uint8_t> payload)
+[[nodiscard]] cd::ui::widgets::Theme build_dark_widget_theme()
 {
-    write_be32(out, static_cast<std::uint32_t>(payload.size()));
-    const std::size_t type_offset = out.size();
-    out.push_back(static_cast<std::uint8_t>(type[0]));
-    out.push_back(static_cast<std::uint8_t>(type[1]));
-    out.push_back(static_cast<std::uint8_t>(type[2]));
-    out.push_back(static_cast<std::uint8_t>(type[3]));
-    out.insert(out.end(), payload.begin(), payload.end());
-    const std::uint32_t crc = png_crc32(std::span<const std::uint8_t>(out.data() + type_offset, 4U + payload.size()));
-    write_be32(out, crc);
+    const auto dark = cd::ui::theme::k_dark_theme();
+    cd::ui::widgets::Theme t {};
+    t.background    = to_widget_color(dark.color(cd::ui::theme::PaletteSlot::kBackground));
+    t.surface       = to_widget_color(dark.color(cd::ui::theme::PaletteSlot::kSurface));
+    t.surface_hover = to_widget_color(dark.color(cd::ui::theme::PaletteSlot::kSurfaceVariant));
+    t.surface_press = to_widget_color(dark.color(cd::ui::theme::PaletteSlot::kPrimaryContainer));
+    t.accent        = to_widget_color(dark.color(cd::ui::theme::PaletteSlot::kPrimary));
+    t.accent_hover  = to_widget_color(dark.color(cd::ui::theme::PaletteSlot::kPrimaryContainer));
+    t.text          = to_widget_color(dark.color(cd::ui::theme::PaletteSlot::kOnSurface));
+    t.text_dim      = to_widget_color(dark.color(cd::ui::theme::PaletteSlot::kOnSurfaceVariant));
+    return t;
 }
 
-[[nodiscard]] bool write_rgba_png(const std::filesystem::path& path, std::uint32_t w, std::uint32_t h, std::span<const std::uint8_t> rgba)
+[[nodiscard]] std::vector<std::uint8_t> find_system_font_for_bd()
 {
-    if (w == 0U || h == 0U || rgba.size() < static_cast<std::size_t>(w) * h * 4U)
-    {
-        return false;
-    }
-    std::vector<std::uint8_t> raw_scanlines;
-    const std::size_t row_bytes = static_cast<std::size_t>(w) * 4U;
-    raw_scanlines.reserve(static_cast<std::size_t>(h) * (1U + row_bytes));
-    for (std::uint32_t y = 0U; y < h; ++y)
-    {
-        raw_scanlines.push_back(0U);  // filter type 0 (None)
-        const auto* row = rgba.data() + static_cast<std::size_t>(y) * row_bytes;
-        raw_scanlines.insert(raw_scanlines.end(), row, row + row_bytes);
-    }
-
-    // Build zlib stream using stored (uncompressed) deflate blocks
-    std::vector<std::uint8_t> zlib_data;
-    zlib_data.push_back(0x78U);
-    zlib_data.push_back(0x01U);
-    std::size_t offset = 0U;
-    while (offset < raw_scanlines.size())
-    {
-        const std::size_t rem = raw_scanlines.size() - offset;
-        const std::uint16_t blk = static_cast<std::uint16_t>(std::min<std::size_t>(rem, 65535U));
-        const bool is_last = (offset + blk >= raw_scanlines.size());
-        zlib_data.push_back(is_last ? 0x01U : 0x00U);
-        zlib_data.push_back(static_cast<std::uint8_t>(blk & 0xFFU));
-        zlib_data.push_back(static_cast<std::uint8_t>((blk >> 8U) & 0xFFU));
-        const std::uint16_t nlen = static_cast<std::uint16_t>(~blk);
-        zlib_data.push_back(static_cast<std::uint8_t>(nlen & 0xFFU));
-        zlib_data.push_back(static_cast<std::uint8_t>((nlen >> 8U) & 0xFFU));
-        zlib_data.insert(
-            zlib_data.end(),
-            raw_scanlines.begin() + static_cast<std::ptrdiff_t>(offset),
-            raw_scanlines.begin() + static_cast<std::ptrdiff_t>(offset + blk)
-        );
-        offset += blk;
-    }
-    std::uint32_t s1 = 1U;
-    std::uint32_t s2 = 0U;
-    for (const std::uint8_t b : raw_scanlines)
-    {
-        s1 = (s1 + b) % 65521U;
-        s2 = (s2 + s1) % 65521U;
-    }
-    write_be32(zlib_data, (s2 << 16U) | s1);
-
-    std::vector<std::uint8_t> png;
-    static constexpr std::array<std::uint8_t, 8> kSig { 137U, 80U, 78U, 71U, 13U, 10U, 26U, 10U };
-    png.insert(png.end(), kSig.begin(), kSig.end());
-
-    std::vector<std::uint8_t> ihdr;
-    write_be32(ihdr, w);
-    write_be32(ihdr, h);
-    ihdr.push_back(8U);  // bit depth
-    ihdr.push_back(6U);  // color type RGBA
-    ihdr.push_back(0U);
-    ihdr.push_back(0U);
-    ihdr.push_back(0U);
-    write_png_chunk(png, "IHDR", ihdr);
-    write_png_chunk(png, "IDAT", zlib_data);
-    write_png_chunk(png, "IEND", {});
-
-    std::error_code ec;
-    if (path.has_parent_path())
-    {
-        std::filesystem::create_directories(path.parent_path(), ec);
-    }
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out)
-    {
-        return false;
-    }
-    out.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
-    return out.good();
-}
-
-void dump_batcher_to_png(const ur::DrawBatcher& batcher, std::uint32_t w, std::uint32_t h, const std::filesystem::path& path)
-{
-    std::vector<std::uint8_t> fb(static_cast<std::size_t>(w) * h * 4U, 0U);
-    for (std::size_t i = 0U; i < fb.size(); i += 4U)
-    {
-        fb[i + 0U] = 15U;
-        fb[i + 1U] = 18U;
-        fb[i + 2U] = 26U;
-        fb[i + 3U] = 255U;
-    }
-
-    const auto verts = batcher.vertices();
-    const auto idxs  = batcher.indices();
-    for (const auto& cmd : batcher.commands())
-    {
-        const int sx0 = (cmd.scissor.width == 0xFFFFFFFFu) ? 0 : std::max(0, cmd.scissor.x);
-        const int sy0 = (cmd.scissor.height == 0xFFFFFFFFu) ? 0 : std::max(0, cmd.scissor.y);
-        const int sx1 = (cmd.scissor.width == 0xFFFFFFFFu)
-                            ? static_cast<int>(w)
-                            : std::min(static_cast<int>(w), cmd.scissor.x + static_cast<int>(cmd.scissor.width));
-        const int sy1 = (cmd.scissor.height == 0xFFFFFFFFu)
-                            ? static_cast<int>(h)
-                            : std::min(static_cast<int>(h), cmd.scissor.y + static_cast<int>(cmd.scissor.height));
-
-        for (std::uint32_t k = 0U; k + 2U < cmd.index_count; k += 3U)
-        {
-            const std::uint32_t base = cmd.index_offset + k;
-            if (base + 2U >= idxs.size()) { break; }
-            const auto& v0 = verts[idxs[base + 0U]];
-            const auto& v1 = verts[idxs[base + 1U]];
-            const auto& v2 = verts[idxs[base + 2U]];
-
-            const int min_x = std::max(sx0, static_cast<int>(std::floor(std::min({ v0.pos_x, v1.pos_x, v2.pos_x }))));
-            const int max_x = std::min(sx1 - 1, static_cast<int>(std::ceil(std::max({ v0.pos_x, v1.pos_x, v2.pos_x }))));
-            const int min_y = std::max(sy0, static_cast<int>(std::floor(std::min({ v0.pos_y, v1.pos_y, v2.pos_y }))));
-            const int max_y = std::min(sy1 - 1, static_cast<int>(std::ceil(std::max({ v0.pos_y, v1.pos_y, v2.pos_y }))));
-
-            const float denom = (v1.pos_y - v2.pos_y) * (v0.pos_x - v2.pos_x) +
-                                (v2.pos_x - v1.pos_x) * (v0.pos_y - v2.pos_y);
-            if (std::abs(denom) < 1e-5F) { continue; }
-            const float inv_denom = 1.0F / denom;
-
-            for (int py = min_y; py <= max_y; ++py)
-            {
-                const float fy = static_cast<float>(py) + 0.5F;
-                for (int px = min_x; px <= max_x; ++px)
-                {
-                    const float fx = static_cast<float>(px) + 0.5F;
-                    const float w0 = ((v1.pos_y - v2.pos_y) * (fx - v2.pos_x) +
-                                      (v2.pos_x - v1.pos_x) * (fy - v2.pos_y)) * inv_denom;
-                    const float w1 = ((v2.pos_y - v0.pos_y) * (fx - v2.pos_x) +
-                                      (v0.pos_x - v2.pos_x) * (fy - v2.pos_y)) * inv_denom;
-                    const float w2 = 1.0F - w0 - w1;
-                    if (w0 >= -1e-4F && w1 >= -1e-4F && w2 >= -1e-4F)
-                    {
-                        const float sr = std::clamp(w0 * v0.r + w1 * v1.r + w2 * v2.r, 0.0F, 255.0F);
-                        const float sg = std::clamp(w0 * v0.g + w1 * v1.g + w2 * v2.g, 0.0F, 255.0F);
-                        const float sb = std::clamp(w0 * v0.b + w1 * v1.b + w2 * v2.b, 0.0F, 255.0F);
-                        const float sa = std::clamp(w0 * v0.a + w1 * v1.a + w2 * v2.a, 0.0F, 255.0F) / 255.0F;
-                        const std::size_t dst = (static_cast<std::size_t>(py) * w + static_cast<std::size_t>(px)) * 4U;
-                        fb[dst + 0U] = static_cast<std::uint8_t>(sr * sa + fb[dst + 0U] * (1.0F - sa));
-                        fb[dst + 1U] = static_cast<std::uint8_t>(sg * sa + fb[dst + 1U] * (1.0F - sa));
-                        fb[dst + 2U] = static_cast<std::uint8_t>(sb * sa + fb[dst + 2U] * (1.0F - sa));
-                        fb[dst + 3U] = 255U;
-                    }
-                }
-            }
-        }
-    }
-
-    if (write_rgba_png(path, w, h, fb))
-    {
-        std::printf("editor: captured frame PNG (%ux%u) -> %s\n", w, h, path.string().c_str());
-        std::fflush(stdout);
-    }
-}
-
-void capture_gpu_swapchain_to_png(rhi::IDevice& device,
-                                  rhi::TextureHandle swapchain_image,
-                                  std::uint32_t w,
-                                  std::uint32_t h,
-                                  const std::filesystem::path& path)
-{
-    if (!swapchain_image.is_valid() || w == 0U || h == 0U) { return; }
-    const std::size_t byte_count = static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4U;
-
-    rhi::BufferDesc bd {};
-    bd.size       = byte_count;
-    bd.usage      = rhi::BufferUsage::kTransferDst;
-    bd.memory     = rhi::MemoryUsage::kGpuToCpu;
-    bd.debug_name = "editor.swapchain_readback";
-    auto buf_r = device.create_buffer(bd);
-    if (!buf_r.has_value()) { return; }
-    const auto readback_buf = *buf_r;
-
-    rhi::IDevice::ImageRegion region {};
-    region.x          = 0U;
-    region.y          = 0U;
-    region.width      = w;
-    region.height     = h;
-    region.mip_level  = 0U;
-    region.base_layer = 0U;
-    region.src_state  = rhi::ResourceState::kPresent;
-
-    auto copy_r = device.copy_image_to_buffer(swapchain_image, readback_buf, 0U, region);
-    if (copy_r.has_value())
-    {
-        std::vector<std::uint8_t> bgra(byte_count, 0U);
-        auto dl_r = device.download_buffer(
-            readback_buf, 0U,
-            std::span<std::byte>(reinterpret_cast<std::byte*>(bgra.data()), bgra.size()));
-        if (dl_r.has_value())
-        {
-            std::vector<std::uint8_t> rgba(byte_count, 0U);
-            for (std::size_t i = 0U; i < byte_count; i += 4U)
-            {
-                rgba[i + 0U] = bgra[i + 2U];
-                rgba[i + 1U] = bgra[i + 1U];
-                rgba[i + 2U] = bgra[i + 0U];
-                rgba[i + 3U] = 255U;
-            }
-            if (write_rgba_png(path, w, h, rgba))
-            {
-                std::printf("editor: captured GPU swapchain PNG (%ux%u) -> %s\n", w, h, path.string().c_str());
-                std::fflush(stdout);
-            }
-        }
-    }
-    device.destroy_buffer(readback_buf);
-}
-
-
-// ---- TTF probe (shared logic with hello_ui) --------------------------------
-
-[[nodiscard]] std::vector<std::uint8_t> find_system_font()
-{
-    static const std::array<const char*, 6> kCandidates {
+    static const std::array<const char*, 6> k_candidates {
         "C:/Windows/Fonts/segoeui.ttf",
         "C:/Windows/Fonts/calibri.ttf",
         "C:/Windows/Fonts/arial.ttf",
@@ -835,7 +467,7 @@ void capture_gpu_swapchain_to_png(rhi::IDevice& device,
         "/usr/share/fonts/TTF/DejaVuSans.ttf",
         "/System/Library/Fonts/Helvetica.ttc",
     };
-    for (const char* p : kCandidates)
+    for (const char* p : k_candidates)
     {
         std::ifstream f(p, std::ios::binary | std::ios::ate);
         if (!f) { continue; }
@@ -849,6013 +481,5192 @@ void capture_gpu_swapchain_to_png(rhi::IDevice& device,
     return {};
 }
 
-// ---- Crisp 5x7 ASCII Bitmap-Quad Text & Line Renderer ----------------------
+// ============================================================================
+// phase1177 — studio_ui fold (ADR-20260614 §3.4, Job C).
 //
-// Renders crisp 5x7 pixel-grid glyphs directly into `ur::DrawBatcher` as
-// solid-colour quads so all UI labels, tab strips, 3D viewport HUD, scene
-// hierarchy nodes, inspector properties, and status bar metrics are 100%
-// legible on both Route A/B GPU swapchains and PNG frame captures.
+// The Button/Slider/Label/Flex demo ported VERBATIM (semantically) from the
+// now-deleted samples/ui/studio_ui/main.cpp. A column FlexTree with three
+// leaves (header label / button / slider) is solved each frame for the
+// panel rect, the leaf rects drive the widget rects, the widgets tick on
+// the (currently empty) input snapshot, and everything is drawn into the
+// shared ui_batcher. The Route B inline Submitter is solid-fill only (it
+// does not sample the glyph atlas today), so the demo renders as the panel
+// background + button face + slider track/knob quads — identical visual
+// contract to the BehaviorDesigner overlay it shares the Submitter with.
+// ============================================================================
 
-[[nodiscard]] constexpr std::array<std::uint8_t, 7> glyph_5x7(char c) noexcept
+[[nodiscard]] cd::ui::widgets::Rect uiw_to_widget_rect(const cd::ui::layout::Rect& r) noexcept
 {
-    if (c >= 'a' && c <= 'z')
-    {
-        c = static_cast<char>(c - 'a' + 'A');
-    }
-    switch (c)
-    {
-        case 'A': return { 0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 };
-        case 'B': return { 0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E };
-        case 'C': return { 0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E };
-        case 'D': return { 0x1C, 0x12, 0x11, 0x11, 0x11, 0x12, 0x1C };
-        case 'E': return { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F };
-        case 'F': return { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10 };
-        case 'G': return { 0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F };
-        case 'H': return { 0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 };
-        case 'I': return { 0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E };
-        case 'J': return { 0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C };
-        case 'K': return { 0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11 };
-        case 'L': return { 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F };
-        case 'M': return { 0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11 };
-        case 'N': return { 0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11 };
-        case 'O': return { 0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E };
-        case 'P': return { 0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10 };
-        case 'Q': return { 0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D };
-        case 'R': return { 0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11 };
-        case 'S': return { 0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E };
-        case 'T': return { 0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 };
-        case 'U': return { 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E };
-        case 'V': return { 0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04 };
-        case 'W': return { 0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11 };
-        case 'X': return { 0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11 };
-        case 'Y': return { 0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04 };
-        case 'Z': return { 0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F };
-        case '0': return { 0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E };
-        case '1': return { 0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E };
-        case '2': return { 0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F };
-        case '3': return { 0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E };
-        case '4': return { 0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02 };
-        case '5': return { 0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E };
-        case '6': return { 0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E };
-        case '7': return { 0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08 };
-        case '8': return { 0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E };
-        case '9': return { 0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C };
-        case ':': return { 0x00, 0x04, 0x04, 0x00, 0x04, 0x04, 0x00 };
-        case '.': return { 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x06 };
-        case ',': return { 0x00, 0x00, 0x00, 0x00, 0x04, 0x04, 0x08 };
-        case '-': return { 0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00 };
-        case '_': return { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F };
-        case '+': return { 0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00 };
-        case '/': return { 0x01, 0x02, 0x02, 0x04, 0x08, 0x08, 0x10 };
-        case '|': return { 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 };
-        case '[': return { 0x0E, 0x08, 0x08, 0x08, 0x08, 0x08, 0x0E };
-        case ']': return { 0x0E, 0x02, 0x02, 0x02, 0x02, 0x02, 0x0E };
-        case '(': return { 0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02 };
-        case ')': return { 0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08 };
-        case '<': return { 0x02, 0x04, 0x08, 0x10, 0x08, 0x04, 0x02 };
-        case '>': return { 0x08, 0x04, 0x02, 0x01, 0x02, 0x04, 0x08 };
-        case '=': return { 0x00, 0x00, 0x1F, 0x00, 0x1F, 0x00, 0x00 };
-        case '%': return { 0x19, 0x19, 0x02, 0x04, 0x08, 0x13, 0x13 };
-        case '#': return { 0x0A, 0x1F, 0x0A, 0x0A, 0x1F, 0x0A, 0x00 };
-        case '?': return { 0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04 };
-        case '!': return { 0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04 };
-        case '*': return { 0x00, 0x04, 0x15, 0x0E, 0x15, 0x04, 0x00 };
-        case '&': return { 0x0C, 0x12, 0x14, 0x08, 0x15, 0x12, 0x0D };
-        case '\'': return { 0x04, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00 };
-        default:  return { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    }
+    return cd::ui::widgets::Rect { r.x, r.y, r.width, r.height };
 }
 
-void draw_ui_text_clipped(ur::DrawBatcher& batcher,
-                          float x,
-                          float y,
-                          std::string_view text,
-                          ur::Color color,
-                          float scale = 1.0F,
-                          float max_x = 1e9F)
+/// Build the column-flex demo tree (header label / button / slider leaves).
+/// Mirrors studio_ui's build_tree(); writes the node ids back into EngineState.
+void uiw_build_tree(cd::ui::layout::FlexTree& tree,
+                    cd::ui::layout::NodeId& root,
+                    cd::ui::layout::NodeId& label,
+                    cd::ui::layout::NodeId& button,
+                    cd::ui::layout::NodeId& slider)
 {
-    const float px = std::max(1.0F, std::round(scale));
-    const float adv = 6.0F * px;
-    float cx = std::round(x);
-    const float cy = std::round(y);
-    for (const char ch : text)
-    {
-        if (cx + 5.0F * px > max_x)
-        {
-            break;
-        }
-        if (ch != ' ')
-        {
-            auto rows = glyph_5x7(ch);
-            for (std::size_t ry = 0U; ry < 7U; ++ry)
-            {
-                std::size_t rx = 0U;
-                while (rx < 5U)
-                {
-                    if (((rows[ry] >> (4U - rx)) & 1U) != 0U)
-                    {
-                        std::size_t run = 1U;
-                        while (rx + run < 5U && ((rows[ry] >> (4U - (rx + run))) & 1U) != 0U)
-                        {
-                            ++run;
-                        }
-                        // Build bitmask for this horizontal run [rx .. rx + run)
-                        std::uint8_t mask = 0U;
-                        for (std::size_t k = 0U; k < run; ++k)
-                        {
-                            mask = static_cast<std::uint8_t>(mask | (1U << (4U - (rx + k))));
-                        }
-                        // Merge vertically downward across subsequent rows where the same bits are set
-                        std::size_t v_run = 1U;
-                        rows[ry] = static_cast<std::uint8_t>(rows[ry] & ~mask);
-                        while (ry + v_run < 7U && (rows[ry + v_run] & mask) == mask)
-                        {
-                            rows[ry + v_run] = static_cast<std::uint8_t>(rows[ry + v_run] & ~mask);
-                            ++v_run;
-                        }
-                        if (batcher.vertex_count() + 4U <= ur::kMaxVertices)
-                        {
-                            batcher.quad(cx + static_cast<float>(rx) * px,
-                                         cy + static_cast<float>(ry) * px,
-                                         static_cast<float>(run) * px,
-                                         static_cast<float>(v_run) * px,
-                                         color);
-                        }
-                        rx += run;
-                    }
-                    else
-                    {
-                        ++rx;
-                    }
-                }
-            }
-        }
-        cx += adv;
-    }
+    namespace ll = cd::ui::layout;
+    ll::FlexStyle rs;
+    rs.direction   = ll::FlexDirection::kColumn;
+    rs.align_items = ll::AlignItems::kStretch;
+    rs.padding     = { 16.0F, 16.0F, 16.0F, 16.0F };
+    rs.gap_main    = 12.0F;
+    root = tree.create_node(rs);
+
+    ll::FlexStyle leaf;
+    leaf.flex_shrink      = 0.0F;
+    leaf.intrinsic_height = 36.0F;
+    label = tree.create_node(leaf);
+
+    leaf.intrinsic_height = 40.0F;
+    button = tree.create_node(leaf);
+
+    leaf.intrinsic_height = 28.0F;
+    slider = tree.create_node(leaf);
+
+    tree.add_child(root, label);
+    tree.add_child(root, button);
+    tree.add_child(root, slider);
 }
 
-void draw_ui_text(ur::DrawBatcher& batcher,
-                  float x,
-                  float y,
-                  std::string_view text,
-                  ur::Color color,
-                  float scale = 1.0F)
-{
-    draw_ui_text_clipped(batcher, x, y, text, color, scale, 1e9F);
-}
-
-void draw_ui_line(ur::DrawBatcher& batcher,
-                  float x0, float y0,
-                  float x1, float y1,
-                  float thickness,
-                  ur::Color color)
-{
-    const float dx = x1 - x0;
-    const float dy = y1 - y0;
-    const float len = std::sqrt(dx * dx + dy * dy);
-    if (len < 0.5F) { return; }
-    if ( std::abs(dy) < 0.75F )
-    {
-        if (batcher.vertex_count() + 4U <= ur::kMaxVertices)
-        {
-            batcher.quad(std::min(x0, x1), y0 - thickness * 0.5F, std::abs(dx), thickness, color);
-        }
-        return;
-    }
-    if ( std::abs(dx) < 0.75F )
-    {
-        if (batcher.vertex_count() + 4U <= ur::kMaxVertices)
-        {
-            batcher.quad(x0 - thickness * 0.5F, std::min(y0, y1), thickness, std::abs(dy), color);
-        }
-        return;
-    }
-    const int steps = std::clamp(static_cast<int>(len / std::max(3.5F, thickness * 1.4F)), 1, 28);
-    const float seg = std::max(thickness, 2.0F);
-    const float half = seg * 0.5F;
-    for (int i = 0; i <= steps; ++i)
-    {
-        if (batcher.vertex_count() + 4U > ur::kMaxVertices) { break; }
-        const float t = static_cast<float>(i) / static_cast<float>(steps);
-        const float px = x0 + dx * t - half;
-        const float py = y0 + dy * t - half;
-        batcher.quad(px, py, seg, seg, color);
-    }
-}
-
-// ---- Default DockSpace layout ----------------------------------------------
+// ============================================================================
+// GPU mesh holder.
 //
-// Builds the 3-column Studio Cockpit layout hosting all 24 panels across
-// 25 DockNodes (12 splits + 13 leaf/tab-groups):
-//
-//   LEFT COLUMN (20% width):
-//     - Top:    scene_tree | scene_navigator (tab group)
-//     - Upper:  pathfinding_viz
-//     - Mid:    material_editor | vehicle_editor | material_preview (tab group)
-//     - Bottom: cutscene_player | dialog_tree_editor (tab group)
-//
-//   CENTER COLUMN (54% width):
-//     - Top (72% height):    viewport (3D Perspective Showcase Stage View)
-//     - Bottom (28% height):
-//         * Left (56%):  console | assets | asset_drop_target | build_panel
-//         * Mid  (24%):  animator | ik_chain_editor
-//         * Right (20%): input_recorder
-//
-//   RIGHT COLUMN (26% width):
-//     - Top:    inspector | settings_panel | scene_palette (tab group)
-//     - Upper:  behavior_designer
-//     - Mid:    light_editor
-//     - Lower:  perf_profiler | asset_pipeline_status (tab group)
-//     - Bottom: lobby_browser
-//
-// Note on `DockSpace::split(target_leaf, kVertical, new_panel_id, ratio)`:
-//   `first_` (LEFT / TOP) receives `target_leaf` with fraction `ratio`.
-//   `second_` (RIGHT / BOTTOM) receives `new_panel_id` with `1 - ratio`.
-[[nodiscard]] bool build_default_layout(uw::DockSpace& ds)
-{
-    auto* root = ds.root();
-    if (root == nullptr) { return false; }
-
-    // 1. Seed root with "scene_tree" so the first vertical split keeps
-    //    "scene_tree" in the LEFT column (20% width) and puts "viewport"
-    //    on the RIGHT (80% width).
-    if (!ds.tab_merge(root, "scene_tree")) { return false; }
-
-    auto* scene_tree_node = ds.find_panel_owner("scene_tree");
-    if (scene_tree_node == nullptr) { return false; }
-    if (!ds.split(scene_tree_node, uw::DockAxis::kVertical,
-                  "viewport", 0.20F))
-    {
-        return false;
-    }
-
-    // 2. Split "viewport" vertically with "inspector" at 0.675 so
-    //    CENTER ("viewport") gets 54% of total width and RIGHT ("inspector")
-    //    gets 26% of total width.
-    auto* viewport_node = ds.find_panel_owner("viewport");
-    if (viewport_node == nullptr) { return false; }
-    if (!ds.split(viewport_node, uw::DockAxis::kVertical,
-                  "inspector", 0.675F))
-    {
-        return false;
-    }
-
-    // 3. Split CENTER "viewport" horizontally with "console" at 0.72 so
-    //    "viewport" keeps top 72% height and "console" gets bottom 28%.
-    viewport_node = ds.find_panel_owner("viewport");
-    if (viewport_node == nullptr) { return false; }
-    if (!ds.split(viewport_node, uw::DockAxis::kHorizontal,
-                  "console", 0.72F))
-    {
-        return false;
-    }
-
-    // Tab-merge "assets" into "console".
-    auto* console_node = ds.find_panel_owner("console");
-    if (console_node == nullptr) { return false; }
-    if (!ds.tab_merge(console_node, "assets")) { return false; }
-
-    // 4. LEFT column splits: scene_tree -> material_editor (0.54)
-    scene_tree_node = ds.find_panel_owner("scene_tree");
-    if (scene_tree_node == nullptr) { return false; }
-    if (!ds.split(scene_tree_node, uw::DockAxis::kHorizontal,
-                  "material_editor", 0.54F))
-    {
-        return false;
-    }
-
-    // 5. RIGHT column splits: inspector -> behavior_designer (0.44)
-    auto* inspector_node = ds.find_panel_owner("inspector");
-    if (inspector_node == nullptr) { return false; }
-    if (!ds.split(inspector_node, uw::DockAxis::kHorizontal,
-                  "behavior_designer", 0.44F))
-    {
-        return false;
-    }
-
-    // 6. CENTER-BOTTOM splits: console -> animator (0.56)
-    auto* console_owner = ds.find_panel_owner("console");
-    if (console_owner == nullptr) { return false; }
-    if (!ds.split(console_owner, uw::DockAxis::kVertical,
-                  "animator", 0.56F))
-    {
-        return false;
-    }
-
-    // Tab-merge "asset_drop_target" into "assets".
-    auto* assets_owner = ds.find_panel_owner("assets");
-    if (assets_owner == nullptr) { return false; }
-    if (!ds.tab_merge(assets_owner, "asset_drop_target")) { return false; }
-
-    // 7. LEFT-lower split: material_editor -> cutscene_player (0.60)
-    auto* material_editor_node = ds.find_panel_owner("material_editor");
-    if (material_editor_node == nullptr) { return false; }
-    if (!ds.split(material_editor_node, uw::DockAxis::kHorizontal,
-                  "cutscene_player", 0.60F))
-    {
-        return false;
-    }
-
-    auto* cutscene_owner = ds.find_panel_owner("cutscene_player");
-    if (cutscene_owner == nullptr) { return false; }
-    if (!ds.tab_merge(cutscene_owner, "dialog_tree_editor")) { return false; }
-    cutscene_owner->set_active_tab(0U);
-
-    // 8. RIGHT-middle split: behavior_designer -> light_editor (0.38)
-    auto* behavior_designer_node = ds.find_panel_owner("behavior_designer");
-    if (behavior_designer_node == nullptr) { return false; }
-    if (!ds.split(behavior_designer_node, uw::DockAxis::kHorizontal,
-                  "light_editor", 0.38F))
-    {
-        return false;
-    }
-
-    // 9. CENTER-BOTTOM right split: animator -> input_recorder (0.55)
-    auto* animator_node = ds.find_panel_owner("animator");
-    if (animator_node == nullptr) { return false; }
-    if (!ds.split(animator_node, uw::DockAxis::kVertical,
-                  "input_recorder", 0.55F))
-    {
-        return false;
-    }
-
-    // Tab-merge "vehicle_editor" into "material_editor".
-    auto* material_editor_owner = ds.find_panel_owner("material_editor");
-    if (material_editor_owner == nullptr) { return false; }
-    if (!ds.tab_merge(material_editor_owner, "vehicle_editor")) { return false; }
-
-    // 10. LEFT-upper split: scene_tree -> pathfinding_viz (0.68)
-    auto* scene_tree_owner = ds.find_panel_owner("scene_tree");
-    if (scene_tree_owner == nullptr) { return false; }
-    if (!ds.split(scene_tree_owner, uw::DockAxis::kHorizontal,
-                  "pathfinding_viz", 0.68F))
-    {
-        return false;
-    }
-
-    // Tab-merge "material_preview" into "material_editor" and keep "material_editor" active.
-    auto* material_editor_owner2 = ds.find_panel_owner("material_editor");
-    if (material_editor_owner2 == nullptr) { return false; }
-    if (!ds.tab_merge(material_editor_owner2, "material_preview")) { return false; }
-    material_editor_owner2->set_active_tab(0U);
-
-    // Tab-merge "scene_navigator" into "scene_tree" and keep "scene_tree" active.
-    auto* scene_tree_owner_690 = ds.find_panel_owner("scene_tree");
-    if (scene_tree_owner_690 == nullptr) { return false; }
-    if (!ds.tab_merge(scene_tree_owner_690, "scene_navigator")) { return false; }
-    scene_tree_owner_690->set_active_tab(0U);
-
-    // Tab-merge "settings_panel" into "inspector".
-    auto* inspector_owner_701 = ds.find_panel_owner("inspector");
-    if (inspector_owner_701 == nullptr) { return false; }
-    if (!ds.tab_merge(inspector_owner_701, "settings_panel")) { return false; }
-
-    // Tab-merge "build_panel" into "console" and keep "console" active.
-    auto* console_owner_701 = ds.find_panel_owner("console");
-    if (console_owner_701 == nullptr) { return false; }
-    if (!ds.tab_merge(console_owner_701, "build_panel")) { return false; }
-    console_owner_701->set_active_tab(0U);
-
-    // 11. RIGHT-lower split: light_editor -> perf_profiler (0.45)
-    auto* light_editor_owner_701 = ds.find_panel_owner("light_editor");
-    if (light_editor_owner_701 == nullptr) { return false; }
-    if (!ds.split(light_editor_owner_701, uw::DockAxis::kHorizontal,
-                  "perf_profiler", 0.45F))
-    {
-        return false;
-    }
-
-    // Tab-merge "asset_pipeline_status" into "perf_profiler" and keep "perf_profiler" active.
-    auto* perf_profiler_owner_711 = ds.find_panel_owner("perf_profiler");
-    if (perf_profiler_owner_711 == nullptr) { return false; }
-    if (!ds.tab_merge(perf_profiler_owner_711, "asset_pipeline_status"))
-    {
-        return false;
-    }
-    perf_profiler_owner_711->set_active_tab(0U);
-
-    // Tab-merge "ik_chain_editor" into "animator" and keep "animator" active.
-    auto* animator_owner_711 = ds.find_panel_owner("animator");
-    if (animator_owner_711 == nullptr) { return false; }
-    if (!ds.tab_merge(animator_owner_711, "ik_chain_editor"))
-    {
-        return false;
-    }
-    animator_owner_711->set_active_tab(0U);
-
-    // Tab-merge "scene_palette" into "settings_panel" (which shares with "inspector")
-    // and keep "inspector" active on first boot.
-    auto* settings_owner_720 = ds.find_panel_owner("settings_panel");
-    if (settings_owner_720 == nullptr) { return false; }
-    if (!ds.tab_merge(settings_owner_720, "scene_palette"))
-    {
-        return false;
-    }
-    settings_owner_720->set_active_tab(0U);
-
-    // 12. RIGHT-bottom split: perf_profiler -> lobby_browser (0.55)
-    auto* perf_profiler_owner_720 = ds.find_panel_owner("perf_profiler");
-    if (perf_profiler_owner_720 == nullptr) { return false; }
-    if (!ds.split(perf_profiler_owner_720, uw::DockAxis::kHorizontal,
-                  "lobby_browser", 0.55F))
-    {
-        return false;
-    }
-    if (auto* pf = ds.find_panel_owner("perf_profiler"))
-    {
-        pf->set_active_tab(0U);
-    }
-
-    return true;
-}
-
-// ---- Live Studio Workbench State (bridged to panel drawers) ----------------
-
-cd::element_core::Stage*             g_active_stage_ptr      { nullptr };
-cd::editor::PieWorkbenchController*  g_pie_controller_ptr    { nullptr };
-cd::editor::AddElementCatalog*       g_add_catalog_ptr       { nullptr };
-cd::editor::ViewportGizmoController* g_viewport_gizmo_ptr    { nullptr };
-cd::editor::EditorCockpitShell*      g_cockpit_shell_ptr     { nullptr };
-cd::runtime::EngineLoop*             g_engine_loop_ptr       { nullptr };
-uw::PointerState                     g_frame_pointer         {};
-std::size_t                          g_selected_element_idx  { 0U };
-std::size_t                          g_active_showcase_idx   { 0U };
-std::size_t                          g_next_spawn_class_idx  { 0U };
-int                                  g_gizmo_mode            { 0 };  // 0=Move, 1=Rotate, 2=Scale
-float                                g_cam_yaw               { 0.58F };
-float                                g_cam_pitch             { 0.36F };
-float                                g_cam_dist              { 13.5F };
-float                                g_anim_time_s           { 0.0F };
-bool                                 g_show_floating_perf_hud{ false };
-std::array<std::array<float, 3>, 32> g_element_pos_offsets   {};
-
-struct DomainBadgeStyle
-{
-    const char* tag;
-    ur::Color   color;
-};
-
-[[nodiscard]] DomainBadgeStyle classify_element_domain(std::string_view cls) noexcept
-{
-    if (cls.find("Mesh") != std::string_view::npos ||
-        cls.find("Camera") != std::string_view::npos ||
-        cls.find("Sky") != std::string_view::npos ||
-        cls.find("PostProcess") != std::string_view::npos ||
-        cls.find("Decal") != std::string_view::npos ||
-        cls.find("Particle") != std::string_view::npos ||
-        cls.find("Light") != std::string_view::npos)
-    {
-        return { "RND", ur::Color { 90U, 175U, 250U, 235U } };
-    }
-    if (cls.find("Terrain") != std::string_view::npos ||
-        cls.find("Ocean") != std::string_view::npos ||
-        cls.find("Foliage") != std::string_view::npos ||
-        cls.find("Weather") != std::string_view::npos)
-    {
-        return { "WLD", ur::Color { 75U, 210U, 130U, 235U } };
-    }
-    if (cls.find("Body") != std::string_view::npos ||
-        cls.find("Vehicle") != std::string_view::npos ||
-        cls.find("Cloth") != std::string_view::npos ||
-        cls.find("Trigger") != std::string_view::npos ||
-        cls.find("Character") != std::string_view::npos)
-    {
-        return { "PHY", ur::Color { 245U, 165U, 70U, 235U } };
-    }
-    if (cls.find("Skeleton") != std::string_view::npos ||
-        cls.find("Animation") != std::string_view::npos ||
-        cls.find("Cutscene") != std::string_view::npos)
-    {
-        return { "ANM", ur::Color { 215U, 115U, 245U, 235U } };
-    }
-    if (cls.find("Audio") != std::string_view::npos ||
-        cls.find("Reverb") != std::string_view::npos)
-    {
-        return { "AUD", ur::Color { 245U, 210U, 80U, 235U } };
-    }
-    if (cls.find("Nav") != std::string_view::npos ||
-        cls.find("Behavior") != std::string_view::npos)
-    {
-        return { "AI ", ur::Color { 245U, 100U, 130U, 235U } };
-    }
-    if (cls.find("Canvas") != std::string_view::npos ||
-        cls.find("Hud") != std::string_view::npos)
-    {
-        return { "UI ", ur::Color { 100U, 225U, 220U, 235U } };
-    }
-    if (cls.find("Replicator") != std::string_view::npos)
-    {
-        return { "NET", ur::Color { 150U, 220U, 95U, 235U } };
-    }
-    return { "ELM", ur::Color { 165U, 175U, 195U, 235U } };
-}
-
-void draw_scene_tree_stub(const uw::Rect& rect,
-                          ur::DrawBatcher& batcher,
-                          uf::Font* /*font*/,
-                          const uw::Theme& theme)
-{
-    batcher.quad(rect.x, rect.y, rect.w, rect.h,
-                 ur::Color { theme.surface_subtle.r, theme.surface_subtle.g,
-                             theme.surface_subtle.b, theme.surface_subtle.a });
-
-    // Panel sub-header bar
-    constexpr float kHdrH = 20.0F;
-    batcher.quad(rect.x, rect.y, rect.w, kHdrH,
-                 ur::Color { 24U, 29U, 42U, 255U });
-    batcher.quad(rect.x, rect.y + kHdrH - 1.0F, rect.w, 1.0F,
-                 ur::Color { theme.accent.r, theme.accent.g, theme.accent.b, 160U });
-
-    const std::string_view stage_name =
-        (g_active_stage_ptr != nullptr && !g_active_stage_ptr->name().empty())
-            ? g_active_stage_ptr->name()
-            : std::string_view("01_pbr_materials_sss_hair");
-
-    draw_ui_text_clipped(batcher, rect.x + 6.0F, rect.y + 6.0F,
-                         stage_name,
-                         ur::Color { 230U, 238U, 255U, 255U }, 1.0F,
-                         rect.x + rect.w - 4.0F);
-
-    if (g_active_stage_ptr == nullptr) { return; }
-
-    const auto& children = g_active_stage_ptr->root().children();
-    if (g_selected_element_idx >= children.size() && !children.empty())
-    {
-        g_selected_element_idx = 0U;
-    }
-
-    float ry = rect.y + kHdrH + 4.0F;
-    constexpr float kRowH = 18.0F;
-
-    // Root stage node row
-    batcher.quad(rect.x + 4.0F, ry, rect.w - 8.0F, kRowH - 2.0F,
-                 ur::Color { 34U, 40U, 56U, 220U });
-    batcher.quad(rect.x + 7.0F, ry + 5.0F, 6.0F, 6.0F,
-                 ur::Color { theme.accent.r, theme.accent.g, theme.accent.b, 255U });
-    draw_ui_text_clipped(batcher, rect.x + 17.0F, ry + 5.0F,
-                         "ROOT [STAGE]",
-                         ur::Color { 200U, 212U, 236U, 255U }, 1.0F,
-                         rect.x + rect.w - 6.0F);
-    ry += kRowH;
-
-    for (std::size_t i = 0U; i < children.size(); ++i)
-    {
-        if (ry + kRowH > rect.y + rect.h - 2.0F) { break; }
-        const auto& elem = children[i];
-        if (!elem) { continue; }
-
-        const uw::Rect row_r { rect.x + 8.0F, ry, rect.w - 12.0F, kRowH - 2.0F };
-        const bool hovered = row_r.contains(g_frame_pointer.mouse_x, g_frame_pointer.mouse_y);
-        if (hovered && g_frame_pointer.left_pressed)
-        {
-            g_selected_element_idx = i;
-        }
-        const bool selected = (i == g_selected_element_idx);
-
-        const ur::Color row_bg =
-            selected ? ur::Color { 58U, 88U, 155U, 240U } :
-            hovered  ? ur::Color { 44U, 52U, 72U, 220U } :
-                       ur::Color { 26U, 31U, 44U, 195U };
-        batcher.quad(row_r.x, row_r.y, row_r.w, row_r.h, row_bg);
-        if (selected)
-        {
-            batcher.quad(row_r.x, row_r.y, 3.0F, row_r.h,
-                         ur::Color { 110U, 195U, 255U, 255U });
-        }
-
-        // Hierarchy connector L-line
-        batcher.quad(rect.x + 5.0F, row_r.y + 7.0F, 3.0F, 1.0F,
-                     ur::Color { 95U, 108U, 135U, 200U });
-
-        // Domain badge pill
-        const auto badge = classify_element_domain(elem->class_name());
-        batcher.quad(row_r.x + 5.0F, row_r.y + 2.0F, 22.0F, row_r.h - 4.0F, badge.color);
-        draw_ui_text_clipped(batcher, row_r.x + 7.0F, row_r.y + 5.0F,
-                             badge.tag,
-                             ur::Color { 15U, 18U, 26U, 255U }, 1.0F,
-                             row_r.x + 27.0F);
-
-        // Element name
-        draw_ui_text_clipped(batcher, row_r.x + 31.0F, row_r.y + 5.0F,
-                             elem->name(),
-                             selected ? ur::Color { 255U, 255U, 255U, 255U }
-                                      : ur::Color { 215U, 224U, 242U, 255U },
-                             1.0F,
-                             row_r.x + row_r.w - 4.0F);
-        ry += kRowH;
-    }
-}
-
-// Viewport panel — backed by cd::editor_panel_viewport + live 3D Stage projection.
-cd::editor::panel::viewport::Viewport g_viewport_panel;
-
-void draw_viewport_panel(const uw::Rect& rect,
-                         ur::DrawBatcher& batcher,
-                         uf::Font* /*font*/,
-                         const uw::Theme& theme)
-{
-    g_viewport_panel.draw(batcher, theme, rect);
-    if (rect.w < 40.0F || rect.h < 40.0F) { return; }
-
-    constexpr float kVpHeaderH = 22.0F;
-    constexpr float kVpFooterH = 20.0F;
-    const uw::Rect canvas {
-        rect.x + 2.0F,
-        rect.y + kVpHeaderH,
-        rect.w - 4.0F,
-        std::max(16.0F, rect.h - kVpHeaderH - kVpFooterH)
-    };
-
-    // 1. Sky & atmosphere gradient + horizon glow + ground plane
-    const float horizon_y = canvas.y + canvas.h * 0.44F;
-    const int sky_bands = 8;
-    for (int b = 0; b < sky_bands; ++b)
-    {
-        const float t0 = static_cast<float>(b) / static_cast<float>(sky_bands);
-        const float t1 = static_cast<float>(b + 1) / static_cast<float>(sky_bands);
-        const float y0 = canvas.y + (horizon_y - canvas.y) * t0;
-        const float y1 = canvas.y + (horizon_y - canvas.y) * t1;
-        const auto r = static_cast<std::uint8_t>(18.0F + t0 * 38.0F);
-        const auto g = static_cast<std::uint8_t>(26.0F + t0 * 52.0F);
-        const auto bl = static_cast<std::uint8_t>(48.0F + t0 * 78.0F);
-        batcher.quad(canvas.x, y0, canvas.w, y1 - y0 + 1.0F, ur::Color { r, g, bl, 255U });
-    }
-    // Horizon atmospheric scattering line
-    batcher.quad(canvas.x, horizon_y - 2.0F, canvas.w, 4.0F,
-                 ur::Color { 95U, 150U, 215U, 180U });
-
-    // Ground gradient below horizon
-    const int gnd_bands = 8;
-    for (int b = 0; b < gnd_bands; ++b)
-    {
-        const float t0 = static_cast<float>(b) / static_cast<float>(gnd_bands);
-        const float t1 = static_cast<float>(b + 1) / static_cast<float>(gnd_bands);
-        const float y0 = horizon_y + (canvas.y + canvas.h - horizon_y) * t0;
-        const float y1 = horizon_y + (canvas.y + canvas.h - horizon_y) * t1;
-        const auto r = static_cast<std::uint8_t>(30.0F - t0 * 10.0F);
-        const auto g = static_cast<std::uint8_t>(36.0F - t0 * 12.0F);
-        const auto bl = static_cast<std::uint8_t>(48.0F - t0 * 14.0F);
-        batcher.quad(canvas.x, y0, canvas.w, y1 - y0 + 1.0F, ur::Color { r, g, bl, 255U });
-    }
-
-    // Sun disc in upper-right sky
-    const float sun_x = canvas.x + canvas.w * 0.78F;
-    const float sun_y = canvas.y + (horizon_y - canvas.y) * 0.36F;
-    batcher.quad(sun_x - 16.0F, sun_y - 16.0F, 32.0F, 32.0F, ur::Color { 255U, 210U, 120U, 55U });
-    batcher.quad(sun_x - 10.0F, sun_y - 10.0F, 20.0F, 20.0F, ur::Color { 255U, 235U, 165U, 140U });
-    batcher.quad(sun_x - 5.0F,  sun_y - 5.0F,  10.0F, 10.0F, ur::Color { 255U, 250U, 225U, 245U });
-
-    // 2. 3D Orbit Camera math
-    const float cy_yaw = std::cos(g_cam_yaw);
-    const float sy_yaw = std::sin(g_cam_yaw);
-    const float cp_pit = std::cos(g_cam_pitch);
-    const float sp_pit = std::sin(g_cam_pitch);
-
-    const float cam_x = g_cam_dist * cp_pit * sy_yaw;
-    const float cam_y = g_cam_dist * sp_pit + 1.8F;
-    const float cam_z = g_cam_dist * cp_pit * cy_yaw;
-
-    // Forward, right, up vectors looking at (0, 1.0, 0)
-    float fx = -cam_x;
-    float fy = 1.0F - cam_y;
-    float fz = -cam_z;
-    const float flen = std::max(1e-4F, std::sqrt(fx * fx + fy * fy + fz * fz));
-    fx /= flen; fy /= flen; fz /= flen;
-
-    // right = normalize(cross(forward, world_up(0,1,0))) = normalize((-fz, 0, fx))
-    float rx = -fz;
-    float ry = 0.0F;
-    float rz = fx;
-    const float rlen = std::max(1e-4F, std::sqrt(rx * rx + rz * rz));
-    rx /= rlen; rz /= rlen;
-
-    // up = cross(right, forward)
-    const float ux = ry * fz - rz * fy;
-    const float uy = rz * fx - rx * fz;
-    const float uz = rx * fy - ry * fx;
-
-    const float fov_scale = canvas.h * 0.92F;
-    const float cx_scr = canvas.x + canvas.w * 0.5F;
-    const float cy_scr = canvas.y + canvas.h * 0.50F;
-
-    auto project_3d = [&](float wx, float wy, float wz, float& out_sx, float& out_sy, float& out_depth) -> bool {
-        const float dx = wx - cam_x;
-        const float dy = wy - cam_y;
-        const float dz = wz - cam_z;
-        const float vz = dx * fx + dy * fy + dz * fz;
-        if (vz <= 0.4F) { return false; }
-        const float vx = dx * rx + dy * ry + dz * rz;
-        const float vy = dx * ux + dy * uy + dz * uz;
-        out_sx = cx_scr + (vx / vz) * fov_scale;
-        out_sy = cy_scr - (vy / vz) * fov_scale;
-        out_depth = vz;
-        return (out_sx >= canvas.x - 60.0F && out_sx <= canvas.x + canvas.w + 60.0F &&
-                out_sy >= canvas.y - 60.0F && out_sy <= canvas.y + canvas.h + 60.0F);
-    };
-
-    // 3. 3D Perspective Ground Grid (XZ plane y=0)
-    for (int g = -8; g <= 8; ++g)
-    {
-        const float coord = static_cast<float>(g) * 1.2F;
-        float x0 = 0.0F, y0 = 0.0F, d0 = 0.0F;
-        float x1 = 0.0F, y1 = 0.0F, d1 = 0.0F;
-        if (project_3d(coord, 0.0F, -9.6F, x0, y0, d0) &&
-            project_3d(coord, 0.0F,  9.6F, x1, y1, d1))
-        {
-            const ur::Color col = (g == 0)
-                ? ur::Color { 75U, 140U, 245U, 210U }   // Z-axis blue
-                : ur::Color { 58U, 68U,  88U,  130U };
-            draw_ui_line(batcher,
-                         std::clamp(x0, canvas.x, canvas.x + canvas.w),
-                         std::clamp(y0, canvas.y, canvas.y + canvas.h),
-                         std::clamp(x1, canvas.x, canvas.x + canvas.w),
-                         std::clamp(y1, canvas.y, canvas.y + canvas.h),
-                         (g == 0) ? 2.0F : 1.0F, col);
-        }
-        if (project_3d(-9.6F, 0.0F, coord, x0, y0, d0) &&
-            project_3d( 9.6F, 0.0F, coord, x1, y1, d1))
-        {
-            const ur::Color col = (g == 0)
-                ? ur::Color { 235U, 85U, 85U, 210U }    // X-axis red
-                : ur::Color { 58U,  68U, 88U, 130U };
-            draw_ui_line(batcher,
-                         std::clamp(x0, canvas.x, canvas.x + canvas.w),
-                         std::clamp(y0, canvas.y, canvas.y + canvas.h),
-                         std::clamp(x1, canvas.x, canvas.x + canvas.w),
-                         std::clamp(y1, canvas.y, canvas.y + canvas.h),
-                         (g == 0) ? 2.0F : 1.0F, col);
-        }
-    }
-
-    // 4. Render 3D Showcase Stage Elements + handle click-to-select & gizmo drag
-    const bool pie_playing =
-        (g_pie_controller_ptr != nullptr &&
-         g_pie_controller_ptr->state() == cd::editor::PieState::kPlaying);
-    const float anim_phase = pie_playing ? g_anim_time_s * 2.4F : 0.35F;
-
-    if (g_active_stage_ptr != nullptr)
-    {
-        const auto& children = g_active_stage_ptr->root().children();
-        const std::size_t count = children.size();
-
-        float sel_wx = 0.0F, sel_wy = 1.0F, sel_wz = 0.0F;
-        bool  has_sel = false;
-
-        // Well-spaced 3D stage anchor slots so hero mesh, solar light, probe, and
-        // additional elements never overlap on screen
-        static constexpr std::array<std::array<float, 3>, 8> kStageSlots {{
-            {  0.0F, 1.05F, -0.4F },   // 0: Hero centerpiece on turntable pedestal
-            { -3.1F, 2.25F, -1.0F },   // 1: Key Solar / Directional Light (upper left)
-            {  3.1F, 1.00F, -0.6F },   // 2: Reflection Probe / Secondary (right)
-            { -2.3F, 0.85F,  1.8F },   // 3: Front-left prop / vehicle / avatar
-            {  2.3F, 0.85F,  1.8F },   // 4: Front-right prop / emitter / audio
-            {  0.0F, 1.65F, -3.2F },   // 5: Back-center backdrop / terrain / sky
-            { -3.8F, 0.90F,  0.6F },   // 6: Far-left wing
-            {  3.8F, 0.90F,  0.6F },   // 7: Far-right wing
-        }};
-
-        // Draw a 3D studio turntable pedestal under the origin (0, 0, -0.4)
-        {
-            float px = 0.0F, py = 0.0F, pd = 10.0F;
-            if (project_3d(0.0F, 0.05F, -0.4F, px, py, pd))
-            {
-                const float ped_w = std::clamp((fov_scale / pd) * 2.2F, 36.0F, 130.0F);
-                const float ped_h = ped_w * 0.24F;
-                batcher.quad(px - ped_w * 0.5F, py - ped_h * 0.5F + 4.0F, ped_w, ped_h,
-                             ur::Color { 22U, 28U, 42U, 220U });
-                batcher.quad(px - ped_w * 0.44F, py - ped_h * 0.42F + 2.0F, ped_w * 0.88F, ped_h * 0.75F,
-                             ur::Color { 42U, 54U, 78U, 235U });
-                batcher.quad(px - ped_w * 0.44F, py - ped_h * 0.42F + 2.0F, ped_w * 0.88F, 2.0F,
-                             ur::Color { 95U, 155U, 235U, 200U });
-            }
-        }
-
-        for (std::size_t i = 0U; i < count; ++i)
-        {
-            const auto& elem = children[i];
-            if (!elem) { continue; }
-
-            const auto& slot = kStageSlots[i % kStageSlots.size()];
-            const float ring_extra = (i >= kStageSlots.size())
-                ? static_cast<float>(i / kStageSlots.size()) * 1.8F : 0.0F;
-            const auto& off = g_element_pos_offsets[i % g_element_pos_offsets.size()];
-            const float bob = pie_playing ? std::sin(anim_phase + static_cast<float>(i) * 1.1F) * 0.22F : 0.0F;
-
-            const float wx = slot[0] + off[0] + ring_extra * ((i % 2U == 0U) ? 1.0F : -1.0F);
-            const float wy = slot[1] + off[1] + bob;
-            const float wz = slot[2] + off[2];
-
-            float sx = 0.0F, sy = 0.0F, depth = 10.0F;
-            if (!project_3d(wx, wy, wz, sx, sy, depth)) { continue; }
-
-            const float scale_mult = (i == 0U) ? 1.45F : 1.05F;
-            const float box_sz = std::clamp((fov_scale / depth) * scale_mult, 18.0F, 76.0F);
-            const float bx = sx - box_sz * 0.5F;
-            const float by = sy - box_sz * 0.5F;
-
-            // Ground contact shadow + vertical drop guide line for elevated objects
-            float gx = 0.0F, gy = 0.0F, gd = 10.0F;
-            if (project_3d(wx, 0.02F, wz, gx, gy, gd))
-            {
-                const float sh_w = box_sz * 0.90F;
-                const float sh_h = box_sz * 0.28F;
-                batcher.quad(gx - sh_w * 0.5F, gy - sh_h * 0.5F, sh_w, sh_h,
-                             ur::Color { 8U, 10U, 16U, 160U });
-                if (wy > 1.4F)
-                {
-                    draw_ui_line(batcher, sx, sy + box_sz * 0.45F, gx, gy, 1.0F,
-                                 ur::Color { 245U, 215U, 110U, 110U });
-                }
-            }
-
-            const auto badge = classify_element_domain(elem->class_name());
-            const bool is_sel = (i == g_selected_element_idx);
-            if (is_sel)
-            {
-                sel_wx = wx; sel_wy = wy; sel_wz = wz;
-                has_sel = true;
-            }
-
-            // Click inside 3D object bounds to select
-            const uw::Rect hit_r { bx - 4.0F, by - 4.0F, box_sz + 8.0F, box_sz + 8.0F };
-            if (canvas.contains(g_frame_pointer.mouse_x, g_frame_pointer.mouse_y) &&
-                hit_r.contains(g_frame_pointer.mouse_x, g_frame_pointer.mouse_y) &&
-                g_frame_pointer.left_pressed)
-            {
-                g_selected_element_idx = i;
-                sel_wx = wx; sel_wy = wy; sel_wz = wz;
-                has_sel = true;
-            }
-
-            const bool is_light = (elem->class_name().find("Light") != std::string_view::npos);
-            const auto c_base = is_light ? ur::Color { 255U, 215U, 95U, 245U } : badge.color;
-            const ur::Color c_top {
-                static_cast<std::uint8_t>(std::min(255, static_cast<int>(c_base.r) + 45)),
-                static_cast<std::uint8_t>(std::min(255, static_cast<int>(c_base.g) + 45)),
-                static_cast<std::uint8_t>(std::min(255, static_cast<int>(c_base.b) + 45)),
-                245U
-            };
-            const ur::Color c_front { c_base.r, c_base.g, c_base.b, 240U };
-            const ur::Color c_side {
-                static_cast<std::uint8_t>(c_base.r * 3U / 5U),
-                static_cast<std::uint8_t>(c_base.g * 3U / 5U),
-                static_cast<std::uint8_t>(c_base.b * 3U / 5U),
-                240U
-            };
-
-            const float bevel = box_sz * 0.22F;
-            // Top face
-            batcher.quad(bx + bevel * 0.5F, by, box_sz - bevel * 0.5F, bevel, c_top);
-            // Front face
-            batcher.quad(bx, by + bevel, box_sz - bevel, box_sz - bevel, c_front);
-            // Right dark shaded face
-            batcher.quad(bx + box_sz - bevel, by + bevel * 0.5F, bevel, box_sz - bevel * 0.5F, c_side);
-            // PBR Specular highlight glint
-            batcher.quad(bx + 4.0F, by + bevel + 4.0F, box_sz * 0.26F, box_sz * 0.20F,
-                         ur::Color { 255U, 255U, 255U, 185U });
-
-            // If light element, draw warm directional light beam toward origin
-            if (is_light)
-            {
-                float tx = 0.0F, ty = 0.0F, td = 10.0F;
-                if (project_3d(0.0F, 1.0F, -0.4F, tx, ty, td))
-                {
-                    draw_ui_line(batcher, sx, sy, tx, ty, 1.5F,
-                                 ur::Color { 255U, 225U, 120U, 135U });
-                }
-            }
-
-            // Selection wireframe cage (amber/gold studio highlight)
-            if (is_sel)
-            {
-                const ur::Color sel_c { 255U, 195U, 55U, 255U };
-                batcher.quad(bx - 3.0F, by - 3.0F, box_sz + 6.0F, 2.0F, sel_c);
-                batcher.quad(bx - 3.0F, by + box_sz + 1.0F, box_sz + 6.0F, 2.0F, sel_c);
-                batcher.quad(bx - 3.0F, by - 3.0F, 2.0F, box_sz + 6.0F, sel_c);
-                batcher.quad(bx + box_sz + 1.0F, by - 3.0F, 2.0F, box_sz + 6.0F, sel_c);
-            }
-
-            // 3D Floating nameplate above object
-            const float lbl_w = std::min(126.0F, static_cast<float>(elem->name().size()) * 6.0F + 10.0F);
-            const float lbl_x = std::clamp(sx - lbl_w * 0.5F, canvas.x + 4.0F, canvas.x + canvas.w - lbl_w - 4.0F);
-            const float lbl_y = std::max(canvas.y + 6.0F, by - 16.0F);
-            batcher.quad(lbl_x, lbl_y, lbl_w, 12.0F,
-                         is_sel ? ur::Color { 45U, 72U, 130U, 240U }
-                                : ur::Color { 16U, 20U, 30U, 215U });
-            batcher.quad(lbl_x, lbl_y, lbl_w, 1.0F,
-                         is_sel ? ur::Color { 255U, 210U, 90U, 240U }
-                                : ur::Color { 70U, 88U, 120U, 180U });
-            draw_ui_text_clipped(batcher, lbl_x + 4.0F, lbl_y + 3.0F,
-                                 elem->name(),
-                                 is_sel ? ur::Color { 255U, 240U, 140U, 255U }
-                                        : ur::Color { 215U, 228U, 250U, 255U },
-                                 1.0F, lbl_x + lbl_w - 2.0F);
-        }
-
-        // 5. 3D Transform Gizmo (X=Red, Y=Green, Z=Blue) on selected Element
-        if (has_sel)
-        {
-            float ox = 0.0F, oy = 0.0F, od = 10.0F;
-            if (project_3d(sel_wx, sel_wy, sel_wz, ox, oy, od))
-            {
-                float xx = 0.0F, xy = 0.0F, xd = 10.0F;
-                float yx = 0.0F, yy = 0.0F, yd = 10.0F;
-                float zx = 0.0F, zy = 0.0F, zd = 10.0F;
-                if (project_3d(sel_wx + 1.8F, sel_wy,        sel_wz,        xx, xy, xd))
-                {
-                    draw_ui_line(batcher, ox, oy, xx, xy, 3.0F, ur::Color { 245U, 70U, 70U, 255U });
-                    batcher.quad(xx - 4.0F, xy - 4.0F, 8.0F, 8.0F, ur::Color { 255U, 95U, 95U, 255U });
-                    draw_ui_text(batcher, xx + 6.0F, xy - 4.0F, "X", ur::Color { 255U, 110U, 110U, 255U });
-                }
-                if (project_3d(sel_wx,        sel_wy + 1.8F, sel_wz,        yx, yy, yd))
-                {
-                    draw_ui_line(batcher, ox, oy, yx, yy, 3.0F, ur::Color { 75U, 235U, 105U, 255U });
-                    batcher.quad(yx - 4.0F, yy - 4.0F, 8.0F, 8.0F, ur::Color { 95U, 255U, 125U, 255U });
-                    draw_ui_text(batcher, yx + 6.0F, yy - 4.0F, "Y", ur::Color { 110U, 255U, 140U, 255U });
-                }
-                if (project_3d(sel_wx,        sel_wy,        sel_wz + 1.8F, zx, zy, zd))
-                {
-                    draw_ui_line(batcher, ox, oy, zx, zy, 3.0F, ur::Color { 75U, 155U, 255U, 255U });
-                    batcher.quad(zx - 4.0F, zy - 4.0F, 8.0F, 8.0F, ur::Color { 100U, 175U, 255U, 255U });
-                    draw_ui_text(batcher, zx + 6.0F, zy - 4.0F, "Z", ur::Color { 120U, 195U, 255U, 255U });
-                }
-                batcher.quad(ox - 4.0F, oy - 4.0F, 8.0F, 8.0F, ur::Color { 255U, 240U, 150U, 255U });
-            }
-        }
-    }
-
-    // 5b. 3D Orientation Compass Widget in top-right of Viewport canvas
-    {
-        const float comp_cx = canvas.x + canvas.w - 34.0F;
-        const float comp_cy = canvas.y + 30.0F;
-        batcher.quad(comp_cx - 24.0F, comp_cy - 22.0F, 48.0F, 44.0F,
-                     ur::Color { 14U, 18U, 28U, 185U });
-        draw_ui_line(batcher, comp_cx, comp_cy, comp_cx + 15.0F, comp_cy + 2.0F, 2.0F,
-                     ur::Color { 245U, 80U, 80U, 255U });
-        draw_ui_text(batcher, comp_cx + 16.0F, comp_cy - 2.0F, "X", ur::Color { 255U, 110U, 110U, 255U });
-        draw_ui_line(batcher, comp_cx, comp_cy, comp_cx, comp_cy - 15.0F, 2.0F,
-                     ur::Color { 80U, 235U, 110U, 255U });
-        draw_ui_text(batcher, comp_cx - 2.0F, comp_cy - 21.0F, "Y", ur::Color { 110U, 255U, 140U, 255U });
-        draw_ui_line(batcher, comp_cx, comp_cy, comp_cx - 12.0F, comp_cy + 10.0F, 2.0F,
-                     ur::Color { 85U, 160U, 255U, 255U });
-        draw_ui_text(batcher, comp_cx - 19.0F, comp_cy + 9.0F, "Z", ur::Color { 120U, 195U, 255U, 255U });
-        batcher.quad(comp_cx - 2.0F, comp_cy - 2.0F, 5.0F, 5.0F, ur::Color { 240U, 245U, 255U, 255U });
-    }
-
-    // 6. Viewport Top Sub-Toolbar (Camera, Shading, Grid, Gizmo Mode)
-    batcher.quad(rect.x, rect.y, rect.w, kVpHeaderH, ur::Color { 20U, 24U, 36U, 250U });
-    batcher.quad(rect.x, rect.y + kVpHeaderH - 1.0F, rect.w, 1.0F,
-                 ur::Color { 60U, 75U, 105U, 200U });
-
-    const char* gizmo_lbl = (g_gizmo_mode == 0) ? "GIZMO: TRANSLATE (W)" :
-                            (g_gizmo_mode == 1) ? "GIZMO: ROTATE (E)" :
-                                                  "GIZMO: SCALE (R)";
-    std::string vp_hdr = std::string("3D STAGE VIEWPORT  |  PERSP 60 DEG  |  LIT + DDGI  |  ") + gizmo_lbl;
-    draw_ui_text_clipped(batcher, rect.x + 8.0F, rect.y + 7.0F,
-                         vp_hdr,
-                         ur::Color { 210U, 225U, 250U, 255U }, 1.0F,
-                         rect.x + rect.w - 8.0F);
-
-    // 7. Viewport Bottom Telemetry Strip
-    const float foot_y = rect.y + rect.h - kVpFooterH;
-    batcher.quad(rect.x, foot_y, rect.w, kVpFooterH, ur::Color { 18U, 22U, 32U, 245U });
-    std::string sel_name = "None";
-    std::string sel_cls  = "-";
-    std::size_t elem_cnt = 0U;
-    if (g_active_stage_ptr != nullptr)
-    {
-        const auto& ch = g_active_stage_ptr->root().children();
-        elem_cnt = ch.size();
-        if (g_selected_element_idx < ch.size() && ch[g_selected_element_idx])
-        {
-            sel_name = std::string(ch[g_selected_element_idx]->name());
-            sel_cls  = std::string(ch[g_selected_element_idx]->class_name());
-        }
-    }
-    const std::string vp_foot =
-        "STAGE: " + std::string(g_active_stage_ptr ? g_active_stage_ptr->name() : "default") +
-        "  |  ELEMENTS: " + std::to_string(elem_cnt) +
-        "  |  SELECTED: " + sel_name + " [" + sel_cls + "]" +
-        (pie_playing ? "  |  PIE: RUNNING" : "  |  PIE: AUTHORING");
-    draw_ui_text_clipped(batcher, rect.x + 8.0F, foot_y + 6.0F,
-                         vp_foot,
-                         pie_playing ? ur::Color { 110U, 245U, 150U, 255U }
-                                     : ur::Color { 185U, 200U, 228U, 255U },
-                         1.0F, rect.x + rect.w - 8.0F);
-}
-
-// Inspector panel — backed by cd::editor_panel_inspector.
-cd::editor::panel::inspector::Inspector g_inspector_panel;
-
-// Console panel — backed by cd::editor_panel_console.
-cd::editor::panel::console::Console g_console_panel;
-
-// Asset browser panel — backed by cd::editor_panel_asset_browser.
-cd::editor::panel::asset_browser::AssetBrowser g_asset_browser_panel;
-
-// phase569 / M4 W1B — 3 new panels wired in (libraries shipped in 556-558).
-cd::editor::panel::material_editor::MaterialEditor     g_material_editor_panel;
-cd::editor::panel::animator::Animator                  g_animator_panel;
-cd::editor::panel::behavior_designer::BehaviorDesigner g_behavior_designer_panel;
-
-// phase598 / M6 W3 — asset drop-target panel (dashed-border drop zone).
-cd::editor::panel::asset_drop_target::AssetDropTarget g_asset_drop_target_panel;
-
-// phase667 / M12 W2 — three new panel instances + cutscene_player sibling.
-cd::editor::panel::light_editor::LightEditor            g_light_editor_panel;
-cd::editor::panel::input_recorder::InputRecorderPanel   g_input_recorder_panel;
-cd::editor::panel::dialog_tree_editor::DialogTreeEditor g_dialog_tree_editor_panel;
-cd::editor::panel::cutscene_player::CutscenePlayerPanel g_cutscene_player_panel;
-
-// phase785 / E5 — live Recorder + Replayer that back g_input_recorder_panel.
-cd::game::input_recorder::Recorder g_input_recorder;
-cd::game::input_recorder::Replayer g_input_replayer;
-
-// phase679 / M13 W3 — three new panel instances wired into the dock.
-cd::editor::panel::vehicle_editor::VehicleEditor     g_vehicle_editor_panel;
-cd::editor::panel::pathfinding_viz::PathfindingViz   g_pathfinding_viz_panel;
-cd::editor::panel::material_preview::MaterialPreview g_material_preview_panel;
-
-// phase738 / FINALE-2 W3A B1 — backing AuthoredMaterial for the live PBR preview swatch.
-cd::asset::material_authoring::AuthoredMaterial g_material_preview_demo
-    = cd::asset::material_authoring::AuthoringDefaults::dielectric();
-
-// phase690 / M14 W3 — scene_navigator panel.
-cd::editor::panel::scene_navigator::SceneNavigator g_scene_navigator_panel;
-
-// phase701 / M15 W3 — settings + build + perf_profiler panel instances.
-cd::editor::panel::settings::SettingsPanel     g_settings_panel;
-cd::editor::panel::build::BuildPanel           g_build_panel;
-cd::editor::panel::perf_profiler::PerfProfiler g_perf_profiler_panel;
-
-// phase711 / M16 W3 — two new panel instances wired into the dock.
-cd::editor::panel::asset_pipeline_status::AssetPipelineStatus g_asset_pipeline_status_panel;
-cd::editor::panel::ik_chain_editor::IkChainEditor             g_ik_chain_editor_panel;
-
-// phase720 / M17 W3 — three new panel instances wired into the editor.
-cd::editor::panel::scene_palette::ScenePalette            g_scene_palette_panel;
-cd::editor::panel::lobby_browser::LobbyBrowser            g_lobby_browser_panel;
-cd::editor::panel::auto_save_indicator::AutoSaveIndicator g_auto_save_indicator;
-cd::editor::status_bar::FpsSparkline                      g_fps_sparkline;
-cd::network::lobby::Lobby                                 g_demo_lobby;
-
-// phase711 / M16 W3 — demo IK chain backing the ik_chain_editor panel.
-cd::animation::ik::IkChain  g_demo_ik_chain {};
-cd::animation::ik::IkResult g_demo_ik_result {};
-
-/// Draws a clean studio sub-header banner at the top of a dock panel, covering
-/// the raw 4px placeholder bar emitted by individual panel libraries.
-void draw_panel_sub_header(ur::DrawBatcher& batcher,
-                           const uw::Rect& rect,
-                           std::string_view title)
-{
-    if (rect.w < 20.0F || rect.h < 18.0F) { return; }
-    batcher.quad(rect.x + 2.0F, rect.y + 2.0F, rect.w - 4.0F, 16.0F,
-                 ur::Color { 20U, 25U, 36U, 252U });
-    batcher.quad(rect.x + 2.0F, rect.y + 18.0F, rect.w - 4.0F, 1.0F,
-                 ur::Color { 75U, 95U, 138U, 200U });
-    draw_ui_text_clipped(batcher, rect.x + 8.0F, rect.y + 6.0F,
-                         title,
-                         ur::Color { 230U, 238U, 255U, 255U },
-                         1.0F, rect.x + rect.w - 6.0F);
-}
-
-void draw_inspector_panel(const uw::Rect& rect,
-                          ur::DrawBatcher& batcher,
-                          uf::Font* /*font*/,
-                          const uw::Theme& theme)
-{
-    g_inspector_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "PBR MATERIAL + STAGE ELEMENT INSPECTOR");
-
-    const float max_x = rect.x + rect.w - 6.0F;
-    draw_ui_text_clipped(batcher, rect.x + 12.0F, rect.y + 39.0F,
-                         "METALLIC   0.60", ur::Color { 255U, 255U, 255U, 245U }, 1.0F, max_x);
-    draw_ui_text_clipped(batcher, rect.x + 12.0F, rect.y + 63.0F,
-                         "ROUGHNESS  0.35", ur::Color { 255U, 255U, 255U, 245U }, 1.0F, max_x);
-    draw_ui_text_clipped(batcher, rect.x + 12.0F, rect.y + 87.0F,
-                         "ALPHA MODE MASK [OPAQUE | MASK | BLEND]", ur::Color { 245U, 250U, 255U, 245U }, 1.0F, max_x);
-    draw_ui_text_clipped(batcher, rect.x + 12.0F, rect.y + 111.0F,
-                         "CUTOFF     0.50", ur::Color { 255U, 255U, 255U, 245U }, 1.0F, max_x);
-
-    float iy = rect.y + 132.0F;
-    if (iy + 36.0F < rect.y + rect.h && g_active_stage_ptr != nullptr)
-    {
-        const auto& ch = g_active_stage_ptr->root().children();
-        if (g_selected_element_idx < ch.size() && ch[g_selected_element_idx])
-        {
-            const auto& el = *ch[g_selected_element_idx];
-            batcher.quad(rect.x + 6.0F, iy, rect.w - 12.0F,
-                         std::min(76.0F, rect.y + rect.h - iy - 4.0F),
-                         ur::Color { 22U, 27U, 38U, 240U });
-            draw_ui_text_clipped(batcher, rect.x + 12.0F, iy + 5.0F,
-                                 std::string("ELEMENT: ") + std::string(el.name()),
-                                 ur::Color { 120U, 205U, 255U, 255U }, 1.0F, max_x);
-            draw_ui_text_clipped(batcher, rect.x + 12.0F, iy + 19.0F,
-                                 std::string("CLASS:   ") + std::string(el.class_name()),
-                                 ur::Color { 200U, 215U, 240U, 255U }, 1.0F, max_x);
-            if (iy + 46.0F < rect.y + rect.h)
-            {
-                const auto& off = g_element_pos_offsets[g_selected_element_idx % g_element_pos_offsets.size()];
-                char buf[96];
-                std::snprintf(buf, sizeof(buf), "TRANSFORM POS: (%.1f, %.1f, %.1f)  SCALE: (1.0, 1.0, 1.0)",
-                              static_cast<double>(off[0]),
-                              static_cast<double>(1.0F + off[1]),
-                              static_cast<double>(off[2]));
-                draw_ui_text_clipped(batcher, rect.x + 12.0F, iy + 33.0F,
-                                     buf, ur::Color { 165U, 230U, 175U, 255U }, 1.0F, max_x);
-            }
-        }
-    }
-}
-
-void draw_console_panel(const uw::Rect& rect,
-                        ur::DrawBatcher& batcher,
-                        uf::Font* /*font*/,
-                        const uw::Theme& theme)
-{
-    g_console_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "ENGINE CONSOLE  [INFO | WARN | ERROR]  FILTER: ALL");
-    const float max_x = rect.x + rect.w - 6.0F;
-
-    static constexpr std::array<std::pair<const char*, ur::Color>, 6> kLogs {{
-        { "[INFO]  Vulkan RHI device + Swapchain (1280x720 BGRA8) initialized", ur::Color{120U, 220U, 155U, 255U} },
-        { "[INFO]  cd::material Route A UI pipeline + ThemePalette UBO bound",   ur::Color{120U, 220U, 155U, 255U} },
-        { "[STAGE] Loaded Showcase Stage with 24-panel Studio Cockpit layout",   ur::Color{130U, 195U, 255U, 255U} },
-        { "[ASSET] HotReload FileWatcher polling 6 shader/stage/script paths",   ur::Color{210U, 220U, 240U, 255U} },
-        { "[AUDIO] Native WASAPI backend active (procedural ADSR chime ready)",  ur::Color{210U, 220U, 240U, 255U} },
-        { "[PIE]   Press F5 or click [PLAY] in Top Toolbar to run Stage sim",    ur::Color{250U, 205U, 100U, 255U} },
-    }};
-    float ly = rect.y + 26.0F;
-    for (const auto& [msg, col] : kLogs)
-    {
-        if (ly + 12.0F > rect.y + rect.h - 4.0F) { break; }
-        draw_ui_text_clipped(batcher, rect.x + 12.0F, ly, msg, col, 1.0F, max_x);
-        ly += 14.0F;
-    }
-}
-
-void draw_assets_panel(const uw::Rect& rect,
-                       ur::DrawBatcher& batcher,
-                       uf::Font* /*font*/,
-                       const uw::Theme& theme)
-{
-    g_asset_browser_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "ASSET BROWSER: /assets [textures | meshes | materials]");
-}
-
-// phase569 / M4 W1B drawers ---------------------------------------------------
-
-void draw_material_editor_panel(const uw::Rect& rect,
-                                ur::DrawBatcher& batcher,
-                                uf::Font* /*font*/,
-                                const uw::Theme& theme)
-{
-    g_material_editor_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "PBR MATERIAL AUTHORING GRAPH");
-    const float max_x = rect.x + rect.w - 6.0F;
-    if (rect.h > 55.0F)
-    {
-        draw_ui_text_clipped(batcher, rect.x + 14.0F, rect.y + 24.0F,
-                             "BASE COLOR  R:0.35  G:0.62  B:0.95",
-                             ur::Color { 245U, 250U, 255U, 255U }, 1.0F, max_x);
-    }
-    if (rect.h > 85.0F)
-    {
-        draw_ui_text_clipped(batcher, rect.x + 14.0F, rect.y + 50.0F,
-                             "METALLIC: 0.65", ur::Color { 235U, 242U, 255U, 245U }, 1.0F, max_x);
-        draw_ui_text_clipped(batcher, rect.x + 14.0F, rect.y + 76.0F,
-                             "ROUGHNESS: 0.28", ur::Color { 235U, 242U, 255U, 245U }, 1.0F, max_x);
-    }
-    // Replace the bright bottom swatch rectangle with a dark studio PBR preview card + shaded sphere
-    if (rect.h > 115.0F)
-    {
-        const float sw_y = rect.y + 94.0F;
-        const float sw_h = std::min(44.0F, rect.y + rect.h - sw_y - 4.0F);
-        batcher.quad(rect.x + 6.0F, sw_y, rect.w - 12.0F, sw_h,
-                     ur::Color { 22U, 28U, 42U, 250U });
-        batcher.quad(rect.x + 6.0F, sw_y, rect.w - 12.0F, 1.0F,
-                     ur::Color { 75U, 130U, 215U, 200U });
-        // Shaded PBR sphere icon on the left of the swatch card
-        const float sp_x = rect.x + 14.0F;
-        const float sp_y = sw_y + 6.0F;
-        batcher.quad(sp_x, sp_y, 28.0F, 28.0F, ur::Color { 45U, 95U, 175U, 255U });
-        batcher.quad(sp_x + 3.0F, sp_y + 3.0F, 20.0F, 20.0F, ur::Color { 75U, 145U, 235U, 255U });
-        batcher.quad(sp_x + 6.0F, sp_y + 5.0F, 8.0F, 7.0F, ur::Color { 235U, 245U, 255U, 240U });
-        draw_ui_text_clipped(batcher, sp_x + 36.0F, sw_y + 9.0F,
-                             "SWATCH: COBALT COAT", ur::Color { 140U, 210U, 255U, 255U }, 1.0F, max_x);
-        draw_ui_text_clipped(batcher, sp_x + 36.0F, sw_y + 22.0F,
-                             "GGX + CLEARCOAT + IBL", ur::Color { 190U, 205U, 230U, 240U }, 1.0F, max_x);
-    }
-}
-
-void draw_animator_panel(const uw::Rect& rect,
-                         ur::DrawBatcher& batcher,
-                         uf::Font* /*font*/,
-                         const uw::Theme& theme)
-{
-    g_animator_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "ANIMATOR STATE MACHINE");
-    const float max_x = rect.x + rect.w - 6.0F;
-    if (rect.h > 48.0F)
-    {
-        draw_ui_text_clipped(batcher, rect.x + 10.0F, rect.y + 26.0F,
-                             "[IDLE] -> [RUN] -> [JUMP]",
-                             ur::Color { 195U, 215U, 245U, 245U }, 1.0F, max_x);
-    }
-}
-
-void draw_behavior_designer_panel(const uw::Rect& rect,
-                                  ur::DrawBatcher& batcher,
-                                  uf::Font* /*font*/,
-                                  const uw::Theme& theme)
-{
-    g_behavior_designer_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "BEHAVIOR TREE & GOAP PLANNER");
-    const float max_x = rect.x + rect.w - 6.0F;
-    if (rect.h > 48.0F)
-    {
-        draw_ui_text_clipped(batcher, rect.x + 12.0F, rect.y + 24.0F,
-                             "SELECTOR -> [PATROL | CHASE | ATTACK]",
-                             ur::Color { 195U, 215U, 245U, 245U }, 1.0F, max_x);
-    }
-}
-
-// phase598 / M6 W3 — asset_drop_target drawer.
-void draw_asset_drop_target_panel(const uw::Rect& rect,
-                                  ur::DrawBatcher& batcher,
-                                  uf::Font* /*font*/,
-                                  const uw::Theme& theme)
-{
-    g_asset_drop_target_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "ASSET DRAG & DROP ZONE");
-    draw_ui_text_clipped(batcher, rect.x + 12.0F, rect.y + rect.h * 0.5F - 4.0F,
-                         "DROP .GLTF / .GLB / .PNG / .WAV ASSETS HERE",
-                         ur::Color { 220U, 230U, 250U, 255U }, 1.0F, rect.x + rect.w - 8.0F);
-}
-
-// phase667 / M12 W2 — new panel drawers.
-void draw_light_editor_panel(const uw::Rect& rect,
-                             ur::DrawBatcher& batcher,
-                             uf::Font* /*font*/,
-                             const uw::Theme& theme)
-{
-    g_light_editor_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "LIGHTING & DDGI / RESTIR GI");
-    const float max_x = rect.x + rect.w - 6.0F;
-    if (rect.h > 48.0F)
-    {
-        draw_ui_text_clipped(batcher, rect.x + 12.0F, rect.y + 24.0F,
-                             "SUN 6500K  LUX: 12.5  CASCADE CSM: 4",
-                             ur::Color { 255U, 225U, 140U, 245U }, 1.0F, max_x);
-    }
-}
-
-void draw_input_recorder_panel(const uw::Rect& rect,
-                               ur::DrawBatcher& batcher,
-                               uf::Font* /*font*/,
-                               const uw::Theme& theme)
-{
-    g_input_recorder_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "INPUT RECORDER / REPLAY");
-    const float max_x = rect.x + rect.w - 6.0F;
-    if (rect.h > 48.0F)
-    {
-        draw_ui_text_clipped(batcher, rect.x + 10.0F, rect.y + 26.0F,
-                             "[REC]  [STOP]  [REPLAY]",
-                             ur::Color { 245U, 185U, 185U, 245U }, 1.0F, max_x);
-    }
-}
-
-void draw_dialog_tree_editor_panel(const uw::Rect& rect,
-                                   ur::DrawBatcher& batcher,
-                                   uf::Font* /*font*/,
-                                   const uw::Theme& theme)
-{
-    g_dialog_tree_editor_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "DIALOG TREE GRAPH");
-}
-
-void draw_cutscene_player_panel(const uw::Rect& rect,
-                                ur::DrawBatcher& batcher,
-                                uf::Font* /*font*/,
-                                const uw::Theme& theme)
-{
-    g_cutscene_player_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "CUTSCENE TIMELINE SEQUENCER");
-    const float max_x = rect.x + rect.w - 6.0F;
-    if (rect.h > 48.0F)
-    {
-        draw_ui_text_clipped(batcher, rect.x + 12.0F, rect.y + 26.0F,
-                             "00:00.0  [CAM_SHOT_A | AUDIO_SCORE]",
-                             ur::Color { 195U, 215U, 245U, 245U }, 1.0F, max_x);
-    }
-}
-
-// phase679 / M13 W3 — drawers for the 3 new panels.
-
-void draw_vehicle_editor_panel(const uw::Rect& rect,
-                               ur::DrawBatcher& batcher,
-                               uf::Font* /*font*/,
-                               const uw::Theme& theme)
-{
-    g_vehicle_editor_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "VEHICLE PACEJKA TIRE & SUSPENSION");
-}
-
-void draw_pathfinding_viz_panel(const uw::Rect& rect,
-                                ur::DrawBatcher& batcher,
-                                uf::Font* /*font*/,
-                                const uw::Theme& theme)
-{
-    g_pathfinding_viz_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "NAVMESH A* & RVO2 CROWD MAP");
-}
-
-void draw_material_preview_panel(const uw::Rect& rect,
-                                 ur::DrawBatcher& batcher,
-                                 uf::Font* /*font*/,
-                                 const uw::Theme& theme)
-{
-    g_material_preview_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "PBR MATERIAL SPHERE PREVIEW");
-}
-
-// phase690 / M14 W3 — scene_navigator drawer.
-void draw_scene_navigator_panel(const uw::Rect& rect,
-                                ur::DrawBatcher& batcher,
-                                uf::Font* /*font*/,
-                                const uw::Theme& theme)
-{
-    g_scene_navigator_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "SCENE SEARCH & FILTER");
-}
-
-std::string* g_active_theme_name_ptr { nullptr };
-
-void draw_settings_panel(const uw::Rect& rect,
-                         ur::DrawBatcher& batcher,
-                         uf::Font* /*font*/,
-                         const uw::Theme& theme)
-{
-    g_settings_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "ENGINE & PROJECT SETTINGS");
-}
-
-void draw_build_panel(const uw::Rect& rect,
-                      ur::DrawBatcher& batcher,
-                      uf::Font* /*font*/,
-                      const uw::Theme& theme)
-{
-    g_build_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "LIVE SHADER & HOT-RELOAD PIPELINE");
-}
-
-void draw_perf_profiler_panel(const uw::Rect& rect,
-                              ur::DrawBatcher& batcher,
-                              uf::Font* /*font*/,
-                              const uw::Theme& /*widget_theme*/)
-{
-    const std::string_view name =
-        (g_active_theme_name_ptr != nullptr && !g_active_theme_name_ptr->empty())
-            ? std::string_view(*g_active_theme_name_ptr)
-            : std::string_view(uth::kThemeNameDark);
-    const auto v2_theme = uth::theme_from_name(name);
-    g_perf_profiler_panel.draw(batcher, v2_theme, rect);
-    draw_panel_sub_header(batcher, rect, "FRAME TELEMETRY & GPU PROFILER (60 FPS)");
-}
-
-void draw_asset_pipeline_status_panel(const uw::Rect& rect,
-                                      ur::DrawBatcher& batcher,
-                                      uf::Font* /*font*/,
-                                      const uw::Theme& theme)
-{
-    g_asset_pipeline_status_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "ASSET STREAMER POOL STATUS");
-}
-
-void draw_ik_chain_editor_panel(const uw::Rect& rect,
-                                ur::DrawBatcher& batcher,
-                                uf::Font* /*font*/,
-                                const uw::Theme& theme)
-{
-    g_ik_chain_editor_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "FABRIK / CCD IK SOLVER CHAIN");
-}
-
-void draw_scene_palette_panel(const uw::Rect& rect,
-                              ur::DrawBatcher& batcher,
-                              uf::Font* /*font*/,
-                              const uw::Theme& theme)
-{
-    g_scene_palette_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "MATERIAL 3 THEME PALETTE SWATCHES");
-}
-
-void draw_lobby_browser_panel(const uw::Rect& rect,
-                              ur::DrawBatcher& batcher,
-                              uf::Font* /*font*/,
-                              const uw::Theme& theme)
-{
-    g_lobby_browser_panel.draw(batcher, theme, rect);
-    draw_panel_sub_header(batcher, rect, "MULTIPLAYER LOBBY BROWSER (2 ROOMS)");
-    const float max_x = rect.x + rect.w - 6.0F;
-    if (rect.h > 38.0F)
-    {
-        draw_ui_text_clipped(batcher, rect.x + 12.0F, rect.y + 23.0F,
-                             "1. CAPTURE POINT BETA [CTF 2/4]   PUBLIC",
-                             ur::Color { 145U, 235U, 165U, 245U }, 1.0F, max_x);
-    }
-    if (rect.h > 54.0F)
-    {
-        draw_ui_text_clipped(batcher, rect.x + 12.0F, rect.y + 37.0F,
-                             "2. VIP MATCH          [DM  1/8]   LOCKED",
-                             ur::Color { 245U, 205U, 120U, 245U }, 1.0F, max_x);
-    }
-}
-
-// ---- DockSpace Tab Strip Title Overlay & Top Studio Toolbar ----------------
-
-[[nodiscard]] std::string_view friendly_tab_title(std::string_view id) noexcept
-{
-    if (id == "scene_tree")            return "SCENE TREE";
-    if (id == "scene_navigator")       return "SEARCH";
-    if (id == "viewport")              return "3D VIEWPORT";
-    if (id == "inspector")             return "INSPECTOR";
-    if (id == "settings_panel")        return "SETTINGS";
-    if (id == "scene_palette")         return "PALETTE";
-    if (id == "console")               return "CONSOLE";
-    if (id == "assets")                return "ASSETS";
-    if (id == "asset_drop_target")     return "DROP ZONE";
-    if (id == "build_panel")           return "HOT-RELOAD";
-    if (id == "material_editor")       return "MATERIAL";
-    if (id == "vehicle_editor")        return "VEHICLE";
-    if (id == "material_preview")      return "PBR PREVIEW";
-    if (id == "animator")              return "ANIMATOR";
-    if (id == "ik_chain_editor")       return "IK CHAIN";
-    if (id == "behavior_designer")     return "BEHAVIOR AI";
-    if (id == "light_editor")          return "LIGHTING";
-    if (id == "perf_profiler")         return "PROFILER";
-    if (id == "asset_pipeline_status") return "STREAMER";
-    if (id == "cutscene_player")       return "CUTSCENE";
-    if (id == "dialog_tree_editor")    return "DIALOG";
-    if (id == "pathfinding_viz")       return "NAVMESH";
-    if (id == "input_recorder")        return "INPUT REC";
-    if (id == "lobby_browser")         return "NET LOBBY";
-    return id;
-}
-
-void draw_dock_node_tab_labels(const uw::DockNode* node, ur::DrawBatcher& batcher)
-{
-    if (node == nullptr) { return; }
-    if (node->kind() == uw::DockNodeKind::kSplit)
-    {
-        draw_dock_node_tab_labels(node->first(), batcher);
-        draw_dock_node_tab_labels(node->second(), batcher);
-        return;
-    }
-    if (node->kind() != uw::DockNodeKind::kTabGroup || node->panels().empty())
-    {
-        return;
-    }
-
-    const auto& r = node->rect();
-    const auto& panels = node->panels();
-    const float tab_w = std::min(120.0F, r.w / static_cast<float>(panels.size()));
-    for (std::size_t i = 0U; i < panels.size(); ++i)
-    {
-        const float tx = r.x + static_cast<float>(i) * tab_w;
-        const bool active = (i == node->active_tab());
-        draw_ui_text_clipped(
-            batcher,
-            tx + 5.0F,
-            r.y + 8.0F,
-            friendly_tab_title(panels[i]),
-            active ? ur::Color { 255U, 255U, 255U, 255U }
-                   : ur::Color { 185U, 195U, 215U, 230U },
-            1.0F,
-            tx + tab_w - 3.0F);
-    }
-}
-
-constexpr float kTopToolbarH = 28.0F;
-
-void switch_active_showcase(std::size_t new_idx)
-{
-    if (g_cockpit_shell_ptr == nullptr || g_active_stage_ptr == nullptr) { return; }
-    const auto& list = g_cockpit_shell_ptr->project_hub_showcases();
-    if (list.empty()) { return; }
-    g_active_showcase_idx = new_idx % list.size();
-    const std::string_view slug = list[g_active_showcase_idx].slug;
-    if (g_pie_controller_ptr != nullptr &&
-        g_pie_controller_ptr->state() != cd::editor::PieState::kStopped)
-    {
-        (void)g_pie_controller_ptr->stop(*g_active_stage_ptr);
-    }
-    *g_active_stage_ptr = cd::gameplay_director::build_showcase_stage_by_slug(slug);
-    if (g_engine_loop_ptr != nullptr)
-    {
-        g_engine_loop_ptr->set_stage(cd::gameplay_director::build_showcase_stage_by_slug(slug));
-    }
-    g_selected_element_idx = 0U;
-    std::printf("editor: switched active Showcase Stage -> [%02zu/12] %.*s (%zu elements)\n",
-                g_active_showcase_idx + 1U,
-                static_cast<int>(slug.size()), slug.data(),
-                g_active_stage_ptr->root().children().size());
-    std::fflush(stdout);
-}
-
-void draw_top_cockpit_toolbar(ur::DrawBatcher& batcher,
-                              const uw::Theme& theme,
-                              float fb_w,
-                              const uw::PointerState& ptr,
-                              bool& io_show_dbg_viz,
-                              bool& io_show_shortcuts)
-{
-    // Toolbar background + bottom accent border
-    batcher.quad(0.0F, 0.0F, fb_w, kTopToolbarH, ur::Color { 18U, 22U, 32U, 255U });
-    batcher.quad(0.0F, kTopToolbarH - 1.0F, fb_w, 1.0F,
-                 ur::Color { theme.accent.r, theme.accent.g, theme.accent.b, 190U });
-
-    float cx = 6.0F;
-    const float btn_y = 4.0F;
-    const float btn_h = kTopToolbarH - 8.0F;
-
-    auto draw_btn = [&](float w, std::string_view label, bool active, ur::Color active_col) -> bool {
-        const uw::Rect r { cx, btn_y, w, btn_h };
-        const bool hov = r.contains(ptr.mouse_x, ptr.mouse_y);
-        const ur::Color bg =
-            active ? active_col :
-            hov    ? ur::Color { 56U, 66U, 92U, 255U } :
-                     ur::Color { 34U, 40U, 58U, 255U };
-        batcher.quad(r.x, r.y, r.w, r.h, bg);
-        batcher.quad(r.x, r.y, r.w, 1.0F,
-                     active ? ur::Color { 255U, 255U, 255U, 210U }
-                            : ur::Color { 75U, 88U, 118U, 180U });
-        draw_ui_text_clipped(batcher, r.x + 6.0F, r.y + 6.0F, label,
-                             active ? ur::Color { 15U, 18U, 26U, 255U }
-                                    : ur::Color { 230U, 238U, 255U, 255U },
-                             1.0F, r.x + r.w - 3.0F);
-        cx += w + 4.0F;
-        return hov && ptr.left_pressed;
-    };
-
-    // 1. Brand Pill
-    batcher.quad(cx, btn_y, 148.0F, btn_h, ur::Color { 95U, 72U, 165U, 255U });
-    draw_ui_text_clipped(batcher, cx + 7.0F, btn_y + 6.0F, "CHROMODYNAMIC STUDIO",
-                         ur::Color { 255U, 255U, 255U, 255U }, 1.0F, cx + 144.0F);
-    cx += 154.0F;
-
-    // 2. Showcase Stage Switcher: [<] [01/12 slug] [>]
-    if (draw_btn(22.0F, "<", false, ur::Color { 90U, 160U, 240U, 255U }))
-    {
-        const std::size_t n = (g_cockpit_shell_ptr != nullptr)
-            ? g_cockpit_shell_ptr->project_hub_showcases().size() : 12U;
-        switch_active_showcase((g_active_showcase_idx + n - 1U) % std::max<std::size_t>(1U, n));
-    }
-
-    std::string stage_pill = "STAGE 01/12: ";
-    if (g_active_stage_ptr != nullptr)
-    {
-        char num_b[32];
-        std::snprintf(num_b, sizeof(num_b), "STAGE %02zu/12: ", g_active_showcase_idx + 1U);
-        stage_pill = std::string(num_b) + std::string(g_active_stage_ptr->name());
-    }
-    if (draw_btn(256.0F, stage_pill, false, ur::Color { 60U, 110U, 190U, 255U }))
-    {
-        switch_active_showcase(g_active_showcase_idx + 1U);
-    }
-
-    if (draw_btn(22.0F, ">", false, ur::Color { 90U, 160U, 240U, 255U }))
-    {
-        switch_active_showcase(g_active_showcase_idx + 1U);
-    }
-
-    cx += 6.0F;
-
-    // 3. PIE Transport Controls: [PLAY F5] [PAUSE F6] [STEP F7] [STOP F8]
-    const auto pie_st = (g_pie_controller_ptr != nullptr)
-        ? g_pie_controller_ptr->state()
-        : cd::editor::PieState::kStopped;
-
-    if (draw_btn(64.0F, "PLAY F5", pie_st == cd::editor::PieState::kPlaying,
-                 ur::Color { 75U, 215U, 120U, 255U }))
-    {
-        if (g_pie_controller_ptr != nullptr && g_active_stage_ptr != nullptr)
-        {
-            if (pie_st == cd::editor::PieState::kPaused)
-            {
-                (void)g_pie_controller_ptr->resume();
-            }
-            else if (pie_st == cd::editor::PieState::kStopped)
-            {
-                (void)g_pie_controller_ptr->play(*g_active_stage_ptr);
-            }
-        }
-    }
-    if (draw_btn(68.0F, "PAUSE F6", pie_st == cd::editor::PieState::kPaused,
-                 ur::Color { 245U, 195U, 75U, 255U }))
-    {
-        if (g_pie_controller_ptr != nullptr && pie_st == cd::editor::PieState::kPlaying)
-        {
-            (void)g_pie_controller_ptr->pause();
-        }
-    }
-    if (draw_btn(62.0F, "STEP F7", false, ur::Color { 110U, 185U, 250U, 255U }))
-    {
-        if (g_pie_controller_ptr != nullptr && g_active_stage_ptr != nullptr)
-        {
-            if (pie_st == cd::editor::PieState::kStopped)
-            {
-                (void)g_pie_controller_ptr->play(*g_active_stage_ptr);
-                (void)g_pie_controller_ptr->pause();
-            }
-            (void)g_pie_controller_ptr->step_one_frame(*g_active_stage_ptr, 1.0F / 60.0F);
-        }
-    }
-    if (draw_btn(62.0F, "STOP F8", false, ur::Color { 235U, 90U, 90U, 255U }))
-    {
-        if (g_pie_controller_ptr != nullptr && g_active_stage_ptr != nullptr &&
-            pie_st != cd::editor::PieState::kStopped)
-        {
-            (void)g_pie_controller_ptr->stop(*g_active_stage_ptr);
-        }
-    }
-
-    cx += 6.0F;
-
-    // 4. [+ ADD ELEMENT] Spawner Button
-    if (draw_btn(104.0F, "+ ADD ELEMENT", false, ur::Color { 95U, 205U, 245U, 255U }))
-    {
-        if (g_add_catalog_ptr != nullptr && g_active_stage_ptr != nullptr)
-        {
-            const auto& entries = g_add_catalog_ptr->items();
-            if (!entries.empty())
-            {
-                const auto& desc = entries[g_next_spawn_class_idx % entries.size()];
-                ++g_next_spawn_class_idx;
-                const std::string inst_name =
-                    std::string(desc.class_name) + "_" +
-                    std::to_string(g_active_stage_ptr->root().children().size() + 1U);
-                if (g_add_catalog_ptr->spawn_into_stage(*g_active_stage_ptr, desc.class_name, inst_name))
-                {
-                    g_selected_element_idx = g_active_stage_ptr->root().children().size() - 1U;
-                    std::printf("editor: spawned Element '%s' (%.*s) into Stage.\n",
-                                inst_name.c_str(),
-                                static_cast<int>(desc.class_name.size()),
-                                desc.class_name.data());
-                    std::fflush(stdout);
-                }
-            }
-        }
-    }
-
-    // 5. Gizmo Mode Selectors: [W:MOVE] [E:ROT] [R:SCALE]
-    if (draw_btn(54.0F, "W:MOVE", g_gizmo_mode == 0, ur::Color { 115U, 195U, 255U, 255U }))
-    {
-        g_gizmo_mode = 0;
-    }
-    if (draw_btn(50.0F, "E:ROT", g_gizmo_mode == 1, ur::Color { 115U, 195U, 255U, 255U }))
-    {
-        g_gizmo_mode = 1;
-    }
-    if (draw_btn(58.0F, "R:SCALE", g_gizmo_mode == 2, ur::Color { 115U, 195U, 255U, 255U }))
-    {
-        g_gizmo_mode = 2;
-    }
-
-    // 6. Right-aligned HUD / G-Buffer / Help toggles
-    if (cx + 185.0F < fb_w)
-    {
-        cx = fb_w - 188.0F;
-        if (draw_btn(58.0F, "HUD F1", g_show_floating_perf_hud, ur::Color { 115U, 215U, 165U, 255U }))
-        {
-            g_show_floating_perf_hud = !g_show_floating_perf_hud;
-        }
-        if (draw_btn(62.0F, "GBUF F4", io_show_dbg_viz, ur::Color { 245U, 185U, 85U, 255U }))
-        {
-            io_show_dbg_viz = !io_show_dbg_viz;
-        }
-        if (draw_btn(54.0F, "HELP ?", io_show_shortcuts, ur::Color { 175U, 145U, 255U, 255U }))
-        {
-            io_show_shortcuts = !io_show_shortcuts;
-        }
-    }
-}
-
-
-// ===========================================================================
-// phase701 / M15 W3 — toast notification system
-// ===========================================================================
-//
-// Small floating-message queue rendered in the bottom-right of the status bar.
-// Each Toast lives 2 seconds (1.7 s opaque + 0.3 s fade-out). The queue holds
-// at most kMaxToasts; pushing into a full queue evicts the oldest entry.
-//
-// Three colour kinds, each mapped to a status-bar swatch:
-//   kInfo    — blue   (RGB 100 / 150 / 220)
-//   kSuccess — green  (RGB  80 / 200 / 100)
-//   kWarning — amber  (RGB 220 / 200 /  80)
-//
-// MOMENT: a dev opens the editor; three toasts pop up — 'Editor ready' (green),
-// 'Loaded saved layout' (blue), 'Theme: Dark' (blue). The editor talks to them,
-// they feel oriented before they have to click anything.
-
-}  // namespace  (close the outer anonymous namespace so named cd::editor::*
-   //             namespaces below are valid C++; reopened after the bridge.)
-
-namespace cd::editor::toast
-{
-
-enum class Kind : std::uint8_t
-{
-    kInfo    = 0,
-    kSuccess = 1,
-    kWarning = 2,
-};
-
-struct Toast
-{
-    std::string message;                              ///< Short text payload.
-    Kind        kind { Kind::kInfo };                 ///< Colour category.
-    std::chrono::steady_clock::time_point spawn_tp {};///< Birth wall-clock.
-    double      spawn_ms    { 0.0 };                  ///< Monotonic ms at push (for anim).
-    double      lifetime_ms { 2000.0 };               ///< Total lifetime (ms); default 2000.
-};
-
-class ToastQueue
-{
-public:
-    static constexpr std::size_t kMaxToasts    = 5U;
-    static constexpr double      kLifetimeMs   = 2000.0;  ///< Total visible life.
-    static constexpr double      kFadeMs       =  300.0;  ///< Fade-out duration.
-
-    /// Push a new toast. When the queue is full the oldest is evicted (FIFO).
-    /// @param lifetime_ms  Total visible lifetime in milliseconds (default 2000).
-    void push(std::string message, Kind kind = Kind::kInfo,
-              double lifetime_ms = kLifetimeMs)
-    {
-        if (toasts_.size() >= kMaxToasts) { toasts_.erase(toasts_.begin()); }
-        const auto now = std::chrono::steady_clock::now();
-        const auto spawn_ms_val = static_cast<double>(
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                now.time_since_epoch()).count()) / 1000.0;
-        toasts_.push_back(Toast{
-            std::move(message), kind, now, spawn_ms_val, lifetime_ms });
-    }
-
-    /// Drop toasts whose lifetime has expired. Call once per frame BEFORE
-    /// rendering so the rendered list is always fresh.
-    void tick(std::chrono::steady_clock::time_point now)
-    {
-        toasts_.erase(
-            std::remove_if(toasts_.begin(), toasts_.end(),
-                [&](const Toast& t)
-                {
-                    using namespace std::chrono;
-                    const auto age_ms = static_cast<double>(
-                        duration_cast<microseconds>(now - t.spawn_tp).count()) / 1000.0;
-                    return age_ms >= kLifetimeMs;
-                }),
-            toasts_.end());
-    }
-
-    [[nodiscard]] std::size_t size() const noexcept { return toasts_.size(); }
-    [[nodiscard]] const std::vector<Toast>& items() const noexcept { return toasts_; }
-
-private:
-    std::vector<Toast> toasts_ {};
-};
-
-}  // namespace cd::editor::toast
-
-// ===========================================================================
-// phase701 / M15 W3 — global build-panel registration helper (Sprint-1)
-// ===========================================================================
-//
-// Other engine subsystems (asset validator, future shader compiler hook, etc.)
-// need a way to inform the editor's BuildPanel about events WITHOUT linking
-// the cd::editor binary itself. The helper exposes a free function +
-// thread-safe pointer set at editor startup. When the editor is not running
-// (samples, tests) the pointer stays null and the helper is a no-op.
-
-namespace cd::editor::build_panel_bridge
-{
-
-namespace
-{
-    panel::build::BuildPanel* g_bridge_target { nullptr };
-}  // namespace
-
-void register_target(panel::build::BuildPanel* target) noexcept
-{
-    g_bridge_target = target;
-}
-
-void push_event(const panel::build::BuildEvent& event)
-{
-    if (g_bridge_target != nullptr) { g_bridge_target->push_event(event); }
-}
-
-void set_status(panel::build::Status status) noexcept
-{
-    if (g_bridge_target != nullptr) { g_bridge_target->set_status(status); }
-}
-
-}  // namespace cd::editor::build_panel_bridge
-
-// ===========================================================================
-// phase746 -- cd::editor::profile::FrameCapture
-// ===========================================================================
-//
-// Aggregates REAL profiling data streams collected per frame into a single
-// POD that is converted to PerfProfiler::FrameSnapshot via to_snapshot().
-//
-// Data sources (all real, no synthetic feed):
-//   cpu_markers  -- MarkerSamples from cpu_marker_overlay::Collector
-//                   ("frame.draw" scope, 2×budget_ms lookback).
-//   gpu_markers  -- GpuMarkerSamples from gpu_marker::Recorder via
-//                   prev_gpu_markers carry-forward (resolved samples from the
-//                   previous frame's Vulkan submit; same double-buffer pattern
-//                   as Timeline::last_frame_passes()).
-//   gpu_passes   -- PassRecords from fgt_timeline.last_frame_passes()
-//                   ("DockDraw" CPU wall-clock pass).
-//   total_ms     -- real wall-clock frame dt from FrameTimeRing.
-
-namespace cd::editor::profile
-{
-
-struct FrameCapture
-{
-    double total_ms { 0.0 };
-    std::vector<cd::profile::cpu_marker_overlay::MarkerSample>   cpu_markers;
-    std::vector<cd::profile::gpu_marker::GpuMarkerSample>         gpu_markers;
-    std::vector<cd::profile::frame_graph_timeline::PassRecord>    gpu_passes;
-};
-
-[[nodiscard]] cd::editor::panel::perf_profiler::FrameSnapshot
-to_snapshot(FrameCapture&& cap)
-{
-    cd::editor::panel::perf_profiler::FrameSnapshot snap;
-    snap.total_ms    = cap.total_ms;
-    snap.cpu_markers = std::move(cap.cpu_markers);
-    snap.gpu_markers = std::move(cap.gpu_markers);
-    snap.gpu_passes  = std::move(cap.gpu_passes);
-    return snap;
-}
-
-}  // namespace cd::editor::profile
-
-// Reopen the outer anonymous namespace closed above so the rest of the file
-// (drawer stubs, helpers, main()) retains internal linkage as before.
-namespace
-{
-
-// Render the toast stack into the bottom-right corner of the framebuffer,
-// stacking UP from just above the status bar. Each toast is a 220 x 22 px
-// pill quad in the colour matching its kind.
-//
-// phase724: slide-in from the right (cubic ease-out, 0..150 ms),
-// steady (150..1850 ms), then linear fade-out (1850..2000 ms).
-// cd::ui::toast_anim() drives both alpha and x_offset.
-void draw_toasts(ur::DrawBatcher& batcher,
-                 const uw::Theme& theme,
-                 const cd::editor::toast::ToastQueue& queue,
-                 float fb_w, float fb_h,
-                 std::chrono::steady_clock::time_point now)
-{
-    using cd::editor::toast::Kind;
-    using cd::editor::toast::ToastQueue;
-
-    constexpr float kToastW   = 220.0F;
-    constexpr float kToastH   =  22.0F;
-    constexpr float kToastGap =   4.0F;
-    constexpr float kMarginR  =  10.0F;
-    constexpr float kMarginB  =   4.0F;   // above status bar
-    // Status bar pinned height (mirrors kStatusBarH defined further below; we
-    // duplicate the literal here so draw_toasts can sit ahead of the status-bar
-    // helpers without a forward declaration).
-    constexpr float kToastStatusBarH = 20.0F;
-
-    const float bottom = fb_h - kToastStatusBarH - kMarginB;
-    const float base_x = fb_w - kToastW - kMarginR;
-
-    const auto& items = queue.items();
-    for (std::size_t i = 0; i < items.size(); ++i)
-    {
-        const auto& t = items[i];
-        using namespace std::chrono;
-        const auto age_ms = static_cast<double>(
-            duration_cast<microseconds>(now - t.spawn_tp).count()) / 1000.0;
-        if (age_ms >= ToastQueue::kLifetimeMs) { continue; }
-
-        // phase724 — animation: cubic ease-out slide-in + linear fade-out.
-        const cd::ui::ToastAnimCfg anim_cfg {
-            t.lifetime_ms,
-            150.0,                           // slide_ms
-            ToastQueue::kFadeMs,             // fadeout_ms
-            50.0F                            // slide_max_px
-        };
-        const auto [alpha_f, x_offset, y_offset] = cd::ui::toast_anim(age_ms, anim_cfg);
-        (void)y_offset;
-        const auto alpha    = static_cast<std::uint8_t>(alpha_f * 230.0F);
-        const float x       = base_x + x_offset;
-
-        ur::Color fill { 100U, 150U, 220U, alpha };  // kInfo (blue)
-        switch (t.kind)
-        {
-            case Kind::kSuccess: fill = ur::Color {  80U, 200U, 100U, alpha }; break;
-            case Kind::kWarning: fill = ur::Color { 220U, 200U,  80U, alpha }; break;
-            case Kind::kInfo:    /* already set */                            break;
-        }
-
-        // Stack upwards: newest at the bottom, older toasts above.
-        const float y = bottom - static_cast<float>(i + 1U) * (kToastH + kToastGap);
-        if (y < 0.0F) { break; }
-
-        // Body fill.
-        batcher.quad(x, y, kToastW, kToastH, fill);
-
-        // 2 px left-edge accent stripe in theme accent so the toast reads as
-        // a toast (not a button).
-        batcher.quad(x, y, 2.0F, kToastH,
-                     ur::Color { theme.accent.r, theme.accent.g,
-                                 theme.accent.b, alpha });
-
-        draw_ui_text_clipped(batcher,
-                             x + 8.0F,
-                             y + 7.0F,
-                             t.message,
-                             ur::Color { 15U, 20U, 28U, alpha },
-                             1.0F,
-                             x + kToastW - 6.0F);
-    }
-}
-
-// ---- phase679 / M13 W3 — DockSpace serialize <-> string hex codec ----------
-//
-// DockSpace::serialize() returns std::vector<std::byte>; CdprojData stores
-// dock_layout as a UTF-8 std::string. Encode bytes as lowercase hex so the
-// payload is JSON-safe (printable, escape-free, no embedded NULs). On boot the
-// inverse decode is fed back to DockSpace::restore().
-//
-// Hex was chosen over base64 because it has no third-party-library dependency
-// in cd::core, is human-debuggable in a .cdproj file, and the payload size
-// (~2x the byte stream) is negligible — a typical 16-node tree fits in <1 KB.
+// Phase 290 (Run 7 extract pass): the GpuMesh struct + upload_mesh +
+// destroy_mesh helpers moved to cd::render::MeshUpload (header-only).
+// The sample brings them into the anonymous namespace via using-
+// declarations so existing call sites stay identical.
+// ============================================================================
+
+using cd::render::GpuMesh;
+using cd::render::destroy_mesh;
+
+// W8-AR: PbrVertex / to_pbr_vertices / upload_pbr_mesh REMOVED.
+// They existed to feed the dedicated StandardPbrMaterial pipeline
+// with a pos+normal-only stream. After W8-AR the PBR demo spheres
+// are ECS entities rendered through the same PrimitiveVertex
+// (pos+normal+uv+color) stream every other primitive uses.
+
+// =============================================================================
+// Phase 289 / Marathon Run 7 sub-N1A: the embedded kPrimVS / kPrimFS / kShadowVS
+// / kShadowFS GLSL strings (~990 lines total) live in PrimShader.hpp +
+// PrimShader_kPrimFS.inl + PrimShader_kShadow.inl now. The remaining
+// main.cpp call sites were extracted since, so no using-decls are needed.
 // =============================================================================
 
-[[nodiscard]] std::string dock_layout_to_hex(const std::vector<std::byte>& bytes)
-{
-    static constexpr char kHex[] = "0123456789abcdef";
-    std::string out;
-    out.reserve(bytes.size() * 2U);
-    for (const auto b : bytes)
-    {
-        const auto u = static_cast<std::uint8_t>(b);
-        out.push_back(kHex[(u >> 4U) & 0x0FU]);
-        out.push_back(kHex[u & 0x0FU]);
-    }
-    return out;
-}
 
-// phase785 / E5 — canonical path for the last input recording binary.
-// Mirrors the pattern used by default_cdproj_path() in cd::editor::cdproj:
-//   Windows : %APPDATA%\cd_editor\last_input_recording.bin
-//   macOS   : ~/Library/Application Support/cd_editor/last_input_recording.bin
-//   Linux   : ~/.local/share/cd_editor/last_input_recording.bin
-//   Fallback: <temp>/cd_editor/last_input_recording.bin
+// R3 - Composite pass - shader source + push struct extracted into
+// cd::post_composite. chromodynamic_studio just references the namespace via
+// the using-decl below.
+using CompositePush = cd::post::composite::Push;
+
+// R3 - Multi-mip bloom (Karis 2013) - shader source + push struct
+// definitions are extracted into cd::post_bloom. chromodynamic_studio just
+// references them via the namespace.
+using BloomPrefilterPush = cd::post::bloom::PrefilterPush;
+using BloomUpsamplePush = cd::post::bloom::UpsamplePush;
+
+// =============================================================================
+// Phase 290 / Marathon Run 7 sub-N1B: PrimPush + LightSlotGpu + LightUboGpu
+// layouts + the pack_light_slot() helper live in StudioLighting.hpp. main.cpp
+// re-imports the names so existing call sites stay identical.
+// =============================================================================
+using cd::studio_rt::PrimPush;
+using cd::studio_rt::LightUboGpu;
+using cd::studio_rt::pack_light_slot;
+
+// GpuTexture2D, create_texture_rgba8 moved to file scope (before namespace {}).
+
+// ============================================================================
+// R1 - True IBL helpers (HDR cubemap + diffuse irradiance + BRDF LUT).
 //
-// Note: uses the same _dupenv_s / getenv pattern as cd::editor::cdproj
-// to avoid the MSVC _CRT_INSECURE_DEPRECATE(getenv) warning under /W4 -Werror.
-[[nodiscard]] std::filesystem::path input_recording_save_path()
+// Generates a CPU environment cubemap by sampling the analytical sky
+// function (same palette as AnalyticalSkyMaterial::sample_env), runs
+// cd::ibl convolutions (irradiance + prefiltered specular + BRDF LUT),
+// and uploads to GPU as kCube + kCube-with-mips + k2D textures.
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// Phase 292 / Marathon Run 7 sub-N1D: planar-shadow projection matrix
+// builder moved to cd::render::PlanarShadow.hpp. The helper is brought
+// back in scope below via a using-decl so the caster loop's existing
+// `make_planar_shadow_matrix(...)` call site stays identical.
+// ----------------------------------------------------------------------------
+using cd::render::make_planar_shadow_matrix;
+
+// ============================================================================
+// Render-target helpers - extracted to cd::framegraph::Targets.
+// BloomMipChain extracted to cd::post_bloom.
+// ============================================================================
+using ColorTarget = cd::framegraph::ColorTarget;
+using DepthTarget = cd::framegraph::DepthTarget;
+using BloomMipChain = cd::post::bloom::BloomMipChain;
+// phase1140: create_depth_target using-decl dropped — the last direct
+// caller moved into StudioBootGpu.hpp (ADL resolves it there).
+using cd::post::bloom::create_bloom_chain;
+
+// Histogram, SelKind, LightRow moved to file scope (before namespace {}).
+
+// =============================================================================
+// Phase 297 / Marathon Run 8 sub-N2A: small self-contained UI panel draw
+// helpers extracted from main(). These touch a narrow, well-defined slice
+// of frame state (counters table, random-viz histograms, history + log)
+// and have no shared draw-order coupling with the rest of the UI loop, so
+// they extract cleanly with explicit parameter lists - no FrameContext
+// aggregate required yet. The dt-ring static inside draw_counters_panel
+// keeps the same single-instance lifetime as before (one named function,
+// one static).
+// =============================================================================
+
+// ---- draw_selection_outline_overlay ---------------------------------------
+inline void draw_selection_outline_overlay(const std::vector<SceneEntity>& entities,
+                                           int selected,
+                                           SelKind selected_kind,
+                                           cd::editor::SelectionOutline& outline,
+                                           cd::scene::Scene& scene,
+                                           const cd::math::Mat4f& vp,
+                                           cd::rhi::Extent2D extent)
 {
-    namespace fs = std::filesystem;
-
-    // Platform-safe env-var reader: returns nullopt if the variable is absent
-    // or empty.  On MSVC _dupenv_s is the non-deprecated alternative to
-    // getenv; on all other platforms we use getenv directly (no deprecation).
-    const auto read_env = [](const char* name) -> std::optional<std::string> {
-#if defined(_WIN32)
-        char*       buf  { nullptr };
-        std::size_t size { 0U };
-        if (_dupenv_s(&buf, &size, name) != 0 || buf == nullptr)
-            return std::nullopt;
-        std::string val(buf);
-        free(buf);  // _dupenv_s caller owns the buffer
-        if (val.empty()) { return std::nullopt; }
-        return val;
-#else
-        const char* v = std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
-        if (v && *v != '\0') { return std::string(v); }
-        return std::nullopt;
-#endif
-    };
-
-#if defined(_WIN32)
-    if (auto base = read_env("APPDATA"))
-        return fs::path(*base) / "cd_editor" / "last_input_recording.bin";
-    if (auto base = read_env("LOCALAPPDATA"))
-        return fs::path(*base) / "cd_editor" / "last_input_recording.bin";
-    if (auto up = read_env("USERPROFILE"))
-        return fs::path(*up) / "AppData" / "Roaming" / "cd_editor" / "last_input_recording.bin";
-#elif defined(__APPLE__)
-    if (auto home = read_env("HOME"))
-        return fs::path(*home) / "Library" / "Application Support" / "cd_editor" / "last_input_recording.bin";
-#else
-    if (auto xdg = read_env("XDG_DATA_HOME"))
-        return fs::path(*xdg) / "cd_editor" / "last_input_recording.bin";
-    if (auto home = read_env("HOME"))
-        return fs::path(*home) / ".local" / "share" / "cd_editor" / "last_input_recording.bin";
-#endif
-    return fs::temp_directory_path() / "cd_editor" / "last_input_recording.bin";
-}
-
-[[nodiscard]] std::vector<std::byte> dock_layout_from_hex(std::string_view hex)
-{
-    std::vector<std::byte> out;
-    if ((hex.size() & 0x1U) != 0U) { return out; }
-    out.reserve(hex.size() / 2U);
-
-    auto digit = [](char c) -> int {
-        if (c >= '0' && c <= '9') { return c - '0'; }
-        if (c >= 'a' && c <= 'f') { return 10 + (c - 'a'); }
-        if (c >= 'A' && c <= 'F') { return 10 + (c - 'A'); }
-        return -1;
-    };
-
-    for (std::size_t i = 0; i < hex.size(); i += 2U)
+    // We use the kWireframe style: project the selected entity's
+    // world position onto the screen, then draw a circle around it
+    // via ImGui's foreground draw list. Cheap, no extra GPU pass,
+    // and demonstrates SelectionOutline state end-to-end.
+    if (selected_kind == SelKind::kEntity && selected >= 0 && std::cmp_less(selected,entities.size()))
     {
-        const int hi = digit(hex[i]);
-        const int lo = digit(hex[i + 1U]);
-        if (hi < 0 || lo < 0) { out.clear(); return out; }
-        out.push_back(static_cast<std::byte>(
-            static_cast<std::uint8_t>((hi << 4) | lo)));
-    }
-    return out;
-}
-
-// ---- GPU marker overlay draw helper ----------------------------------------
-//
-// phase631 / M9 W1A — mirrors the cpu_marker_overlay::Overlay::draw() pattern
-// but consumes cd::profile::gpu_marker::GpuMarkerSample data (name +
-// duration_ms_computed). GPU markers have no thread-id lane concept — all bars
-// are drawn in a single horizontal lane spanning the overlay height.
-//
-// The overlay is fed synthetic GpuMarkerSample data each frame (real GPU
-// timestamps require ICommandBuffer::write_timestamp, which is a future Sprint).
-void draw_gpu_marker_overlay(
-    ur::DrawBatcher&                                          batcher,
-    std::span<const cd::profile::gpu_marker::GpuMarkerSample> samples,
-    float                                                      x,
-    float                                                      y,
-    float                                                      width,
-    float                                                      height,
-    double                                                     window_ms)
-{
-    if (samples.empty() || width <= 0.0F || height <= 0.0F)
-        return;
-
-    // Compute min start_ms equivalent from the GPU tick data.
-    // GpuMarkerSample stores raw ticks; after resolve() duration_ms_computed is
-    // valid. For the overlay we treat gpu_start_tick as the "start" offset in
-    // ticks and map ticks onto the [0, window_ms] time axis using the same
-    // stub frequency used by Recorder::resolve (1 GHz = 1e9 ticks/s).
-    static constexpr double kStubFreqHz = 1.0e9;
-    static constexpr double kTickToMs   = 1000.0 / kStubFreqHz;
-
-    const std::uint64_t min_tick = [&]
-    {
-        std::uint64_t m = samples[0].gpu_start_tick;
-        for (const auto& s : samples)
-            m = (s.gpu_start_tick < m) ? s.gpu_start_tick : m;
-        return m;
-    }();
-
-    const double time_range     = (window_ms > 0.0) ? window_ms : 1.0;
-    const float  pixels_per_ms  =
-        width / static_cast<float>(time_range);
-    const float  bar_h          = height * 0.75F;  // 75% height; 25% top/bottom padding
-    const float  bar_y          = y + (height - bar_h) * 0.5F;
-
-    // djb2 hash → stable hue (same function as cpu_marker_overlay).
-    auto gpu_colour = [](std::string_view name) -> ur::Color
-    {
-        std::uint32_t h = 5381U;
-        for (const char c : name)
-            h = ((h << 5U) + h) + static_cast<std::uint32_t>(static_cast<unsigned char>(c));
-        // Shift bits vs cpu palette to produce visually distinct hues.
-        const auto r = static_cast<std::uint8_t>(((h >> 4U) & 0xFFu));
-        const auto g = static_cast<std::uint8_t>(((h >> 12U) & 0xFFu));
-        const auto b = static_cast<std::uint8_t>((h & 0xFFu));
-        return ur::Color { r, g, b, 200U };
-    };
-
-    // Push a scissor rect scoped to the overlay bounds. This gives the GPU
-    // marker overlay its own DrawCommand in the batcher (distinct scissor key),
-    // so command_count() increments by 1 relative to the CPU/FGT overlays.
-    const ur::ScissorRect scissor {
-        static_cast<std::int32_t>(x),
-        static_cast<std::int32_t>(y),
-        static_cast<std::uint32_t>(width),
-        static_cast<std::uint32_t>(height),
-    };
-    batcher.push_scissor(scissor);
-
-    for (const auto& s : samples)
-    {
-        const double rel_start_ms =
-            static_cast<double>(s.gpu_start_tick - min_tick) * kTickToMs;
-        const double dur_ms = s.duration_ms_computed;
-
-        if (rel_start_ms > time_range)
-            continue;
-        if (rel_start_ms + dur_ms < 0.0)
-            continue;
-
-        const float bar_x =
-            x + static_cast<float>(rel_start_ms) * pixels_per_ms;
-        const float bar_w =
-            std::max(1.0F, static_cast<float>(dur_ms) * pixels_per_ms);
-
-        batcher.quad(bar_x, bar_y, bar_w, bar_h, gpu_colour(s.name));
-    }
-
-    batcher.pop_scissor();
-}
-
-// ---- Pointer event flatten (same shape as hello_ui) ------------------------
-
-struct PointerAccumulator
-{
-    float mouse_x        { 0.0F };
-    float mouse_y        { 0.0F };
-    bool  left_down      { false };
-    bool  left_down_prev { false };
-    bool  right_down     { false };
-};
-
-[[nodiscard]] uw::PointerState flatten_pointer(const PointerAccumulator& a) noexcept
-{
-    uw::PointerState p;
-    p.mouse_x       = a.mouse_x;
-    p.mouse_y       = a.mouse_y;
-    p.left_down     = a.left_down;
-    p.left_pressed  = a.left_down && !a.left_down_prev;
-    p.left_released = !a.left_down && a.left_down_prev;
-    return p;
-}
-
-void apply_event(PointerAccumulator& a, const platform::OSEvent& e) noexcept
-{
-    switch (e.kind)
-    {
-        case platform::OSEventKind::kMouseMove:
-            if (a.right_down)
-            {
-                const float dx = e.mouse_x - a.mouse_x;
-                const float dy = e.mouse_y - a.mouse_y;
-                g_cam_yaw   += dx * 0.006F;
-                g_cam_pitch = std::clamp(g_cam_pitch + dy * 0.005F, -1.2F, 1.2F);
-            }
-            a.mouse_x = e.mouse_x;
-            a.mouse_y = e.mouse_y;
-            break;
-        case platform::OSEventKind::kMouseButtonDown:
-            if (e.mouse_button == platform::MouseButton::kLeft)
-            {
-                a.left_down = true;
-            }
-            else if (e.mouse_button == platform::MouseButton::kRight)
-            {
-                a.right_down = true;
-            }
-            break;
-        case platform::OSEventKind::kMouseButtonUp:
-            if (e.mouse_button == platform::MouseButton::kLeft)
-            {
-                a.left_down = false;
-            }
-            else if (e.mouse_button == platform::MouseButton::kRight)
-            {
-                a.right_down = false;
-            }
-            break;
-        default:
-            break;
-    }
-}
-
-// ---- Theme bridge ----------------------------------------------------------
-//
-// cd::ui::theme V2 exposes float-RGBA design tokens. cd::ui_widgets uses
-// its own uint8_t-RGBA palette. Translate the chosen V2 theme so the
-// editor binary stays on the V2 token surface while still feeding the
-// widget catalog.
-//
-// phase695 / M14 W6A: build_widget_theme() now accepts a theme_name string
-// ("dark" / "light" / "high_contrast") so the caller can hot-swap the
-// palette without touching the widget hierarchy. Unknown names fall back to
-// the dark palette (same behaviour as theme_from_name()).
-[[nodiscard]] uw::Color to_widget_color(uth::ColorToken c) noexcept
-{
-    auto pack = [](float v) noexcept -> std::uint8_t {
-        const float clamped = (v < 0.0F) ? 0.0F : (v > 1.0F) ? 1.0F : v;
-        return static_cast<std::uint8_t>(std::lround(clamped * 255.0F));
-    };
-    return uw::Color { pack(c.r), pack(c.g), pack(c.b), pack(c.a) };
-}
-
-[[nodiscard]] uw::Theme build_widget_theme(std::string_view theme_name)
-{
-    const auto tok = uth::theme_from_name(theme_name);
-    uw::Theme t {};
-    // Map V2 16-slot palette into the cd::ui_widgets 9-slot theme. The
-    // semantic intent stays in lock-step with Material 3: background =
-    // surface, panel surface = surfaceVariant, hover/press = secondary /
-    // primary containers, focus = primary container (highlight).
-    t.background    = to_widget_color(tok.color(uth::PaletteSlot::kBackground));
-    t.surface       = to_widget_color(tok.color(uth::PaletteSlot::kSurface));
-    t.surface_hover = to_widget_color(tok.color(uth::PaletteSlot::kSurfaceVariant));
-    t.surface_press = to_widget_color(tok.color(uth::PaletteSlot::kPrimaryContainer));
-    t.accent        = to_widget_color(tok.color(uth::PaletteSlot::kPrimary));
-    t.accent_hover  = to_widget_color(tok.color(uth::PaletteSlot::kPrimaryContainer));
-    t.text          = to_widget_color(tok.color(uth::PaletteSlot::kOnSurface));
-    t.text_dim      = to_widget_color(tok.color(uth::PaletteSlot::kOnSurfaceVariant));
-
-    // Semantic extension tokens (phase673 / M12 W6A):
-    // accent_error driven from the V2 kError swatch so warning/error visuals
-    // are consistent across the theme tree. surface_subtle / divider /
-    // accent_warning / accent_success retain their struct defaults so they
-    // remain legible in all three palettes without per-palette overrides.
-    t.accent_error = to_widget_color(tok.color(uth::PaletteSlot::kError));
-    return t;
-}
-
-
-// ---- phase667 / M12 W2 — status bar ---------------------------------------
-//
-// A 20px-tall horizontal strip pinned to the bottom of the framebuffer that
-// shows three live readouts the brief calls out:
-//
-//   * asset::validator badge — three colour-coded count blocks (green = pass,
-//     yellow = warn, red = error) sized proportionally to the corresponding
-//     issue counts. The counts come from the latest Validator pass.
-//   * frame stats — FPS, vertex count, draw command count. Rendered as
-//     three coloured intensity strips so the user sees them light up even
-//     before glyph rendering is hooked.
-//   * active route indicator — single coloured strip showing which UI
-//     submitter path (Route A vs Route B) is live this boot.
-//
-// The status bar lives OUTSIDE the dock tree so it does not bump
-// DockSpace::node_count. The dock area is shrunk by `kStatusBarH` before
-// `set_rect()` so the status bar never overlaps a panel.
-constexpr float kStatusBarH = 20.0F;
-
-struct StatusBarStats
-{
-    // Validator badge totals.
-    std::uint32_t validator_pass  { 0U };
-    std::uint32_t validator_warn  { 0U };
-    std::uint32_t validator_error { 0U };
-    // Frame stats — derived from DrawBatcher after dockspace.draw() per frame.
-    float         fps             { 0.0F };
-    std::uint32_t vertex_count    { 0U };
-    std::uint32_t draw_calls      { 0U };
-    // Route indicator: 1 = A success, 2 = A fallback, 3 = B only.
-    int           route_taken     { 0 };
-};
-
-/// Emit the bottom status bar quads into `batcher`. Rendered AFTER the dock
-/// content so the bar paints on top of any anti-aliased panel edges. The
-/// status bar is opinionated about its own background fill (slightly darker
-/// than the dock surface so the user reads it as a separate ribbon).
-void draw_status_bar(ur::DrawBatcher& batcher,
-                     const uw::Theme& theme,
-                     const StatusBarStats& stats,
-                     float fb_w, float fb_h)
-{
-    const float bar_x = 0.0F;
-    const float bar_y = fb_h - kStatusBarH;
-    const float bar_w = fb_w;
-
-    // 1. Status bar background
-    batcher.quad(bar_x, bar_y, bar_w, kStatusBarH,
-                 ur::Color {
-                     theme.surface_subtle.r,
-                     theme.surface_subtle.g,
-                     theme.surface_subtle.b,
-                     theme.surface_subtle.a });
-
-    // 2. Top separator line
-    batcher.quad(bar_x, bar_y, bar_w, 1.0F,
-                 ur::Color {
-                     theme.divider.r,
-                     theme.divider.g,
-                     theme.divider.b,
-                     theme.divider.a });
-
-    // ---- 3. Validator badge (LEFT region) ----------------------------------
-    constexpr float kBadgeW    = 280.0F;
-    constexpr float kBadgePad  = 6.0F;
-    constexpr float kBadgeH    = kStatusBarH - 4.0F;
-    const float     badge_y    = bar_y + 2.0F;
-    const float     badge_avail = kBadgeW - 2.0F * kBadgePad;
-
-    const std::uint32_t total = stats.validator_pass + stats.validator_warn + stats.validator_error;
-    const float kMinBlock = 6.0F;
-
-    auto block_w = [&](std::uint32_t count) -> float {
-        if (total == 0U) { return (badge_avail - 4.0F) / 3.0F; }
-        const auto frac = static_cast<float>(count) / static_cast<float>(total);
-        return std::max(kMinBlock, frac * (badge_avail - 4.0F));
-    };
-
-    float bx = bar_x + kBadgePad;
-    {
-        const float w = block_w(stats.validator_pass);
-        batcher.quad(bx, badge_y, w, kBadgeH,
-                     ur::Color {
-                         theme.accent_success.r,
-                         theme.accent_success.g,
-                         theme.accent_success.b,
-                         theme.accent_success.a });
-        draw_ui_text_clipped(batcher, bx + 4.0F, badge_y + 5.0F,
-                             "PASS:" + std::to_string(stats.validator_pass),
-                             ur::Color { 12U, 18U, 14U, 255U }, 1.0F, bx + w - 2.0F);
-        bx += w + 2.0F;
-    }
-    {
-        const float w = block_w(stats.validator_warn);
-        batcher.quad(bx, badge_y, w, kBadgeH,
-                     ur::Color {
-                         theme.accent_warning.r,
-                         theme.accent_warning.g,
-                         theme.accent_warning.b,
-                         theme.accent_warning.a });
-        draw_ui_text_clipped(batcher, bx + 4.0F, badge_y + 5.0F,
-                             "WARN:" + std::to_string(stats.validator_warn),
-                             ur::Color { 20U, 16U, 10U, 255U }, 1.0F, bx + w - 2.0F);
-        bx += w + 2.0F;
-    }
-    {
-        const float w = block_w(stats.validator_error);
-        batcher.quad(bx, badge_y, w, kBadgeH,
-                     ur::Color {
-                         theme.accent_error.r,
-                         theme.accent_error.g,
-                         theme.accent_error.b,
-                         theme.accent_error.a });
-        draw_ui_text_clipped(batcher, bx + 4.0F, badge_y + 5.0F,
-                             "ERR:" + std::to_string(stats.validator_error),
-                             ur::Color { 255U, 255U, 255U, 255U }, 1.0F, bx + w - 2.0F);
-    }
-
-    // ---- 4. Frame stats (CENTRE region) -----------------------------------
-    constexpr float kStatsW    = 360.0F;
-    constexpr float kStatsPad  = 6.0F;
-    const float     stats_x    = bar_x + kBadgeW + 12.0F;
-    const float     stats_h    = kStatusBarH - 4.0F;
-    const float     strip_w    = (kStatsW - 2.0F * kStatsPad - 4.0F) / 3.0F;
-    const float     stats_y0   = bar_y + 2.0F;
-
-    auto draw_meter = [&](float ox, float norm, ur::Color color, std::string_view label) {
-        const float clamped = std::clamp(norm, 0.0F, 1.0F);
-        batcher.quad(stats_x + ox, stats_y0,
-                     strip_w, stats_h,
-                     ur::Color {
-                         theme.surface_hover.r,
-                         theme.surface_hover.g,
-                         theme.surface_hover.b,
-                         theme.surface_hover.a });
-        if (clamped > 0.0F)
-        {
-            batcher.quad(stats_x + ox, stats_y0,
-                         strip_w * clamped, stats_h, color);
-        }
-        draw_ui_text_clipped(batcher, stats_x + ox + 4.0F, stats_y0 + 5.0F,
-                             label,
-                             ur::Color { 255U, 255U, 255U, 255U }, 1.0F,
-                             stats_x + ox + strip_w - 2.0F);
-    };
-
-    char fps_buf[32];
-    std::snprintf(fps_buf, sizeof(fps_buf), "FPS: %.1f", static_cast<double>(stats.fps));
-    draw_meter(0.0F,
-               std::clamp(stats.fps / 240.0F, 0.0F, 1.0F),
-               ur::Color { 55U, 135U, 165U, 220U },
-               fps_buf);
-    draw_meter(strip_w + 2.0F,
-               std::clamp(static_cast<float>(stats.vertex_count) / 65536.0F, 0.0F, 1.0F),
-               ur::Color { 155U, 115U, 45U, 220U },
-               "VTX: " + std::to_string(stats.vertex_count));
-    draw_meter((strip_w + 2.0F) * 2.0F,
-               std::clamp(static_cast<float>(stats.draw_calls) / 256.0F, 0.0F, 1.0F),
-               ur::Color { 135U, 75U, 160U, 220U },
-               "CMD: " + std::to_string(stats.draw_calls));
-
-    // ---- 5. Active route indicator (RIGHT region) -------------------------
-    constexpr float kRouteW = 140.0F;
-    const float     route_x = bar_x + bar_w - kRouteW - 6.0F;
-    const float     route_y = bar_y + 2.0F;
-    const float     route_h = kStatusBarH - 4.0F;
-
-    ur::Color route_color { 120U, 120U, 120U, 200U };
-    const char* route_lbl = "ROUTE: INIT";
-    switch (stats.route_taken)
-    {
-        case 1: route_color = ur::Color {  60U, 175U,  90U, 235U }; route_lbl = "ROUTE A: VULKAN"; break;
-        case 2: route_color = ur::Color { 200U, 175U,  60U, 235U }; route_lbl = "ROUTE B: FALLBK"; break;
-        case 3: route_color = ur::Color {  80U, 135U, 205U, 235U }; route_lbl = "ROUTE B: GLSL";   break;
-        default: break;
-    }
-    batcher.quad(route_x, route_y, kRouteW, route_h, route_color);
-    draw_ui_text_clipped(batcher, route_x + 6.0F, route_y + 5.0F,
-                         route_lbl,
-                         ur::Color { 255U, 255U, 255U, 255U }, 1.0F,
-                         route_x + kRouteW - 4.0F);
-}
-
-[[nodiscard]] bool draw_theme_picker(ur::DrawBatcher&   batcher,
-                                     const uw::Theme&   theme,
-                                     float              fb_w,
-                                     float              fb_h,
-                                     std::string_view   active_name,
-                                     float              mouse_x,
-                                     float              mouse_y,
-                                     bool               left_clicked,
-                                     std::string*       out_new_name)
-{
-    constexpr float kPickerSlabW = 48.0F;
-    constexpr float kPickerGap   =  3.0F;
-    constexpr float kPickerPad   =  6.0F;
-    constexpr float kPickerW = 3.0F * kPickerSlabW + 2.0F * kPickerGap;
-    constexpr float kRouteW  = 140.0F;
-    const float strip_right  = fb_w - kRouteW - kPickerPad * 3.0F;
-    const float strip_x      = strip_right - kPickerW;
-    const float strip_y      = fb_h - kStatusBarH + 2.0F;
-    const float slab_h       = kStatusBarH - 4.0F;
-
-    struct SlabDesc
-    {
-        std::string_view name;
-        std::string_view short_lbl;
-        ur::Color        active_color;
-        ur::Color        inactive_color;
-    };
-    const std::array<SlabDesc, 3> slabs {{
-        { "dark",          "DARK",
-          ur::Color { 140U, 112U, 200U, 230U },
-          ur::Color {  70U,  56U, 100U, 160U } },
-        { "light",         "LIGHT",
-          ur::Color { 230U, 224U, 245U, 230U },
-          ur::Color { 115U, 112U, 122U, 160U } },
-        { "high_contrast", "HI-C",
-          ur::Color {   0U, 200U, 220U, 230U },
-          ur::Color {   0U, 100U, 110U, 160U } },
-    }};
-
-    bool any_clicked = false;
-    for (std::size_t idx = 0; idx < slabs.size(); ++idx)
-    {
-        const float slab_x = strip_x
-                             + static_cast<float>(idx) * (kPickerSlabW + kPickerGap);
-        const bool is_active  = (slabs[idx].name == active_name);
-        const bool is_hovered = (mouse_x >= slab_x &&
-                                 mouse_x <= slab_x + kPickerSlabW &&
-                                 mouse_y >= strip_y &&
-                                 mouse_y <= strip_y + slab_h);
-
-        ur::Color fill = is_active ? slabs[idx].active_color
-                                   : slabs[idx].inactive_color;
-        if (is_hovered && !is_active)
-        {
-            fill.r = static_cast<std::uint8_t>(std::min(255, static_cast<int>(fill.r) + 40));
-            fill.g = static_cast<std::uint8_t>(std::min(255, static_cast<int>(fill.g) + 40));
-            fill.b = static_cast<std::uint8_t>(std::min(255, static_cast<int>(fill.b) + 40));
-        }
-
-        batcher.quad(slab_x, strip_y, kPickerSlabW, slab_h, fill);
-
-        if (is_active)
-        {
-            batcher.quad(slab_x, strip_y, kPickerSlabW, 2.0F,
-                         ur::Color { 255U, 255U, 255U, 220U });
-        }
-
-        const ur::Color txt_col = (idx == 1 && is_active)
-            ? ur::Color { 20U, 20U, 30U, 255U }
-            : ur::Color { 245U, 248U, 255U, 255U };
-        draw_ui_text_clipped(batcher, slab_x + 8.0F, strip_y + 5.0F,
-                             slabs[idx].short_lbl, txt_col, 1.0F,
-                             slab_x + kPickerSlabW - 2.0F);
-
-        if (is_hovered && left_clicked && !is_active)
-        {
-            *out_new_name = std::string(slabs[idx].name);
-            any_clicked   = true;
-        }
-    }
-
-    (void)theme;
-    return any_clicked;
-}
-
-// ---- Boot splash -----------------------------------------------------------
-//
-// phase685 / M13 W6B — polished 2.5 s branded splash with three animation
-// stages, rendered on top of the dock during editor startup.
-//
-//   [0,   500ms)  Title fade-in: 'CHROMODYNAMIC' quads alpha 0 -> 255.
-//   [500, 1500ms) Subtitle reveal: 'A library-oriented game engine' strip
-//                 grows in from width 0 -> kSubtitleW.
-//   [1500, 2500ms) Scrolling hints: four hint strings step vertically through
-//                  "Booting Vulkan..." / "Loading panels..." /
-//                  "Restoring layout..." / "Ready" every 250 ms.
-//   [2500, 2800ms) Fade-out: full alpha lerps 255 -> 0 over 300 ms.
-//   >= 2800 ms    Splash fully done — dock visible; first-launch dialog shown.
-//
-// Elapsed time is driven by the same BootSplash::elapsed_ms() call used
-// in the existing frame loop; cd::frame_timing is used for real FPS, not for
-// this wall-clock measurement (which needs absolute ms, not dt accumulation).
-
-struct BootSplash
-{
-    /// Wall-clock reference point at which the editor window first opened.
-    std::chrono::steady_clock::time_point start_tp = std::chrono::steady_clock::now();
-
-    // --- Timing constants (ms) -------------------------------------------
-    static constexpr double kTitleFadeEndMs    =  500.0;   ///< Title fully opaque.
-    static constexpr double kSubtitleEndMs     = 1500.0;   ///< Subtitle fully revealed.
-    static constexpr double kHintEndMs         = 2500.0;   ///< Hint scroll ends (solid phase end).
-    static constexpr double kSolidMs           = kHintEndMs;
-    static constexpr double kFadeMs            =  300.0;   ///< Fade-out duration after solid.
-
-    /// Returns elapsed milliseconds since start_tp (wall-clock, not dt sum).
-    [[nodiscard]] double elapsed_ms() const noexcept
-    {
-        using namespace std::chrono;
-        return static_cast<double>(
-            duration_cast<microseconds>(steady_clock::now() - start_tp).count())
-            / 1000.0;
-    }
-
-    /// True once the fade-out has fully completed (splash invisible).
-    [[nodiscard]] bool done(double ms) const noexcept
-    {
-        return ms >= kSolidMs + kFadeMs;
-    }
-
-    /// Overall splash alpha [0, 255] for the given elapsed_ms.
-    /// During the title-fade stage (0..kTitleFadeEndMs) this controls the
-    /// title bar alpha; the subtitle / hints / background use it directly.
-    [[nodiscard]] std::uint8_t splash_alpha(double ms) const noexcept
-    {
-        if (ms < kSolidMs) { return 255U; }
-        const double t       = (ms - kSolidMs) / kFadeMs;
-        const double clamped = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
-        return static_cast<std::uint8_t>((1.0 - clamped) * 255.0);
-    }
-
-    /// Title alpha [0, 255]: rises from 0 to 255 in the first kTitleFadeEndMs.
-    [[nodiscard]] std::uint8_t title_alpha(double ms) const noexcept
-    {
-        if (ms >= kSolidMs) { return splash_alpha(ms); }
-        const double t = ms / kTitleFadeEndMs;
-        const double clamped = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
-        return static_cast<std::uint8_t>(clamped * 255.0);
-    }
-
-    /// Subtitle reveal fraction [0.0, 1.0]: 0 before kTitleFadeEndMs,
-    /// linearly 0->1 over [kTitleFadeEndMs, kSubtitleEndMs].
-    [[nodiscard]] float subtitle_frac(double ms) const noexcept
-    {
-        if (ms < kTitleFadeEndMs) { return 0.0F; }
-        if (ms >= kSubtitleEndMs) { return 1.0F; }
-        const double t = (ms - kTitleFadeEndMs) / (kSubtitleEndMs - kTitleFadeEndMs);
-        return static_cast<float>(t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t));
-    }
-
-    /// Index of the hint string currently visible [0..3] during the hint-scroll
-    /// phase [kSubtitleEndMs, kHintEndMs].  Each string shows for 250 ms.
-    [[nodiscard]] static int hint_index(double ms) noexcept
-    {
-        if (ms < kSubtitleEndMs) { return 0; }
-        if (ms >= kHintEndMs)    { return 3; }
-        const double phase_ms = ms - kSubtitleEndMs;
-        const auto idx = static_cast<int>(phase_ms / 250.0);
-        return (idx > 3) ? 3 : idx;
-    }
-
-    /// The four scrolling hint strings shown during [1500, 2500ms).
-    [[nodiscard]] static const char* hint_string(int idx) noexcept
-    {
-        static constexpr const char* kHints[4] = {
-            "Booting Vulkan...",
-            "Loading panels...",
-            "Restoring layout...",
-            "Ready",
-        };
-        if (idx < 0) { return kHints[0]; }
-        if (idx > 3) { return kHints[3]; }
-        return kHints[idx];
-    }
-};
-
-/// Emit boot splash quads into `batcher`.  Call AFTER dockspace.draw() so the
-/// splash paints on top of panels.
-///
-/// phase685 / M13 W6B — three animation stages keyed on `elapsed_ms`:
-///   Stage 1 [0, 500ms)    : Title fades in  (title_alpha 0->255).
-///   Stage 2 [500, 1500ms) : Subtitle reveals (subtitle width 0->kSubtitleW).
-///   Stage 3 [1500, 2500ms): Scrolling hints  (4 strings, 250 ms each).
-///   Fade    [2500, 2800ms): Overall alpha 255->0.
-///
-/// phase707 / M15 W6B — `particle_snaps` carries live particle data from the
-///   cd::particle::system::System ticked each frame while the splash is active.
-///   Particles are rendered AFTER the background fill but BEFORE the title /
-///   subtitle / hints so they sit between the dark background and the foreground
-///   text elements.  Each particle is a 4x4 px dot in PaletteV2::accent_success
-///   colour (muted green, { 80, 200, 100 }).
-void draw_boot_splash(ur::DrawBatcher&                                  batcher,
-                      const uw::Theme&                                   theme,
-                      float                                              fb_w,
-                      float                                              fb_h,
-                      const BootSplash&                                  splash,
-                      double                                             elapsed_ms,
-                      std::span<const cd::particle::system::ParticleSnapshot> particle_snaps)
-{
-    const std::uint8_t overall_alpha = splash.splash_alpha(elapsed_ms);
-    if (overall_alpha == 0U) { return; }
-
-    // Helper: multiply a byte alpha by a [0,1] fraction (preserves uint8_t range).
-    auto scale_alpha = [](std::uint8_t a, float frac) -> std::uint8_t {
-        const auto v = static_cast<float>(a) * frac;
-        const float clamped = v < 0.0F ? 0.0F : (v > 255.0F ? 255.0F : v);
-        return static_cast<std::uint8_t>(clamped);
-    };
-
-    // 1. Full-framebuffer surface fill — slightly darker than the dock surface.
-    //    This is the deepest layer: covers dock panels beneath the splash.
-    const auto bg_r = static_cast<std::uint8_t>(theme.surface.r / 2U);
-    const auto bg_g = static_cast<std::uint8_t>(theme.surface.g / 2U);
-    const auto bg_b = static_cast<std::uint8_t>(theme.surface.b / 2U);
-    batcher.quad(0.0F, 0.0F, fb_w, fb_h,
-                 ur::Color { bg_r, bg_g, bg_b, overall_alpha });
-
-    // 1b. Particle field — rendered AFTER the background fill but BEFORE the
-    //     title / subtitle / hints so particles appear between the background
-    //     and the foreground text elements.  Each particle is a 4x4 px dot in
-    //     PaletteV2::accent_success colour (muted green, { 80, 200, 100 }).
-    //
-    //     Coordinate mapping (simulation -> screen):
-    //       screen_x = fb_w * 0.5 + p.pos[0]
-    //       screen_y = fb_h * 0.85 - p.pos[1]   (pos[1] grows upward)
-    //     Emitter spawns particles at origin (0, 0, 0) spread ±fb_w/2 on x;
-    //     velocity_y drives upward drift in abstract "pixel units per second".
-    {
-        constexpr float kDotSz     = 4.0F;
-        constexpr float kHalfDot   = kDotSz * 0.5F;
-        constexpr std::uint8_t kPR = 80U;
-        constexpr std::uint8_t kPG = 200U;
-        constexpr std::uint8_t kPB = 100U;
-        const float origin_x = fb_w * 0.5F;
-        const float origin_y = fb_h * 0.85F;
-        for (const auto& p : particle_snaps)
-        {
-            const float sx = origin_x + p.pos[0] - kHalfDot;
-            const float sy = origin_y - p.pos[1] - kHalfDot;
-            // p.color[3] holds the particle's alpha (fades over its lifetime).
-            const auto  pa = scale_alpha(overall_alpha, p.color[3]);
-            if (pa == 0U) { continue; }
-            batcher.quad(sx, sy, kDotSz, kDotSz,
-                         ur::Color { kPR, kPG, kPB, pa });
-        }
-    }
-
-    const float cx = fb_w * 0.5F;
-    const float cy = fb_h * 0.5F;
-
-    // 2. Stage 1 — 'CHROMODYNAMIC' title quad fades in over [0, 500ms).
-    //    340 x 28 px accent-coloured bar centred above the midpoint.
-    constexpr float kTitleW  = 340.0F;
-    constexpr float kTitleH  = 28.0F;
-    constexpr float kGap     =   6.0F;
-
-    const std::uint8_t title_a = scale_alpha(overall_alpha,
-        static_cast<float>(splash.title_alpha(elapsed_ms)) / 255.0F);
-
-    batcher.quad(cx - kTitleW * 0.5F,
-                 cy - kTitleH - kGap * 0.5F,
-                 kTitleW, kTitleH,
-                 ur::Color { theme.accent.r, theme.accent.g,
-                             theme.accent.b, title_a });
-
-    // 3. Stage 2 — subtitle bar reveals from width 0 to kSubtitleW over
-    //    [500ms, 1500ms).  'A library-oriented game engine' represented as a
-    //    narrower accent_hover bar directly below the title.
-    constexpr float kSubtitleW  = 240.0F;
-    constexpr float kSubtitleH  =  10.0F;
-
-    const float subtitle_frac = splash.subtitle_frac(elapsed_ms);
-    if (subtitle_frac > 0.0F)
-    {
-        const float sub_w = kSubtitleW * subtitle_frac;
-        batcher.quad(cx - kSubtitleW * 0.5F,
-                     cy + kGap * 0.5F,
-                     sub_w, kSubtitleH,
-                     ur::Color { theme.accent_hover.r, theme.accent_hover.g,
-                                 theme.accent_hover.b,
-                                 scale_alpha(overall_alpha, 0.71F) });
-    }
-
-    // 4. Stage 3 — scrolling hint strip during [1500ms, 2500ms).
-    //    Four hint strings step every 250 ms.  The active hint drives:
-    //      * A progress bar whose fill fraction = hint_index / 3.
-    //      * A small 6 x 6 px indicator dot that steps right by 52 px per
-    //        stage so the user sees visible animation even without glyphs.
-    //
-    //    The hint strip sits kProgressY px below the subtitle bar.
-    constexpr float kProgressW  = 220.0F;
-    constexpr float kProgressH  =   4.0F;
-    constexpr float kProgressY  =  60.0F;   // offset below the subtitle bar
-    constexpr float kDotSz      =   6.0F;
-    constexpr float kDotStep    =  52.0F;
-
-    const float prog_x = cx - kProgressW * 0.5F;
-    const float prog_y = cy + kGap * 0.5F + kSubtitleH + kProgressY;
-
-    // Background track (always visible once subtitle appears).
-    if (subtitle_frac > 0.0F)
-    {
-        batcher.quad(prog_x, prog_y, kProgressW, kProgressH,
-                     ur::Color { theme.surface_hover.r, theme.surface_hover.g,
-                                 theme.surface_hover.b,
-                                 scale_alpha(overall_alpha, 0.47F) });
-    }
-
-    // Active fill — grows from 0 to full over the hint-scroll phase.
-    if (elapsed_ms >= BootSplash::kSubtitleEndMs)
-    {
-        const int   hi     = BootSplash::hint_index(elapsed_ms);
-        const float frac   = (hi == 3) ? 1.0F
-                             : static_cast<float>(hi) / 3.0F
-                               + (static_cast<float>(
-                                      static_cast<double>(elapsed_ms)
-                                      - BootSplash::kSubtitleEndMs
-                                      - static_cast<double>(hi) * 250.0) / 750.0F);
-        const float clamped_frac = frac < 0.0F ? 0.0F : (frac > 1.0F ? 1.0F : frac);
-
-        batcher.quad(prog_x, prog_y,
-                     kProgressW * clamped_frac, kProgressH,
-                     ur::Color { theme.accent.r, theme.accent.g,
-                                 theme.accent.b,
-                                 scale_alpha(overall_alpha, 0.78F) });
-
-        // Indicator dot — steps right by kDotStep per hint index.
-        const float dot_x = prog_x + static_cast<float>(hi) * kDotStep;
-        batcher.quad(dot_x, prog_y - (kDotSz - kProgressH) * 0.5F,
-                     kDotSz, kDotSz,
-                     ur::Color { theme.accent.r, theme.accent.g,
-                                 theme.accent.b, overall_alpha });
-    }
-}
-
-// ---- First-time-user welcome dialog ----------------------------------------
-//
-// phase685 / M13 W6B — shown ONCE after the boot splash finishes, if no
-// .cdproj existed when the editor started (first-launch detection).
-//
-// The dialog is a single centred panel (480 x 220 px) with four labelled
-// option buttons rendered as coloured quads. Clicking a button commits the
-// layout choice and the choice is written to .cdproj immediately so the next
-// launch skips the dialog.
-//
-// Layout presets:
-//   kDefault  — keep the existing 24-panel default layout built by
-//               build_default_layout().
-//   kCompact  — collapse to 3 tiles: viewport (centre) + console (bottom) +
-//               inspector (right).  Ideal for focused scene work.
-//   kFull     — all 24 panels at equal weight, tiled in a 4-column grid.
-//               Gives a power user everything visible at once.
-//   kCustom   — (phase788 / H5) Opens a two-phase picker: the user selects
-//               which panels to include via a checklist, then confirms.  The
-//               selection is saved to .cdproj as user_custom_layout so the
-//               power user's personal cockpit survives restarts.
-//               MOMENT: a power user picks exactly the 6 panels they need and
-//               never sees the rest — permanent, personal layout.
-
-enum class WelcomeChoice : std::uint8_t
-{
-    kNone    = 0,   ///< Dialog still open / picker open.
-    kDefault = 1,
-    kCompact = 2,
-    kFull    = 3,
-    kCustom  = 4,   ///< User confirmed a custom panel selection.
-};
-
-// phase788 / H5 — All 24 dock-panel IDs (must mirror register_panel order).
-// Used by the Custom layout picker checklist.
-static constexpr std::array<std::string_view, 24> kAllPanelIds {{
-    "scene_tree",
-    "scene_navigator",
-    "viewport",
-    "inspector",
-    "settings_panel",
-    "scene_palette",
-    "console",
-    "build_panel",
-    "assets",
-    "asset_drop_target",
-    "material_editor",
-    "vehicle_editor",
-    "material_preview",
-    "animator",
-    "ik_chain_editor",
-    "behavior_designer",
-    "light_editor",
-    "perf_profiler",
-    "asset_pipeline_status",
-    "cutscene_player",
-    "dialog_tree_editor",
-    "input_recorder",
-    "pathfinding_viz",
-    "lobby_browser",
-}};
-
-/// phase788 / H5 — State for the two-phase Custom layout picker.
-/// Phase 1: draw_welcome_dialog shows 4 buttons; user clicks "Custom".
-/// Phase 2: draw_custom_picker shows a panel checklist; user confirms.
-struct CustomPickerState
-{
-    bool        active   { false };  ///< True while the picker panel is open.
-    /// Parallel bool array — checked[i] == true means kAllPanelIds[i] included.
-    std::array<bool, 24> checked {};
-
-    CustomPickerState()
-    {
-        // Default: all panels enabled.
-        checked.fill(true);
-    }
-
-    void open() noexcept { active = true; }
-
-    /// Return the list of selected panel IDs (preserves kAllPanelIds order).
-    [[nodiscard]] std::vector<std::string> selected_panels() const
-    {
-        std::vector<std::string> result;
-        result.reserve(kAllPanelIds.size());
-        for (std::size_t i = 0; i < kAllPanelIds.size(); ++i)
-        {
-            if (checked[i])
-            {
-                result.emplace_back(kAllPanelIds[i]);
-            }
-        }
-        return result;
-    }
-};
-
-struct FirstTimeWelcome
-{
-    bool          active { false };   ///< True while the dialog is visible.
-    WelcomeChoice choice { WelcomeChoice::kNone };
-    CustomPickerState custom_picker {};
-
-    void show() noexcept { active = true; }
-
-    /// Returns true if user has made a choice.
-    [[nodiscard]] bool decided() const noexcept
-    {
-        return choice != WelcomeChoice::kNone;
-    }
-};
-
-/// Draw the welcome dialog into `batcher` and handle click input.
-/// Returns the chosen option if a button was clicked this frame, kNone otherwise.
-/// phase788 / H5: now has 4 buttons — Default / Compact / Full / Custom.
-/// Clicking Custom does NOT immediately return kCustom; the caller must then
-/// open the CustomPickerState before the next frame.  The return value
-/// kCustom signals "open the picker" — actual layout application happens
-/// after the user confirms in draw_custom_picker.
-[[nodiscard]] WelcomeChoice draw_welcome_dialog(
-    ur::DrawBatcher&       batcher,
-    const uw::Theme&       theme,
-    float                  fb_w,
-    float                  fb_h,
-    const uw::PointerState& ptr)
-{
-    // Dialog dimensions.  Widened from 480 -> 580 px to fit 4 buttons.
-    constexpr float kDlgW   = 580.0F;
-    constexpr float kDlgH   = 220.0F;
-    constexpr float kBtnH   =  40.0F;
-    constexpr float kBtnW   = 120.0F;
-    constexpr float kBtnGap =  12.0F;
-    constexpr float kPad    =  20.0F;
-
-    const float dlg_x = (fb_w - kDlgW) * 0.5F;
-    const float dlg_y = (fb_h - kDlgH) * 0.5F;
-
-    // --- 1. Dim backdrop (full-screen translucent overlay) ---
-    batcher.quad(0.0F, 0.0F, fb_w, fb_h,
-                 ur::Color { 0U, 0U, 0U, 160U });
-
-    // --- 2. Dialog background ---
-    batcher.quad(dlg_x, dlg_y, kDlgW, kDlgH,
-                 ur::Color { theme.surface.r, theme.surface.g,
-                             theme.surface.b, 245U });
-
-    // --- 3. Header strip in accent colour (32 px tall title bar) ---
-    constexpr float kHeaderH = 32.0F;
-    batcher.quad(dlg_x, dlg_y, kDlgW, kHeaderH,
-                 ur::Color { theme.accent.r, theme.accent.g,
-                             theme.accent.b, 230U });
-
-    // --- 4. Subtitle indicator — two small quads representing "Choose layout"
-    //         text (no glyph renderer in apps/editor yet; quads carry the intent).
-    constexpr float kSubH = 6.0F;
-    batcher.quad(dlg_x + kPad,
-                 dlg_y + kHeaderH + kPad * 0.5F,
-                 kDlgW * 0.55F, kSubH,
-                 ur::Color { theme.text_dim.r, theme.text_dim.g,
-                             theme.text_dim.b, 160U });
-    batcher.quad(dlg_x + kPad,
-                 dlg_y + kHeaderH + kPad * 0.5F + kSubH + 4.0F,
-                 kDlgW * 0.35F, kSubH * 0.6F,
-                 ur::Color { theme.text_dim.r, theme.text_dim.g,
-                             theme.text_dim.b, 100U });
-
-    // --- 5. Four option buttons ---
-    //   Layout: [Default Layout] [Compact Layout] [Full Layout] [Custom...]
-    //   Centred horizontally; anchored near the dialog bottom.
-    const float total_btn_w = 4.0F * kBtnW + 3.0F * kBtnGap;
-    const float btn_row_x   = dlg_x + (kDlgW - total_btn_w) * 0.5F;
-    const float btn_row_y   = dlg_y + kDlgH - kBtnH - kPad;
-
-    struct BtnDesc { float x; ur::Color color; WelcomeChoice result; };
-    const std::array<BtnDesc, 4> buttons {{
-        { btn_row_x,
-          ur::Color { theme.accent.r, theme.accent.g, theme.accent.b, 220U },
-          WelcomeChoice::kDefault },
-        { btn_row_x + kBtnW + kBtnGap,
-          ur::Color { theme.accent_hover.r, theme.accent_hover.g,
-                      theme.accent_hover.b, 220U },
-          WelcomeChoice::kCompact },
-        { btn_row_x + (kBtnW + kBtnGap) * 2.0F,
-          ur::Color { theme.surface_hover.r, theme.surface_hover.g,
-                      theme.surface_hover.b, 220U },
-          WelcomeChoice::kFull },
-        // phase788 / H5 — "Custom..." button: a warm amber tint so the power-
-        // user option stands out visually from the three presets.
-        { btn_row_x + (kBtnW + kBtnGap) * 3.0F,
-          ur::Color { 180U, 120U, 40U, 220U },
-          WelcomeChoice::kCustom },
-    }};
-
-    WelcomeChoice clicked = WelcomeChoice::kNone;
-    for (const auto& btn : buttons)
-    {
-        const bool hovered =
-            ptr.mouse_x >= btn.x && ptr.mouse_x <= btn.x + kBtnW &&
-            ptr.mouse_y >= btn_row_y && ptr.mouse_y <= btn_row_y + kBtnH;
-
-        ur::Color draw_color = btn.color;
-        if (hovered)
-        {
-            // Lighten on hover.
-            draw_color.r = static_cast<std::uint8_t>(
-                std::min(255, static_cast<int>(draw_color.r) + 30));
-            draw_color.g = static_cast<std::uint8_t>(
-                std::min(255, static_cast<int>(draw_color.g) + 30));
-            draw_color.b = static_cast<std::uint8_t>(
-                std::min(255, static_cast<int>(draw_color.b) + 30));
-        }
-
-        batcher.quad(btn.x, btn_row_y, kBtnW, kBtnH, draw_color);
-
-        // Label indicator: a thin stripe below the button mid-height that
-        // identifies the button index until glyph rendering is wired.
-        constexpr float kLabelH = 3.0F;
-        batcher.quad(btn.x + 8.0F,
-                     btn_row_y + (kBtnH - kLabelH) * 0.5F,
-                     kBtnW - 16.0F, kLabelH,
-                     ur::Color { 220U, 220U, 220U, 200U });
-
-        // For the "Custom..." button, draw a second indicator dot stripe to
-        // signal "this leads somewhere" (2 lines = picker ahead).
-        if (btn.result == WelcomeChoice::kCustom)
-        {
-            batcher.quad(btn.x + 8.0F,
-                         btn_row_y + (kBtnH - kLabelH) * 0.5F + kLabelH + 3.0F,
-                         kBtnW * 0.5F - 8.0F, kLabelH,
-                         ur::Color { 240U, 200U, 100U, 180U });
-        }
-
-        if (hovered && ptr.left_pressed)
-        {
-            clicked = btn.result;
-        }
-    }
-
-    return clicked;
-}
-
-/// phase788 / H5 — Draw the Custom layout picker panel.
-///
-/// Renders a full-screen modal (same dim-backdrop style as the welcome dialog)
-/// with a scrollable checklist of all 24 panels.  Each row is a small coloured
-/// toggle quad (filled = checked, hollow = unchecked) plus a label-stripe.
-/// A "Confirm" button at the bottom returns true when clicked; "Back" returns
-/// false (caller should re-show the welcome dialog and clear the picker).
-///
-/// @param picker     Mutable picker state (checked[] toggled in place).
-/// @param batcher    Destination draw batcher.
-/// @param theme      Active widget theme for colours.
-/// @param fb_w/fb_h  Framebuffer dimensions for centring.
-/// @param ptr        Current pointer state.
-/// @returns true if the user confirmed (caller should apply + persist layout).
-///          false if the user pressed Back.
-///          std::nullopt while the picker is still open.
-[[nodiscard]] std::optional<bool> draw_custom_picker(
-    CustomPickerState&     picker,
-    ur::DrawBatcher&       batcher,
-    const uw::Theme&       theme,
-    float                  fb_w,
-    float                  fb_h,
-    const uw::PointerState& ptr)
-{
-    // Picker panel dimensions.
-    constexpr float kPkW    = 480.0F;
-    constexpr float kPkH    = 520.0F;
-    constexpr float kPad    =  16.0F;
-    constexpr float kRowH   =  18.0F;   ///< Height per panel toggle row.
-    constexpr float kRowGap =   2.0F;
-    constexpr float kBoxSz  =  12.0F;   ///< Toggle checkbox size.
-    constexpr float kBtnH   =  36.0F;
-    constexpr float kBtnW   = 100.0F;
-    constexpr float kHeaderH = 32.0F;
-    // Rows area: from below header+pad to above buttons+pad.
-    constexpr float kRowsTop  = kHeaderH + kPad;
-    constexpr float kBtnAreaH = kBtnH + kPad * 2.0F;
-
-    const float pk_x = (fb_w - kPkW) * 0.5F;
-    const float pk_y = (fb_h - kPkH) * 0.5F;
-
-    // --- 1. Dim backdrop ---
-    batcher.quad(0.0F, 0.0F, fb_w, fb_h,
-                 ur::Color { 0U, 0U, 0U, 180U });
-
-    // --- 2. Panel background ---
-    batcher.quad(pk_x, pk_y, kPkW, kPkH,
-                 ur::Color { theme.surface.r, theme.surface.g,
-                             theme.surface.b, 248U });
-
-    // --- 3. Header strip ---
-    batcher.quad(pk_x, pk_y, kPkW, kHeaderH,
-                 ur::Color { theme.accent.r, theme.accent.g,
-                             theme.accent.b, 230U });
-
-    // Header label indicator (two stripes = "panel checklist").
-    constexpr float kSubH = 5.0F;
-    batcher.quad(pk_x + kPad, pk_y + (kHeaderH - kSubH * 2.0F - 3.0F) * 0.5F,
-                 kPkW * 0.40F, kSubH,
-                 ur::Color { 240U, 240U, 240U, 200U });
-    batcher.quad(pk_x + kPad,
-                 pk_y + (kHeaderH - kSubH * 2.0F - 3.0F) * 0.5F + kSubH + 3.0F,
-                 kPkW * 0.25F, kSubH * 0.7F,
-                 ur::Color { 200U, 200U, 200U, 150U });
-
-    // --- 4. Panel checklist rows (two columns to fit 24 panels) ---
-    // Split 24 panels into left column (12) and right column (12).
-    constexpr std::size_t kColSize  = 12U;
-    constexpr float       kColW     = kPkW * 0.5F - kPad;
-    const float rows_y0 = pk_y + kRowsTop;
-
-    for (std::size_t i = 0; i < kAllPanelIds.size(); ++i)
-    {
-        const bool   is_right_col = (i >= kColSize);
-        const float  col_x        = pk_x + kPad
-                                    + (is_right_col ? kPkW * 0.5F : 0.0F);
-        const auto   row_idx      = static_cast<float>(is_right_col ? i - kColSize : i);
-        const float  row_y        = rows_y0 + row_idx * (kRowH + kRowGap);
-
-        // Clamp: if row_y overflows the rows area, skip (shouldn't happen with 24 rows).
-        if (row_y + kRowH > pk_y + kPkH - kBtnAreaH) { break; }
-
-        const bool checked = picker.checked[i];
-
-        // Toggle checkbox quad.
-        const ur::Color box_fill = checked
-            ? ur::Color { theme.accent.r, theme.accent.g, theme.accent.b, 220U }
-            : ur::Color { static_cast<std::uint8_t>(theme.surface.r / 2U),
-                          static_cast<std::uint8_t>(theme.surface.g / 2U),
-                          static_cast<std::uint8_t>(theme.surface.b / 2U),
-                          180U };
-        batcher.quad(col_x, row_y + (kRowH - kBoxSz) * 0.5F,
-                     kBoxSz, kBoxSz, box_fill);
-
-        // Row label stripe (represents panel name; no glyph yet).
-        const float label_alpha = checked ? 200U : 100U;
-        batcher.quad(col_x + kBoxSz + 4.0F,
-                     row_y + (kRowH - 4.0F) * 0.5F,
-                     kColW - kBoxSz - 8.0F, 4.0F,
-                     ur::Color { theme.text_dim.r, theme.text_dim.g,
-                                 theme.text_dim.b,
-                                 static_cast<std::uint8_t>(label_alpha) });
-
-        // Click-to-toggle.
-        const bool row_hovered =
-            ptr.mouse_x >= col_x &&
-            ptr.mouse_x <= col_x + kColW &&
-            ptr.mouse_y >= row_y &&
-            ptr.mouse_y <= row_y + kRowH;
-
-        if (row_hovered && ptr.left_pressed)
-        {
-            picker.checked[i] = !picker.checked[i];
-        }
-    }
-
-    // --- 5. "Back" and "Confirm" buttons at the bottom ---
-    const float btn_y    = pk_y + kPkH - kBtnH - kPad;
-    const float back_x   = pk_x + kPad;
-    const float confirm_x = pk_x + kPkW - kBtnW - kPad;
-
-    // Back button.
-    const bool back_hovered =
-        ptr.mouse_x >= back_x && ptr.mouse_x <= back_x + kBtnW &&
-        ptr.mouse_y >= btn_y  && ptr.mouse_y <= btn_y + kBtnH;
-
-    {
-        ur::Color back_col { theme.surface_hover.r, theme.surface_hover.g,
-                             theme.surface_hover.b, 210U };
-        if (back_hovered)
-        {
-            back_col.r = static_cast<std::uint8_t>(
-                std::min(255, static_cast<int>(back_col.r) + 30));
-        }
-        batcher.quad(back_x, btn_y, kBtnW, kBtnH, back_col);
-        // Label stripe.
-        batcher.quad(back_x + 8.0F, btn_y + (kBtnH - 3.0F) * 0.5F,
-                     kBtnW - 16.0F, 3.0F,
-                     ur::Color { 200U, 200U, 200U, 180U });
-    }
-
-    // Confirm button (amber, matching the Custom button tint).
-    const bool confirm_hovered =
-        ptr.mouse_x >= confirm_x && ptr.mouse_x <= confirm_x + kBtnW &&
-        ptr.mouse_y >= btn_y     && ptr.mouse_y <= btn_y + kBtnH;
-
-    {
-        ur::Color conf_col { 180U, 120U, 40U, 220U };
-        if (confirm_hovered)
-        {
-            conf_col.r = static_cast<std::uint8_t>(
-                std::min(255, static_cast<int>(conf_col.r) + 30));
-            conf_col.g = static_cast<std::uint8_t>(
-                std::min(255, static_cast<int>(conf_col.g) + 30));
-        }
-        batcher.quad(confirm_x, btn_y, kBtnW, kBtnH, conf_col);
-        batcher.quad(confirm_x + 8.0F, btn_y + (kBtnH - 3.0F) * 0.5F,
-                     kBtnW - 16.0F, 3.0F,
-                     ur::Color { 240U, 220U, 140U, 200U });
-    }
-
-    if (back_hovered && ptr.left_pressed) { return false; }
-    if (confirm_hovered && ptr.left_pressed) { return true; }
-    return std::nullopt;
-}
-
-/// Apply the welcome choice to the live DockSpace.
-/// kDefault: no change (already built by build_default_layout).
-/// kCompact: collapse to viewport + console + inspector (3 tiles).
-/// kFull:    equal-weight 4-column split of all 24 panels.
-/// kCustom:  viewport always centre; each additional selected panel is
-///           tab-merged onto viewport.  Simple "everything on one tile with
-///           tabs" approach — the user can drag panels out later.
-///
-/// Strategy: build a temporary DockSpace with the desired topology, serialize
-/// it, then restore into the live `ds`.  Uses only the public DockSpace API
-/// (no "clear") and keeps all registered panel drawers intact because
-/// DockSpace::restore() replaces only the tree structure, not the panel map.
-void apply_welcome_layout(uw::DockSpace& ds, WelcomeChoice choice,
-                          const std::vector<std::string>& custom_panels = {})
-{
-    if (choice == WelcomeChoice::kDefault) { return; }  // nothing to do
-
-    if (choice == WelcomeChoice::kCompact)
-    {
-        // Build a temporary 3-panel compact tree (viewport + inspector + console).
-        uw::DockSpace tmp;
-        auto* root = tmp.root();
-        if (root == nullptr) { return; }
-        if (!tmp.tab_merge(root, "viewport")) { return; }
-
-        auto* vp = tmp.find_panel_owner("viewport");
-        if (vp == nullptr) { return; }
-        if (!tmp.split(vp, uw::DockAxis::kVertical, "inspector", 0.75F)) { return; }
-
-        vp = tmp.find_panel_owner("viewport");
-        if (vp == nullptr) { return; }
-        (void)tmp.split(vp, uw::DockAxis::kHorizontal, "console", 0.72F);
-
-        const auto bytes = tmp.serialize();
-        if (!bytes.empty())
-        {
-            (void)ds.restore(std::span<const std::byte>(bytes.data(), bytes.size()));
-        }
-        return;
-    }
-
-    // kFull — all 24 panels in a 4-column layout built in a temporary DockSpace.
-    // Column A (LEFT, 25%):    scene_tree / material_editor / cutscene_player
-    // Column B (CENTRE, 37%):  viewport + console (bottom)
-    // Column C (RIGHT-C, 20%): inspector / behavior_designer / light_editor
-    // Column D (RIGHT, 18%):   assets / animator / input_recorder / (tab-merges)
-    if (choice == WelcomeChoice::kFull)
-    {
-        uw::DockSpace tmp;
-        auto* root = tmp.root();
-        if (root == nullptr) { return; }
-        if (!tmp.tab_merge(root, "viewport")) { return; }
-
-        // LEFT column A (25% of total).
-        auto* vp = tmp.find_panel_owner("viewport");
-        if (vp == nullptr) { return; }
-        if (!tmp.split(vp, uw::DockAxis::kVertical, "scene_tree", 0.25F)) { return; }
-
-        // RIGHT-C column C (inspector, ~27% of remaining after A).
-        vp = tmp.find_panel_owner("viewport");
-        if (vp == nullptr) { return; }
-        if (!tmp.split(vp, uw::DockAxis::kVertical, "inspector", 0.73F)) { return; }
-
-        // RIGHT column D (assets, ~25% of what remains after C).
-        vp = tmp.find_panel_owner("viewport");
-        if (vp == nullptr) { return; }
-        if (!tmp.split(vp, uw::DockAxis::kVertical, "assets", 0.75F)) { return; }
-
-        // Console at bottom of viewport tile.
-        vp = tmp.find_panel_owner("viewport");
-        if (vp == nullptr) { return; }
-        (void)tmp.split(vp, uw::DockAxis::kHorizontal, "console", 0.60F);
-
-        // Stack scene_tree column vertically.
-        auto* sc = tmp.find_panel_owner("scene_tree");
-        if (sc != nullptr)
-        {
-            (void)tmp.split(sc, uw::DockAxis::kHorizontal, "material_editor", 0.50F);
-            auto* me = tmp.find_panel_owner("material_editor");
-            if (me != nullptr)
-            {
-                (void)tmp.split(me, uw::DockAxis::kHorizontal, "cutscene_player", 0.60F);
-            }
-        }
-
-        // Stack inspector column vertically.
-        auto* ins = tmp.find_panel_owner("inspector");
-        if (ins != nullptr)
-        {
-            (void)tmp.split(ins, uw::DockAxis::kHorizontal, "behavior_designer", 0.50F);
-            auto* bd = tmp.find_panel_owner("behavior_designer");
-            if (bd != nullptr)
-            {
-                (void)tmp.split(bd, uw::DockAxis::kHorizontal, "light_editor", 0.60F);
-            }
-        }
-
-        // Stack assets column vertically.
-        auto* ass = tmp.find_panel_owner("assets");
-        if (ass != nullptr)
-        {
-            (void)tmp.split(ass, uw::DockAxis::kHorizontal, "animator", 0.50F);
-            auto* an = tmp.find_panel_owner("animator");
-            if (an != nullptr)
-            {
-                (void)tmp.split(an, uw::DockAxis::kHorizontal, "input_recorder", 0.60F);
-            }
-        }
-
-        // Tab-merge panels that share tiles.
-        auto merge_into = [&](const char* owner_p, const char* new_p)
-        {
-            auto* nd = tmp.find_panel_owner(owner_p);
-            if (nd != nullptr) { (void)tmp.tab_merge(nd, new_p); }
-        };
-
-        merge_into("console",         "asset_drop_target");
-        merge_into("material_editor", "vehicle_editor");
-        merge_into("material_editor", "material_preview");
-        merge_into("cutscene_player", "dialog_tree_editor");
-        merge_into("scene_tree",      "pathfinding_viz");
-
-        const auto bytes = tmp.serialize();
-        if (!bytes.empty())
-        {
-            (void)ds.restore(std::span<const std::byte>(bytes.data(), bytes.size()));
-        }
-        return;
-    }
-
-    // phase788 / H5 — kCustom: viewport is always the centre anchor; every
-    // other selected panel is tab-merged onto the viewport tile.  This gives
-    // the user a single "home" tile with tabs for every panel they picked;
-    // they can drag panels out to their preferred positions after first launch.
-    // viewport is always included regardless of the checklist (it is the
-    // mandatory anchor; an editor without a viewport is not useful).
-    {
-        uw::DockSpace tmp;
-        auto* root = tmp.root();
-        if (root == nullptr) { return; }
-        if (!tmp.tab_merge(root, "viewport")) { return; }
-
-        auto* vp = tmp.find_panel_owner("viewport");
-        if (vp == nullptr) { return; }
-
-        for (const auto& panel_id : custom_panels)
-        {
-            if (panel_id == "viewport") { continue; }  // already the anchor
-            (void)tmp.tab_merge(vp, panel_id.c_str());
-        }
-
-        const auto bytes = tmp.serialize();
-        if (!bytes.empty())
-        {
-            (void)ds.restore(std::span<const std::byte>(bytes.data(), bytes.size()));
-        }
-    }
-}
-
-// ---- Overlay titled-header strip -------------------------------------------
-//
-// phase674 / M12 W6B — draw a 14 px titled-header band above the bar-chart
-// body of each profiling overlay.  Header colour identifies the kind without
-// requiring glyph rendering.  A 2 px separator in text_dim colour follows.
-
-enum class OverlayKind : std::uint8_t
-{
-    kCpu   = 0,
-    kGpu   = 1,
-    kFrame = 2,
-};
-
-constexpr float kOverlayHeaderH = 14.0F;  ///< Height of the titled-header strip.
-
-/// Draw the titled header for a profiling overlay.
-/// `x`, `y`, `w` = header bounds; bar-chart body starts at y + kOverlayHeaderH.
-void draw_overlay_header(ur::DrawBatcher& batcher,
-                         const uw::Theme& theme,
-                         float            x,
-                         float            y,
-                         float            w,
-                         OverlayKind      kind)
-{
-    ur::Color header_bg { theme.accent.r, theme.accent.g, theme.accent.b, 200U };
-    switch (kind)
-    {
-        case OverlayKind::kCpu:
-            header_bg = ur::Color { theme.accent.r, theme.accent.g,
-                                    theme.accent.b, 200U };
-            break;
-        case OverlayKind::kGpu:
-            header_bg = ur::Color { static_cast<std::uint8_t>(theme.accent.b / 2U),
-                                    theme.accent.r,
-                                    static_cast<std::uint8_t>(theme.accent.g / 2U),
-                                    200U };
-            break;
-        case OverlayKind::kFrame:
-            header_bg = ur::Color { theme.accent_hover.r,
-                                    static_cast<std::uint8_t>(theme.accent_hover.g / 2U),
-                                    static_cast<std::uint8_t>(theme.accent_hover.b / 4U),
-                                    200U };
-            break;
-    }
-
-    batcher.quad(x, y, w, kOverlayHeaderH - 2.0F, header_bg);
-
-    // 2 px separator in text_dim colour.
-    batcher.quad(x, y + kOverlayHeaderH - 2.0F, w, 2.0F,
-                 ur::Color { theme.text_dim.r, theme.text_dim.g,
-                             theme.text_dim.b, 180U });
-
-    // Dot mnemonic: 1 dot = CPU, 2 = GPU, 3 = FRAME.
-    constexpr float kDotSz  = 6.0F;
-    constexpr float kDotGap = 3.0F;
-    constexpr float kDotPad = 4.0F;
-    constexpr float kDotY   = 4.0F;
-    const auto dot_count = static_cast<int>(kind) + 1;
-    for (int d = 0; d < dot_count; ++d)
-    {
-        batcher.quad(x + kDotPad + static_cast<float>(d) * (kDotSz + kDotGap),
-                     y + kDotY, kDotSz, kDotSz,
-                     ur::Color { 240U, 240U, 240U, 210U });
-    }
-}
-
-// ---- Headless one-line summary ---------------------------------------------
-
-void report_headless_frame(const ur::DrawBatcher& batcher,
-                           const urr::Submitter& submitter,
-                           const uw::DockSpace& ds,
-                           std::uint32_t frame_idx)
-{
-    std::printf(
-        "editor[headless frame %u]: dock nodes=%zu  status_bar=on  "
-        "batcher verts=%zu/idx=%zu/cmds=%zu  "
-        "submitter verts=%u/idx=%u/cmds=%u\n",
-        frame_idx, ds.node_count(),
-        batcher.vertex_count(), batcher.index_count(), batcher.command_count(),
-        submitter.vertex_count(), submitter.index_count(), submitter.command_count());
-    std::fflush(stdout);
-}
-
-}  // namespace
-
-int main(int argc, char** argv)
-{
-    const cd::app_runtime::Runtime runtime = cd::app_runtime::parse_runtime(argc, argv);
-    const EditorArgs               local   = parse_editor_args(argc, argv);
-
-    // -- 0. .cdproj restore — read last.cdproj (or explicit --project path) ----
-    //
-    // On startup we attempt to read the project file. If a --project flag was
-    // passed we honour it; otherwise we fall back to the platform default
-    // location (%APPDATA%\cd_editor\last.cdproj on Windows). The data is used
-    // below to seed the window geometry and dock layout.  If the file is absent
-    // or malformed we proceed with defaults (graceful degradation, no crash).
-    const std::filesystem::path cdproj_path =
-        local.project_path.empty()
-            ? cd::editor::cdproj::default_cdproj_path()
-            : std::filesystem::path(local.project_path);
-
-    // phase685 / M13 W6B — detect first launch BEFORE reading the file.
-    // We check existence separately so we can set the first_launch flag
-    // regardless of whether the subsequent read succeeds.
-    const bool first_launch = !std::filesystem::exists(cdproj_path);
-
-    cd::editor::cdproj::CdprojData project_data;  // defaults if file absent/bad
-    if (const auto loaded = cd::editor::cdproj::read_cdproj(cdproj_path);
-        loaded.has_value())
-    {
-        project_data = *loaded;
-        std::printf("editor: restored session from %s "
-                    "(scene=%s, recent_files=%zu)\n",
-                    cdproj_path.string().c_str(),
-                    project_data.last_opened_scene_path.c_str(),
-                    project_data.recent_files.size());
+        outline.set(entities[static_cast<std::size_t>(selected)].handle);
     }
     else
     {
-        std::printf("editor: no .cdproj at %s — using defaults%s.\n",
-                    cdproj_path.string().c_str(),
-                    first_launch ? " (first launch — welcome dialog will show)" : "");
+        outline.clear();
     }
-
-    // -- 1. Font (optional; widgets gracefully fall back when missing) -------
-    uf::Font font;
+    outline.clamp_params();
+    if (outline.style != cd::editor::OutlineStyle::kNone && !outline.empty())
     {
-        const auto ttf = find_system_font();
-        if (!ttf.empty() &&
-            font.load_ttf_in_memory(std::span<const std::uint8_t>(ttf.data(), ttf.size())))
+        const auto vw = static_cast<float>(extent.width);
+        const auto vh = static_cast<float>(extent.height);
+        // Background draw-list keeps gizmos BEHIND ImGui panels so
+        // the selection ring doesn't bleed through Lights / Inspector
+        // / Showcase windows (user-reported bug B01).
+        auto* dl = ImGui::GetBackgroundDrawList();
+        const ImU32 col = ImGui::ColorConvertFloat4ToU32(
+            ImVec4(outline.color.x, outline.color.y, outline.color.z, outline.opacity)
+        );
+        for (const auto& e : outline.entities())
         {
-            static constexpr float         kPixelSize = 16.0F;
-            static constexpr std::uint32_t kAtlasDim  = 2048U;
-            (void)font.rasterize_range(0x0020U, 0x00FFU, kPixelSize, kAtlasDim);
-        }
-    }
-
-    // -- 2. Theme tokens + widget-side palette (phase695 / M14 W6A) ----------
-    //
-    // Restore the active theme from .cdproj (theme_name field). On first launch
-    // the field defaults to "dark". The widget_theme is rebuilt whenever the
-    // user clicks a slab in the status-bar theme picker.
-    std::string active_theme_name = project_data.theme_name.empty()
-                                        ? std::string(uth::kThemeNameDark)
-                                        : project_data.theme_name;
-    uw::Theme widget_theme = build_widget_theme(active_theme_name);
-    std::printf("editor: active theme = '%s'\n", active_theme_name.c_str());
-
-    // -- phase715 / M16 W6 — 200 ms cross-fade transition state -------------
-    //
-    // When the user picks a new theme, we store the V2 `from` palette and the
-    // `to` palette plus the start wall-clock time. For the next 200 ms the
-    // lerp_palette() helper blends every color token; after 200 ms we snap.
-    // `theme_fade_active` gates the lerp so there is zero overhead per frame
-    // when no transition is in progress.
-    //
-    // We store ONLY the V2 cd::ui::theme::Theme palettes (not widget_theme)
-    // because lerp_palette() operates on the token layer. build_widget_theme()
-    // is only called once per transition start and once on snap (not every
-    // frame) so it is not on the hot path.
-    static constexpr float kThemeFadeMs = 200.0F;
-    uth::Theme theme_fade_from {};
-    uth::Theme theme_fade_to   {};
-    bool       theme_fade_active    = false;
-    std::chrono::steady_clock::time_point theme_fade_start_tp {};
-
-    // -- 3. cd::editor instance (drives the scene-tree panel content) -------
-    cd::editor::EditorDesc ed_desc {};
-    ed_desc.width  = 1280.0F;
-    ed_desc.height = 720.0F;
-    cd::editor::Editor editor { ed_desc };
-    cd::editor::HierarchyView hierarchy {};
-    (void)hierarchy;  // referenced by name to prove the include compiles;
-                      // the live tree render is plumbed in the next session.
-    std::printf("editor: cd::editor::Editor booted (scene root entity id=%u)\n",
-                editor.scene_root().id);
-
-    // Wire the inspector panel to the editor's ECS World + auto-select the
-    // scene root so the inspector is non-empty on first boot.
-    g_inspector_panel.set_world_ptr(&editor.world());
-    g_inspector_panel.set_target(editor.scene_root());
-
-    // phase667 / M12 W2 — Inspector PBR / alpha section:
-    //
-    // Hand the inspector an inert (device-less) MaterialInstance so the new
-    // metallic / roughness / alpha_mode / alpha_cutoff sliders have a
-    // non-empty round-trip target on first boot. The inspector reads the
-    // CPU-side accessors only, so an inert instance is sufficient until a
-    // real glTF material is selected via the scene-tree panel in a later
-    // session. The instance lives in main()'s stack frame and is bound to
-    // the inspector for the lifetime of main().
-    //
-    // Defaults: metallic = 0.0 (dielectric), roughness = 0.5, kOpaque, 0.5
-    // alpha_cutoff. We pre-seed metallic = 0.6 + alpha_mode = kMask so a
-    // first-time user sees the gold and orange swatches light up on every
-    // boot (proves the PBR pipeline reads round-trip values).
-    cd::material::MaterialInstance inspector_demo_material {};
-    inspector_demo_material.set_metallic(0.6F);
-    inspector_demo_material.set_roughness(0.35F);
-    inspector_demo_material.set_alpha_mode(cd::material::AlphaMode::kMask);
-    inspector_demo_material.set_alpha_cutoff(0.5F);
-    g_inspector_panel.set_material_instance(&inspector_demo_material);
-
-    // phase667 / M12 W2 — Asset validator wired for the new status bar badge.
-    //
-    // Seed the validator with one PASS + one WARN + one ERROR by validating
-    // three synthetic blobs at boot so the status bar shows non-zero counts
-    // in each colour bucket DAY ONE. A real Sprint will replace this seed
-    // with a sweep of the project's actual asset set on .cdproj load.
-    cd::asset::validator::Validator validator;
-    std::uint32_t validator_pass  = 0U;
-    std::uint32_t validator_warn  = 0U;
-    std::uint32_t validator_error = 0U;
-    {
-        // PNG magic bytes — passes texture validation (0 issues -> 1 pass).
-        const std::array<std::uint8_t, 8> kPngMagic {
-            0x89U, 0x50U, 0x4EU, 0x47U, 0x0DU, 0x0AU, 0x1AU, 0x0AU
-        };
-        const auto png_issues = validator.validate_texture_blob(
-            std::span<const std::uint8_t>(kPngMagic.data(), kPngMagic.size()),
-            "demo/textures/baseline.png");
-        if (png_issues.empty()) { ++validator_pass; }
-        else
-        {
-            for (const auto& iss : png_issues)
+            auto* lt = scene.local(e);
+            if (lt == nullptr)
+                continue;
+            const auto& p = lt->value.position;
+            // Project world ??' NDC ??' pixel.
+            const cd::math::Vec4f wp { p.x, p.y, p.z, 1.0F };
+            cd::math::Vec4f clip {};
+            for (std::size_t r = 0; r < 4; ++r)
             {
-                if (iss.severity == cd::asset::validator::Severity::kError)        ++validator_error;
-                else if (iss.severity == cd::asset::validator::Severity::kWarning) ++validator_warn;
+                clip[r] = vp[0][r] * wp[0] + vp[1][r] * wp[1] + vp[2][r] * wp[2] + vp[3][r] * wp[3];
             }
+            if (clip[3] <= 0.0F)
+                continue;  // behind camera
+            const float ndc_x = clip[0] / clip[3];
+            const float ndc_y = clip[1] / clip[3];
+            const float sx = (ndc_x * 0.5F + 0.5F) * vw;
+            const float sy = (1.0F - (ndc_y * 0.5F + 0.5F)) * vh;
+            // Radius shrinks with distance.
+            const float radius = std::max(8.0F, 60.0F / std::max(0.5F, clip[3] * 0.25F));
+            dl->AddCircle(ImVec2(sx, sy), radius, col, 32, outline.thickness * 1.5F);
+            // Crosshair tick marks for emphasis.
+            dl->AddLine(ImVec2(sx - radius - 6.0F, sy), ImVec2(sx - radius + 6.0F, sy), col, outline.thickness);
+            dl->AddLine(ImVec2(sx + radius - 6.0F, sy), ImVec2(sx + radius + 6.0F, sy), col, outline.thickness);
+            dl->AddLine(ImVec2(sx, sy - radius - 6.0F), ImVec2(sx, sy - radius + 6.0F), col, outline.thickness);
+            dl->AddLine(ImVec2(sx, sy + radius - 6.0F), ImVec2(sx, sy + radius + 6.0F), col, outline.thickness);
         }
+    }
+}
 
-        // 8 byte glTF-shaped blob with version != 2 -> warning bucket.
-        const std::array<std::uint8_t, 12> kGlbV1 {
-            0x67U, 0x6CU, 0x54U, 0x46U,
-            0x01U, 0x00U, 0x00U, 0x00U,   // version = 1
-            0x00U, 0x00U, 0x00U, 0x00U
-        };
-        const auto glb_issues = validator.validate_gltf_blob(
-            std::span<const std::uint8_t>(kGlbV1.data(), kGlbV1.size()),
-            "demo/meshes/legacy.glb");
-        for (const auto& iss : glb_issues)
+// ---- draw_light_markers_overlay -------------------------------------------
+// Each enabled light gets a small visual in the viewport so the user can
+// SEE where the lights are placed.
+//   Directional: a yellow line from sky toward target (sun ray)
+//   Point:       filled circle in light color + range ring
+//   Spot:        filled circle at apex + cone wireframe (4 lines to far disk)
+//   Rect area:   4 corners outlined in light color + emit-normal arrow
+inline void draw_light_markers_overlay(const std::vector<LightRow>& lights,
+                                       int selected,
+                                       SelKind selected_kind,
+                                       const cd::math::Mat4f& vp,
+                                       cd::rhi::Extent2D extent)
+{
+    const auto vw = static_cast<float>(extent.width);
+    const auto vh = static_cast<float>(extent.height);
+    // Background draw-list - same fix as the outline drawlist
+    // above. Light gizmos / cone edges / range rings no longer
+    // bleed across the Lights/Inspector/Showcase panels.
+    auto* dl_m = ImGui::GetBackgroundDrawList();
+    auto project = [&](const cd::math::Vec3f& p) -> ImVec2
+    {
+        const cd::math::Vec4f wp { p.x, p.y, p.z, 1.0F };
+        cd::math::Vec4f c {};
+        for (std::size_t r = 0; r < 4; ++r)
+            c[r] = vp[0][r] * wp[0] + vp[1][r] * wp[1] + vp[2][r] * wp[2] + vp[3][r] * wp[3];
+        if (c[3] <= 0.0F)
+            return { -1.0F, -1.0F };
+        return { (c[0] / c[3] * 0.5F + 0.5F) * vw, (1.0F - (c[1] / c[3] * 0.5F + 0.5F)) * vh };
+    };
+    for (std::size_t li = 0; li < lights.size(); ++li)
+    {
+        const auto& lrow = lights[li];
+        if (!lrow.enabled)
+            continue;
+        const auto& L = lrow.light;
+        const bool sel = (selected_kind == SelKind::kLight && std::cmp_equal(selected,li));
+        const ImU32 col = ImGui::ColorConvertFloat4ToU32(ImVec4(L.color.x, L.color.y, L.color.z, 1.0F));
+        const ImU32 col_dim =
+            ImGui::ColorConvertFloat4ToU32(ImVec4(L.color.x * 0.6F, L.color.y * 0.6F, L.color.z * 0.6F, 0.7F));
+        const ImU32 col_sel =
+            ImGui::ColorConvertFloat4ToU32(ImVec4(1.0F, 0.85F, 0.0F, 1.0F));  // golden hover-style for selected
+        switch (L.type)
         {
-            if (iss.severity == cd::asset::validator::Severity::kError)        ++validator_error;
-            else if (iss.severity == cd::asset::validator::Severity::kWarning) ++validator_warn;
-        }
-        if (glb_issues.empty()) { ++validator_pass; }
-
-        // Empty audio blob -> error bucket.
-        const std::vector<std::uint8_t> empty_blob {};
-        const auto wav_issues = validator.validate_audio_blob(
-            std::span<const std::uint8_t>(empty_blob.data(), empty_blob.size()),
-            "demo/audio/missing.wav");
-        for (const auto& iss : wav_issues)
-        {
-            if (iss.severity == cd::asset::validator::Severity::kError)        ++validator_error;
-            else if (iss.severity == cd::asset::validator::Severity::kWarning) ++validator_warn;
-        }
-        if (wav_issues.empty()) { ++validator_pass; }
-    }
-    std::printf("editor: validator badge seed -> pass=%u warn=%u error=%u\n",
-                validator_pass, validator_warn, validator_error);
-
-    // Seed the asset browser with a minimal default file tree so it is
-    // non-empty on first boot. A real .cdproj loader will replace these.
-    {
-        using AB = cd::editor::panel::asset_browser::Entry;
-        const std::array<AB, 5> seed_entries {
-            AB { "textures",  "assets/textures",        true  },
-            AB { "meshes",    "assets/meshes",           true  },
-            AB { "materials", "assets/materials",        true  },
-            AB { "sky.hdr",   "assets/textures/sky.hdr", false },
-            AB { "mesh.glb",  "assets/meshes/mesh.glb",  false },
-        };
-        g_asset_browser_panel.set_entries(seed_entries);
-    }
-
-    // -- 4. A11y tree (proves the include + namespace link) -----------------
-    // Future per-panel widgets register their A11yMeta via this tree so
-    // screen readers + keyboard tab navigation work consistently across
-    // the editor surface. Today only the link is wired -- panel widgets
-    // arrive in the next session.
-    cd::ui::a11y::A11yTree a11y_tree {};
-    (void)a11y_tree;
-
-    // -- 5. Dockspace + 9-panel layout (phase598 / M6 W3) -------------------
-    //
-    // phase598 wires in the M5 asset_drop_target panel: filter is configured
-    // for the six asset extensions called out in the M6 W3 brief
-    // (.gltf, .glb, .png, .jpg, .wav, .ogg). When the user drops a path the
-    // log shows it; the full routing pipeline lands in a future Sprint.
-    {
-        const std::array<std::string, 6> kAssetExts {
-            std::string{".gltf"}, std::string{".glb"},
-            std::string{".png"},  std::string{".jpg"},
-            std::string{".wav"},  std::string{".ogg"},
-        };
-        g_asset_drop_target_panel.set_accepted_extensions(
-            std::span<const std::string>(kAssetExts.data(), kAssetExts.size()));
-    }
-
-    uw::DockSpace dockspace;
-    dockspace.register_panel("scene_tree",          draw_scene_tree_stub);
-    dockspace.register_panel("viewport",            draw_viewport_panel);
-    dockspace.register_panel("inspector",           draw_inspector_panel);
-    dockspace.register_panel("console",             draw_console_panel);
-    dockspace.register_panel("assets",              draw_assets_panel);
-    dockspace.register_panel("material_editor",     draw_material_editor_panel);
-    dockspace.register_panel("animator",            draw_animator_panel);
-    dockspace.register_panel("behavior_designer",   draw_behavior_designer_panel);
-    dockspace.register_panel("asset_drop_target",   draw_asset_drop_target_panel);
-    // phase667 / M12 W2 — register the 4 new panel drawers (the brief's "3 new
-    // panels" + cutscene_player as the LEFT-column tab companion of
-    // dialog_tree_editor).
-    dockspace.register_panel("light_editor",        draw_light_editor_panel);
-    dockspace.register_panel("input_recorder",      draw_input_recorder_panel);
-    dockspace.register_panel("dialog_tree_editor",  draw_dialog_tree_editor_panel);
-    dockspace.register_panel("cutscene_player",     draw_cutscene_player_panel);
-    // phase679 / M13 W3 — register the 3 new drawers (vehicle_editor +
-    // pathfinding_viz + material_preview). vehicle_editor and material_preview
-    // share the material_editor tile via tab-merge; pathfinding_viz lives in
-    // its own bottom-left split.
-    dockspace.register_panel("vehicle_editor",      draw_vehicle_editor_panel);
-    dockspace.register_panel("pathfinding_viz",     draw_pathfinding_viz_panel);
-    dockspace.register_panel("material_preview",    draw_material_preview_panel);
-    // phase738 / FINALE-2 W3A B1 — bind the demo AuthoredMaterial so the panel
-    // shows a non-empty PBR preview on first boot.  Seeded in the global
-    // declaration above with AuthoringDefaults::dielectric() (mid-grey,
-    // metallic=0, roughness=0.6 — a "starter clay" preset a material artist
-    // recognises at a glance).  After this bind, is_dirty() returns true on
-    // the very first poll so the host pays the initial 256x256 PBR render.
-    g_material_preview_panel.set_material(&g_material_preview_demo);
-    // phase690 / M14 W3 — scene_navigator is tab-merged with scene_tree on
-    // LEFT-top (see build_default_layout). Registering the drawer here is
-    // sufficient; the layout step then tab-merges it onto scene_tree's leaf.
-    dockspace.register_panel("scene_navigator",     draw_scene_navigator_panel);
-    // phase701 / M15 W3 — register the 3 new panels:
-    //   settings_panel (tab-merged with inspector),
-    //   build_panel    (tab-merged with console),
-    //   perf_profiler  (split below light_editor, RIGHT-lower).
-    dockspace.register_panel("settings_panel",      draw_settings_panel);
-    dockspace.register_panel("build_panel",         draw_build_panel);
-    dockspace.register_panel("perf_profiler",       draw_perf_profiler_panel);
-    // phase711 / M16 W3 — register the 2 new panels:
-    //   asset_pipeline_status  (tab-merged with perf_profiler),
-    //   ik_chain_editor        (tab-merged with animator).
-    // Both are tab-merges so dockspace.node_count() stays at 14 (no new splits);
-    // only the registered-panel count grows 20 -> 22.
-    dockspace.register_panel("asset_pipeline_status", draw_asset_pipeline_status_panel);
-    dockspace.register_panel("ik_chain_editor",       draw_ik_chain_editor_panel);
-    // phase720 / M17 W3 — register the 2 new dock panels (auto_save_indicator
-    // lives in the status bar and is NOT a dock node, so it is NOT registered
-    // with the DockSpace here):
-    //   scene_palette  (tab-merged with settings_panel),
-    //   lobby_browser  (split below perf_profiler, RIGHT-lower).
-    // scene_palette is a tab-merge so node_count is unchanged by it; only the
-    // lobby_browser split bumps the underlying tree (+1 node). Registered-panel
-    // count grows 22 -> 24.
-    dockspace.register_panel("scene_palette",  draw_scene_palette_panel);
-    dockspace.register_panel("lobby_browser",  draw_lobby_browser_panel);
-    if (!build_default_layout(dockspace))
-    {
-        std::fprintf(stderr, "editor: failed to build default DockSpace layout.\n");
-        return 1;
-    }
-    // phase679 / M13 W3: panel count grew 13 -> 16 (vehicle_editor +
-    // pathfinding_viz + material_preview). dockspace.node_count() grew by
-    // exactly +1 because only pathfinding_viz introduces a new split;
-    // vehicle_editor and material_preview are tab-merged onto material_editor
-    // (tab_merges do not increment node_count).
-    //
-    // phase690 / M14 W3: panel count grew 16 -> 17 (scene_navigator added,
-    // tab-merged with scene_tree on LEFT-top; tab_merge keeps node_count flat).
-    //
-    // phase701 / M15 W3: panel count grew 17 -> 20 (settings_panel +
-    // build_panel + perf_profiler added). settings_panel + build_panel are
-    // tab-merges (flat); perf_profiler is the only new split (+1 node).
-    //
-    // phase711 / M16 W3: panel count grew 20 -> 22 (asset_pipeline_status +
-    // ik_chain_editor added). Both are tab-merges (flat), so the underlying
-    // dockspace.node_count() does NOT change — only the registered-panel
-    // count does.
-    //
-    // phase720 / M17 W3: panel count grew 22 -> 24 (scene_palette +
-    // lobby_browser added). scene_palette is tab-merged with settings_panel
-    // (flat); lobby_browser introduces one new split below perf_profiler (+1
-    // node). auto_save_indicator is NOT a dock node — it lives in the status
-    // bar — so it does NOT bump kEditorPanelCount. The "24 dock nodes" log
-    // line is what the M17 W3 smoke checks for.
-    constexpr std::size_t kEditorPanelCount = 24U;
-    std::printf("editor: dock layout ready with %zu dock nodes (%zu panels: scene_tree | "
-                "scene_navigator | viewport | inspector | settings_panel | scene_palette | "
-                "console | build_panel | assets | material_editor | animator | "
-                "ik_chain_editor | behavior_designer | asset_drop_target | light_editor | "
-                "input_recorder | dialog_tree_editor | cutscene_player | vehicle_editor | "
-                "pathfinding_viz | material_preview | perf_profiler | "
-                "asset_pipeline_status | lobby_browser)\n",
-                kEditorPanelCount, kEditorPanelCount);
-
-    // -- phase679 / M13 W3 — restore saved dock layout (if any) -------------
-    //
-    // The .cdproj read step above populated `project_data.dock_layout` with the
-    // hex-encoded byte stream captured at the previous shutdown. Apply it via
-    // DockSpace::restore so the user sees the EXACT layout they left behind
-    // (including which tab in each tab strip was active). On any framing
-    // failure we silently fall back to the default 16-panel layout — the user
-    // still gets a working editor and we log which path was taken.
-    //
-    // MOMENT: a user closes the editor mid-task, reopens it, the layout is
-    // EXACTLY as they left it. Source 2 SDK feel.
-    if (!project_data.dock_layout.empty())
-    {
-        const auto bytes = dock_layout_from_hex(project_data.dock_layout);
-        uw::DockSpace candidate;
-        bool valid_candidate = !bytes.empty() &&
-            candidate.restore(std::span<const std::byte>(bytes.data(), bytes.size()));
-        if (valid_candidate)
-        {
-            candidate.set_rect(uw::Rect { 0.0F, 0.0F, 1280.0F, 700.0F });
-            uw::InputState dummy_in {};
-            candidate.tick(dummy_in, 0.0F);
-            const auto* vp_owner = candidate.find_panel_owner("viewport");
-            const auto* ins_owner = candidate.find_panel_owner("inspector");
-            if (vp_owner == nullptr || ins_owner == nullptr ||
-                vp_owner->rect().x < 100.0F || ins_owner->rect().x < 500.0F)
+            case cd::light::LightType::kDirectional:
             {
-                valid_candidate = false;
+                // Render an arrow from sky position toward scene center.
+                cd::math::Vec3f sky_origin { -L.direction.x * 15.0F,
+                                             -L.direction.y * 15.0F,
+                                             -L.direction.z * 15.0F };
+                cd::math::Vec3f tip { sky_origin.x + L.direction.x * 8.0F,
+                                      sky_origin.y + L.direction.y * 8.0F,
+                                      sky_origin.z + L.direction.z * 8.0F };
+                const auto p0 = project(sky_origin);
+                const auto p1 = project(tip);
+                if (p0.x >= 0.0F && p1.x >= 0.0F)
+                {
+                    dl_m->AddLine(p0, p1, col, 3.0F);
+                    dl_m->AddCircleFilled(p0, 8.0F, col);
+                    if (sel)
+                        dl_m->AddCircle(p0, 16.0F, col_sel, 16, 3.0F);
+                    dl_m->AddText(ImVec2(p0.x + 10.0F, p0.y - 8.0F), col, "SUN");
+                }
+                break;
             }
-        }
-        if (valid_candidate &&
-            dockspace.restore(std::span<const std::byte>(bytes.data(), bytes.size())))
-        {
-            std::printf("editor: restored layout from %s (%zu nodes)\n",
-                        cdproj_path.string().c_str(),
-                        dockspace.node_count());
-        }
-        else
-        {
-            std::printf("editor: saved layout in %s was legacy/malformed — using 3-column studio defaults.\n",
-                        cdproj_path.string().c_str());
-        }
-    }
-    else
-    {
-        std::printf("editor: no saved layout, using defaults.\n");
-    }
-    std::printf("editor: File > Save Layout (auto-saved on exit to %s)\n",
-                cdproj_path.string().c_str());
-    std::fflush(stdout);
-
-    // -- 5a. phase690 / M14 W3 + FAZ 7/8 — Showcase Stage + FullFledgedEditorSuite
-    cd::editor::EditorCockpitShell      cockpit_shell {};
-    cd::editor::AddElementCatalog       add_element_catalog {};
-    cd::editor::ViewportGizmoController viewport_gizmo {};
-    cd::editor::TerrainFoliageBrush     terrain_brush {};
-    cd::editor::GpuFrameProfilerExporter chrome_tracing_exporter {};
-    (void)terrain_brush;
-    (void)chrome_tracing_exporter;
-
-    cd::runtime::EngineContextConfig rt_cfg {};
-    rt_cfg.eager_thread_pool = false;
-    cd::runtime::EngineContext runtime_ctx(rt_cfg);
-    cd::runtime::EngineLoop    engine_loop(runtime_ctx, 1.0F / 60.0F);
-    cd::editor::PieWorkbenchController pie_controller(engine_loop);
-
-    cd::element_core::Stage active_stage =
-        cd::gameplay_director::build_showcase_stage_by_slug(local.showcase_slug);
-    engine_loop.set_stage(cd::gameplay_director::build_showcase_stage_by_slug(local.showcase_slug));
-    if (local.pie_play)
-    {
-        (void)pie_controller.play(active_stage);
-    }
-
-    g_active_stage_ptr   = &active_stage;
-    g_pie_controller_ptr = &pie_controller;
-    g_add_catalog_ptr    = &add_element_catalog;
-    g_viewport_gizmo_ptr = &viewport_gizmo;
-    g_cockpit_shell_ptr  = &cockpit_shell;
-    g_engine_loop_ptr    = &engine_loop;
-    {
-        const auto& sc_list = cockpit_shell.project_hub_showcases();
-        for (std::size_t si = 0U; si < sc_list.size(); ++si)
-        {
-            if (sc_list[si].slug == active_stage.name())
+            case cd::light::LightType::kPoint:
             {
-                g_active_showcase_idx = si;
+                const auto p = project(L.position);
+                if (p.x >= 0.0F)
+                {
+                    dl_m->AddCircleFilled(p, 10.0F, col);
+                    dl_m->AddCircle(p, 14.0F, col_dim, 12, 2.0F);
+                    if (sel)
+                        dl_m->AddCircle(p, 18.0F, col_sel, 16, 3.0F);
+                    // Range ring - only draw when this light is selected
+                    // so unselected lights show just a dot/icon instead
+                    // of a noisy 16-segment circle that cuts through
+                    // every nearby mesh (user-reported B04 clutter).
+                    if (sel)
+                    {
+                        for (int i = 0; i < 24; ++i)
+                        {
+                            const float t0 = static_cast<float>(i) / 24.0F * 2.0F * std::numbers::pi_v<float>;
+                            const float t1 = static_cast<float>(i + 1) / 24.0F * 2.0F * std::numbers::pi_v<float>;
+                            cd::math::Vec3f a { L.position.x + std::cos(t0) * L.range,
+                                                L.position.y,
+                                                L.position.z + std::sin(t0) * L.range };
+                            cd::math::Vec3f b { L.position.x + std::cos(t1) * L.range,
+                                                L.position.y,
+                                                L.position.z + std::sin(t1) * L.range };
+                            const auto pa = project(a);
+                            const auto pb = project(b);
+                            if (pa.x >= 0.0F && pb.x >= 0.0F)
+                                dl_m->AddLine(pa, pb, col_dim, 1.5F);
+                        }
+                    }
+                    dl_m->AddText(ImVec2(p.x + 14.0F, p.y - 8.0F), col, "POINT");
+                }
+                break;
+            }
+            case cd::light::LightType::kSpot:
+            {
+                const auto p_apex = project(L.position);
+                // Far disk at range along direction.
+                cd::math::Vec3f far_center { L.position.x + L.direction.x * L.range,
+                                             L.position.y + L.direction.y * L.range,
+                                             L.position.z + L.direction.z * L.range };
+                // Use a tangent basis on the cone axis.
+                cd::math::Vec3f up { 0, 1, 0 };
+                if (std::abs(L.direction.y) > 0.95F)
+                    up = { 1, 0, 0 };
+                cd::math::Vec3f rgt { L.direction.y * up.z - L.direction.z * up.y,
+                                      L.direction.z * up.x - L.direction.x * up.z,
+                                      L.direction.x * up.y - L.direction.y * up.x };
+                const float rgt_len = std::sqrt(rgt.x * rgt.x + rgt.y * rgt.y + rgt.z * rgt.z);
+                if (rgt_len > 1e-5F)
+                {
+                    rgt.x /= rgt_len;
+                    rgt.y /= rgt_len;
+                    rgt.z /= rgt_len;
+                }
+                cd::math::Vec3f bt { L.direction.y * rgt.z - L.direction.z * rgt.y,
+                                     L.direction.z * rgt.x - L.direction.x * rgt.z,
+                                     L.direction.x * rgt.y - L.direction.y * rgt.x };
+                // outer cone half-angle from cos_outer
+                const float outer_angle = std::acos(std::clamp(L.cos_outer_cone, -1.0F, 1.0F));
+                const float disk_r = L.range * std::tan(outer_angle);
+                // Cone edges + far-disk circle - drawn only when the
+                // spot is selected. Unselected lights show just the
+                // apex icon so they don't clutter the scene with rays
+                // through every nearby mesh (user-reported B04).
+                if (sel)
+                {
+                    const int kEdges = 4;
+                    std::array<cd::math::Vec3f, kEdges + 1> rim {};
+                    for (int i = 0; i <= kEdges; ++i)
+                    {
+                        const float t = static_cast<float>(i) / static_cast<float>(kEdges) * 2.0F * std::numbers::pi_v<float>;
+                        const float ct = std::cos(t);
+                        const float st = std::sin(t);
+                        rim[static_cast<std::size_t>(i)] = { far_center.x + (rgt.x * ct + bt.x * st) * disk_r,
+                                                             far_center.y + (rgt.y * ct + bt.y * st) * disk_r,
+                                                             far_center.z + (rgt.z * ct + bt.z * st) * disk_r };
+                    }
+                    // Apex ? 4 edge points.
+                    for (int i = 0; i < kEdges; ++i)
+                    {
+                        const auto pe = project(rim[static_cast<std::size_t>(i)]);
+                        if (p_apex.x >= 0.0F && pe.x >= 0.0F)
+                            dl_m->AddLine(p_apex, pe, col_dim, 1.5F);
+                    }
+                    // Far-disk rim - close the cone visually.
+                    for (int i = 0; i < kEdges; ++i)
+                    {
+                        const auto pa = project(rim[static_cast<std::size_t>(i)]);
+                        const auto pb = project(rim[static_cast<std::size_t>(i) + 1U]);
+                        if (pa.x >= 0.0F && pb.x >= 0.0F)
+                            dl_m->AddLine(pa, pb, col_dim, 1.5F);
+                    }
+                }
+                if (p_apex.x >= 0.0F)
+                {
+                    dl_m->AddCircleFilled(p_apex, 8.0F, col);
+                    if (sel)
+                        dl_m->AddCircle(p_apex, 16.0F, col_sel, 16, 3.0F);
+                    dl_m->AddText(ImVec2(p_apex.x + 10.0F, p_apex.y - 8.0F), col, "SPOT");
+                }
+                break;
+            }
+            case cd::light::LightType::kRectArea:
+            case cd::light::LightType::kDiskArea:
+            {
+                // Derive tangent + bitangent from L.direction
+                // exactly the way the FS does - so when the user
+                // rotates the area light's direction via the
+                // Inspector or gizmo, the visual rectangle
+                // rotates with it. Closes 'area donunce gorseli
+                // donmuyor' bug.
+                cd::math::Vec3f ln = L.direction;
+                const float lnl = std::sqrt(ln.x * ln.x + ln.y * ln.y + ln.z * ln.z);
+                if (lnl > 1e-5F)
+                {
+                    ln.x /= lnl;
+                    ln.y /= lnl;
+                    ln.z /= lnl;
+                }
+                else
+                {
+                    ln = { 0.0F, 0.0F, -1.0F };
+                }
+                // W8-O: read the SAME area_tangent the shader uses.
+                // Earlier wireframe derived its tangent via Frisvad
+                // while the shader read the uploaded tangent — when
+                // the user rotated the rect via the gizmo, the
+                // wireframe rotated by Frisvad's smooth derivation
+                // and the actual lit polygon rotated by the
+                // user-controlled tangent, so the two visibly
+                // disagreed. Use light.area_tangent for both.
+                cd::math::Vec3f t = L.area_tangent;
+                const float tll = std::sqrt(t.x * t.x + t.y * t.y + t.z * t.z);
+                if (tll > 1e-5F)
+                {
+                    t.x /= tll;
+                    t.y /= tll;
+                    t.z /= tll;
+                }
+                else
+                {
+                    t = { 1.0F, 0.0F, 0.0F };
+                }
+                // Re-orthogonalise tangent against the (possibly
+                // dragged) normal — same trick the rotate gizmo
+                // applies after rotating both.
+                const float pr = t.x * ln.x + t.y * ln.y + t.z * ln.z;
+                t.x -= pr * ln.x;
+                t.y -= pr * ln.y;
+                t.z -= pr * ln.z;
+                const float tnl = std::sqrt(t.x * t.x + t.y * t.y + t.z * t.z);
+                if (tnl > 1e-5F)
+                {
+                    t.x /= tnl;
+                    t.y /= tnl;
+                    t.z /= tnl;
+                }
+                else
+                {
+                    t = { 1.0F, 0.0F, 0.0F };
+                }
+                // bitangent = normal x tangent (matches the shader's
+                // cross(N, T) for B_rect).
+                cd::math::Vec3f b { ln.y * t.z - ln.z * t.y, ln.z * t.x - ln.x * t.z, ln.x * t.y - ln.y * t.x };
+                // Project 4 corners.
+                const float hw = L.area_width * 0.5F;
+                const float hh = L.area_height * 0.5F;
+                cd::math::Vec3f c0 { L.position.x - t.x * hw - b.x * hh,
+                                     L.position.y - t.y * hw - b.y * hh,
+                                     L.position.z - t.z * hw - b.z * hh };
+                cd::math::Vec3f c1 { L.position.x + t.x * hw - b.x * hh,
+                                     L.position.y + t.y * hw - b.y * hh,
+                                     L.position.z + t.z * hw - b.z * hh };
+                cd::math::Vec3f c2 { L.position.x + t.x * hw + b.x * hh,
+                                     L.position.y + t.y * hw + b.y * hh,
+                                     L.position.z + t.z * hw + b.z * hh };
+                cd::math::Vec3f c3 { L.position.x - t.x * hw + b.x * hh,
+                                     L.position.y - t.y * hw + b.y * hh,
+                                     L.position.z - t.z * hw + b.z * hh };
+                const auto p0 = project(c0);
+                const auto p1 = project(c1);
+                const auto p2 = project(c2);
+                const auto p3 = project(c3);
+                if (p0.x >= 0.0F && p1.x >= 0.0F && p2.x >= 0.0F && p3.x >= 0.0F)
+                {
+                    const float thickness = sel ? 4.0F : 2.0F;
+                    const ImU32 use_col = sel ? col_sel : col;
+                    dl_m->AddLine(p0, p1, use_col, thickness);
+                    dl_m->AddLine(p1, p2, use_col, thickness);
+                    dl_m->AddLine(p2, p3, use_col, thickness);
+                    dl_m->AddLine(p3, p0, use_col, thickness);
+                    dl_m->AddText(p0, col, "AREA");
+                    // W8-R: explicit normal arrow so the user can see
+                    // which side is emissive (one-sided rect lights
+                    // only illuminate +N hemisphere). Arrow shoots
+                    // from the rect centre along +ln by 1/3 of the
+                    // longer side length, big enough to be visible
+                    // but not overwhelming.
+                    const float arrow_len = std::max(L.area_width, L.area_height) * 0.6F + 0.3F;
+                    const cd::math::Vec3f arrow_tip { L.position.x + ln.x * arrow_len,
+                                                      L.position.y + ln.y * arrow_len,
+                                                      L.position.z + ln.z * arrow_len };
+                    const auto p_centre = project(L.position);
+                    const auto p_tip = project(arrow_tip);
+                    if (p_centre.x >= 0.0F && p_tip.x >= 0.0F)
+                    {
+                        dl_m->AddLine(p_centre, p_tip, use_col, sel ? 3.0F : 2.0F);
+                        // Tiny circle at tip = arrow head substitute.
+                        dl_m->AddCircleFilled(p_tip, sel ? 5.0F : 3.5F, use_col);
+                    }
+                }
                 break;
             }
         }
     }
+}
 
-    std::printf(
-        "editor: FullFledgedEditorSuite active (showcases=%zu, add_element_catalog=%zu classes, "
-        "active_stage='%.*s' elements=%zu, pie=%s)\n",
-        cockpit_shell.project_hub_showcases().size(),
-        add_element_catalog.count(),
-        static_cast<int>(active_stage.name().size()),
-        active_stage.name().data(),
-        active_stage.root().children().size(),
-        pie_controller.state() == cd::editor::PieState::kPlaying ? "PLAYING" : "STOPPED"
-    );
+// =============================================================================
+// Phase 302 / Marathon Run 8 sub-N2F: Command Palette popup extracted. Small
+// (~50 lines) but the last of the genuinely self-contained UI panel-style
+// regions in the main render loop. Gizmo + R-Showcase remain and need a
+// dedicated phase each (gizmo carries deep drag-state coupling, R-Showcase
+// needs an FxState struct refactor for its 26-knob parameter surface).
+// =============================================================================
 
+// ---- draw_command_palette_popup -------------------------------------------
+// Modal-ish floating popup centred horizontally near the top of the
+// viewport. Shows filtered command labels from cd::editor::CommandPalette;
+// Enter or Selectable click invokes the highlighted entry and dismisses
+// the popup. Caller manages palette_visible + palette_query through key
+// events; this helper only handles the per-frame draw + invoke.
+inline void draw_command_palette_popup(cd::editor::CommandPalette& palette,
+                                       bool& palette_visible,
+                                       std::string& palette_query,
+                                       cd::rhi::Extent2D extent)
+{
+    if (palette_visible)
     {
-        std::vector<cd::ecs::Entity> nav_entities {
-            cd::ecs::Entity { 1U, 1U },
-            cd::ecs::Entity { 2U, 1U },
-            cd::ecs::Entity { 3U, 1U },
-            cd::ecs::Entity { 4U, 1U },
-            cd::ecs::Entity { 5U, 1U },
-            cd::ecs::Entity { 6U, 1U },
-        };
-        std::vector<std::string> nav_names {
-            std::string{"PlayerSpawn"},
-            std::string{"Box.001"},
-            std::string{"Box.002"},
-            std::string{"EnemySpawn"},
-            std::string{"SkyLight"},
-            std::string{"MainCamera"},
-        };
-        std::uint32_t next_id = 7U;
-        for (const auto& elem : active_stage.root().children())
+        const auto vw_p = static_cast<float>(extent.width);
+        const float pw = 520.0F;
+        const float ph = 360.0F;
+        ImGui::SetNextWindowPos(ImVec2((vw_p - pw) * 0.5F, 80.0F), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(pw, ph), ImGuiCond_Always);
+        if (ImGui::Begin(
+                "Command Palette",
+                &palette_visible,
+                ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
+                    ImGuiWindowFlags_NoDocking
+            ))
         {
-            if (elem)
+            if (ImGui::IsWindowAppearing())
+                ImGui::SetKeyboardFocusHere();
+            char buf[128] {};
+            std::snprintf(buf, sizeof(buf), "%s", palette_query.c_str());
+            if (ImGui::InputText("##q", buf, sizeof(buf)))
+                palette_query = buf;
+            ImGui::Separator();
+            const auto hits = palette.filter(palette_query);
+            if (hits.empty())
             {
-                nav_entities.push_back(cd::ecs::Entity { next_id++, 1U });
-                nav_names.push_back(
-                    std::string(elem->name()) + " [" + std::string(elem->class_name()) + "]"
-                );
-            }
-        }
-        g_scene_navigator_panel.set_entities(
-            std::span<const cd::ecs::Entity>(nav_entities.data(), nav_entities.size()),
-            std::span<const std::string>(nav_names.data(), nav_names.size()));
-    }
-
-    // -- 5b1. phase711 / M16 W3 — keyboard_shortcut_overlay AUTO-POPULATE ----
-    //
-    // Pre-register all editor shortcuts at boot via a PANEL-REGISTRY WALK.
-    //
-    // The shortcut catalogue is no longer a hand-rolled 15-entry list (as it
-    // was in phase690 / M14 W3). Instead, the apps/editor binary keeps a
-    // PanelShortcutSpec table — one entry per panel registered with the
-    // DockSpace shell — and for each entry it pre-registers:
-    //
-    //   1. A FOCUS hotkey (Ctrl+1 .. Ctrl+22) that switches focus to that panel.
-    //   2. Any PANEL-SPECIFIC shortcuts the panel author wants surfaced
-    //      (e.g. Ctrl+F to focus the scene_navigator search field).
-    //
-    // It also pre-registers the standard editor-wide actions (Save Layout /
-    // Load Layout / Toggle Help / Stats / Close-overlay).
-    //
-    // The walker reuses the existing `Shortcut` struct from M14 phase688
-    // (keys + action_description + category) — see KeyboardShortcutOverlay.hpp —
-    // so no new public type is added to the panel libraries themselves. The
-    // panel-specific list lives in apps/editor (single source of truth), which
-    // avoids touching FROZEN sample binaries and keeps the panel libraries
-    // ImGui-/widget-independent.
-    //
-    // MOMENT: a NEW USER presses '?' on day one, sees ALL the editor's
-    // shortcuts auto-listed (panel focus hotkeys + per-panel actions + global
-    // actions) — no manual maintenance, no out-of-date help.
-
-    using cd::editor::panel::keyboard_shortcut_overlay::Shortcut;
-
-    // Per-panel shortcut spec. A panel may contribute zero or more "extra"
-    // shortcuts beyond its auto-assigned focus hotkey. The walker assigns
-    // each panel a sequential Ctrl+N focus hotkey (N=1..22).
-    struct PanelShortcutSpec
-    {
-        std::string_view              id;                ///< Panel id (must match register_panel).
-        std::string_view              display_name;      ///< Human-readable name for the focus shortcut.
-        std::vector<Shortcut>         extras;            ///< Panel-specific shortcuts (key + description + category).
-    };
-
-    // Panel registry — single source of truth for both the dock layout and
-    // the shortcut walker. Order MUST mirror the dockspace.register_panel
-    // call order above so the Ctrl+N focus hotkeys line up with the visible
-    // panel index a user counts from left to right in the dock.
-    const std::array<PanelShortcutSpec, 24> kPanelRegistry { {
-        { "scene_tree",            "Scene Tree",             {} },
-        { "viewport",              "Viewport",               {} },
-        { "inspector",             "Inspector",              {} },
-        { "console",               "Console",                {} },
-        { "assets",                "Assets",                 {} },
-        { "material_editor",       "Material Editor",        {} },
-        { "animator",              "Animator",               {} },
-        { "behavior_designer",     "Behavior Designer",      {} },
-        { "asset_drop_target",     "Asset Drop Target",      {} },
-        { "light_editor",          "Light Editor",           {} },
-        { "input_recorder",        "Input Recorder",         {} },
-        { "dialog_tree_editor",    "Dialog Tree Editor",     {} },
-        { "cutscene_player",       "Cutscene Player",        {} },
-        { "vehicle_editor",        "Vehicle Editor",         {} },
-        { "pathfinding_viz",       "Pathfinding Viz",        {} },
-        { "material_preview",      "Material Preview",       {} },
-        // scene_navigator carries one panel-specific extra: Ctrl+F focuses
-        // the search field. The walker picks this up automatically.
-        { "scene_navigator",       "Scene Navigator",
-          { Shortcut{ "Ctrl+F", "Focus Scene Navigator search", "Navigation" } } },
-        { "settings_panel",        "Settings",               {} },
-        { "build_panel",           "Build",                  {} },
-        { "perf_profiler",         "Perf Profiler",          {} },
-        // phase711 / M16 W3 — two new panels join the registry.
-        { "asset_pipeline_status", "Asset Pipeline Status",  {} },
-        { "ik_chain_editor",       "IK Chain Editor",        {} },
-        // phase720 / M17 W3 — two new dock panels join the registry.
-        // auto_save_indicator is a status-bar widget (not a dock panel) and
-        // therefore is NOT listed here.
-        { "scene_palette",         "Scene Palette",          {} },
-        { "lobby_browser",         "Lobby Browser",          {} },
-    } };
-
-    // Standard editor-wide shortcuts. These are NOT panel-bound — they drive
-    // the application shell itself (layout save/load, overlay toggle, stats).
-    const std::array<Shortcut, 7> kEditorActionShortcuts { {
-        Shortcut{ "Ctrl+S", "Save Layout",                "File"  },
-        Shortcut{ "Ctrl+L", "Load Layout",                "File"  },
-        Shortcut{ "?",      "Toggle Shortcut Help",       "Help"  },
-        Shortcut{ "Esc",    "Close overlay / clear filter","Help"  },
-        Shortcut{ "F1",     "CPU Stats",                  "Stats" },
-        Shortcut{ "F2",     "GPU Stats",                  "Stats" },
-        Shortcut{ "F3",     "Frame Graph Timeline",       "Stats" },
-    } };
-
-    cd::editor::panel::keyboard_shortcut_overlay::KeyboardShortcutOverlay
-        shortcut_overlay {};
-
-    // (1) Editor-wide actions first so they appear at the top of their
-    //     respective category columns.
-    for (const auto& s : kEditorActionShortcuts)
-    {
-        shortcut_overlay.register_shortcut(s);
-    }
-
-    // (2) Walk the panel registry: for every panel, register a Ctrl+N focus
-    //     hotkey + any panel-specific extras. Index is 1-based to match the
-    //     user-facing "Ctrl+1" convention. Ctrl+1..Ctrl+9 use a single digit;
-    //     Ctrl+10..Ctrl+22 use two digits — the overlay handles arbitrary
-    //     string keys, so no special casing is needed here.
-    std::size_t panel_focus_registered = 0U;
-    std::size_t panel_extras_registered = 0U;
-    for (std::size_t i = 0; i < kPanelRegistry.size(); ++i)
-    {
-        const auto& spec = kPanelRegistry[i];
-
-        // Focus hotkey: Ctrl+N (N = 1..panel_count).
-        Shortcut focus_shortcut;
-        focus_shortcut.keys               =
-            std::string{ "Ctrl+" } + std::to_string(i + 1U);
-        focus_shortcut.action_description =
-            std::string{ "Focus " } + std::string{ spec.display_name };
-        focus_shortcut.category           = "PanelFocus";
-        shortcut_overlay.register_shortcut(focus_shortcut);
-        ++panel_focus_registered;
-
-        // Panel-specific extras (each panel decides its own list, declared
-        // alongside the registry above so a future panel author can add a
-        // shortcut without touching this loop).
-        for (const auto& extra : spec.extras)
-        {
-            shortcut_overlay.register_shortcut(extra);
-            ++panel_extras_registered;
-        }
-    }
-
-    std::printf(
-        "editor: shortcut overlay auto-populated -> %zu actions + %zu panel-focus + "
-        "%zu panel-extras = %zu total (no manual maintenance).\n",
-        kEditorActionShortcuts.size(),
-        panel_focus_registered,
-        panel_extras_registered,
-        shortcut_overlay.shortcut_count());
-
-    // -- 5b1b. phase711 / M16 W3 — ik_chain_editor + asset_pipeline_status seed -
-    //
-    // ik_chain_editor: bind a non-trivial 5-joint demo chain so the panel reads
-    // as an actual IK visualiser on first boot rather than an empty rectangle.
-    // The chain is anchored at the world origin with each joint offset +X by
-    // 1.0 m; end-effector target shifted +X / +Y so the chain visibly bends
-    // toward the marker. The cd::animation::ik::IkResult is left default-
-    // constructed (converged=false, no solved_rotations) — the editor is a
-    // static visual surface today; live solve hooks land when an animator
-    // scene drives the IK system from the playmode timeline.
-    {
-        using cd::animation::ik::Joint;
-        g_demo_ik_chain.joints.clear();
-        for (int i = 0; i < 5; ++i)
-        {
-            Joint j;
-            j.name           = std::string{"demo_joint_"} + std::to_string(i);
-            j.local_position = (i == 0)
-                ? std::array<float, 3>{ 0.0F, 0.0F, 0.0F }
-                : std::array<float, 3>{ 1.0F, 0.0F, 0.0F };
-            j.local_rotation_quat = { 0.0F, 0.0F, 0.0F, 1.0F };
-            j.length              = 1.0F;
-            g_demo_ik_chain.joints.push_back(std::move(j));
-        }
-        g_demo_ik_chain.end_effector_target   = { 3.5F, 1.5F, 0.0F };
-        g_demo_ik_chain.max_iterations        = 16U;
-        g_demo_ik_chain.convergence_threshold = 0.001F;
-        g_ik_chain_editor_panel.set_chain(&g_demo_ik_chain);
-        g_ik_chain_editor_panel.set_last_result(&g_demo_ik_result);
-        std::printf("editor: ik_chain_editor seeded with %zu-joint demo chain.\n",
-                    g_demo_ik_chain.joints.size());
-    }
-
-    // asset_pipeline_status: no StreamerPool is wired in apps/editor yet (the
-    // engine-side pool lives in the runtime loop in sample binaries). Detach
-    // explicitly so the panel renders the 4-row background + label quads
-    // without dereferencing a stale pointer. When the editor wires a real
-    // pool in a future Sprint, set_pool(&pool) here will light up the bars.
-    g_asset_pipeline_status_panel.set_pool(nullptr);
-    std::printf("editor: asset_pipeline_status attached pool=<none> (pending=%zu, "
-                "completed=%zu).\n",
-                g_asset_pipeline_status_panel.total_pending(),
-                g_asset_pipeline_status_panel.total_completed());
-
-    // -- 5b1c. phase720 / M17 W3 — scene_palette + lobby_browser seed ---------
-    //
-    // scene_palette: bind the live cd::ui::widgets::Theme so the swatch grid
-    // reads from the same palette the dock paints with.  When the theme picker
-    // swaps the palette the next draw() picks up the new pointer-value via the
-    // theme parameter, so no per-frame re-binding is needed (the held pointer
-    // is just a hint until the explicit theme argument arrives at draw time).
-    g_scene_palette_panel.set_palette(&widget_theme);
-    std::printf("editor: scene_palette bound to live widget_theme (15 tokens).\n");
-
-    // lobby_browser: seed the demo Lobby with two rooms so the panel reads as
-    // a real visualiser on first boot — not an empty placeholder.
-    //   * "Capture Point Beta" — public, 4-player slot, 2 joined, no passcode.
-    //   * "VIP Match"          — private, 8-player slot, 1 joined, passcode set.
-    {
-        using cd::network::lobby::LobbyConfig;
-        using cd::network::lobby::PlayerState;
-
-        LobbyConfig public_cfg {};
-        public_cfg.lobby_name  = "Capture Point Beta";
-        public_cfg.game_mode   = "ctf";
-        public_cfg.max_players = 4U;
-        public_cfg.is_public   = true;
-        const auto room_a = g_demo_lobby.create_room(public_cfg, 1001ULL);
-        (void)g_demo_lobby.join_room(room_a,
-            PlayerState{ 1002ULL, "Alice", false, 0U }, std::string_view{""});
-
-        LobbyConfig private_cfg {};
-        private_cfg.lobby_name  = "VIP Match";
-        private_cfg.game_mode   = "deathmatch";
-        private_cfg.max_players = 8U;
-        private_cfg.is_public   = false;
-        private_cfg.passcode    = "1234";
-        const auto room_b = g_demo_lobby.create_room(private_cfg, 2001ULL);
-        (void)room_b;
-
-        g_lobby_browser_panel.set_lobby(&g_demo_lobby);
-        std::printf("editor: lobby_browser seeded with %zu demo rooms.\n",
-                    g_demo_lobby.active_rooms().size());
-    }
-    std::fflush(stdout);
-
-    // -- 5b2. phase690 / M14 W3 — popout_dock state machine ------------------
-    //
-    // Sprint-1 internal: tracks panels the user has "torn off" from the main
-    // dock. Each frame the editor iterates `detached_windows()`; for every
-    // detached panel it renders a floating-internal rectangle at the stored
-    // position (border in palette accent_warning so the detached state is
-    // visually distinct).
-    //
-    // Native multi-window promotion = Sprint-2 (gated on cd::platform multi-
-    // window support). For Sprint-1 the editor never auto-detaches any panel;
-    // tearing off is a future input-handler hookup that calls detach_panel().
-    cd::ui::widgets::PopoutDock popout_dock {};
-    std::printf("editor: popout_dock tracks %zu detached panels.\n",
-                popout_dock.detached_windows().size());
-    std::fflush(stdout);
-
-    // -- 5c. phase701 / M15 W3 — settings + build + perf_profiler seeding ----
-    //
-    // Pre-seed all 3 new panels so they are non-empty on first boot.
-    //   * settings: 8 demo entries spread across all 5 categories.
-    //   * build:    Compiling status + 5 demo events with timestamps.
-    //   * perf:     60-fps target; real FrameCapture data from cpu_collector +
-    //               gpu_marker_recorder + fgt_timeline (phase736).
-    //
-    // The build_panel_bridge global helper points at g_build_panel so other
-    // subsystems can call cd::editor::build_panel_bridge::push_event(...)
-    // without linking apps/editor (Sprint-1 placeholder; Sprint-2 will wire
-    // real shader-compile events).
-    {
-        using cd::editor::panel::settings::Category;
-        using cd::editor::panel::settings::Entry;
-        const std::array<Entry, 8> kSeedSettings {
-            Entry { "vsync",           "V-Sync",            "on",       "Vertical sync — caps render rate to monitor refresh.", Category::kGraphics },
-            Entry { "resolution",      "Resolution",        "1280x720", "Render target resolution.",                            Category::kGraphics },
-            Entry { "shadow_quality",  "Shadow Quality",    "high",     "Cascade count + filter taps.",                          Category::kGraphics },
-            Entry { "mouse_sens",      "Mouse Sensitivity", "1.0",      "Multiplier for raw pointer deltas.",                    Category::kInput    },
-            Entry { "master_volume",   "Master Volume",     "0.85",     "Output mixer attenuation [0,1].",                       Category::kAudio    },
-            Entry { "spatial_audio",   "Spatial Audio",     "on",       "HRTF + per-source positional mixing.",                  Category::kAudio    },
-            Entry { "auto_save_min",   "Auto-Save (min)",   "5",        "Editor auto-save interval in minutes.",                 Category::kEditor   },
-            Entry { "log_verbosity",   "Log Verbosity",     "info",     "Per-subsystem default log level.",                       Category::kAdvanced },
-        };
-        for (const auto& e : kSeedSettings) { g_settings_panel.register_entry(e); }
-        std::printf("editor: settings_panel seeded with %zu entries across 5 categories.\n",
-                    g_settings_panel.entry_count());
-    }
-
-    {
-        using cd::editor::panel::build::BuildEvent;
-        using cd::editor::panel::build::Status;
-        g_build_panel.set_status(Status::kCompiling);
-        const std::array<BuildEvent, 5> kSeedEvents {
-            BuildEvent {   12.5, "configuring CMake presets...",          "", 0U,    Status::kIdle      },
-            BuildEvent {  243.0, "compiling cd::core...",                 "", 0U,    Status::kCompiling },
-            BuildEvent {  812.5, "compiling cd::editor_panel_settings...","", 0U,    Status::kCompiling },
-            BuildEvent { 1502.0, "warning: unused parameter 'flags'",
-                         "engine/render/Material.cpp",                    142U,  Status::kSuccess   },
-            BuildEvent { 1820.0, "linked editor.exe",                     "", 0U,    Status::kSuccess   },
-        };
-        for (const auto& ev : kSeedEvents) { g_build_panel.push_event(ev); }
-        cd::editor::build_panel_bridge::register_target(&g_build_panel);
-        std::printf("editor: build_panel seeded with %zu events (bridge registered).\n",
-                    g_build_panel.event_count());
-    }
-
-    // -- 5c2. phase744 — hot-reload FileWatcher + HotReloadQueue setup ---------
-    //
-    // Watches a representative set of asset paths (shaders, glTF scenes, Lua
-    // scripts) for file-system changes.  On each poll() hit we:
-    //   1. Immediately mark the asset dirty in the HotReloadQueue.
-    //   2. Emit a kCompiling BuildEvent with the path and current timestamp.
-    //   3. Emit a kSuccess BuildEvent right after (synchronous single-frame
-    //      hot-reload; async compile duration measurement = Sprint-2 when
-    //      in-process glslang is integrated).
-    //
-    // The watching paths are relative to the working directory (engine source
-    // tree).  FileWatcher::watch() silently treats a missing file as "never
-    // changed" so boot succeeds on any machine regardless of which optional
-    // asset paths exist on disk.
-    //
-    // MOMENT: a dev edits a GLSL file in their IDE, saves, and within one frame
-    // the build_panel badge turns yellow (Compiling) then green (Compiled).
-    // Zero additional tooling required — the feedback loop is in the editor.
-    cd::asset::FileWatcher   hot_reload_watcher {};
-    cd::asset::HotReloadQueue hot_reload_queue {};
-
-    // Monotonic start reference for hot-reload event timestamps.
-    const auto hot_reload_epoch = std::chrono::steady_clock::now();
-
-    // Helper: current monotonic ms relative to the epoch.
-    auto hot_reload_now_ms = [&]() -> double {
-        using ms = std::chrono::duration<double, std::milli>;
-        return std::chrono::duration_cast<ms>(
-            std::chrono::steady_clock::now() - hot_reload_epoch).count();
-    };
-
-    // Register watched paths; capture the AssetId so the drain callback can
-    // log it. Each FileWatcher entry captures its own AssetId by value.
-    {
-        using namespace cd::asset;
-
-        // Representative asset paths for the three hot-reload categories:
-        //   * GLSL shaders   — the editor's own UI fragment shader.
-        //   * glTF scenes    — a sample scene used by material_preview.
-        //   * Lua scripts    — future game-logic scripting layer (not yet wired).
-        //
-        // FileWatcher silently no-ops for absent paths; adding more paths here
-        // is always safe and additive.
-        const std::array<std::pair<std::string, std::string>, 6> kWatchList { {
-            { "engine/render/shaders/lit.frag.glsl",              "shader"  },
-            { "engine/render/shaders/lit.vert.glsl",              "shader"  },
-            { "engine/render/shaders/composite.frag.glsl",        "shader"  },
-            { "engine/asset/tests/gltf/test_scene.gltf",          "gltf"    },
-            { "showcases/01_pbr_materials_sss_hair/main.cdstage", "cdstage" },
-            { "scripts/editor_startup.lua",                        "lua"     },
-        } };
-
-        for (const auto& [path, kind] : kWatchList)
-        {
-            const AssetId id { AssetId::from_path(path) };
-
-            // Capture by value so the lambda is self-contained.
-            hot_reload_watcher.watch(path,
-                [id, &hot_reload_queue](std::string_view /*p*/) {
-                    hot_reload_queue.notify(id);
-                });
-
-            std::printf("editor: hot_reload watching '%s' (id=%llu, kind=%s)\n",
-                        path.c_str(),
-                        static_cast<unsigned long long>(id.value()),
-                        kind.c_str());
-        }
-        std::printf("editor: hot_reload_watcher watching %zu paths.\n",
-                    hot_reload_watcher.size());
-        std::fflush(stdout);
-    }
-
-    // PerfProfiler: configure budget (60 fps target).
-    // phase736/phase746: REAL FrameSnapshot data — cpu_collector + fgt_timeline +
-    // prev_gpu_markers carry-forward — feeds capture_frame() each iteration.
-    g_perf_profiler_panel.set_target_fps(60.0F);
-    std::printf("editor: perf_profiler budget_ms=%.2f (60 fps target, REAL data feed).\n",
-                static_cast<double>(g_perf_profiler_panel.budget_ms()));
-
-    // Wire the perf_profiler drawer's V2 theme bridge to the live theme name.
-    g_active_theme_name_ptr = &active_theme_name;
-
-    // -- 5d. phase701 / M15 W3 — toast notification queue --------------------
-    //
-    // Pre-register 3 example toasts so a first-time editor user sees the
-    // editor talk to them on boot — Source 2 / Hammer SDK feel. The queue
-    // holds at most 5 entries with a 2-second lifetime each (fade-out in the
-    // last 300 ms).
-    cd::editor::toast::ToastQueue toast_queue {};
-    toast_queue.push("Editor ready",          cd::editor::toast::Kind::kSuccess);
-    toast_queue.push("Loaded saved layout",   cd::editor::toast::Kind::kInfo);
-    toast_queue.push(std::string("Theme: ") + active_theme_name,
-                     cd::editor::toast::Kind::kInfo);
-    std::printf("editor: 3 toasts queued on startup (queue size=%zu, cap=%zu).\n",
-                toast_queue.size(),
-                cd::editor::toast::ToastQueue::kMaxToasts);
-    std::fflush(stdout);
-
-    // -- 5e. phase785 / E5 — input recorder + replayer boot wiring ------------
-    //
-    // Wire the live Recorder and Replayer into the InputRecorderPanel that
-    // already sits in the dock (input_recorder tile, BOTTOM strip far-right).
-    //
-    // The two file-scope instances (g_input_recorder / g_input_replayer) own
-    // the recording state; the panel holds non-owning raw pointers per the
-    // InputRecorderPanel lifetime contract.
-    //
-    // Per-frame loop contract (see the event loop below):
-    //   * RECORD   — every OSEvent pushed into `events` is translated to an
-    //                InputEvent and forwarded to g_input_recorder.record()
-    //                while is_recording() is true.
-    //   * STOP     — when is_recording() transitions false → the recording is
-    //                auto-saved to ~/.cd_editor/last_input_recording.bin.
-    //   * REPLAY   — g_input_replayer.next_event(elapsed_ms) is called each
-    //                frame to drain due events; the dispatcher logs them so
-    //                future code can route replayed events into the input
-    //                backend without any apps/editor change.
-    //
-    // MOMENT: a QA tester clicks Record, plays for 30 s, clicks Stop — the
-    // binary drops a .bin on disk they can share with a dev to reproduce a
-    // flaky interaction frame-accurately (HL2-style demo replay).
-    g_input_recorder_panel.set_recorder(&g_input_recorder);
-    g_input_recorder_panel.set_replayer(&g_input_replayer);
-    std::printf("editor: input_recorder wired (recorder @ %p, replayer @ %p).\n",
-                static_cast<const void*>(&g_input_recorder),
-                static_cast<const void*>(&g_input_replayer));
-    std::fflush(stdout);
-
-    // -- 5b. Overlay instances (phase598 / M6 W3; phase631 / M9 W1A) --------
-    //
-    // CPU-marker bar chart   -> floating top-right (~300x120 px).
-    // GPU-marker bar chart   -> floating top-right below CPU (~300x100 px).
-    //                          phase631 / M9 W1A: cpu/gpu classification sibling.
-    //                          Real GpuMarkerSamples via gpu_marker_recorder +
-    //                          prev_gpu_markers carry-forward (phase746).
-    //                          duration_ms_computed from stub monotonic counter
-    //                          until ICommandBuffer::write_timestamp lands.
-    // Frame-graph timeline   -> floating bottom-right (~400x80 px).
-    //
-    // All overlays consume REAL data as of phase736/phase746:
-    //   cpu_overlay         — cpu_collector.samples_since() each frame.
-    //   gpu_marker overlay  — gpu_marker_recorder resolved samples.
-    //   frame_graph overlay — fgt_timeline.last_frame_passes() (DockDraw pass).
-    //
-    // asset::validator status badge: no status bar exists in apps/editor yet.
-    // TODO(phase631): add status bar and wire cd::asset::validator badge here.
-    namespace cmo = cd::profile::cpu_marker_overlay;
-    namespace fgt = cd::profile::frame_graph_timeline;
-    const cmo::Overlay         cpu_overlay        { 16.0 };
-    const fgt::TimelineOverlay frame_graph_overlay { 16.0 };
-    // phase737 — mutable timeline that accumulates real pass records each frame.
-    fgt::Timeline              fgt_timeline {};
-
-    // phase736 / phase746 — real instrumentation objects for FrameCapture.
-    //   cpu_collector        -- Collector records "frame.draw" CPU scope each frame.
-    //   gpu_marker_recorder  -- Recorder brackets "gpu.ui_submit" in Vulkan cmd path.
-    //                           Empty on NullDevice (no cmd buffer available).
-    //   prev_gpu_markers     -- Carry-forward buffer: holds the resolved samples from
-    //                           the previous frame's gpu_marker_recorder.resolve().
-    //                           GPU timestamps are only valid AFTER resolve(), which
-    //                           runs after capture_frame(); the carry-forward makes the
-    //                           N-1 frame's GPU data available when building frame N's
-    //                           FrameCapture — identical pattern to Timeline::last_frame_passes().
-    cmo::Collector                                               cpu_collector { 4096U };
-    cd::profile::gpu_marker::Recorder                           gpu_marker_recorder {};
-    std::vector<cd::profile::gpu_marker::GpuMarkerSample>       prev_gpu_markers {};
-
-    // -- 6. Try Vulkan + window + Renderer; fall back to NullDevice ---------
-    std::unique_ptr<platform::IWindow>  window;
-    std::unique_ptr<rhi::IDevice>       device;
-    std::optional<render::Renderer>     renderer;
-    bool                                using_null { local.force_null };
-
-    if (!using_null)
-    {
-        platform::WindowDesc wd {};
-        wd.title  = "CHROMODYNAMIC ENGINE STUDIO v1.0";
-        wd.width  = 1600;
-        wd.height = 900;
-        auto wr   = platform::create_window(wd);
-        if (!wr.has_value())
-        {
-            std::fprintf(stderr,
-                         "editor: platform window create failed, switching to NullDevice.\n");
-            using_null = true;
-        }
-        else
-        {
-            window = std::move(*wr);
-            rhi::vulkan::VulkanCreateInfo vci {};
-            auto dr = rhi::vulkan::create_vulkan_device(vci);
-            if (!dr.has_value())
-            {
-                std::fprintf(stderr,
-                             "editor: Vulkan device create failed, switching to NullDevice.\n");
-                window.reset();
-                using_null = true;
+                ImGui::TextDisabled("no match (%zu commands)", palette.size());
             }
             else
             {
-                device = std::move(*dr);
-                render::RendererDesc rd {};
-                rd.device                   = device.get();
-                rd.swapchain.window_handle  = window->native_window_handle();
-                rd.swapchain.display_handle = window->native_display_handle();
-                rd.swapchain.extent         = { window->width(), window->height() };
-                rd.swapchain.format         = rhi::Format::kBGRA8Unorm;
-                rd.frames_in_flight         = 2U;
-                auto rr = render::Renderer::create(rd);
-                if (!rr.has_value())
+                for (std::size_t i = 0; i < hits.size() && i < 24; ++i)
                 {
-                    std::fprintf(stderr,
-                                 "editor: Renderer::create failed, switching to NullDevice.\n");
-                    window.reset();
-                    device.reset();
-                    using_null = true;
-                }
-                else
-                {
-                    renderer.emplace(std::move(*rr));
-                }
-            }
-        }
-    }
-
-    if (using_null)
-    {
-        device = std::make_unique<rhi::NullDevice>();
-        std::printf("editor: running headless on cd::rhi::NullDevice (no GPU swapchain).\n");
-    }
-    else
-    {
-        std::printf("editor: booted Vulkan backend + Renderer swapchain. ESC to exit.\n");
-    }
-    std::fflush(stdout);
-
-#if defined(CD_USE_MATERIAL_UI_ROUTE_A)
-    constexpr bool kEditorPreferRouteA = true;
-#else
-    constexpr bool kEditorPreferRouteA = false;
-#endif
-
-    urr::SubmitterCreateInfo sci {};
-    sci.max_vertices = 262144U;
-    sci.max_indices  = 786432U;
-    sci.color_format = rhi::Format::kBGRA8Unorm;
-
-    // Runtime self-test marker -- which route actually produced the
-    // working submitter. Logged once after submitter wire-up so the user
-    // sees the active path on every boot. Values:
-    //   0 = uninitialized
-    //   1 = Route A succeeded (preferred path took effect)
-    //   2 = Route A attempted then failed; Route B succeeded (fallback)
-    //   3 = Route B was the only attempt (flag OFF or A path unavailable)
-    int route_taken { 0 };
-
-    cd::core::Result<urr::Submitter> sub_r =
-        std::unexpected(cd::core::ErrorCode { 0x0001U, 0U, "uninitialized" });
-
-    if (kEditorPreferRouteA)
-    {
-        // Build the cd::material::UiVariant up front. Phase 648 / M10 W3A
-        // Sprint-3: opt into the Sprint-2 theme-UBO branch so the variant
-        // carries a real fragment-stage descriptor set (theme palette).
-        // SDF sampler stays off because apps/editor does not yet wire its
-        // ui_font atlas into a TextureView the submitter can sample.
-        const std::array<rhi::Format, 1> kColorFormats {
-            rhi::Format::kBGRA8Unorm,
-        };
-        cd::material::UiVariantSpec vspec {};
-        vspec.color_attachment_formats = std::span<const rhi::Format>(
-            kColorFormats.data(), kColorFormats.size());
-        vspec.use_theme_palette_ubo = true;
-        vspec.theme_palette_ubo_slot = 0U;
-        vspec.name = "editor_ui_variant_route_a";
-
-        auto var_r = cd::material::create_ui_variant(*device, vspec);
-        if (!var_r.has_value())
-        {
-            std::fprintf(stderr,
-                         "editor: WARNING -- Route A (cd::material UI variant) "
-                         "create_ui_variant failed: domain=%u code=%u -- "
-                         "falling back to Route B (inline GLSL).\n",
-                         var_r.error().domain, var_r.error().code);
-            sub_r = urr::Submitter::create_with_inline_shader(*device, sci);
-            route_taken = sub_r.has_value() ? 2 : 0;
-        }
-        else
-        {
-            sub_r = urr::Submitter::create_with_material_ui_variant(
-                *device, sci, std::move(*var_r));
-            if (!sub_r.has_value())
-            {
-                std::fprintf(stderr,
-                             "editor: WARNING -- Route A "
-                             "Submitter::create_with_material_ui_variant "
-                             "failed: domain=%u code=%u -- falling back "
-                             "to Route B (inline GLSL).\n",
-                             sub_r.error().domain, sub_r.error().code);
-                sub_r = urr::Submitter::create_with_inline_shader(*device, sci);
-                route_taken = sub_r.has_value() ? 2 : 0;
-            }
-            else
-            {
-                route_taken = 1;
-            }
-        }
-    }
-    else
-    {
-        sub_r = urr::Submitter::create_with_inline_shader(*device, sci);
-        route_taken = sub_r.has_value() ? 3 : 0;
-    }
-
-    if (!sub_r.has_value())
-    {
-        std::fprintf(stderr,
-                     "editor: ui_renderer_rhi::Submitter::create failed on "
-                     "both Route A and Route B (last error: domain=%u code=%u).\n",
-                     sub_r.error().domain, sub_r.error().code);
-        return 2;
-    }
-    auto& submitter = *sub_r;
-
-    // Phase 731 / FINALE-1 W2C A7 — Route A is the default-ON ship path
-    // (CMake CD_USE_MATERIAL_UI_ROUTE_A default ON since phase659; the
-    // editor binary boots through cd::material's UI pipeline end-to-end).
-    // On the success case we emit the single-line "Route A active" marker
-    // the audit asks for; the fallback / Route-B-only branches keep their
-    // longer diagnostic strings because they signal a regression and the
-    // operator needs the error context immediately.
-    switch (route_taken)
-    {
-        case 1:
-            std::printf("editor: Route A active.\n");
-            break;
-        case 2:
-            std::printf("editor: submitter route = "
-                        "Route A failed -> Route B fallback (inline GLSL).\n");
-            break;
-        case 3:
-            std::printf("editor: submitter route = "
-                        "Route B only (CD_USE_MATERIAL_UI_ROUTE_A off).\n");
-            break;
-        default:
-            std::printf("editor: submitter route = unknown.\n");
-            break;
-    }
-    std::fflush(stdout);
-
-    // Feed the editor's dark theme palette into the variant's theme UBO so
-    // the fragment shader's `tint` math multiplies vertex color by the real
-    // swatches. Only meaningful on Route A; `set_theme_palette` is a no-op
-    // (returns false) on the Route B inline path, so the call is safe to
-    // make unconditionally.
-    if (route_taken == 1)
-    {
-        const auto dark = uth::k_dark_theme();
-        const auto pri  = dark.color(uth::PaletteSlot::kPrimary);
-        const auto sec  = dark.color(uth::PaletteSlot::kSecondary);
-        const auto sur  = dark.color(uth::PaletteSlot::kSurface);
-        const auto on_s = dark.color(uth::PaletteSlot::kOnSurface);
-        cd::material::UiThemePaletteUbo palette {};
-        palette.primary[0]    = pri.r;  palette.primary[1]    = pri.g;
-        palette.primary[2]    = pri.b;  palette.primary[3]    = pri.a;
-        palette.secondary[0]  = sec.r;  palette.secondary[1]  = sec.g;
-        palette.secondary[2]  = sec.b;  palette.secondary[3]  = sec.a;
-        palette.surface[0]    = sur.r;  palette.surface[1]    = sur.g;
-        palette.surface[2]    = sur.b;  palette.surface[3]    = sur.a;
-        palette.on_surface[0] = on_s.r; palette.on_surface[1] = on_s.g;
-        palette.on_surface[2] = on_s.b; palette.on_surface[3] = on_s.a;
-        const bool pal_ok = submitter.set_theme_palette(palette);
-        std::printf("editor: Route A theme palette upload %s.\n",
-                    pal_ok ? "OK" : "skipped (variant has no theme UBO)");
-    }
-
-    // -- 8. Frame loop ------------------------------------------------------
-    ur::DrawBatcher                batcher;
-    PointerAccumulator             pointer {};
-    std::vector<platform::OSEvent> events;
-    events.reserve(64);
-
-    const std::uint32_t default_headless = using_null ? 1U : 0U;
-    const std::uint32_t req_frames =
-        local.max_frames > 0U ? local.max_frames : runtime.headless_frames;
-    const std::uint32_t cap_frames =
-        req_frames > 0U ? req_frames : default_headless;
-
-    // phase685 / M13 W6B — boot splash + real FPS feed + first-launch welcome.
-    BootSplash                       boot_splash {};   // starts counting from now
-    cd::frame_timing::FrameTimeRing<120> ft_ring {};  // feeds real fps to overlays + status bar
-    std::chrono::steady_clock::time_point prev_tp = std::chrono::steady_clock::now();
-
-    // phase707 / M15 W6B — particle system driving the cinematic boot splash
-    // background.  Lifetime matches the splash window (kSolidMs + kFadeMs =
-    // 2.8 s max).  The optional<> is reset when the splash is done so the
-    // System is destroyed cleanly (no leaked allocations after boot).
-    //
-    // Emitter parameters:
-    //   * 20 particles/sec — steady slow rain of green glows.
-    //   * velocity_x in [-400, 400] px/s — wide horizontal spread.
-    //   * velocity_y in  [40,  120] px/s — upward drift in sim-space;
-    //     mapped to -screen_y at draw time.
-    //   * life_seconds = 4.0 s — fades out gracefully over full lifetime.
-    //   * color_start alpha = 0.6, color_end alpha = 0.0 (fade-to-transparent).
-    using cd::particle::system::System;
-    using cd::particle::system::EmitterSpec;
-    using cd::particle::system::ParticleSpec;
-    using cd::particle::system::ParticleSnapshot;
-
-    std::optional<System> splash_particles;
-    if (window)
-    {
-        splash_particles.emplace();
-
-        ParticleSpec pspec;
-        pspec.life_seconds = 4.0F;
-        pspec.size_start   = 1.0F;
-        pspec.size_end     = 0.5F;
-        // accent_success: { 80, 200, 100 } normalised -> { 0.314, 0.784, 0.392 }
-        pspec.color_start  = { 0.314F, 0.784F, 0.392F, 0.6F };
-        pspec.color_end    = { 0.314F, 0.784F, 0.392F, 0.0F };
-
-        EmitterSpec espec;
-        espec.emit_rate_per_sec = 20.0F;
-        espec.position          = { 0.0F, 0.0F, 0.0F };
-        espec.velocity_min      = { -400.0F,  40.0F, 0.0F };
-        espec.velocity_max      = {  400.0F, 120.0F, 0.0F };
-        espec.particle           = pspec;
-
-        splash_particles->add_emitter(espec);
-        std::printf("editor: splash particle system ACTIVE (20/sec, 4s life, accent_success).\n");
-        std::fflush(stdout);
-    }
-
-    // Snapshot buffer — reused every frame to avoid per-frame allocation.
-    // 512 slots: 20/sec * 4s max life = 80 live particles steady-state max.
-    // We over-provision to handle bursts safely.
-    constexpr std::size_t kParticleSnapCap = 512U;
-    std::array<ParticleSnapshot, kParticleSnapCap> particle_snap_buf {};
-    std::size_t particle_snap_count = 0U;
-
-    // -- phase775 / FINALE-8 W1B H2 — splash audio cue ----------------------
-    //
-    // A 500 ms sine-wave chime (440 Hz, soft ADSR envelope) is generated
-    // procedurally at runtime and played once via the native audio backend
-    // at splash t = 300 ms (after the title begins to fade in).
-    //
-    // Resolution order:
-    //   1. make_native_audio_backend() — WASAPI on Windows; falls through to
-    //      null backend if WASAPI cannot initialise (e.g. headless CI with no
-    //      audio service).
-    //   2. Null backend — accepts clip + play calls; produces no output.
-    //      The chime trigger still fires (fired() == true); chimed() == false
-    //      because the null backend is still a valid backend, it just produces
-    //      no sound.
-    //
-    // MOMENT: the CHROMODYNAMIC title fades in, a soft chime sounds at 300 ms —
-    // the engine has a voice the moment it starts.
-    cd::audio::NativeBackendResult splash_audio_result =
-        cd::audio::make_native_audio_backend();
-
-    std::printf("editor: splash audio backend = %s\n",
-                [&]() -> const char*
-                {
-                    switch (splash_audio_result.kind)
+                    const auto& e = palette.at(hits[i]);
+                    char row[160] {};
+                    std::snprintf(row, sizeof(row), "  %s", e.label.c_str());
+                    if (ImGui::Selectable(row))
                     {
-                        case cd::audio::NativeBackendKind::kWasapi:      return "WASAPI";
-                        case cd::audio::NativeBackendKind::kCoreAudio:   return "CoreAudio";
-                        case cd::audio::NativeBackendKind::kAlsa:        return "ALSA";
-                        case cd::audio::NativeBackendKind::kNullFallback: return "null fallback";
+                        (void)palette.invoke(hits[i]);
+                        palette_visible = false;
+                        palette_query.clear();
+                        break;
                     }
-                    return "unknown";
-                }());
-    std::fflush(stdout);
+                }
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) && !hits.empty())
+            {
+                (void)palette.invoke(hits.front());
+                palette_visible = false;
+                palette_query.clear();
+            }
+        }
+        ImGui::End();
+    }
+}
 
-    cd::editor::SplashAudioCue splash_audio_cue {};
+// =============================================================================
+// Phase 295 / Marathon Run 7 sub-N1G: scene-bootstrap helpers extracted
+// from main(). These are sample-local (operate on the anon-namespace
+// SceneEntity / PrimitiveKind) so they live in main.cpp rather than a
+// library header. main() shrinks and the boot region reads as four
+// named call sites instead of three nested initializer blocks.
+// =============================================================================
 
-    // First-time-user welcome dialog state.  Active only on first_launch
-    // (no .cdproj existed at startup) and only once the splash has finished.
-    FirstTimeWelcome welcome_dialog {};
-    if (first_launch && window)
+// ---- setup_world_container ------------------------------------------------
+// phase1146 (on_boot extraction batch 7): moved VERBATIM to
+// StudioBootProject.hpp (cd_studio) — the file-scope using-decl above keeps
+// the unqualified callsites compiling unchanged.
+
+// ---- spawn_primitive_seeds -----------------------------------------------
+// Spawn the original 5-primitive showcase row (Cube/Sphere/Cone/
+// Cylinder/Torus) across x=-2.4..+2.4 at y=0. The saturated artistic
+// palette preserves enough off-channel content for each tint to read
+// distinctly without going to pure RGB.
+inline void spawn_primitive_seeds(cd::scene::Scene& scene,
+                                  std::vector<SceneEntity>& entities)
+{
+    struct Seed
     {
-        // Will be shown() once the splash finishes — see frame loop below.
-        std::printf("editor: first launch detected — welcome dialog queued.\n");
+        const char* name {};
+        cd::math::Vec3f pos;
+        cd::math::Vec3f tint;
+        PrimitiveKind k {};
+    };
+    const std::array<Seed, 5> seeds {
+        {
+            { "Cube",     { -2.4F, 0.0F, 0.0F }, { 1.00F, 0.10F, 0.10F }, PrimitiveKind::kCube     },
+            { "Sphere",   { -1.2F, 0.0F, 0.0F }, { 0.20F, 0.95F, 0.30F }, PrimitiveKind::kSphere   },
+            { "Cone",     {  0.0F, 0.0F, 0.0F }, { 0.15F, 0.40F, 1.00F }, PrimitiveKind::kCone     },
+            { "Cylinder", {  1.2F, 0.0F, 0.0F }, { 1.00F, 0.75F, 0.15F }, PrimitiveKind::kCylinder },
+            { "Torus",    {  2.4F, 0.0F, 0.0F }, { 0.90F, 0.15F, 0.90F }, PrimitiveKind::kTorus    },
+        }
+    };
+    for (const auto& s : seeds)
+    {
+        SceneEntity e;
+        e.handle = scene.create_node();
+        e.name = s.name;
+        e.tint = s.tint;
+        e.kind = s.k;
+        scene.local(e.handle)->value.position = s.pos;
+        entities.push_back(std::move(e));
+    }
+}
+
+// ---- spawn_sponza_and_cesiumman_entities ---------------------------------
+// Spawn two glTF entities:
+//   1. Sponza Atrium (kSponza) — static scene, identity rotation (glTF
+//      Khronos Sponza is already Y-up), scale 0.01 to convert raw
+//      centimeter vertices to meters. Placed at origin.
+//   2. CesiumMan (kGltf) — animated character inside the nave. Z-up
+//      -> Y-up correction (-90 deg X) applied because CesiumMan.glb
+//      is authored in Z-up.  Falls back to a procedural Earth sphere
+//      when CesiumMan was not found on disk.
+//
+// When neither Sponza nor CesiumMan is available the old single Earth
+// fallback entity is produced (kGltf, procedural).
+inline void spawn_sponza_and_cesiumman_entities(cd::scene::Scene& scene,
+                                                const GpuMesh& sponza_mesh,
+                                                std::string_view sponza_loaded_name,
+                                                const GpuMesh& cesium_mesh,
+                                                std::string_view cesium_loaded_name,
+                                                std::vector<SceneEntity>& entities)
+{
+    // --- Sponza entity (kSponza) ---
+    if (sponza_mesh.vb.is_valid())
+    {
+        SceneEntity es;
+        es.handle = scene.create_node();
+        es.name   = std::string { "Sponza (" } + std::string { sponza_loaded_name } + ")";
+        es.tint   = { 1.0F, 1.0F, 1.0F };
+        es.kind   = PrimitiveKind::kSponza;
+        // Sponza vertices are in centimetres (glTF node carries 0.008 scale
+        // which our loader ignores at vertex-read time).  0.01 brings it to
+        // a metre-scale room that the default camera sees comfortably.
+        // Identity rotation: Khronos Sponza glTF is Y-up, no correction needed.
+        scene.local(es.handle)->value.position = { 0.0F, 0.0F, 0.0F };
+        scene.local(es.handle)->value.scale    = { 0.01F, 0.01F, 0.01F };
+        // Identity quaternion (w=1) — no rotation.
+        scene.local(es.handle)->value.rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
+        entities.push_back(std::move(es));
     }
 
-    // phase684 / M13 W6A — Debug Visualization overlays -------------------------
-    //
-    // Three ~200x150 px thumbnails stacked vertically in the top-right corner
-    // of the editor (below the profiling overlays).  Each carries a separate
-    // VizKind and is independently toggled via set_visible().  Sprint-1 renders
-    // coloured placeholder gradients so the overlay surfaces are immediately
-    // visible; Sprint-2 replaces them with real G-buffer texture samples once
-    // cd::render::framegraph exposes depth/normal/bucket textures cleanly.
-    //
-    // MOMENT: A render dev hits a curtain-bleed-through bug, toggles 'Alpha
-    // Bucket' viz, sees the curtain is correctly classified as red (kAlphaBlend),
-    // confirms the framegraph order is right, narrows the bug elsewhere.
-    using DebugVizOverlay = cd::editor::debug_viz::DebugVizOverlay;
-    using VizKind         = cd::editor::debug_viz::VizKind;
-    DebugVizOverlay dbg_depth  { VizKind::kDepth };
-    DebugVizOverlay dbg_normal { VizKind::kNormal };
-    DebugVizOverlay dbg_bucket { VizKind::kAlphaBucket };
-    dbg_depth.set_visible(false);
-    dbg_normal.set_visible(false);
-    dbg_bucket.set_visible(false);
-
-    constexpr std::uint32_t kGBufferDepthSlot  = 0xD0000001u;  // depth   target slot
-    constexpr std::uint32_t kGBufferNormalSlot = 0xD0000002u;  // normal  target slot
-    constexpr std::uint32_t kGBufferAlbedoSlot = 0xD0000003u;  // albedo  target slot
-
-    const cd::rhi::TextureHandle gbuffer_depth_tex {
-        static_cast<cd::rhi::TextureHandle::index_type>(kGBufferDepthSlot),
-        static_cast<cd::rhi::TextureHandle::generation_type>(1U) };
-    const cd::rhi::TextureHandle gbuffer_normal_tex {
-        static_cast<cd::rhi::TextureHandle::index_type>(kGBufferNormalSlot),
-        static_cast<cd::rhi::TextureHandle::generation_type>(1U) };
-    const cd::rhi::TextureHandle gbuffer_albedo_tex {
-        static_cast<cd::rhi::TextureHandle::index_type>(kGBufferAlbedoSlot),
-        static_cast<cd::rhi::TextureHandle::generation_type>(1U) };
-    (void)gbuffer_depth_tex;
-    (void)gbuffer_normal_tex;
-    (void)gbuffer_albedo_tex;
-
-    std::printf("editor: debug_viz overlays ACTIVE: depth=%s  normal=%s  alpha_bucket=%s\n",
-                dbg_depth.is_visible()  ? "ON" : "OFF",
-                dbg_normal.is_visible() ? "ON" : "OFF",
-                dbg_bucket.is_visible() ? "ON" : "OFF");
-    std::fflush(stdout);
-
-    // -- phase720 / M17 W3 — 30 s auto-save timer + dirty-flag propagation ----
-    //
-    // Drives the AutoSaveIndicator status-bar widget through its five-state
-    // lifecycle (kIdle / kPendingDirty / kSaving / kJustSaved / kError).
-    //
-    // Dirty propagation:
-    //   * A short hash of (dock_layout_hex || theme_name || window geometry) is
-    //     recomputed every frame.  Any change (e.g. user drags a divider, swaps
-    //     theme, resizes window) flips the indicator to kPendingDirty and arms
-    //     the auto-save timer.
-    //
-    // Auto-save cadence:
-    //   * Every kAutosaveIntervalMs the editor checks the dirty flag; if dirty,
-    //     it flips the indicator to kSaving, writes the .cdproj atomically via
-    //     cd::editor::cdproj::write_cdproj, then flips to kJustSaved (or kError
-    //     on write failure).  The "Saved N s ago" counter is refreshed each
-    //     frame so the indicator's label stays current.
-    //
-    // Initial state:
-    //   * Idle on boot (boot itself doesn't count as user-driven change).  The
-    //     first divider drag / theme swap / resize transitions to PendingDirty.
-    //
-    // MOMENT: a user edits the layout, walks away for 30 seconds, returns to
-    // find the indicator showing "Saved 12s ago" — they never lose work to a
-    // crash because the editor saves itself proactively.
-
-    using auto_save_status = cd::editor::panel::auto_save_indicator::Status;
-    constexpr double kAutosaveIntervalMs = 30'000.0;  // 30 seconds
-
-    // Hash the persisted-state snapshot so we detect "data has changed since
-    // last save" purely from observable fields (no scattered dirty flags to
-    // sync across panels). Uses std::hash<std::string> on a concatenated key
-    // so equivalent snapshots collapse to the same value.
-    auto compute_state_hash = [&]() -> std::size_t {
-        std::string key;
-        key.reserve(64);
-        // DockSpace serialized layout (hex string, JSON-safe).
-        key.append(dock_layout_to_hex(dockspace.serialize()));
-        key.push_back('|');
-        // Active theme name.
-        key.append(active_theme_name);
-        key.push_back('|');
-        // Window geometry: position + size + maximized flag.
-        const std::uint32_t ww = window ? window->width()  : 0U;
-        const std::uint32_t wh = window ? window->height() : 0U;
-        key.append(std::to_string(ww));
-        key.push_back('x');
-        key.append(std::to_string(wh));
-        return std::hash<std::string>{}(key);
-    };
-
-    const std::size_t initial_state_hash = compute_state_hash();
-    std::size_t        last_saved_state_hash    { initial_state_hash };
-    auto               last_save_tp             = std::chrono::steady_clock::now();
-    auto               last_autosave_check_tp   = std::chrono::steady_clock::now();
-    bool               autosave_logged_fired    { false };
-
-    // -- phase776 — chord state machine + Ctrl modifier tracking ---------------
-    namespace kso_ns = cd::editor::panel::keyboard_shortcut_overlay;
-    kso_ns::ChordStateMachine chord_sm;
-    bool ctrl_down { false };
-    const auto now_ms = []() noexcept -> std::int64_t {
-        return static_cast<std::int64_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now().time_since_epoch())
-            .count());
-    };
-
-    bool          needs_rebuild        { false };
-    std::uint32_t frame_idx            { 0U };
-    // phase785 / E5 — input recorder state tracking.
-    // was_recording: carry-forward of is_recording() from the previous frame so
-    // we detect the exact frame the user clicks Stop and trigger the auto-save.
-    // replay_elapsed_ms: monotonic replay cursor incremented per frame while
-    // the replayer is active, used to gate next_event() delivery.
-    bool   was_recording      { false };
-    double replay_elapsed_ms  { 0.0 };
-
-    cd::editor::studio::StudioWorkbench studio_workbench {};
-    if (local.pie_play)
+    // --- CesiumMan entity (kGltf) ---
     {
-        studio_workbench.start_play(active_stage, pie_controller);
+        SceneEntity ec;
+        ec.handle = scene.create_node();
+        ec.tint   = { 1.0F, 1.0F, 1.0F };
+        ec.kind   = PrimitiveKind::kGltf;
+        if (cesium_mesh.vb.is_valid())
+        {
+            ec.name = std::string { "CesiumMan (" } + std::string { cesium_loaded_name } + ")";
+            // phase832-default-view-unblock-pbr-grid:
+            // CesiumMan was at world origin (0, 0, 0) which sat **directly
+            // in front of** the phase799-relocated PBR demo grid (at Z=0,
+            // X∈[-1.58,+1.58], Y∈[0.55,3.70]). The default M2 camera at
+            // (0, 2.5, +8) → (0, 1, 0) saw CesiumMan filling the centre
+            // of the view; the chrome grid behind it was invisible at
+            // app launch.
+            //
+            // Move CesiumMan to world (-4, 0, -1.5) — off to the entrance
+            // (-X) side of the nave, slightly toward the back wall. The
+            // character still inhabits Sponza, still casts shadows, still
+            // reflects on chrome (it is in the TLAS), but it no longer
+            // occludes the front of the grid from the default camera.
+            scene.local(ec.handle)->value.position = { -4.0F, 0.0F, -1.5F };
+            scene.local(ec.handle)->value.scale    = { 2.2F, 2.2F, 2.2F };
+            // X -90 deg rotation (CesiumMan.glb is Z-up -> engine Y-up).
+            scene.local(ec.handle)->value.rotation = { -0.7071068F, 0.0F, 0.0F, 0.7071068F };
+        }
+        else if (!sponza_mesh.vb.is_valid())
+        {
+            // No Sponza and no CesiumMan: procedural Earth fallback.
+            ec.name = "Earth (procedural showcase)";
+            scene.local(ec.handle)->value.position = { -4.5F, 0.7F, 0.0F };
+            scene.local(ec.handle)->value.scale    = { 1.5F, 1.5F, 1.5F };
+            // Identity rotation for procedural Earth.
+            scene.local(ec.handle)->value.rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
+        }
+        else
+        {
+            // Sponza loaded but no CesiumMan: skip the kGltf entity to avoid
+            // an empty mesh placeholder.
+            return;
+        }
+        entities.push_back(std::move(ec));
+    }
+}
+
+// ---- spawn_chrome_probe_entity --------------------------------------------
+// phase797-rt-chrome-sponza-probe: spawn ONE chrome sphere at the world
+// position locked in SponzaFixtures.hpp (kChromeProbePosition). This
+// sphere is the iteration anchor for the chrome-reflection golden loop:
+// the fixture-#5 camera (`chrome_probe` slug) frames it with curtains
+// + columns behind, and `--golden-fixture 5 --golden-out X.png` writes
+// a deterministic PNG that I (the agent) can read back and verify.
+//
+// The probe is only spawned when fixture #5 is active so the normal
+// chromodynamic_studio scene stays byte-identical for every other fixture and
+// every interactive run. Metallic=1, roughness=0.04 (near-mirror) so
+// the SSBO reflection branch dominates and any RT-energy bug is
+// immediately visible on the captured PNG.
+inline void spawn_chrome_probe_entity(cd::scene::Scene&         scene,
+                                      std::vector<SceneEntity>& entities)
+{
+    SceneEntity e;
+    e.handle    = scene.create_node();
+    e.name      = "ChromeProbe (phase797)";
+    e.kind      = PrimitiveKind::kSphere;
+    e.tint      = cd::math::Vec3f { 0.95F, 0.93F, 0.88F };  // matches PBR grid chrome albedo
+    e.is_pbr    = true;
+    e.metallic  = 1.0F;
+    e.roughness = 0.04F;
+    scene.local(e.handle)->value.position = {
+        cd::studio_rt::sponza_fixtures::kChromeProbePosition[0],
+        cd::studio_rt::sponza_fixtures::kChromeProbePosition[1],
+        cd::studio_rt::sponza_fixtures::kChromeProbePosition[2],
+    };
+    const float k = cd::studio_rt::sponza_fixtures::kChromeProbeScale;
+    scene.local(e.handle)->value.scale    = { k, k, k };
+    entities.push_back(std::move(e));
+}
+
+// ---- spawn_pbr_grid_entities ---------------------------------------------
+// Consume the 4x4 PbrGridSlot array from StudioPbrSphereGrid.hpp and assemble
+// one SceneEntity per slot. Sample-local SceneEntity / PrimitiveKind
+// assembly stays here; pure data + math lives in the header.
+inline void spawn_pbr_grid_entities(cd::scene::Scene& scene,
+                                    std::vector<SceneEntity>& entities)
+{
+    // phase999-pbr-default-texture-off (was phase983): spawn the PBR
+    // grid with EVERY sphere starting on the procedural-color path.
+    // The user opts into the albedo texture path per-entity via the
+    // Inspector "Albedo texture (PBR opt-in)" checkbox or grid-wide
+    // via the R-Showcase R2 panel buttons. See phase999 comment in
+    // the loop body for the user-feedback rationale.
+    for (const auto& slot : cd::studio_rt::build_pbr_demo_grid())
+    {
+        SceneEntity e;
+        e.handle = scene.create_node();
+        e.name = slot.name;
+        e.kind = PrimitiveKind::kSphere;
+        e.tint = slot.tint;
+        e.is_pbr = true;
+        e.metallic = slot.metallic;
+        e.roughness = slot.roughness;
+        // phase999-pbr-default-texture-off: user feedback (Run 26)
+        // pointed out that auto-texturing the dielectric column makes
+        // the non-metallic spheres look WRONG ("metalic olmayan
+        // objelerde kendi textureleri varmış gibi gördüm"). Roll
+        // back the default seed -- every PBR sphere starts with
+        // use_texture = false (procedural color). The user opts in
+        // per-entity via the Inspector "Albedo texture (PBR opt-in)"
+        // checkbox or grid-wide via the R-Showcase R2 panel buttons
+        // (Textured ALL / Textured RIGHT COL). kPbrGridTexturedColumn
+        // constant in StudioPbrSphereGrid.hpp remains as the documented
+        // default-on column for the RIGHT COL preset, but no longer
+        // applied at spawn time.
+        e.use_texture = false;
+        scene.local(e.handle)->value.position = slot.position;
+        scene.local(e.handle)->value.scale = { slot.scale, slot.scale, slot.scale };
+        entities.push_back(std::move(e));
+    }
+}
+
+// ---- upload_multi_light_ubo ------------------------------------------------
+// Walks every enabled non-sun light and packs into the descriptor-bound UBO.
+// Up to kMaxLights (8) slots; extras drop silently (caller can read the
+// "lights_active" counter to see how many landed). Directional lights are
+// driven through PrimPush.sun_dir, not the multi-light UBO -- pack_light_slot
+// returns false for them so they're skipped automatically here.
+inline void upload_multi_light_ubo(cd::rhi::IDevice& device,
+                                   cd::rhi::BufferHandle lights_ubo,
+                                   const std::vector<LightRow>& lights,
+                                   cd::core::CounterTable& counters)
+{
+    LightUboGpu ubo {};
+    ubo.count = 0;
+    for (const auto& lrow : lights)
+    {
+        if (!lrow.enabled)
+            continue;
+        if (ubo.count >= cd::studio_rt::kMaxLights)
+            break;
+        if (!pack_light_slot(ubo.slots[ubo.count], lrow.light))
+            continue;
+        ++ubo.count;
+    }
+    (void)device.upload_buffer(
+        lights_ubo,
+        0,
+        std::span<const std::byte>(reinterpret_cast<const std::byte*>(&ubo), sizeof(ubo))
+    );
+    counters.set("lights_active", ubo.count);
+}
+
+// GizmoMode, GizmoState, PrevCamBasis moved to file scope (before namespace {}).
+
+// ---- SunLight + resolve_sun_light -----------------------------------------
+// Per-frame extracted from main loop in phase 307 (N4B). The sun slot
+// (direction + linear RGB + clamped strength + ambient hemisphere weight)
+// is rebuilt every frame from the first enabled directional light. If no
+// directional light is enabled, every field stays at the dark default so
+// the scene fades to (near-)black -- user feedback: "isik yoksa golge
+// yada isik beklemem".
+struct SunLight
+{
+    cd::math::Vec3f dir { 0.0F, -1.0F, 0.0F };
+    cd::math::Vec3f col { 0.0F, 0.0F, 0.0F };
+    float strength { 0.0F };
+    float ambient_w { 0.0F };
+    bool has_sun { false };
+};
+
+inline SunLight resolve_sun_light(const std::vector<LightRow>& lights)
+{
+    SunLight s {};
+    for (const auto& lrow : lights)
+    {
+        if (!lrow.enabled)
+            continue;
+        if (lrow.light.type != cd::light::LightType::kDirectional)
+            continue;
+        s.dir = lrow.light.direction;
+        s.col = lrow.light.color;
+        s.strength = std::min(2.5F, lrow.light.intensity / 80000.0F);
+        // Sky hemisphere tied to sun being enabled: no sun, no sky bounce.
+        s.ambient_w = 0.18F;
+        s.has_sun = true;
+        break;
+    }
+    return s;
+}
+
+// ---- fill_prim_push_shared --------------------------------------------------
+// Floor + ECS entity draws each push a PrimPush, and the fx + sun + camera
+// fields are identical between them (R-Showcase knobs + sun frame state +
+// camera-pos for parallax). Pulled out in phase 308 (N4C-prep) so the
+// downstream floor/ECS helpers only have to set the per-mesh fields
+// (mvp / model / tint / per-entity fx_params4 [PBR vs BRDF]).
+inline void fill_prim_push_shared(PrimPush& pp,
+                                  const cd_studio::StudioRenderFx& fx,
+                                  const SunLight& sun,
+                                  const cd::camera::Camera& cam)
+{
+    pp.sun_dir[0] = sun.dir.x;
+    pp.sun_dir[1] = sun.dir.y;
+    pp.sun_dir[2] = sun.dir.z;
+    pp.sun_dir[3] = sun.strength;
+    pp.sun_color[0] = sun.col.x;
+    pp.sun_color[1] = sun.col.y;
+    pp.sun_color[2] = sun.col.z;
+    pp.sun_color[3] = sun.ambient_w;
+    pp.fx_params[0] = static_cast<float>(fx.tonemap_op);
+    pp.fx_params[2] = fx.gtao_strength;
+    pp.fx_params[3] = fx.bloom_strength;
+    pp.fx_params2[0] = fx.smaa_strength;
+    pp.fx_params2[1] = fx.motion_blur;
+    pp.fx_params2[2] = fx.taa_amount;
+    pp.fx_params2[3] = fx.dof_strength;
+    pp.fx_params3[0] = fx.fog_density;
+    pp.fx_params3[1] = fx.aerial_perspective;
+    pp.fx_params3[2] = fx.clouds_coverage;
+    pp.fx_params3[3] = fx.light_shafts;
+    pp.camera_pos[0] = cam.eye.x;
+    pp.camera_pos[1] = cam.eye.y;
+    pp.camera_pos[2] = cam.eye.z;
+    pp.camera_pos[3] = 0.0F;
+}
+
+// ---- draw_sky_pass --------------------------------------------------------
+// Rebuild the camera-space basis (fwd / right / up + half-extents),
+// fill cd::material::AnalyticalSkyPush, then apply the sky material +
+// push constants + draw the fullscreen triangle. Tints the sky with the
+// directional sun_col at full sky-tint blend so the CCT slider in the
+// Lights panel propagates to the sky too.
+inline void draw_sky_pass(cd::rhi::IDrawRecorder& cmd,
+                          const cd::camera::Camera& cam,
+                          float aspect,
+                          const SunLight& sun,
+                          cd::material::Material& sky_material)
+{
+    cd::math::Vec3f forward { cam.target.x - cam.eye.x,
+                              cam.target.y - cam.eye.y,
+                              cam.target.z - cam.eye.z };
+    const float fl = std::sqrt(forward.x * forward.x + forward.y * forward.y + forward.z * forward.z);
+    forward.x /= fl;
+    forward.y /= fl;
+    forward.z /= fl;
+    constexpr cd::math::Vec3f world_up { 0.0F, 1.0F, 0.0F };
+    cd::math::Vec3f sky_right { forward.y * world_up.z - forward.z * world_up.y,
+                                forward.z * world_up.x - forward.x * world_up.z,
+                                forward.x * world_up.y - forward.y * world_up.x };
+    const float rl = std::sqrt(sky_right.x * sky_right.x + sky_right.y * sky_right.y + sky_right.z * sky_right.z);
+    sky_right.x /= rl;
+    sky_right.y /= rl;
+    sky_right.z /= rl;
+    const cd::math::Vec3f sky_up { sky_right.y * forward.z - sky_right.z * forward.y,
+                                   sky_right.z * forward.x - sky_right.x * forward.z,
+                                   sky_right.x * forward.y - sky_right.y * forward.x };
+    const float half_h = std::tan(cam.fov_y * 0.5F);
+    const float half_w = half_h * aspect;
+
+    cd::material::AnalyticalSkyPush spush {};
+    spush.cam_right[0] = sky_right.x;
+    spush.cam_right[1] = sky_right.y;
+    spush.cam_right[2] = sky_right.z;
+    spush.cam_right[3] = half_w;
+    spush.cam_up[0] = sky_up.x;
+    spush.cam_up[1] = sky_up.y;
+    spush.cam_up[2] = sky_up.z;
+    spush.cam_up[3] = half_h;
+    spush.cam_fwd[0] = forward.x;
+    spush.cam_fwd[1] = forward.y;
+    spush.cam_fwd[2] = forward.z;
+    spush.cam_fwd[3] = 0.0F;
+    spush.sun_dir[0] = sun.dir.x;
+    spush.sun_dir[1] = sun.dir.y;
+    spush.sun_dir[2] = sun.dir.z;
+    spush.sun_dir[3] = sun.strength;
+    spush.sun_color[0] = sun.col.x;
+    spush.sun_color[1] = sun.col.y;
+    spush.sun_color[2] = sun.col.z;
+    spush.sun_color[3] = 1.0F;  // full sky-tint blend
+    sky_material.apply(cmd);
+    cmd.push_constants(
+        sky_material.pipeline_layout(),
+        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+        0,
+        sizeof(spush),
+        &spush
+    );
+    cmd.draw(3, 1, 0, 0);
+}
+
+// ---- draw_planar_shadows ---------------------------------------------------
+// Faz 1.5 planar projective shadows: each enabled caster ECS entity is
+// flattened onto the floor (y = floor_y) via make_planar_shadow_matrix
+// (taken from cd::render::PlanarShadow, Run 7 N1D) and re-drawn with
+// the tint.w=0 sentinel that triggers the prim FS shadow-bypass path
+// (flat dark output, no lighting).
+//
+// Parallel-prep / serial-draw split (X1E pattern, phase 287): each
+// shadow PrimPush is built in parallel into a pre-sized scratch
+// vector; the draw pass remains serial because Vulkan command-buffer
+// recording is not thread-safe per buffer (ADR-015).
+//
+// The MeshFor template lets the helper accept main()'s `mesh_for`
+// lambda without dragging the GpuMesh registry into a public header.
+template <typename MeshFor>
+inline void draw_planar_shadows(cd::rhi::IDrawRecorder& cmd,
+                                const SunLight& sun,
+                                float floor_y,
+                                float shadow_lift,
+                                const std::vector<SceneEntity>& entities,
+                                const cd::scene::Scene& scene,
+                                const cd::math::Mat4f& vp,
+                                cd::material::Material& prim_material,
+                                cd::core::CounterTable& counters,
+                                const MeshFor& mesh_for)
+{
+    // Skip when sun is disabled or pointing upward.
+    // DeMorgan with per-term negation (NOT operator flips) so NaN
+    // comparisons keep their exact pre-rewrite behaviour.
+    if (!(sun.strength > 1e-4F) || !(sun.dir.y < -1e-3F))
+        return;
+    const auto S = make_planar_shadow_matrix(sun.dir, floor_y, shadow_lift);
+    PrimPush sp {};
+    // Shadow tint: tint.w < 0.5 triggers shader bypass; rgb is the shadow
+    // color (linear, post-tonemap output).
+    sp.tint[0] = 0.04F;
+    sp.tint[1] = 0.04F;
+    sp.tint[2] = 0.05F;
+    sp.tint[3] = 0.0F;
+    // Zero out lighting fields - shadow path doesn't read them but keep the
+    // push deterministic for SPIR-V validators.
+    sp.sun_dir[0] = sp.sun_dir[1] = sp.sun_dir[2] = sp.sun_dir[3] = 0.0F;
+    sp.sun_color[0] = sp.sun_color[1] = sp.sun_color[2] = sp.sun_color[3] = 0.0F;
+    sp.fx_params[0] = sp.fx_params[1] = sp.fx_params[2] = sp.fx_params[3] = 0.0F;
+    sp.fx_params2[0] = sp.fx_params2[1] = sp.fx_params2[2] = sp.fx_params2[3] = 0.0F;
+    sp.fx_params3[0] = sp.fx_params3[1] = sp.fx_params3[2] = sp.fx_params3[3] = 0.0F;
+    sp.camera_pos[0] = sp.camera_pos[1] = sp.camera_pos[2] = sp.camera_pos[3] = 0.0F;
+    sp.fx_params4[0] = sp.fx_params4[1] = sp.fx_params4[2] = sp.fx_params4[3] = 0.0F;
+
+    std::vector<PrimPush> plan_push(entities.size());
+    std::vector<std::uint8_t> plan_valid(entities.size(), 0u);
+    cd::concurrency::parallel_for(
+        std::size_t { 0 },
+        entities.size(),
+        [&](std::size_t i)
+        {
+            const auto& ent = entities[i];
+            const auto& mesh = mesh_for(ent.kind);
+            if (!mesh.vb.is_valid())
+                return;
+            auto* lt = scene.local(ent.handle);
+            if (lt == nullptr)
+                return;
+            const auto model = cd::math::to_mat4(lt->value);
+            const auto shadow_model = S * model;
+            PrimPush& dst = plan_push[i];
+            dst = sp;
+            dst.mvp = vp * shadow_model;
+            dst.model = shadow_model;
+            plan_valid[i] = 1u;
+        }
+    );
+    for (std::size_t i = 0; i < entities.size(); ++i)
+    {
+        if (plan_valid[i] == 0u)
+            continue;
+        const auto& ent = entities[i];
+        const auto& mesh = mesh_for(ent.kind);
+        cmd.bind_vertex_buffer(0, mesh.vb, 0);
+        cmd.bind_index_buffer(mesh.ib, 0, mesh.index_type);
+        cmd.push_constants(
+            prim_material.pipeline_layout(),
+            cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+            0,
+            sizeof(PrimPush),
+            &plan_push[i]
+        );
+        cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
+        counters.increment("draws_shadow");
+    }
+}
+
+// ---- draw_shadow_map_pass --------------------------------------------------
+// Faz 1.6 CSM (single-cascade variant): each enabled directional-light
+// sun position drives an orthographic light_vp; entities are re-drawn
+// into the depth-only shadow_target via shadow_material; main pass
+// later samples this depth attachment with PCF + bias.
+// shadow_initialised_on_gpu tracks the once-per-process first-frame
+// transition; main owns the bool so re-creating the renderer or window
+// can reset it cleanly.
+template <typename MeshFor>
+inline void draw_shadow_map_pass(cd::rhi::ICommandBuffer& cmd,
+                                 const SunLight& sun,
+                                 cd::rhi::IDevice& device,
+                                 cd::rhi::BufferHandle shadow_ubo,
+                                 const cd::framegraph::DepthTarget& shadow_target,
+                                 bool& shadow_initialised_on_gpu,
+                                 cd::material::Material& shadow_material,
+                                 cd::rhi::Extent2D shadow_map_size,
+                                 const std::vector<SceneEntity>& entities,
+                                 const cd::scene::Scene& scene,
+                                 const MeshFor& mesh_for)
+{
+    cd::math::Vec3f sd = sun.has_sun ? sun.dir : cd::math::Vec3f { -0.4F, -0.9F, -0.2F };
+    {
+        const float sd_len = std::sqrt(sd.x * sd.x + sd.y * sd.y + sd.z * sd.z);
+        if (sd_len > 1e-4F) { sd.x /= sd_len; sd.y /= sd_len; sd.z /= sd_len; }
+        else { sd = { 0.0F, -1.0F, 0.0F }; }
+    }
+    // phase451-csm: ortho shrunk 80x80 -> 25x25 extent, far 100 -> 60,
+    // eye dist 40 -> 25. The previous 80m extent was sized for "any
+    // sun angle covers Sponza" but the actual scene (Sponza at 0.01
+    // scale + entity cluster) fits in ±10m. Halving the extent gives
+    // 4x shadow texel density (2048/25 ≈ 8cm tex vs 4cm prior) and
+    // the depth range is 60m so the matching NDC bias of 0.00005
+    // (phase 451 shader) is ~3mm world — small enough for cube /
+    // character shadows to register on Sponza without overlap.
+    const cd::math::Vec3f eye { -sd.x * 25.0F, -sd.y * 25.0F, -sd.z * 25.0F };
+    const cd::math::Vec3f tgt { 0.0F, 0.0F, 0.0F };
+    const cd::math::Vec3f up =
+        (std::fabs(sd.y) > 0.99F) ? cd::math::Vec3f { 0.0F, 0.0F, 1.0F } : cd::math::Vec3f { 0.0F, 1.0F, 0.0F };
+    const auto light_view = cd::math::look_at(eye, tgt, up);
+    const auto light_proj = cd::math::ortho(-12.5F, 12.5F, -12.5F, 12.5F, 0.1F, 60.0F);
+    const cd::math::Mat4f light_vp = light_proj * light_view;
+    (void)device.upload_buffer(shadow_ubo, 0, std::span<const std::byte>(reinterpret_cast<const std::byte*>(&light_vp), sizeof(light_vp)));
+    if (!shadow_initialised_on_gpu)
+    {
+        std::array<cd::rhi::TextureBarrier, 1> sb { cd::rhi::TextureBarrier { .texture = shadow_target.image, .from = cd::rhi::ResourceState::kUndefined, .to = cd::rhi::ResourceState::kDepthWrite, .range = { .base_mip = 0, .mip_count = 1, .base_layer = 0, .layer_count = 1 } } };
+        cmd.barrier({}, sb);
+        shadow_initialised_on_gpu = true;
+    }
+    else
+    {
+        std::array<cd::rhi::TextureBarrier, 1> sb { cd::rhi::TextureBarrier { .texture = shadow_target.image, .from = cd::rhi::ResourceState::kShaderResource, .to = cd::rhi::ResourceState::kDepthWrite, .range = { .base_mip = 0, .mip_count = 1, .base_layer = 0, .layer_count = 1 } } };
+        cmd.barrier({}, sb);
+    }
+    {
+        cd::rhi::DepthStencilAttachmentInfo sda {};
+        sda.view = shadow_target.view;
+        sda.depth_load = cd::rhi::LoadOp::kClear;
+        sda.depth_store = cd::rhi::StoreOp::kStore;
+        sda.clear.depth = 1.0F;
+        cd::rhi::RenderPassBeginInfo srp {};
+        srp.render_area = cd::rhi::Rect2D { { 0, 0 }, shadow_map_size };
+        srp.color_attachments = {};
+        srp.depth_stencil = &sda;
+        cmd.begin_render_pass(srp);
+        cmd.set_viewport(cd::rhi::Viewport { 0.0F, 0.0F, static_cast<float>(shadow_map_size.width), static_cast<float>(shadow_map_size.height), 0.0F, 1.0F });
+        cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, shadow_map_size });
+        if (sun.has_sun)
+        {
+            shadow_material.apply(cmd);
+            std::vector<cd::math::Mat4f> csm_light_mvp(entities.size());
+            std::vector<std::uint8_t> csm_valid(entities.size(), 0u);
+            cd::concurrency::parallel_for(std::size_t { 0 }, entities.size(), [&](std::size_t i) {
+                const auto& ent = entities[i];
+                const auto& mesh = mesh_for(ent.kind);
+                if (!mesh.vb.is_valid()) return;
+                auto* lt = scene.local(ent.handle);
+                if (lt == nullptr) return;
+                const auto model = cd::math::to_mat4(lt->value);
+                csm_light_mvp[i] = light_vp * model;
+                csm_valid[i] = 1u;
+            });
+            for (std::size_t i = 0; i < entities.size(); ++i)
+            {
+                if (csm_valid[i] == 0u) continue;
+                const auto& ent = entities[i];
+                const auto& mesh = mesh_for(ent.kind);
+                cmd.bind_vertex_buffer(0, mesh.vb, 0);
+                cmd.bind_index_buffer(mesh.ib, 0, mesh.index_type);
+                cmd.push_constants(shadow_material.pipeline_layout(), cd::rhi::ShaderStage::kVertex, 0, sizeof(cd::math::Mat4f), &csm_light_mvp[i]);
+                cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
+            }
+        }
+        cmd.end_render_pass();
+    }
+    {
+        std::array<cd::rhi::TextureBarrier, 1> sb { cd::rhi::TextureBarrier { .texture = shadow_target.image, .from = cd::rhi::ResourceState::kDepthWrite, .to = cd::rhi::ResourceState::kShaderResource, .range = { .base_mip = 0, .mip_count = 1, .base_layer = 0, .layer_count = 1 } } };
+        cmd.barrier({}, sb);
+    }
+}
+
+// ---- update_and_draw_gizmo --------------------------------------------------
+// Editor gizmo overlay - translate / rotate / scale modes against either an
+// ECS entity or a non-directional light. Heavy ImGui + cd::editor::AxisGizmo
+// + EditHistory plumbing extracted from the render loop in phase 314
+// (Marathon Run 10 N5, the largest single per-frame extraction in this
+// marathon: ~690 lines body).
+inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
+                                  GizmoState& gizmo_state,
+                                  bool& pending_pick,
+                                  int selected,
+                                  SelKind selected_kind,
+                                  std::vector<SceneEntity>& entities,
+                                  std::vector<LightRow>& lights,
+                                  cd::scene::Scene& scene,
+                                  cd::editor::EditHistory& history,
+                                  const std::function<void(std::string)>& log_push,
+                                  const cd::math::Mat4f& vp,
+                                  const cd::camera::Camera& cam,
+                                  cd::platform::IWindow& window,
+                                  cd::rhi::Extent2D extent)
+{
+    // ---- Phase 152 - axis-translation gizmo (ImGui overlay) ----
+    // Project the selected entity's world position to screen,
+    // draw three colored axis arrows, do hover/click drag in
+    // screen-space, map back into world delta along the active
+    // axis, and push a TranslateCommand on release.
+    // Gizmo target can be either an entity transform OR a light's
+    // position. The lambda below makes the same draw + drag code
+    // path applicable to both - point/spot/area lights drag their
+    // position; directional lights have no world position so they
+    // skip the gizmo.
+    auto gizmo_target_pos = [&]() -> cd::math::Vec3f*
+    {
+        if (selected < 0)
+            return nullptr;
+        if (selected_kind == SelKind::kEntity)
+        {
+            if (std::cmp_greater_equal(selected,entities.size()))
+                return nullptr;
+            if (auto* lt = scene.local(entities[static_cast<std::size_t>(selected)].handle))
+                return &lt->value.position;
+            return nullptr;
+        }
+        if (selected_kind == SelKind::kLight)
+        {
+            if (std::cmp_greater_equal(selected,lights.size()))
+                return nullptr;
+            auto& L = lights[static_cast<std::size_t>(selected)].light;
+            if (L.type == cd::light::LightType::kDirectional)
+                return nullptr;
+            return &L.position;
+        }
+        return nullptr;
+    };
+
+    if (!gizmo_state.visible || gizmo_target_pos() == nullptr)
+    {
+        gizmo_state.was_hovered = false;
+    }
+    if (gizmo_state.visible && gizmo_target_pos() != nullptr)
+    {
+        cd::math::Vec3f* target_pos = gizmo_target_pos();
+        // For entity targets, also need transform record for full
+        // rotate/scale ops; for light targets, only position drag.
+        const bool target_is_entity = (selected_kind == SelKind::kEntity);
+        cd::ecs::Entity sel_ent =
+            target_is_entity ? entities[static_cast<std::size_t>(selected)].handle : cd::ecs::Entity {};
+        cd::scene::LocalTransform* lt = target_is_entity ? scene.local(sel_ent) : nullptr;
+        if (target_pos != nullptr)
+        {
+            gizmo.set_target(*target_pos);
+            const auto vw = static_cast<float>(extent.width);
+            const auto vh = static_cast<float>(extent.height);
+            auto project = [&](const cd::math::Vec3f& p) -> ImVec2
+            {
+                const cd::math::Vec4f wp { p.x, p.y, p.z, 1.0F };
+                cd::math::Vec4f c {};
+                for (std::size_t r = 0; r < 4; ++r)
+                    c[r] = vp[0][r] * wp[0] + vp[1][r] * wp[1] + vp[2][r] * wp[2] + vp[3][r] * wp[3];
+                if (c[3] <= 0.0F)
+                    return { -1.0F, -1.0F };
+                return { (c[0] / c[3] * 0.5F + 0.5F) * vw, (1.0F - (c[1] / c[3] * 0.5F + 0.5F)) * vh };
+            };
+            const auto& tgt = gizmo.target();
+            constexpr float kAxisLen = 1.5F;
+            const ImVec2 p_org = project(tgt);
+            const ImVec2 p_x = project({ tgt.x + kAxisLen, tgt.y, tgt.z });
+            const ImVec2 p_y = project({ tgt.x, tgt.y + kAxisLen, tgt.z });
+            const ImVec2 p_z = project({ tgt.x, tgt.y, tgt.z + kAxisLen });
+
+            if (p_org.x >= 0.0F)
+            {
+                auto* dl = ImGui::GetForegroundDrawList();
+                auto axis_color_imgui = [](cd::editor::GizmoAxis a)
+                {
+                    const auto c = cd::editor::axis_color(a);
+                    return ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 1.0F));
+                };
+                const ImU32 cx = axis_color_imgui(cd::editor::GizmoAxis::kX);
+                const ImU32 cy = axis_color_imgui(cd::editor::GizmoAxis::kY);
+                const ImU32 cz = axis_color_imgui(cd::editor::GizmoAxis::kZ);
+
+                auto thick = [&](cd::editor::GizmoAxis a) -> float
+                {
+                    return (gizmo.hover() == a || gizmo.active_axis() == a) ? 5.0F : 3.0F;
+                };
+
+                dl->AddLine(p_org, p_x, cx, thick(cd::editor::GizmoAxis::kX));
+                dl->AddLine(p_org, p_y, cy, thick(cd::editor::GizmoAxis::kY));
+                dl->AddLine(p_org, p_z, cz, thick(cd::editor::GizmoAxis::kZ));
+                // Arrowheads (filled triangles).
+                auto arrowhead = [&](ImVec2 from, ImVec2 to, ImU32 col)
+                {
+                    const float dx = to.x - from.x;
+                    const float dy = to.y - from.y;
+                    const float len = std::sqrt(dx * dx + dy * dy);
+                    if (len < 1e-3F)
+                        return;
+                    const float nx = dx / len;
+                    const float ny = dy / len;
+                    const float sx = -ny;
+                    const float sy = nx;
+                    constexpr float kHead = 10.0F;
+                    const ImVec2 a = to;
+                    const ImVec2 b { to.x - nx * kHead + sx * 5.0F, to.y - ny * kHead + sy * 5.0F };
+                    const ImVec2 c { to.x - nx * kHead - sx * 5.0F, to.y - ny * kHead - sy * 5.0F };
+                    dl->AddTriangleFilled(a, b, c, col);
+                };
+                // Mode-specific tip decoration:
+                //   translate ??' arrowheads
+                //   rotate    ??' small circles at tips
+                //   scale     ??' small filled cubes at tips
+                if (gizmo_state.mode == GizmoMode::kTranslate)
+                {
+                    arrowhead(p_org, p_x, cx);
+                    arrowhead(p_org, p_y, cy);
+                    arrowhead(p_org, p_z, cz);
+                }
+                else if (gizmo_state.mode == GizmoMode::kRotate)
+                {
+                    // Draw the standard 3 rotation rings on each
+                    // world-axis plane. Each ring is the projection
+                    // of a unit-radius circle (scaled by kAxisLen)
+                    // in the plane perpendicular to its color axis.
+                    constexpr int kRingSeg = 48;
+                    constexpr float kRingRad = 1.5F;
+                    auto draw_ring = [&](cd::math::Vec3f u, cd::math::Vec3f v, ImU32 c, float t)
+                    {
+                        for (int i = 0; i < kRingSeg; ++i)
+                        {
+                            const float a = static_cast<float>(i) / kRingSeg * 2.0F * std::numbers::pi_v<float>;
+                            const float b = static_cast<float>(i + 1) / kRingSeg * 2.0F * std::numbers::pi_v<float>;
+                            const float ca0 = std::cos(a);
+                            const float sa0 = std::sin(a);
+                            const float cb0 = std::cos(b);
+                            const float sb0 = std::sin(b);
+                            cd::math::Vec3f wa { tgt.x + (u.x * ca0 + v.x * sa0) * kRingRad,
+                                                 tgt.y + (u.y * ca0 + v.y * sa0) * kRingRad,
+                                                 tgt.z + (u.z * ca0 + v.z * sa0) * kRingRad };
+                            cd::math::Vec3f wb { tgt.x + (u.x * cb0 + v.x * sb0) * kRingRad,
+                                                 tgt.y + (u.y * cb0 + v.y * sb0) * kRingRad,
+                                                 tgt.z + (u.z * cb0 + v.z * sb0) * kRingRad };
+                            const auto pa = project(wa);
+                            const auto pb = project(wb);
+                            if (pa.x >= 0.0F && pb.x >= 0.0F)
+                                dl->AddLine(pa, pb, c, t);
+                        }
+                    };
+                    const float th_x = (gizmo.hover() == cd::editor::GizmoAxis::kX) ? 4.0F : 2.0F;
+                    const float th_y = (gizmo.hover() == cd::editor::GizmoAxis::kY) ? 4.0F : 2.0F;
+                    const float th_z = (gizmo.hover() == cd::editor::GizmoAxis::kZ) ? 4.0F : 2.0F;
+                    // Ring around X axis lives in (Y, Z) plane.
+                    draw_ring({ 0, 1, 0 }, { 0, 0, 1 }, cx, th_x);
+                    // Ring around Y axis lives in (X, Z) plane.
+                    draw_ring({ 1, 0, 0 }, { 0, 0, 1 }, cy, th_y);
+                    // Ring around Z axis lives in (X, Y) plane.
+                    draw_ring({ 1, 0, 0 }, { 0, 1, 0 }, cz, th_z);
+                }
+                else  // kScale
+                {
+                    const auto cube_at = [&](ImVec2 c, ImU32 col)
+                    {
+                        const ImVec2 a { c.x - 5, c.y - 5 };
+                        const ImVec2 b { c.x + 5, c.y + 5 };
+                        dl->AddRectFilled(a, b, col);
+                    };
+                    cube_at(p_x, cx);
+                    cube_at(p_y, cy);
+                    cube_at(p_z, cz);
+                }
+                // Mode label.
+                const char* mode_lbl = "S";
+                if (gizmo_state.mode == GizmoMode::kTranslate)
+                    mode_lbl = "T";
+                else if (gizmo_state.mode == GizmoMode::kRotate)
+                    mode_lbl = "R";
+                dl->AddText(
+                    ImVec2(p_org.x + 8, p_org.y + 8),
+                    ImGui::ColorConvertFloat4ToU32(ImVec4(1, 1, 1, 0.9F)),
+                    mode_lbl
+                );
+
+                // Hover test. Translate/Scale modes measure mouse-to-
+                // axis-line distance (arrows). Rotate mode measures
+                // mouse-to-ring polyline distance (so the user grabs a
+                // ring, not an arrow - feedback "rotation islemini
+                // yeni koydugun cemberler userinden yapabilmek
+                // istiyorum").
+                const ImVec2 mp = ImGui::GetIO().MousePos;
+                auto dist_to_seg = [](ImVec2 a, ImVec2 b, ImVec2 p)
+                {
+                    const float dx = b.x - a.x;
+                    const float dy = b.y - a.y;
+                    const float L2 = dx * dx + dy * dy;
+                    if (L2 < 1e-4F)
+                        return std::sqrt((p.x - a.x) * (p.x - a.x) + (p.y - a.y) * (p.y - a.y));
+                    const float t = std::clamp(((p.x - a.x) * dx + (p.y - a.y) * dy) / L2, 0.0F, 1.0F);
+                    const float qx = a.x + t * dx;
+                    const float qy = a.y + t * dy;
+                    return std::sqrt((p.x - qx) * (p.x - qx) + (p.y - qy) * (p.y - qy));
+                };
+                cd::editor::GizmoAxis best = cd::editor::GizmoAxis::kNone;
+                float best_d = gizmo.hover_tolerance_pixels;
+                if (gizmo_state.mode == GizmoMode::kRotate)
+                {
+                    // Sample each ring at the same resolution we draw
+                    // it (48 segments); compute min distance from
+                    // mouse to the ring polyline. Cheap (3 ?- 48 = 144
+                    // segments per frame at hover-test time).
+                    constexpr int kHoverSeg = 48;
+                    constexpr float kHoverRad = 1.5F;  // matches kRingRad above
+                    auto ring_dist = [&](cd::math::Vec3f u, cd::math::Vec3f v) -> float
+                    {
+                        float min_d = std::numeric_limits<float>::infinity();
+                        ImVec2 prev {};
+                        bool prev_ok = false;
+                        for (int i = 0; i <= kHoverSeg; ++i)
+                        {
+                            const float a = static_cast<float>(i) / kHoverSeg * 2.0F * std::numbers::pi_v<float>;
+                            const float ca = std::cos(a);
+                            const float sa = std::sin(a);
+                            const cd::math::Vec3f w { tgt.x + (u.x * ca + v.x * sa) * kHoverRad,
+                                                      tgt.y + (u.y * ca + v.y * sa) * kHoverRad,
+                                                      tgt.z + (u.z * ca + v.z * sa) * kHoverRad };
+                            const auto pw = project(w);
+                            if (pw.x >= 0.0F)
+                            {
+                                if (prev_ok)
+                                {
+                                    const float d = dist_to_seg(prev, pw, mp);
+                                    min_d = std::min(d, min_d);
+                                }
+                                prev = pw;
+                                prev_ok = true;
+                            }
+                            else
+                            {
+                                prev_ok = false;
+                            }
+                        }
+                        return min_d;
+                    };
+                    const float dx = ring_dist({ 0, 1, 0 }, { 0, 0, 1 });  // X-axis ring lives in YZ
+                    const float dy = ring_dist({ 1, 0, 0 }, { 0, 0, 1 });  // Y-axis ring lives in XZ
+                    const float dz = ring_dist({ 1, 0, 0 }, { 0, 1, 0 });  // Z-axis ring lives in XY
+                    if (dx < best_d)
+                    {
+                        best_d = dx;
+                        best = cd::editor::GizmoAxis::kX;
+                    }
+                    if (dy < best_d)
+                    {
+                        best_d = dy;
+                        best = cd::editor::GizmoAxis::kY;
+                    }
+                    if (dz < best_d)
+                    {
+                        best_d = dz;
+                        best = cd::editor::GizmoAxis::kZ;
+                    }
+                }
+                else  // translate / scale - axis-arrow hover
+                {
+                    if (auto d = dist_to_seg(p_org, p_x, mp); d < best_d)
+                    {
+                        best_d = d;
+                        best = cd::editor::GizmoAxis::kX;
+                    }
+                    if (auto d = dist_to_seg(p_org, p_y, mp); d < best_d)
+                    {
+                        best_d = d;
+                        best = cd::editor::GizmoAxis::kY;
+                    }
+                    if (auto d = dist_to_seg(p_org, p_z, mp); d < best_d)
+                    {
+                        best_d = d;
+                        best = cd::editor::GizmoAxis::kZ;
+                    }
+                }
+                gizmo.set_hover(best);
+                gizmo_state.was_hovered = (best != cd::editor::GizmoAxis::kNone);
+
+                const bool over_imgui_ui = ImGui::GetIO().WantCaptureMouse && ImGui::IsAnyItemHovered();
+                // If the mouse is hovering an axis arrow AND a left-
+                // click is pending from the OS event loop, the gizmo
+                // wins over the 3D pick path - suppress the pick.
+                if (pending_pick && best != cd::editor::GizmoAxis::kNone)
+                {
+                    pending_pick = false;
+                }
+                // Ray-plane projection of a screen pixel onto the
+                // active axis. Returns the signed distance along
+                // the axis from `world_start` to the hit point,
+                // or std::optional() if the plane is too parallel
+                // to the camera ray (caller falls back to the
+                // screen-space dot method below). The plane is
+                // the one containing the axis with normal
+                // = normalize(cross(axis, cross(view, axis))) -
+                // the most camera-facing orientation. Closes the
+                // "gizmo ileri-geri yapinca objeler isinlaniyor"
+                // teleport bug.
+                auto ray_axis_offset = [&](cd::editor::GizmoAxis axis,
+                                           ImVec2 mouse_pixel,
+                                           cd::math::Vec3f world_start) -> std::optional<float>
+                {
+                    const auto vw = static_cast<float>(window.width());
+                    const auto vh = static_cast<float>(window.height());
+                    if (vw < 1 || vh < 1)
+                        return std::nullopt;
+                    // Camera basis (same path as pick).
+                    cd::math::Vec3f fwd { cam.target.x - cam.eye.x,
+                                          cam.target.y - cam.eye.y,
+                                          cam.target.z - cam.eye.z };
+                    const float fl = std::sqrt(fwd.x * fwd.x + fwd.y * fwd.y + fwd.z * fwd.z);
+                    if (fl < 1e-5F)
+                        return std::nullopt;
+                    fwd.x /= fl;
+                    fwd.y /= fl;
+                    fwd.z /= fl;
+                    cd::math::Vec3f wup { 0, 1, 0 };
+                    cd::math::Vec3f rgt { fwd.y * wup.z - fwd.z * wup.y,
+                                          fwd.z * wup.x - fwd.x * wup.z,
+                                          fwd.x * wup.y - fwd.y * wup.x };
+                    const float rl = std::sqrt(rgt.x * rgt.x + rgt.y * rgt.y + rgt.z * rgt.z);
+                    if (rl < 1e-5F)
+                        return std::nullopt;
+                    rgt.x /= rl;
+                    rgt.y /= rl;
+                    rgt.z /= rl;
+                    cd::math::Vec3f up_v { rgt.y * fwd.z - rgt.z * fwd.y,
+                                           rgt.z * fwd.x - rgt.x * fwd.z,
+                                           rgt.x * fwd.y - rgt.y * fwd.x };
+                    const float ndc_x = (2.0F * mouse_pixel.x / vw) - 1.0F;
+                    const float ndc_y = 1.0F - (2.0F * mouse_pixel.y / vh);
+                    const float tan_half = std::tan(cam.fov_y * 0.5F);
+                    const float sx = (vw / vh) * tan_half;
+                    const float sy = tan_half;
+                    cd::math::Vec3f rdir { fwd.x + rgt.x * ndc_x * sx + up_v.x * ndc_y * sy,
+                                           fwd.y + rgt.y * ndc_x * sx + up_v.y * ndc_y * sy,
+                                           fwd.z + rgt.z * ndc_x * sx + up_v.z * ndc_y * sy };
+                    const float rdl = std::sqrt(rdir.x * rdir.x + rdir.y * rdir.y + rdir.z * rdir.z);
+                    if (rdl < 1e-5F)
+                        return std::nullopt;
+                    rdir.x /= rdl;
+                    rdir.y /= rdl;
+                    rdir.z /= rdl;
+                    // Axis unit vector + plane normal.
+                    cd::math::Vec3f a { 0, 0, 0 };
+                    if (axis == cd::editor::GizmoAxis::kX)
+                        a = { 1, 0, 0 };
+                    else if (axis == cd::editor::GizmoAxis::kY)
+                        a = { 0, 1, 0 };
+                    else if (axis == cd::editor::GizmoAxis::kZ)
+                        a = { 0, 0, 1 };
+                    cd::math::Vec3f c1 { fwd.y * a.z - fwd.z * a.y,
+                                         fwd.z * a.x - fwd.x * a.z,
+                                         fwd.x * a.y - fwd.y * a.x };
+                    cd::math::Vec3f n { a.y * c1.z - a.z * c1.y, a.z * c1.x - a.x * c1.z, a.x * c1.y - a.y * c1.x };
+                    const float nl = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+                    if (nl < 1e-5F)
+                        return std::nullopt;
+                    n.x /= nl;
+                    n.y /= nl;
+                    n.z /= nl;
+                    const float denom = rdir.x * n.x + rdir.y * n.y + rdir.z * n.z;
+                    if (std::fabs(denom) < 1e-4F)
+                        return std::nullopt;
+                    const float t = ((world_start.x - cam.eye.x) * n.x + (world_start.y - cam.eye.y) * n.y +
+                                     (world_start.z - cam.eye.z) * n.z) /
+                                    denom;
+                    if (t < 0.0F)
+                        return std::nullopt;
+                    const cd::math::Vec3f hit { cam.eye.x + rdir.x * t,
+                                                cam.eye.y + rdir.y * t,
+                                                cam.eye.z + rdir.z * t };
+                    return (hit.x - world_start.x) * a.x + (hit.y - world_start.y) * a.y +
+                           (hit.z - world_start.z) * a.z;
+                };
+
+                if (!gizmo.is_dragging() && best != cd::editor::GizmoAxis::kNone &&
+                    ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !over_imgui_ui)
+                {
+                    gizmo.begin_drag(best, *target_pos);
+                    gizmo_state.drag_anchor = mp;
+                    gizmo_state.drag_world_start = *target_pos;
+                    if (lt != nullptr)
+                    {
+                        gizmo_state.drag_scale_start = lt->value.scale;
+                        gizmo_state.drag_rot_start = lt->value.rotation;
+                    }
+                    // Capture light start state for gaps #16/#17:
+                    // R-mode rotates light.direction; S-mode scales
+                    // light.range / area_width / area_height.
+                    if (selected_kind == SelKind::kLight && selected >= 0 &&
+                        std::cmp_less(selected, lights.size()))
+                    {
+                        const auto& L = lights[static_cast<std::size_t>(selected)].light;
+                        gizmo_state.light_drag_dir_start = L.direction;
+                        gizmo_state.light_drag_tangent_start = L.area_tangent;
+                        gizmo_state.light_drag_range_start = L.range;
+                        gizmo_state.light_drag_area_w_start = L.area_width;
+                        gizmo_state.light_drag_area_h_start = L.area_height;
+                    }
+                    // Capture the initial ray-plane axis offset
+                    // so subsequent moves give delta = current -
+                    // initial (no jump at click).
+                    if (auto off = ray_axis_offset(best, mp, *target_pos); off.has_value())
+                    {
+                        gizmo_state.drag_initial_offset = *off;
+                        gizmo_state.drag_use_ray_plane = true;
+                    }
+                    else
+                    {
+                        gizmo_state.drag_use_ray_plane = false;
+                    }
+                }
+                if (gizmo.is_dragging())
+                {
+                    ImVec2 axis_screen_end = p_x;
+                    if (gizmo.active_axis() == cd::editor::GizmoAxis::kY)
+                        axis_screen_end = p_y;
+                    else if (gizmo.active_axis() == cd::editor::GizmoAxis::kZ)
+                        axis_screen_end = p_z;
+                    const float ax_dx = axis_screen_end.x - p_org.x;
+                    const float ax_dy = axis_screen_end.y - p_org.y;
+                    const float ax_len_px = std::sqrt(ax_dx * ax_dx + ax_dy * ax_dy);
+                    // Two paths: ray-plane (preferred, robust) vs
+                    // screen-space dot (fallback for rotate/scale
+                    // which use angular / exponential math).
+                    float delta_world = 0.0F;
+                    if (gizmo_state.drag_use_ray_plane && gizmo_state.mode == GizmoMode::kTranslate)
+                    {
+                        if (auto off = ray_axis_offset(gizmo.active_axis(), mp, gizmo_state.drag_world_start);
+                            off.has_value())
+                        {
+                            delta_world = *off - gizmo_state.drag_initial_offset;
+                        }
+                    }
+                    if (ax_len_px > 1.0F)
+                    {
+                        // Screen-space path (rotate/scale, or
+                        // ray-plane fallback). delta_world stays 0
+                        // for translate when ray-plane worked.
+                        const float nx = ax_dx / ax_len_px;
+                        const float ny = ax_dy / ax_len_px;
+                        const float mouse_dx = mp.x - gizmo_state.drag_anchor.x;
+                        const float mouse_dy = mp.y - gizmo_state.drag_anchor.y;
+                        const float dot_px = mouse_dx * nx + mouse_dy * ny;
+                        const float world_per_px = kAxisLen / ax_len_px;
+                        if (!gizmo_state.drag_use_ray_plane || gizmo_state.mode != GizmoMode::kTranslate)
+                        {
+                            delta_world = dot_px * world_per_px;
+                        }
+                    }
+                    if (ax_len_px > 1.0F || gizmo_state.drag_use_ray_plane)
+                    {
+                        // Only translate works for both entities and
+                        // lights; rotate/scale need a transform record
+                        // and are gated on lt != nullptr.
+                        switch (gizmo_state.mode)
+                        {
+                            case GizmoMode::kTranslate:
+                            {
+                                cd::math::Vec3f cur = gizmo_state.drag_world_start;
+                                switch (gizmo.active_axis())
+                                {
+                                    case cd::editor::GizmoAxis::kX:
+                                        cur.x += delta_world;
+                                        break;
+                                    case cd::editor::GizmoAxis::kY:
+                                        cur.y += delta_world;
+                                        break;
+                                    case cd::editor::GizmoAxis::kZ:
+                                        cur.z += delta_world;
+                                        break;
+                                    default:
+                                        break;
+                                }
+                                *target_pos = cur;
+                                gizmo.update_drag(cur);
+                                break;
+                            }
+                            case GizmoMode::kScale:
+                            {
+                                const float factor = std::exp(delta_world * 0.5F);
+                                if (lt != nullptr)
+                                {
+                                    cd::math::Vec3f cur = gizmo_state.drag_scale_start;
+                                    switch (gizmo.active_axis())
+                                    {
+                                        case cd::editor::GizmoAxis::kX:
+                                            cur.x *= factor;
+                                            break;
+                                        case cd::editor::GizmoAxis::kY:
+                                            cur.y *= factor;
+                                            break;
+                                        case cd::editor::GizmoAxis::kZ:
+                                            cur.z *= factor;
+                                            break;
+                                        default:
+                                            break;
+                                    }
+                                    cur.x = std::max(cur.x, 0.05F);
+                                    cur.y = std::max(cur.y, 0.05F);
+                                    cur.z = std::max(cur.z, 0.05F);
+                                    lt->value.scale = cur;
+                                }
+                                else if (selected_kind == SelKind::kLight && selected >= 0 &&
+                                         std::cmp_less(selected, lights.size()))
+                                {
+                                    // gap #17: scale-mode gizmo on a
+                                    // light edits its area-of-effect.
+                                    // Point/Spot: range. Rect-area:
+                                    // X=width, Y=height. Disk: width
+                                    // (= radius in our convention).
+                                    auto& L = lights[static_cast<std::size_t>(selected)].light;
+                                    const auto axis = gizmo.active_axis();
+                                    if (L.type == cd::light::LightType::kPoint ||
+                                        L.type == cd::light::LightType::kSpot)
+                                    {
+                                        float r = gizmo_state.light_drag_range_start * factor;
+                                        r = std::max(r, 0.1F);
+                                        r = std::min(r, 200.0F);
+                                        L.range = r;
+                                    }
+                                    else if (L.type == cd::light::LightType::kRectArea)
+                                    {
+                                        float w = gizmo_state.light_drag_area_w_start;
+                                        float h = gizmo_state.light_drag_area_h_start;
+                                        if (axis == cd::editor::GizmoAxis::kX || axis == cd::editor::GizmoAxis::kZ)
+                                            w *= factor;
+                                        if (axis == cd::editor::GizmoAxis::kY || axis == cd::editor::GizmoAxis::kZ)
+                                            h *= factor;
+                                        L.area_width = std::clamp(w, 0.05F, 50.0F);
+                                        L.area_height = std::clamp(h, 0.05F, 50.0F);
+                                    }
+                                    else if (L.type == cd::light::LightType::kDiskArea)
+                                    {
+                                        float w = gizmo_state.light_drag_area_w_start * factor;
+                                        L.area_width = std::clamp(w, 0.05F, 50.0F);
+                                        L.area_height = L.area_width;  // radius
+                                    }
+                                }
+                                break;
+                            }
+                            case GizmoMode::kRotate:
+                            {
+                                // Compute the angle the mouse has swept around the
+                                // gizmo center since drag start (atan2 difference).
+                                const float anchor_dx = gizmo_state.drag_anchor.x - p_org.x;
+                                const float anchor_dy = gizmo_state.drag_anchor.y - p_org.y;
+                                const float cur_dx = mp.x - p_org.x;
+                                const float cur_dy = mp.y - p_org.y;
+                                if (std::sqrt(anchor_dx * anchor_dx + anchor_dy * anchor_dy) < 5.0F)
+                                    break;  // too close to center, ignore
+                                const float a_anchor = std::atan2(anchor_dy, anchor_dx);
+                                const float a_now = std::atan2(cur_dy, cur_dx);
+                                // W7-C: mouse coords have Y-down so atan2
+                                // gives a screen-CCW reading; world-space
+                                // convention is right-hand (CCW about +axis
+                                // looking from +axis toward origin). The
+                                // sign was therefore inverted — drag CW in
+                                // screen was producing positive (CCW)
+                                // rotation. Negate to match user intent.
+                                float ang = a_anchor - a_now;
+                                while (ang > std::numbers::pi_v<float>)
+                                    ang -= 2.0F * std::numbers::pi_v<float>;
+                                while (ang < -std::numbers::pi_v<float>)
+                                    ang += 2.0F * std::numbers::pi_v<float>;
+                                const float ca = std::cos(ang * 0.5F);
+                                const float sa = std::sin(ang * 0.5F);
+                                cd::math::Quatf q { 0, 0, 0, 1 };
+                                switch (gizmo.active_axis())
+                                {
+                                    case cd::editor::GizmoAxis::kX:
+                                        q = { sa, 0, 0, ca };
+                                        break;
+                                    case cd::editor::GizmoAxis::kY:
+                                        q = { 0, sa, 0, ca };
+                                        break;
+                                    case cd::editor::GizmoAxis::kZ:
+                                        q = { 0, 0, sa, ca };
+                                        break;
+                                    default:
+                                        break;
+                                }
+                                if (lt != nullptr)
+                                {
+                                    const auto& a = q;
+                                    const auto& b = gizmo_state.drag_rot_start;
+                                    lt->value.rotation =
+                                        cd::math::Quatf { a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+                                                          a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+                                                          a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+                                                          a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z };
+                                }
+                                else if (selected_kind == SelKind::kLight && selected >= 0 &&
+                                         std::cmp_less(selected, lights.size()))
+                                {
+                                    // gap #16: rotate-mode gizmo rotates
+                                    // a light's direction. W8-N: also
+                                    // rotates area_tangent so the rect's
+                                    // local +X (uploaded to GPU as
+                                    // slot.tangent.xyz) stays in sync —
+                                    // each gizmo axis now drives an
+                                    // independent rotation of the full
+                                    // basis instead of just the normal.
+                                    auto rotate_v = [&](cd::math::Vec3f v)
+                                    {
+                                        const cd::math::Vec3f t { q.w * v.x + q.y * v.z - q.z * v.y,
+                                                                  q.w * v.y + q.z * v.x - q.x * v.z,
+                                                                  q.w * v.z + q.x * v.y - q.y * v.x };
+                                        const float tw = -(q.x * v.x + q.y * v.y + q.z * v.z);
+                                        return cd::math::Vec3f { tw * -q.x + t.x * q.w + t.y * -q.z - t.z * -q.y,
+                                                                 tw * -q.y - t.x * -q.z + t.y * q.w + t.z * -q.x,
+                                                                 tw * -q.z + t.x * -q.y - t.y * -q.x + t.z * q.w };
+                                    };
+                                    auto norm_v = [](cd::math::Vec3f v)
+                                    {
+                                        const float l = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+                                        return (l > 1e-5F) ? cd::math::Vec3f { v.x / l, v.y / l, v.z / l } : v;
+                                    };
+                                    auto& Lr = lights[static_cast<std::size_t>(selected)].light;
+                                    const auto rd_dir = rotate_v(gizmo_state.light_drag_dir_start);
+                                    Lr.direction = norm_v(rd_dir);
+                                    // Tangent rotates too (only meaningful
+                                    // for area lights; harmless for spot /
+                                    // point — direction-derived rendering
+                                    // ignores tangent there).
+                                    auto rt = rotate_v(gizmo_state.light_drag_tangent_start);
+                                    // Re-orthogonalize tangent against new
+                                    // direction to stay perpendicular.
+                                    const auto dn = Lr.direction;
+                                    const float pr = rt.x * dn.x + rt.y * dn.y + rt.z * dn.z;
+                                    rt.x -= pr * dn.x;
+                                    rt.y -= pr * dn.y;
+                                    rt.z -= pr * dn.z;
+                                    Lr.area_tangent = norm_v(rt);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+                    {
+                        const auto delta = gizmo.end_drag();
+                        (void)delta;
+                        switch (gizmo_state.mode)
+                        {
+                            case GizmoMode::kTranslate:
+                            {
+                                const float dx = target_pos->x - gizmo_state.drag_world_start.x;
+                                const float dy = target_pos->y - gizmo_state.drag_world_start.y;
+                                const float dz = target_pos->z - gizmo_state.drag_world_start.z;
+                                if (std::abs(dx) + std::abs(dy) + std::abs(dz) > 1e-4F)
+                                {
+                                    if (target_is_entity && lt != nullptr)
+                                    {
+                                        // Roll back live mutation + push undoable command.
+                                        *target_pos = gizmo_state.drag_world_start;
+                                        history.push(
+                                            std::make_unique<cd::editor::TranslateCommand>(
+                                                scene,
+                                                sel_ent,
+                                                cd::math::Vec3f { dx, dy, dz }
+                                            )
+                                        );
+                                        log_push("[gizmo] entity translate (undoable)");
+                                    }
+                                    else
+                                    {
+                                        // Light translate - apply directly (no history wire yet).
+                                        // W8-AL: removed W8-X auto-aim-at-origin after
+                                        // translate. User reported "otomatik merkeze
+                                        // odaklaniyor" — the magic auto-rotation was
+                                        // annoying because it overrode their manual
+                                        // rotation immediately after a move. The
+                                        // "Aim at origin" panel button (W8-V) is still
+                                        // available for one-click manual re-aim.
+                                        log_push("[gizmo] light translate applied");
+                                    }
+                                }
+                                break;
+                            }
+                            case GizmoMode::kScale:
+                                if (lt != nullptr)
+                                    log_push("[gizmo] scale applied");
+                                break;
+                            case GizmoMode::kRotate:
+                                if (lt != nullptr)
+                                    log_push("[gizmo] rotate applied");
+                                break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---- velocity_gbuffer_pass ------------------------------------------------
+// R3 phase 227 velocity G-Buffer pass: re-draws every entity mesh into
+// gbuf_velocity with velocity_material; FS writes (curr_uv - prev_uv).
+// Depth attachment in kDepthRead so the velocity raster matches the HDR
+// pass visible surface per pixel (no overdraw soup).
+//
+// Per-entity push: prev_vp * prev_model and curr_vp * curr_model (vp is
+// always un-jittered so TAA jitter doesn't pollute the velocity output).
+// Snapshots ent.prev_model on the way out so next frame can re-project.
+//
+// Barriers in/out: gbuf_velocity Color->Shader (with Undefined seed on
+// first frame); depth DepthWrite->DepthRead before, DepthRead->Shader
+// after, so composite can sample both.
+template <typename MeshFor>
+inline void velocity_gbuffer_pass(cd::rhi::ICommandBuffer& cmd,
+                                  std::uint32_t frame_idx,
+                                  const cd::framegraph::ColorTarget& gbuf_velocity,
+                                  const cd::framegraph::DepthTarget& depth,
+                                  cd::rhi::Extent2D extent,
+                                  cd::material::Material& velocity_material,
+                                  std::vector<SceneEntity>& entities,
+                                  const cd::scene::Scene& scene,
+                                  const cd::math::Mat4f& prev_vp_unjittered,
+                                  const cd::math::Mat4f& vp_unjittered,
+                                  const MeshFor& mesh_for)
+{
+    // R3 phase 227 - velocity G-Buffer pass. Re-draws every entity
+    // mesh using velocity_material; FS writes (curr_uv - prev_uv).
+    // Depth attachment in kDepthRead so the velocity raster matches
+    // the HDR pass's visible surface per pixel (no overdraw soup).
+    {
+        const cd::rhi::ResourceState vel_prev =
+            (frame_idx == 0) ? cd::rhi::ResourceState::kUndefined : cd::rhi::ResourceState::kShaderResource;
+        std::array<cd::rhi::TextureBarrier, 2> vb {
+            cd::rhi::TextureBarrier { .texture = gbuf_velocity.image,
+                                     .from = vel_prev,
+                                     .to = cd::rhi::ResourceState::kColorAttachment,
+                                     .range = { 0, 1, 0, 1 } },
+            cd::rhi::TextureBarrier { .texture = depth.image,
+                                     .from = cd::rhi::ResourceState::kDepthWrite,
+                                     .to = cd::rhi::ResourceState::kDepthRead,
+                                     .range = { 0, 1, 0, 1 } }
+        };
+        cmd.barrier({}, vb);
+
+        std::array<cd::rhi::ColorAttachmentInfo, 1> vel_ca {
+            cd::rhi::ColorAttachmentInfo { .view = gbuf_velocity.view,
+                                          .load_op = cd::rhi::LoadOp::kClear,
+                                          .store_op = cd::rhi::StoreOp::kStore,
+                                          .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 0.0F } } }
+        };
+        cd::rhi::DepthStencilAttachmentInfo vel_depth {};
+        vel_depth.view = depth.view;
+        vel_depth.depth_load = cd::rhi::LoadOp::kLoad;
+        vel_depth.depth_store = cd::rhi::StoreOp::kStore;
+        cd::rhi::RenderPassBeginInfo vel_rp {};
+        vel_rp.render_area = cd::rhi::Rect2D {
+            { 0, 0 },
+            extent
+        };
+        vel_rp.color_attachments = vel_ca;
+        vel_rp.depth_stencil = &vel_depth;
+        cmd.begin_render_pass(vel_rp);
+        cmd.set_viewport(
+            cd::rhi::Viewport { 0.0F,
+                                0.0F,
+                                static_cast<float>(extent.width),
+                                static_cast<float>(extent.height),
+                                0.0F,
+                                1.0F }
+        );
+        cmd.set_scissor(
+            cd::rhi::Rect2D {
+                { 0, 0 },
+                extent
+        }
+        );
+        velocity_material.apply(cmd);
+        // Per-entity draw: push prev/curr vp*model, draw the same
+        // mesh the HDR pass used. CesiumMan path: prim entities
+        // share kPrimBindings layout so the velocity VS reads
+        // their position attribute without a re-bind shape change.
+        for (auto& ent : entities)
+        {
+            const auto& mesh = mesh_for(ent.kind);
+            if (!mesh.vb.is_valid())
+                continue;
+            auto* lt = scene.local(ent.handle);
+            if (lt == nullptr)
+                continue;
+            cmd.bind_vertex_buffer(0, mesh.vb, 0);
+            cmd.bind_index_buffer(mesh.ib, 0, mesh.index_type);
+
+            const auto curr_model_mat = cd::math::to_mat4(lt->value);
+            const auto& prev_model_mat = ent.prev_model_valid ? ent.prev_model : curr_model_mat;
+
+            struct VelocityPush
+            {
+                cd::math::Mat4f prev_vp_model;
+                cd::math::Mat4f curr_vp_model;
+            } vpush;
+
+            vpush.prev_vp_model = prev_vp_unjittered * prev_model_mat;
+            vpush.curr_vp_model = vp_unjittered * curr_model_mat;
+            cmd.push_constants(
+                velocity_material.pipeline_layout(),
+                cd::rhi::ShaderStage::kVertex,
+                0,
+                sizeof(vpush),
+                &vpush
+            );
+            cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
+
+            // Snapshot for next frame's velocity reprojection.
+            ent.prev_model = curr_model_mat;
+            ent.prev_model_valid = true;
+        }
+        cmd.end_render_pass();
+
+        std::array<cd::rhi::TextureBarrier, 2> vb2 {
+            cd::rhi::TextureBarrier { .texture = gbuf_velocity.image,
+                                     .from = cd::rhi::ResourceState::kColorAttachment,
+                                     .to = cd::rhi::ResourceState::kShaderResource,
+                                     .range = { 0, 1, 0, 1 } },
+            cd::rhi::TextureBarrier { .texture = depth.image,
+                                     .from = cd::rhi::ResourceState::kDepthRead,
+                                     .to = cd::rhi::ResourceState::kShaderResource,
+                                     .range = { 0, 1, 0, 1 } }
+        };
+        cmd.barrier({}, vb2);
+    }
+}
+
+// ---- run_bloom_chain ------------------------------------------------------
+// R3 bloom: 7 fullscreen-triangle passes against the dedicated bloom mip
+// chain - 1 prefilter (HDR -> mip0 with soft-knee threshold), 3 downsamples
+// (mip0->1, 1->2, 2->3), 3 upsamples (mip3->2, 2->1, 1->0 with additive
+// blend via LoadOp::kLoad). Each sub-pass barriers its target into
+// ColorAttachment (or Undefined seed on first frame) then back to
+// ShaderResource so the next pass can sample.
+//
+// All 7 invocations share the inner run_bloom_pass lambda; thresholds
+// stay hardcoded as W4 visual baseline (1.10 threshold, 0.50 knee, radius
+// 1.0 / intensity 1.0 per upsample level).
+//
+// Phase 511: `ev_stops` is the current scene auto-exposed EV (from
+// `cd::post::exposure::Setup::current_ev()`). The prefilter shader scales
+// its threshold + knee by exp2(-ev_stops), so the bloom highlight pick-off
+// tracks the scene's auto-exposure. ev_stops = 0 (default) reproduces the
+// pre-phase-511 behaviour exactly, because exp2(0) = 1.
+inline void run_bloom_chain(cd::rhi::ICommandBuffer& cmd,
+                            std::uint32_t frame_idx,
+                            BloomMipChain& bloom_chain,
+                            cd::material::Material& bloom_prefilter_material,
+                            cd::material::MaterialInstance& bloom_prefilter_inst,
+                            cd::material::Material& bloom_downsample_material,
+                            std::array<cd::material::MaterialInstance, 3>& bloom_down_insts,
+                            cd::material::Material& bloom_upsample_material,
+                            std::array<cd::material::MaterialInstance, 3>& bloom_up_insts,
+                            float ev_stops = 0.0F)
+{
+    auto run_bloom_pass = [&](cd::material::Material& mat,
+                              cd::material::MaterialInstance& inst,
+                              ColorTarget& dst,
+                              cd::rhi::LoadOp load_op,
+                              std::span<const std::byte> push_bytes,
+                              bool first_frame)
+    {
+        std::array<cd::rhi::TextureBarrier, 1> tb {
+            cd::rhi::TextureBarrier { .texture = dst.image,
+                                     .from = first_frame ? cd::rhi::ResourceState::kUndefined
+                                                          : cd::rhi::ResourceState::kShaderResource,
+                                     .to = cd::rhi::ResourceState::kColorAttachment,
+                                     .range = { 0, 1, 0, 1 } }
+        };
+        cmd.barrier({}, tb);
+
+        std::array<cd::rhi::ColorAttachmentInfo, 1> ca {
+            cd::rhi::ColorAttachmentInfo { .view = dst.view,
+                                          .load_op = load_op,
+                                          .store_op = cd::rhi::StoreOp::kStore,
+                                          .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 1.0F } } }
+        };
+        cd::rhi::RenderPassBeginInfo rp {};
+        rp.render_area = cd::rhi::Rect2D { { 0, 0 }, dst.extent };
+        rp.color_attachments = ca;
+        rp.depth_stencil = nullptr;
+        cmd.begin_render_pass(rp);
+        cmd.set_viewport(cd::rhi::Viewport { 0.0F, 0.0F,
+                                             static_cast<float>(dst.extent.width),
+                                             static_cast<float>(dst.extent.height),
+                                             0.0F, 1.0F });
+        cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, dst.extent });
+        mat.apply(cmd);
+        inst.bind(cmd, 0);
+        if (!push_bytes.empty())
+        {
+            cmd.push_constants(mat.pipeline_layout(),
+                               cd::rhi::ShaderStage::kFragment,
+                               0,
+                               static_cast<std::uint32_t>(push_bytes.size()),
+                               push_bytes.data());
+        }
+        cmd.draw(3, 1, 0, 0);
+        cmd.end_render_pass();
+
+        std::array<cd::rhi::TextureBarrier, 1> tb2 {
+            cd::rhi::TextureBarrier { .texture = dst.image,
+                                     .from = cd::rhi::ResourceState::kColorAttachment,
+                                     .to = cd::rhi::ResourceState::kShaderResource,
+                                     .range = { 0, 1, 0, 1 } }
+        };
+        cmd.barrier({}, tb2);
+    };
+
+    const bool bloom_first_frame = (frame_idx == 0);
+    // 1) Prefilter: HDR -> mip0 (soft-knee threshold, EV-scaled per phase 511).
+    {
+        BloomPrefilterPush bpp {};
+        bpp.params[0] = 1.10F;     // threshold (linear HDR units)
+        bpp.params[1] = 0.50F;     // knee
+        bpp.params[2] = ev_stops;  // scene EV in stops (phase 511)
+        bpp.params[3] = 0.0F;
+        std::span<const std::byte> bytes { reinterpret_cast<const std::byte*>(&bpp), sizeof(bpp) };
+        run_bloom_pass(bloom_prefilter_material, bloom_prefilter_inst,
+                       bloom_chain.mips[0], cd::rhi::LoadOp::kClear, bytes, bloom_first_frame);
+    }
+    // 2) Downsample chain: mip0 -> 1, 1 -> 2, 2 -> 3.
+    for (std::uint32_t i = 0; i < 3; ++i)
+    {
+        run_bloom_pass(bloom_downsample_material, bloom_down_insts[i],
+                       bloom_chain.mips[i + 1], cd::rhi::LoadOp::kClear, {}, bloom_first_frame);
+    }
+    // 3) Upsample chain: mip3 -> 2, 2 -> 1, 1 -> 0 (additive blend).
+    //    LoadOp::kLoad preserves the prior pass output we are adding onto.
+    for (std::uint32_t i = 0; i < 3; ++i)
+    {
+        const std::uint32_t dst_index = 3U - 1U - i;  // 2, 1, 0
+        BloomUpsamplePush bup {};
+        bup.params[0] = 1.0F;  // radius (px scale)
+        bup.params[1] = 1.0F;  // intensity per level
+        bup.params[2] = 0.0F;
+        bup.params[3] = 0.0F;
+        std::span<const std::byte> bytes { reinterpret_cast<const std::byte*>(&bup), sizeof(bup) };
+        run_bloom_pass(bloom_upsample_material, bloom_up_insts[i],
+                       bloom_chain.mips[dst_index], cd::rhi::LoadOp::kLoad, bytes, bloom_first_frame);
+    }
+}
+
+// ---- begin_composite_pass --------------------------------------------------
+// Heavy composite-pass extraction (phase 317 / Marathon Run 10 N6C, ~285
+// lines body): TAA history ping-pong barrier, swapchain + history render
+// pass open, composite_material apply, CompositePush fill (tonemap + AO +
+// DOF + light shafts + atmospheric fog + camera basis for SSR + prev-cam
+// motion blur), draw, prev_cam_basis snapshot for next frame, prev_vp
+// snapshot for next frame's velocity pass.
+//
+// IMPORTANT: this helper OPENS the swapchain render pass but does NOT
+// close it. The caller draws ImGui inside the same pass after this
+// returns and then calls cmd.end_render_pass(). That keeps the swapchain
+// + history dual-attachment configuration consistent across composite
+// + ImGui without recreating the pass.
+inline void begin_composite_pass(cd::rhi::ICommandBuffer& cmd,
+                                 std::uint32_t frame_idx,
+                                 cd::rhi::TextureViewHandle swapchain_view,
+                                 cd::rhi::Extent2D extent,
+                                 std::array<ColorTarget, 2>& history_targets,
+                                 std::array<cd::rhi::ResourceState, 2>& history_states,
+                                 cd::material::Material& composite_material,
+                                 std::array<cd::material::MaterialInstance, 2>& composite_insts,
+                                 const cd_studio::StudioRenderFx& fx,
+                                 const std::vector<LightRow>& lights,
+                                 const cd::camera::Camera& cam,
+                                 std::chrono::steady_clock::time_point frame_loop_start,
+                                 PrevCamBasis& prev_cam_basis,
+                                 cd::math::Mat4f& prev_vp_unjittered,
+                                 bool& prev_vp_valid,
+                                 const cd::math::Mat4f& vp_unjittered)
+{
+    // TAA ping-pong selection. composite_insts[read_idx] has its
+    // binding=4 wired to history_targets[read_idx]; we render into
+    // history_targets[write_idx] (= the OTHER one) as the 2nd
+    // color attachment so next frame can read it.
+    const std::uint32_t read_idx = frame_idx & 1U;
+    const std::uint32_t write_idx = 1U - read_idx;
+
+    // Barrier the two history targets: read side ??' ShaderResource,
+    // write side ??' ColorAttachment.
+    {
+        std::array<cd::rhi::TextureBarrier, 2> hb {
+            cd::rhi::TextureBarrier { .texture = history_targets[read_idx].image,
+                                     .from = history_states[read_idx],
+                                     .to = cd::rhi::ResourceState::kShaderResource,
+                                     .range = { 0, 1, 0, 1 } },
+            cd::rhi::TextureBarrier { .texture = history_targets[write_idx].image,
+                                     .from = history_states[write_idx],
+                                     .to = cd::rhi::ResourceState::kColorAttachment,
+                                     .range = { 0, 1, 0, 1 } }
+        };
+        cmd.barrier({}, hb);
+        history_states[read_idx] = cd::rhi::ResourceState::kShaderResource;
+        history_states[write_idx] = cd::rhi::ResourceState::kColorAttachment;
+    }
+
+    std::array<cd::rhi::ColorAttachmentInfo, 2> swap_attach {
+        cd::rhi::ColorAttachmentInfo { .view = swapchain_view,
+                                      .load_op = cd::rhi::LoadOp::kClear,
+                                      .store_op = cd::rhi::StoreOp::kStore,
+                                      .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 1.0F } } },
+        cd::rhi::ColorAttachmentInfo { .view = history_targets[write_idx].view,
+                                      .load_op = cd::rhi::LoadOp::kClear,
+                                      .store_op = cd::rhi::StoreOp::kStore,
+                                      .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 1.0F } } }
+    };
+    cd::rhi::RenderPassBeginInfo swap_rp {};
+    swap_rp.render_area = cd::rhi::Rect2D {
+        { 0, 0 },
+        extent
+    };
+    swap_rp.color_attachments = swap_attach;
+    swap_rp.depth_stencil = nullptr;
+    cmd.begin_render_pass(swap_rp);
+    cmd.set_viewport(
+        cd::rhi::Viewport { 0.0F,
+                            0.0F,
+                            static_cast<float>(extent.width),
+                            static_cast<float>(extent.height),
+                            0.0F,
+                            1.0F }
+    );
+    cmd.set_scissor(
+        cd::rhi::Rect2D {
+            { 0, 0 },
+            extent
+    }
+    );
+    composite_material.apply(cmd);
+    composite_insts[read_idx].bind(cmd, 0);
+    CompositePush cp {};
+    cp.fx[0] = static_cast<float>(fx.tonemap_op);
+    cp.fx[1] = fx.exposure;
+    cp.fx[2] = fx.saturation_boost;
+    cp.fx[3] = fx.bloom_post;
+    cp.ao[0] = fx.ao_strength;
+    // B05: 4 px was nearly invisible at 1600?900. Bumped to 20 px
+    // so the crease darkening reads at typical viewport sizes.
+    cp.ao[1] = 20.0F;
+    cp.ao[2] = cam.near_z;
+    cp.ao[3] = cam.far_z;
+    // DOF - wired from the existing UI slider. Focus on cam.target
+    // (length(eye - target)), default 4 m range, 8 px max blur.
+    const float focus_dist = cd::math::length(
+        cd::math::Vec3f { cam.eye.x - cam.target.x, cam.eye.y - cam.target.y, cam.eye.z - cam.target.z }
+    );
+    cp.dof[0] = fx.dof_strength;
+    cp.dof[1] = focus_dist;
+    cp.dof[2] = 4.0F;  // focus range (m) - pixels within ??range stay sharp
+    cp.dof[3] = 8.0F;  // max blur radius (px)
+    // Light shafts - project the first enabled directional light's
+    // sun position to screen-space UV (sun lives at infinity in
+    // direction -L). If sun is behind camera (fwd_dot ??? 0) we
+    // signal disabled via negative strength.
+    cp.shafts[0] = 0.5F;
+    cp.shafts[1] = 0.5F;
+    cp.shafts[2] = -1.0F;  // disabled until a directional light + visible sun
+    cp.shafts[3] = 1.0F;
+    // sun_col.w packs the volumetric-clouds coverage (composite uses it
+    // for the sky-region fBm cloud overlay). RGB filled in the loop
+    // below from the first enabled directional light's colour.
+    cp.sun_col[0] = 0.0F;
+    cp.sun_col[1] = 0.0F;
+    cp.sun_col[2] = 0.0F;
+    cp.sun_col[3] = fx.clouds_coverage;
+    // phase872-sun-col-direction-bug-fix: the loop below early-exits
+    // (break) on every "sun is behind camera" or "shafts geometry
+    // degenerate" branch, which left cp.sun_col at zero whenever the
+    // camera yawed past 90° from the sun. The composite shader's
+    // `sun_amt = length(sun_col.rgb) * 0.5` then collapsed to zero
+    // and `cloud_lit *= mix(0.04, 1.0, 0)` darkened the cloud overlay
+    // to near-black — exactly the user-reported "180° yaw colour
+    // flip". sun_col is now set UNCONDITIONALLY on the first enabled
+    // directional light below; the shafts geometry continues to
+    // gate the shafts amount, not the colour.
+    for (const auto& lrow : lights)
+    {
+        if (!lrow.enabled)
+            continue;
+        if (lrow.light.type != cd::light::LightType::kDirectional)
+            continue;
+        // Set the colour FIRST — this is the per-frame "sun is on"
+        // signal the composite needs regardless of view direction.
+        cp.sun_col[0] = lrow.light.color.x;
+        cp.sun_col[1] = lrow.light.color.y;
+        cp.sun_col[2] = lrow.light.color.z;
+        const cd::math::Vec3f to_sun { -lrow.light.direction.x, -lrow.light.direction.y, -lrow.light.direction.z };
+        // Compute camera basis (forward/right/up). Same construction
+        // as the sky/PBR push setup right above.
+        const cd::math::Vec3f cam_fwd_n { cam.target.x - cam.eye.x,
+                                          cam.target.y - cam.eye.y,
+                                          cam.target.z - cam.eye.z };
+        const float cam_fwd_len =
+            std::sqrt(cam_fwd_n.x * cam_fwd_n.x + cam_fwd_n.y * cam_fwd_n.y + cam_fwd_n.z * cam_fwd_n.z);
+        if (cam_fwd_len < 1e-6F)
+            break;
+        const cd::math::Vec3f f { cam_fwd_n.x / cam_fwd_len, cam_fwd_n.y / cam_fwd_len, cam_fwd_n.z / cam_fwd_len };
+        const cd::math::Vec3f shaft_up_axis { 0.0F, 1.0F, 0.0F };
+        const cd::math::Vec3f r_raw { f.y * shaft_up_axis.z - f.z * shaft_up_axis.y,
+                                      f.z * shaft_up_axis.x - f.x * shaft_up_axis.z,
+                                      f.x * shaft_up_axis.y - f.y * shaft_up_axis.x };
+        const float r_len = std::sqrt(r_raw.x * r_raw.x + r_raw.y * r_raw.y + r_raw.z * r_raw.z);
+        if (r_len < 1e-6F)
+            break;
+        const cd::math::Vec3f r { r_raw.x / r_len, r_raw.y / r_len, r_raw.z / r_len };
+        const cd::math::Vec3f u { r.y * f.z - r.z * f.y, r.z * f.x - r.x * f.z, r.x * f.y - r.y * f.x };
+        const float fwd_dot = to_sun.x * f.x + to_sun.y * f.y + to_sun.z * f.z;
+        if (fwd_dot <= 0.0F)
+            break;  // sun behind camera
+        const float r_dot = to_sun.x * r.x + to_sun.y * r.y + to_sun.z * r.z;
+        const float u_dot = to_sun.x * u.x + to_sun.y * u.y + to_sun.z * u.z;
+        const float aspect_l = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+        const float half_h_l = std::tan(cam.fov_y * 0.5F);
+        const float half_w_l = half_h_l * aspect_l;
+        const float sun_ndc_x = (r_dot / fwd_dot) / half_w_l;
+        const float sun_ndc_y = (u_dot / fwd_dot) / half_h_l;
+        cp.shafts[0] = 0.5F + 0.5F * sun_ndc_x;
+        cp.shafts[1] = 0.5F - 0.5F * sun_ndc_y;
+        // W4-E: smoother edge fade. Old fade hit zero exactly at the
+        // [-1, 1] NDC boundary, so off-screen sun caused shafts to
+        // pop. New shape uses smoothstep with a half-NDC overshoot
+        // so shafts taper gracefully across the edge.
+        const float ndc_max = std::max(std::abs(sun_ndc_x), std::abs(sun_ndc_y));
+        // 0 at ndc_max=1.5 (just off-screen), 1 at ndc_max<=0.5
+        // (well-inside). Smoothstep(1.5, 0.5, ndc_max) follows the
+        // requested orientation.
+        float edge_fade = 1.0F;
+        {
+            const float t = std::clamp((1.5F - ndc_max) / 1.0F, 0.0F, 1.0F);
+            edge_fade = t * t * (3.0F - 2.0F * t);
+        }
+        cp.shafts[2] = fx.shafts_strength * edge_fade;
+        // W4-E: gentler decay so shafts visibly reach across the
+        // frame instead of dying within ~25% of UV distance from
+        // sun. Was 3.5; 1.6 keeps shafts readable at the corners.
+        cp.shafts[3] = 1.6F;  // decay (per UV distance)
+        // phase872: sun_col was already set at the top of the loop;
+        // no need to re-assign here.
+        break;
+    }
+    // Atmospheric fog (uniform exp-haze) + aerial perspective (sky
+    // horizon tint with distance). Reuses the existing UI sliders
+    // so the composite is now the *one* home for these effects.
+    // phase512-volumetric-fog-wire: sign bit on atmo[0] selects mode.
+    //   positive density -> legacy single-tap exp fog
+    //   negative density -> Wronski 2014 integrated single-scatter
+    // The composite shader reads abs(pc.atmo.x) as density and tests
+    // pc.atmo.x < 0 for the mode flag. Zero density disables either
+    // path so the checkbox is a true no-op when density == 0.
+    cp.atmo[0] = fx.volumetric_fog_on ? -fx.fog_density : fx.fog_density;
+    cp.atmo[1] = fx.aerial_perspective;
+    cp.atmo[2] = fx.vignette_strength;
+    cp.atmo[3] = fx.film_grain;
+    cp.lens[0] = fx.chromab_strength;
+    // R5 volumetric fog single-scatter - sun direction packed here.
+    // Composite uses (view ? -sun) with Henyey-Greenstein phase to
+    // colour the fog along the sun ray. Use first enabled directional
+    // light, else neutral (0,-1,0) so no in-scatter shows up.
+    cd::math::Vec3f sun_dir_world { 0.0F, -1.0F, 0.0F };
+    for (const auto& lrow : lights)
+    {
+        if (!lrow.enabled)
+            continue;
+        if (lrow.light.type != cd::light::LightType::kDirectional)
+            continue;
+        sun_dir_world = lrow.light.direction;
+        break;
+    }
+    cp.lens[1] = sun_dir_world.x;
+    cp.lens[2] = sun_dir_world.y;
+    cp.lens[3] = sun_dir_world.z;
+    // G-Buffer-aware ops: pack camera basis so the composite FS can
+    // reconstruct world-space positions per pixel for SSR + normal-
+    // aware AO. Match the same basis the sky shader uses (forward
+    // = (target-eye)/|...|, right = forward ?- +Y, up = right ?-
+    // forward) so SSR rays project consistently.
+    {
+        const cd::math::Vec3f fwd_raw { cam.target.x - cam.eye.x,
+                                        cam.target.y - cam.eye.y,
+                                        cam.target.z - cam.eye.z };
+        const float ssr_fl = std::sqrt(fwd_raw.x * fwd_raw.x + fwd_raw.y * fwd_raw.y + fwd_raw.z * fwd_raw.z);
+        const cd::math::Vec3f fwd =
+            (ssr_fl > 1e-6F) ? cd::math::Vec3f { fwd_raw.x / ssr_fl, fwd_raw.y / ssr_fl, fwd_raw.z / ssr_fl }
+                             : cd::math::Vec3f { 0.0F, 0.0F, -1.0F };
+        constexpr cd::math::Vec3f cam_world_up { 0.0F, 1.0F, 0.0F };
+        const cd::math::Vec3f r_raw { fwd.y * cam_world_up.z - fwd.z * cam_world_up.y,
+                                      fwd.z * cam_world_up.x - fwd.x * cam_world_up.z,
+                                      fwd.x * cam_world_up.y - fwd.y * cam_world_up.x };
+        const float ssr_rl = std::sqrt(r_raw.x * r_raw.x + r_raw.y * r_raw.y + r_raw.z * r_raw.z);
+        const cd::math::Vec3f right = (ssr_rl > 1e-6F)
+                                          ? cd::math::Vec3f { r_raw.x / ssr_rl, r_raw.y / ssr_rl, r_raw.z / ssr_rl }
+                                          : cd::math::Vec3f { 1.0F, 0.0F, 0.0F };
+        const cd::math::Vec3f up_cam { right.y * fwd.z - right.z * fwd.y,
+                                       right.z * fwd.x - right.x * fwd.z,
+                                       right.x * fwd.y - right.y * fwd.x };
+        const float aspect_l = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+        const float half_h_l = std::tan(cam.fov_y * 0.5F);
+        const float half_w_l = half_h_l * aspect_l;
+        cp.cam_right[0] = right.x;
+        cp.cam_right[1] = right.y;
+        cp.cam_right[2] = right.z;
+        cp.cam_right[3] = half_w_l;
+        cp.cam_up[0] = up_cam.x;
+        cp.cam_up[1] = up_cam.y;
+        cp.cam_up[2] = up_cam.z;
+        cp.cam_up[3] = half_h_l;
+        cp.cam_fwd[0] = fwd.x;
+        cp.cam_fwd[1] = fwd.y;
+        // TAA alpha - first frame must blend 0 (history undefined).
+        cp.cam_fwd[2] = fwd.z;
+        cp.cam_fwd[3] = (frame_idx > 0) ? fx.taa_amount : 0.0F;
+        cp.cam_pos[0] = cam.eye.x;
+        cp.cam_pos[1] = cam.eye.y;
+        // W6-B: w slot carries the composite's anim-time (seconds
+        // since the frame loop started) so post-fx that need a
+        // monotonic clock — e.g. the volumetric-cloud drift — read
+        // it without an extra push-constant slot or a global state
+        // buffer. Use the frame-loop epoch instead of steady_clock
+        // since-epoch so the noise stays in a sane numeric range.
+        cp.cam_pos[2] = cam.eye.z;
+        cp.cam_pos[3] = std::chrono::duration<float>(std::chrono::steady_clock::now() - frame_loop_start).count();
+    }
+    // SSR - wired from the existing UI slider; defaults to 0 (off).
+    cp.ssr[0] = fx.ssr_strength;
+    cp.ssr[1] = 25.0F;  // max distance (m)
+    cp.ssr[2] = 24.0F;  // max steps
+    cp.ssr[3] = 1.5F;   // edge-fade aggressiveness
+
+    // Camera-velocity motion blur: pack the prev-frame basis. On
+    // the very first frame, mirror current basis (zero velocity).
+    {
+        const auto& pb = prev_cam_basis;
+        const bool first = !pb.valid;
+        const cd::math::Vec3f pr =
+            first ? cd::math::Vec3f { cp.cam_right[0], cp.cam_right[1], cp.cam_right[2] } : pb.right;
+        const cd::math::Vec3f pu = first ? cd::math::Vec3f { cp.cam_up[0], cp.cam_up[1], cp.cam_up[2] } : pb.up;
+        const cd::math::Vec3f pf = first ? cd::math::Vec3f { cp.cam_fwd[0], cp.cam_fwd[1], cp.cam_fwd[2] } : pb.fwd;
+        const cd::math::Vec3f pp = first ? cd::math::Vec3f { cp.cam_pos[0], cp.cam_pos[1], cp.cam_pos[2] } : pb.pos;
+        const float phw = first ? cp.cam_right[3] : pb.half_w;
+        const float phh = first ? cp.cam_up[3] : pb.half_h;
+        cp.prev_cam_right[0] = pr.x;
+        cp.prev_cam_right[1] = pr.y;
+        cp.prev_cam_right[2] = pr.z;
+        cp.prev_cam_right[3] = phw;
+        cp.prev_cam_up[0] = pu.x;
+        cp.prev_cam_up[1] = pu.y;
+        cp.prev_cam_up[2] = pu.z;
+        cp.prev_cam_up[3] = phh;
+        cp.prev_cam_fwd[0] = pf.x;
+        cp.prev_cam_fwd[1] = pf.y;
+        cp.prev_cam_fwd[2] = pf.z;
+        cp.prev_cam_fwd[3] = fx.motion_blur;
+        cp.prev_cam_pos[0] = pp.x;
+        cp.prev_cam_pos[1] = pp.y;
+        cp.prev_cam_pos[2] = pp.z;
+        cp.prev_cam_pos[3] = 8.0F;  // sample count
+    }
+
+    cmd.push_constants(composite_material.pipeline_layout(), cd::rhi::ShaderStage::kFragment, 0, sizeof(cp), &cp);
+    cmd.draw(3, 1, 0, 0);
+
+    // Snapshot current camera basis for next frame's velocity
+    // reprojection. Done AFTER the push so the next frame can
+    // reproject "where was this pixel one frame ago?".
+    prev_cam_basis.right = { cp.cam_right[0], cp.cam_right[1], cp.cam_right[2] };
+    prev_cam_basis.up = { cp.cam_up[0], cp.cam_up[1], cp.cam_up[2] };
+    prev_cam_basis.fwd = { cp.cam_fwd[0], cp.cam_fwd[1], cp.cam_fwd[2] };
+    prev_cam_basis.pos = { cp.cam_pos[0], cp.cam_pos[1], cp.cam_pos[2] };
+    prev_cam_basis.half_w = cp.cam_right[3];
+    prev_cam_basis.half_h = cp.cam_up[3];
+    prev_cam_basis.valid = true;
+    // Snapshot the un-jittered VP for next frame's velocity pass.
+    prev_vp_unjittered = vp_unjittered;
+    prev_vp_valid = true;
+}
+
+// ---- HdrSceneFrame + begin_hdr_scene_pass ---------------------------------
+// Open the R3 HDR + 3 G-Buffer (normal/albedo/MR) + depth attachment render
+// pass and return the per-frame VP matrices the downstream sky / floor /
+// entity passes need. cd::post::taa::jitter_offset(frame_idx, 8) is the
+// Halton(2,3) sequence; we only apply it when TAA is dialled in.
+//
+// Pass stays open across draw_sky_pass, fill + draw of floor/ECS/planar
+// shadow + gizmo overlay. The caller closes it explicitly via
+// cmd.end_render_pass() before the composite pass opens the swapchain pass.
+struct HdrSceneFrame
+{
+    cd::math::Mat4f vp;
+    cd::math::Mat4f vp_unjittered;
+    float aspect { 1.0F };
+};
+
+inline HdrSceneFrame make_hdr_frame(std::uint32_t frame_idx,
+                                    cd::rhi::Extent2D extent,
+                                    const cd::camera::Camera& cam,
+                                    float taa_amount)
+{
+    HdrSceneFrame out {};
+    out.aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+    out.vp_unjittered = cd::camera::view_projection(cam, out.aspect);
+
+    const cd::math::Vec2f jitter_px =
+        (taa_amount > 0.001F) ? cd::post::taa::jitter_offset(frame_idx, 8U) : cd::math::Vec2f { 0.0F, 0.0F };
+    const float jx_ndc = jitter_px.x * 2.0F / static_cast<float>(extent.width);
+    const float jy_ndc = jitter_px.y * 2.0F / static_cast<float>(extent.height);
+    out.vp = out.vp_unjittered;
+    for (std::size_t c = 0; c < 4; ++c)
+    {
+        out.vp[c][0] += jx_ndc * out.vp_unjittered[c][3];
+        out.vp[c][1] += jy_ndc * out.vp_unjittered[c][3];
+    }
+    return out;
+}
+
+// phase1121 (X1-FU-F step 3): the barrier + attachment construction is
+// shared by the serial open and the parallel-lane open below so the two
+// paths can never drift.
+inline void hdr_pass_barriers(cd::rhi::ICommandBuffer& cmd,
+                              std::uint32_t frame_idx,
+                              const cd::framegraph::ColorTarget& hdr_target,
+                              const cd::framegraph::ColorTarget& gbuf_normal,
+                              const cd::framegraph::ColorTarget& gbuf_albedo,
+                              const cd::framegraph::ColorTarget& gbuf_mr)
+{
+    const cd::rhi::ResourceState prev_state =
+        (frame_idx == 0) ? cd::rhi::ResourceState::kUndefined : cd::rhi::ResourceState::kShaderResource;
+    std::array<cd::rhi::TextureBarrier, 4> hb {
+        cd::rhi::TextureBarrier { .texture = hdr_target.image,
+                                 .from = prev_state,
+                                 .to = cd::rhi::ResourceState::kColorAttachment,
+                                 .range = { 0, 1, 0, 1 } },
+        cd::rhi::TextureBarrier { .texture = gbuf_normal.image,
+                                 .from = prev_state,
+                                 .to = cd::rhi::ResourceState::kColorAttachment,
+                                 .range = { 0, 1, 0, 1 } },
+        cd::rhi::TextureBarrier { .texture = gbuf_albedo.image,
+                                 .from = prev_state,
+                                 .to = cd::rhi::ResourceState::kColorAttachment,
+                                 .range = { 0, 1, 0, 1 } },
+        cd::rhi::TextureBarrier { .texture = gbuf_mr.image,
+                                 .from = prev_state,
+                                 .to = cd::rhi::ResourceState::kColorAttachment,
+                                 .range = { 0, 1, 0, 1 } }
+    };
+    cmd.barrier({}, hb);
+}
+
+/// Attachment bundle for the HDR pass. Self-contained by value: the
+/// RenderPassBeginInfo is built by the caller FROM this struct so its
+/// span/pointer always reference the caller's living instance.
+struct HdrPassAttach
+{
+    std::array<cd::rhi::ColorAttachmentInfo, 4> color {};
+    cd::rhi::DepthStencilAttachmentInfo depth {};
+};
+
+inline HdrPassAttach hdr_pass_attach(const cd::framegraph::ColorTarget& hdr_target,
+                                     const cd::framegraph::ColorTarget& gbuf_normal,
+                                     const cd::framegraph::ColorTarget& gbuf_albedo,
+                                     const cd::framegraph::ColorTarget& gbuf_mr,
+                                     const cd::framegraph::DepthTarget& depth)
+{
+    HdrPassAttach a {};
+    a.color = {
+        cd::rhi::ColorAttachmentInfo { .view = hdr_target.view,
+                                      .load_op = cd::rhi::LoadOp::kClear,
+                                      .store_op = cd::rhi::StoreOp::kStore,
+                                      .clear_color = { .f32 = { 1.0F, 0.0F, 1.0F, 1.0F } } },
+        cd::rhi::ColorAttachmentInfo { .view = gbuf_normal.view,
+                                      .load_op = cd::rhi::LoadOp::kClear,
+                                      .store_op = cd::rhi::StoreOp::kStore,
+                                      .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 0.0F } } },
+        cd::rhi::ColorAttachmentInfo { .view = gbuf_albedo.view,
+                                      .load_op = cd::rhi::LoadOp::kClear,
+                                      .store_op = cd::rhi::StoreOp::kStore,
+                                      .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 0.0F } } },
+        cd::rhi::ColorAttachmentInfo { .view = gbuf_mr.view,
+                                      .load_op = cd::rhi::LoadOp::kClear,
+                                      .store_op = cd::rhi::StoreOp::kStore,
+                                      .clear_color = { .f32 = { 0.0F, 1.0F, 0.0F, 0.0F } } }
+    };
+    a.depth.view = depth.view;
+    a.depth.depth_load = cd::rhi::LoadOp::kClear;
+    a.depth.depth_store = cd::rhi::StoreOp::kStore;
+    a.depth.clear.depth = 1.0F;
+    return a;
+}
+
+inline HdrSceneFrame begin_hdr_scene_pass(cd::rhi::ICommandBuffer& cmd,
+                                          std::uint32_t frame_idx,
+                                          const cd::framegraph::ColorTarget& hdr_target,
+                                          const cd::framegraph::ColorTarget& gbuf_normal,
+                                          const cd::framegraph::ColorTarget& gbuf_albedo,
+                                          const cd::framegraph::ColorTarget& gbuf_mr,
+                                          const cd::framegraph::DepthTarget& depth,
+                                          cd::rhi::Extent2D extent,
+                                          const cd::camera::Camera& cam,
+                                          float taa_amount)
+{
+    hdr_pass_barriers(cmd, frame_idx, hdr_target, gbuf_normal, gbuf_albedo, gbuf_mr);
+    const HdrPassAttach a = hdr_pass_attach(hdr_target, gbuf_normal, gbuf_albedo,
+                                            gbuf_mr, depth);
+    cd::rhi::RenderPassBeginInfo rp {};
+    rp.render_area = cd::rhi::Rect2D { { 0, 0 }, extent };
+    rp.color_attachments = a.color;
+    rp.depth_stencil = &a.depth;
+    cmd.begin_render_pass(rp);
+    cmd.set_viewport(cd::rhi::Viewport { 0.0F, 0.0F,
+                                         static_cast<float>(extent.width),
+                                         static_cast<float>(extent.height),
+                                         0.0F, 1.0F });
+    cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, extent });
+    return make_hdr_frame(frame_idx, extent, cam, taa_amount);
+}
+
+/// phase1121 (X1-FU-F step 3): parallel-lane variant. Same barriers and
+/// attachments, then the pass opens with secondary-contents semantics.
+/// When the backend reports no lane support (null recorder) it falls back
+/// to the serial open INTERNALLY so barriers are never emitted twice;
+/// callers branch on the returned recorder.
+inline std::pair<HdrSceneFrame, std::unique_ptr<cd::rhi::IParallelPassRecorder>>
+begin_hdr_scene_pass_lanes(cd::rhi::ICommandBuffer& cmd,
+                           std::uint32_t frame_idx,
+                           const cd::framegraph::ColorTarget& hdr_target,
+                           const cd::framegraph::ColorTarget& gbuf_normal,
+                           const cd::framegraph::ColorTarget& gbuf_albedo,
+                           const cd::framegraph::ColorTarget& gbuf_mr,
+                           const cd::framegraph::DepthTarget& depth,
+                           cd::rhi::Extent2D extent,
+                           const cd::camera::Camera& cam,
+                           float taa_amount,
+                           std::uint32_t lane_count)
+{
+    hdr_pass_barriers(cmd, frame_idx, hdr_target, gbuf_normal, gbuf_albedo, gbuf_mr);
+    const HdrPassAttach a = hdr_pass_attach(hdr_target, gbuf_normal, gbuf_albedo,
+                                            gbuf_mr, depth);
+    cd::rhi::RenderPassBeginInfo rp {};
+    rp.render_area = cd::rhi::Rect2D { { 0, 0 }, extent };
+    rp.color_attachments = a.color;
+    rp.depth_stencil = &a.depth;
+    auto rec = cmd.begin_parallel_render_pass(rp, lane_count);
+    if (rec == nullptr)
+    {
+        cmd.begin_render_pass(rp);
+        cmd.set_viewport(cd::rhi::Viewport { 0.0F, 0.0F,
+                                             static_cast<float>(extent.width),
+                                             static_cast<float>(extent.height),
+                                             0.0F, 1.0F });
+        cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, extent });
+    }
+    return { make_hdr_frame(frame_idx, extent, cam, taa_amount), std::move(rec) };
+}
+
+/// phase1121: a lane's secondary inherits NO dynamic state from the
+/// primary — every lane must (re)set viewport/scissor before its draws.
+inline void prep_hdr_lane(cd::rhi::IDrawRecorder& lane, cd::rhi::Extent2D extent)
+{
+    lane.set_viewport(cd::rhi::Viewport { 0.0F, 0.0F,
+                                          static_cast<float>(extent.width),
+                                          static_cast<float>(extent.height),
+                                          0.0F, 1.0F });
+    lane.set_scissor(cd::rhi::Rect2D { { 0, 0 }, extent });
+}
+
+// ---- draw_floor_and_entities ----------------------------------------------
+// Draws the floor quad (with FS sentinel tint.w=2.0 -> analytic XZ grid)
+// and the ECS entity primitives row in one helper. Both use the same
+// prim_material + fill_prim_push_shared for the sun/fx/cam fields.
+//
+// X1D parallel-prep / serial-draw split (phase 286) preserved: per-entity
+// PrimPush is built via parallel_for into a pre-sized scratch vector, the
+// bind + push + draw pass stays serial (Vulkan cmd recording not
+// thread-safe per buffer, ADR-015 / Vulkan spec 5.1).
+//
+// kFloorY constant is owned by the caller because planar shadows need it
+// for the projection matrix; we accept it as an argument so the constant
+// stays a single source of truth.
+template <typename MeshFor, typename PrimRangesFor>
+inline void draw_floor_and_entities(cd::rhi::IDrawRecorder& cmd,
+                                    const GpuMesh& floor_mesh,
+                                    float floor_y,
+                                    const cd::math::Mat4f& vp,
+                                    const cd_studio::StudioRenderFx& fx,
+                                    const SunLight& sun,
+                                    const cd::camera::Camera& cam,
+                                    std::vector<SceneEntity>& entities,
+                                    const cd::scene::Scene& scene,
+                                    bool has_gltf_texture,
+                                    cd::material::Material& prim_material,
+                                    cd::core::CounterTable& counters,
+                                    const MeshFor& mesh_for,
+                                    PrimRangesFor prim_ranges_for,
+                                    cd::material::MaterialInstance& prim_inst,
+                                    cd::rhi::SamplerHandle albedo_sampler,
+                                    cd::rhi::IDevice& device,
+                                    cd::rhi::TextureViewHandle global_albedo_view,
+                                    // phase456: global procedural normal + MR views used to
+                                    // restore the shared prim_inst's bindings 8 + 9 after the
+                                    // Sponza per-prim draw loop, so subsequent entity draws
+                                    // (CesiumMan, PBR spheres) sample the right material maps.
+                                    cd::rhi::TextureViewHandle global_normal_view = {},
+                                    cd::rhi::TextureViewHandle global_mr_view     = {},
+                                    // phase435-vis8: skip editor grid when a scene with its
+                                    // own floor (Sponza) is active. Grid bleeds through
+                                    // alpha-discarded vegetation pixels. Default true
+                                    // keeps legacy call sites unchanged.
+                                    bool show_editor_floor = true)
+{
+    // ---- Floor (large flat quad) ----
+    // Faz 1.5 - real geometry on which the planar-shadow pass can
+    // project caster silhouettes. Floor sits at y = floor_y so the
+    // front-row primitives (which extend ??0.5 m around y=0) just
+    // touch it.
+    // phase435-vis8: skip entirely when a scene with its own floor is active.
+    if (show_editor_floor)
+            {
+        cmd.bind_vertex_buffer(0, floor_mesh.vb, 0);
+        cmd.bind_index_buffer(floor_mesh.ib, 0, floor_mesh.index_type);
+        cd::math::Mat4f floor_model = cd::math::Mat4f::identity();
+        floor_model[3][1] = floor_y;  // translate quad to y = floor_y
+        const auto floor_mvp = vp * floor_model;
+        PrimPush fp {};
+        fp.mvp = floor_mvp;
+        fp.model = floor_model;
+        // Slightly cool neutral floor - receives lighting + hemisphere AO.
+        // tint[3] = 2.0 is the FS sentinel that enables the analytic
+        // grid overlay (depth-tested via the floor geometry, so the
+        // grid no longer shows through other objects).
+        // Shadow-catcher + grid-helper combo (gaps #20 + #21).
+        // Floor body colour kept subtle so the plane reads more
+        // like an editor helper than a scene mesh - shadows
+        // (much darker, see planar-shadow tint below) and grid
+        // lines (much brighter) both stand out against it. FS
+        // also fades the floor with camera distance for a
+        // pseudo-infinite-grid feel pending the real procedural-
+        // grid helper in v1.6 editor.
+        fp.tint[0] = 0.15F;
+        fp.tint[1] = 0.16F;
+        fp.tint[2] = 0.18F;
+        fp.tint[3] = 2.0F;  // FS sentinel: enables analytic XZ grid overlay
+        fill_prim_push_shared(fp, fx, sun, cam);
+        // Floor overrides: opt out of texture path + GTAO crease darkening
+        // (flat normal -> dFdx/dFdy=0); keep bloom on bright grid lines.
+        fp.fx_params[1] = 0.0F;
+        fp.fx_params[2] = 0.0F;
+        fp.fx_params4[0] = fp.fx_params4[1] = fp.fx_params4[2] = 0.0F;
+        fp.fx_params4[3] = static_cast<float>(fx.view_mode);
+        cmd.push_constants(
+            prim_material.pipeline_layout(),
+            cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+            0,
+            sizeof(fp),
+            &fp
+        );
+        cmd.draw_indexed(floor_mesh.index_count, 1, 0, 0, 0);
+        counters.increment("draws_prim");
+    }
+
+    // X1D (phase 286): parallel ECS PrimPush prep. The push-
+    // constant struct + valid flag is built per entity into a
+    // pre-sized scratch vector via cd::concurrency::parallel_for
+    // (write-by-index, no push_back), then the serial draw pass
+    // binds mesh + records push_constants + draw_indexed.
+    // Vulkan cmd buffer recording isn't thread-safe per buffer
+    // (ADR-015 / Vulkan spec 5.1) so submission stays serial; the
+    // win is the prep phase parallelizes and the scaling story
+    // unlocks when entity count grows past the worker count.
+    std::vector<PrimPush> ent_push_scratch(entities.size());
+    std::vector<std::uint8_t> ent_push_valid(entities.size(), 0u);
+    cd::concurrency::parallel_for(
+        std::size_t { 0 },
+        entities.size(),
+        [&](std::size_t i)
+        {
+            const auto& ent = entities[i];
+            const auto& mesh = mesh_for(ent.kind);
+            if (!mesh.vb.is_valid())
+                return;
+            auto* lt = scene.local(ent.handle);
+            if (lt == nullptr)
+                return;
+            const auto model = cd::math::to_mat4(lt->value);
+            const auto mvp = vp * model;
+            PrimPush& pp = ent_push_scratch[i];
+            pp.mvp = mvp;
+            pp.model = model;
+            // W8-AR sentinel routing (see pre-X1D comment for the
+            // full rationale): tint.w==3.0 routes through Cook-
+            // Torrance, 1.0 stays on the standard Lambert + textured
+            // path.
+            // phase446-vis9: tint.w==4.0 for glTF prims (Sponza/CesiumMan)
+            // — they sample real per-prim albedo but the shared
+            // cd_normal_tex / cd_mr_tex are procedural Earth which is the
+            // WRONG material at Sponza UVs (made stone look chrome) and
+            // CesiumMan UVs (made polygon facets visible from Earth bumps).
+            // tint.w==4.0 keeps the textured albedo path but forces stone-
+            // like MR (rough 0.85, metal 0), skips procedural normal map,
+            // skips BRDF rim lobes, and reduces hemi ambient so sun direct
+            // contribution dominates indoor contrast.
+            pp.tint[0] = ent.tint.x;
+            pp.tint[1] = ent.tint.y;
+            pp.tint[2] = ent.tint.z;
+            const bool is_gltf_prim = (ent.kind == PrimitiveKind::kSponza ||
+                                       ent.kind == PrimitiveKind::kGltf);
+            pp.tint[3] = 1.0F;
+            if (ent.is_pbr)
+                pp.tint[3] = 3.0F;
+            else if (is_gltf_prim)
+                pp.tint[3] = 4.0F;
+            fill_prim_push_shared(pp, fx, sun, cam);
+            // ECS override: per-entity texture-path flag in fx_params[1]
+            // kSponza: per-prim textures dispatched below; set 0 here (overridden per prim).
+            // kGltf (CesiumMan): single texture if available.
+            // phase983-pbr-texture-fix: PBR entities (is_pbr) can now opt in
+            // via ent.use_texture. The shader's pc.fx_params.y > 0.5 gate then
+            // samples cd_albedo_tex (bound at descriptor binding 4 -- the
+            // earth_albedo texture) and multiplies by ent.tint. Without this
+            // gate every PBR sphere was procedural-color-only despite the
+            // texture descriptor being live.
+            const bool gltf_tex_path = (!ent.is_pbr && (ent.kind == PrimitiveKind::kGltf) && has_gltf_texture);
+            const bool pbr_tex_path  = (ent.is_pbr && ent.use_texture);
+            pp.fx_params[1] = (gltf_tex_path || pbr_tex_path) ? 1.0F : 0.0F;
+            // phase448-arch: fx_params4 reinterpretation matrix —
+            //   tint.w==3.0 (PBR demo sphere): (metallic, roughness, 0, view_mode)
+            //   tint.w==4.0 (glTF prim, data-driven): (metallic, roughness, normal_strength, view_mode)
+            //     - For Sponza, sub_pp OVERRIDES this per-prim inside the
+            //       draw loop below using gltf_prim_ranges[i].metallic etc.
+            //     - For CesiumMan (kGltf, single draw), this entity-level
+            //       push IS the final value; we seed it from the first
+            //       prim_range so the data-driven material lands at the GPU.
+            //   tint.w==1.0 (default Lit): (clearcoat, sheen, sss, view_mode)
+            //     UI sliders carry scene-wide BRDF strengths for showcase.
+            if (ent.is_pbr)
+            {
+                pp.fx_params4[0] = ent.metallic;
+                pp.fx_params4[1] = ent.roughness;
+                pp.fx_params4[2] = 0.0F;
+            }
+            else if (is_gltf_prim)
+            {
+                // Default to "stone-ish" (matte dielectric) so unfilled
+                // prim_ranges still look sensible; gets overridden per-prim
+                // or kept as-is for single draw.
+                float m = 0.0F;
+                float r = 0.9F;
+                float ns = 0.0F;
+                const auto ranges = prim_ranges_for(ent.kind);
+                if (!ranges.empty())
+                {
+                    // seed from first prim_range so the glTF material's authored factors flow to the GPU.
+                    m  = ranges.front().metallic;
+                    r  = ranges.front().roughness;
+                    ns = ranges.front().normal_strength;
+                }
+                pp.fx_params4[0] = m;
+                pp.fx_params4[1] = r;
+                pp.fx_params4[2] = ns;
+            }
+            else
+            {
+                pp.fx_params4[0] = fx.clearcoat_strength;
+                pp.fx_params4[1] = fx.sheen_strength;
+                pp.fx_params4[2] = fx.sss_strength;
+            }
+            pp.fx_params4[3] = static_cast<float>(fx.view_mode);
+            ent_push_valid[i] = 1u;
+        }
+    );
+    for (std::size_t i = 0; i < entities.size(); ++i)
+    {
+        if (ent_push_valid[i] == 0u)
+            continue;
+        const auto& ent = entities[i];
+        const auto& mesh = mesh_for(ent.kind);
+        cmd.bind_vertex_buffer(0, mesh.vb, 0);
+        cmd.bind_index_buffer(mesh.ib, 0, mesh.index_type);
+        cmd.push_constants(
+            prim_material.pipeline_layout(),
+            cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+            0,
+            sizeof(PrimPush),
+            &ent_push_scratch[i]
+        );
+
+        // Per-primitive material dispatch.
+        // glTF models use prim_ranges for per-material texture/parameter switching.
+        const auto ranges = prim_ranges_for(ent.kind);
+        if (!ranges.empty())
+        {
+            for (const auto& pr : ranges)
+            {
+                if (pr.index_count == 0)
+                    continue;
+                if (pr.has_texture && pr.albedo_view.is_valid())
+                {
+                    if (pr.prim_inst.is_valid())
+                    {
+                        // Per-prim descriptor set (pre-built at boot by boot_meshes).
+                        // Avoids Vulkan descriptor-aliasing: each textured prim owns
+                        // its own VkDescriptorSet with the correct albedo in binding 4,
+                        // so the GPU sees the right texture for EVERY draw rather than
+                        // the last-written shared descriptor state.
+                        pr.prim_inst.bind(cmd, 0);
+                    }
+                    else
+                    {
+                        // Fallback: update the shared descriptor (legacy path, may alias).
+                        const std::array<cd::rhi::DescriptorWrite, 1> tw {
+                            cd::rhi::DescriptorWrite { .binding = 4,
+                                                       .array_element = 0,
+                                                       .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                                       .view = pr.albedo_view,
+                                                       .sampler = albedo_sampler }
+                        };
+                        (void)prim_inst.update(tw);
+                        prim_inst.bind(cmd, 0);
+                    }
+                }
+                // PrimPush fx_params[1] = 1.0 when this prim has a texture.
+                // fx_params[3] = alpha_cutoff (> 0 enables GLSL discard).
+                // phase448-arch: per-prim PBR material from the glTF file —
+                // metallic/roughness/normal_strength flow straight from
+                // GltfMaterial via GltfPrimRange. NO per-asset sentinel; ANY
+                // glTF prim that lands here gets its authored PBR factors.
+                PrimPush sub_pp = ent_push_scratch[i];
+                sub_pp.fx_params[1]  = pr.has_texture ? 1.0F : 0.0F;
+                sub_pp.fx_params[3]  = pr.alpha_cutoff;
+                sub_pp.fx_params4[0] = pr.metallic;
+                sub_pp.fx_params4[1] = pr.roughness;
+                sub_pp.fx_params4[2] = pr.normal_strength;
+                // fx_params4[3] view_mode untouched (debug overlay).
+                cmd.push_constants(
+                    prim_material.pipeline_layout(),
+                    cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                    0,
+                    sizeof(PrimPush),
+                    &sub_pp
+                );
+                cmd.draw_indexed(pr.index_count, 1, pr.index_offset, 0, 0);
+                counters.increment("draws_prim");
+            }
+            // phase427-vis4 + phase456: restore binding=4 (albedo) AND
+            // bindings 8 (normal) + 9 (MR) on the SHARED prim_inst so
+            // subsequent entity draws (CesiumMan, PBR spheres) sample the
+            // global procedural maps rather than the last Sponza prim's
+            // material. Without this restore, the next entity bound to
+            // prim_inst would inherit whatever the per-prim descriptor sets
+            // (4/8/9) last held — and since the per-prim instance is a
+            // separate VkDescriptorSet, this isn't even shared state for
+            // the next BIND — but the shared prim_inst itself may have
+            // been mutated by legacy fallback paths above, so we
+            // defensively re-write all three bindings here.
+            if (global_albedo_view.is_valid())
+            {
+                std::vector<cd::rhi::DescriptorWrite> rw;
+                rw.reserve(3);
+                rw.push_back(cd::rhi::DescriptorWrite {
+                    .binding = 4,
+                    .array_element = 0,
+                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view = global_albedo_view,
+                    .sampler = albedo_sampler });
+                if (global_normal_view.is_valid())
+                {
+                    rw.push_back(cd::rhi::DescriptorWrite {
+                        .binding = 8,
+                        .array_element = 0,
+                        .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                        .view = global_normal_view,
+                        .sampler = albedo_sampler });
+                }
+                if (global_mr_view.is_valid())
+                {
+                    rw.push_back(cd::rhi::DescriptorWrite {
+                        .binding = 9,
+                        .array_element = 0,
+                        .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                        .view = global_mr_view,
+                        .sampler = albedo_sampler });
+                }
+                (void)prim_inst.update(rw);
+                prim_inst.bind(cmd, 0);
+            }
+            (void)device;
+        }
+        else
+        {
+            cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
+            counters.increment("draws_prim");
+        }
+    }
+}
+
+}  // namespace
+
+// ============================================================================
+// M2C/M2D/M2E: StudioApp full implementation.
+//
+// EngineState is defined here (not in StudioApp.hpp) so it can
+// reference the anonymous-namespace types declared above
+// (SceneEntity, GizmoState, SelKind, LightRow, GpuTexture2D, etc.).
+// ============================================================================
+
+// ---- EngineState definition ------------------------------------------------
+struct StudioApp::EngineState
+{
+    // Window / device / renderer / imgui
+    std::unique_ptr<cd::platform::IWindow>   window;
+    std::unique_ptr<cd::rhi::IDevice>        device_owner;
+    cd::render::Renderer                     renderer;
+    std::unique_ptr<cd::imgui::Context>      imgui_ctx;
+
+    // Shader compiler
+    std::unique_ptr<cd::shader::ICompiler>   compiler;
+
+    // Render targets
+    cd_studio::RenderTargets                 rts;
+    bool                                     depth_initialised_on_gpu  { false };
+    bool                                     shadow_initialised_on_gpu { false };
+
+    // Materials
+    cd_studio::MaterialBundle                materials;
+    cd_studio::StudioShaderWatch              shader_watch;
+
+    // Shadow-map resources
+    cd::framegraph::DepthTarget              shadow_target;
+    cd::rhi::SamplerHandle                   shadow_sampler  {};
+    cd::rhi::BufferHandle                    shadow_ubo      {};
+
+    // Multi-light UBO + inst-mat SSBO
+    cd::rhi::BufferHandle                    lights_ubo      {};
+    cd::rhi::BufferHandle                    inst_mat_ssbo   {};
+
+    // IBL
+    cd_studio::IblBakeCpu                    ibl_cpu;
+    cd_studio::IblBakeGpu                    ibl_gpu;
+
+    // Procedural textures
+    GpuTexture2D                             albedo_tex;
+    GpuTexture2D                             normal_tex;
+    GpuTexture2D                             mr_tex;
+    cd::rhi::SamplerHandle                   albedo_sampler  {};
+    bool                                     has_gltf_texture { false };
+    // phase435-vis8: suppress the editor floor grid when a scene that
+    // provides its own floor (Sponza) is loaded. Grid shines through
+    // Sponza vegetation alpha-discards and overlaps column bases.
+    bool                                     show_editor_floor { true };
+
+    // Material instances
+    cd::material::MaterialInstance           prim_inst;
+    // phase864-bindless-dedicated-set: one descriptor set allocated
+    // from materials.prim_bindless_layout, populated at boot with
+    // Sponza per-prim albedos + fallback for unused slots. Bound as
+    // set index 1 alongside prim_inst (set 0) when the chrome
+    // reflection branch needs to sample the bindless array.
+    cd::rhi::DescriptorSetHandle             prim_bindless_set {};
+    // phase1031-debug-line-gpu: CPU batch + host-visible VB for the
+    // cd::debug_line kLineList pipeline. The batch is rebuilt every
+    // frame by whichever debug overlays are toggled on; the VB is
+    // created lazily at first use and grown (destroy + recreate at
+    // 2x) when a frame's vertex count exceeds the capacity.
+    cd::debug_line::LineBatch                debug_lines;
+    // phase1058: GPU side ported to cd::debug_draw::Renderer — the
+    // pipeline + lazily-grown VB + frames-in-flight-safe growth all
+    // live in the library now (phase 1031/1034 prototype retired).
+    cd::debug_draw::Renderer                 debug_draw;
+    // phase1053: VT probe page table (moved out of the panel static
+    // so the 3D atlas overlay can enumerate residents()).
+    cd::virtual_textures::PageTable          vt_table { 4, 4 };
+    std::uint32_t                            vt_applied_serial { 0 };
+    std::array<cd::material::MaterialInstance, 2> composite_insts;
+    cd::material::MaterialInstance           bloom_prefilter_inst;
+    std::array<cd::material::MaterialInstance, 3> bloom_down_insts;
+    std::array<cd::material::MaterialInstance, 3> bloom_up_insts;
+
+    // Bloom mip chain
+    cd::post::bloom::BloomMipChain            bloom_chain;
+
+    // Meshes + BLAS / TLAS
+    cd_studio::StudioMeshRegistry                   meshes;
+    cd::rhi::AccelStructureHandle            current_tlas    {};
+    std::deque<cd_studio::DeferredTlas>      tlas_destroy_queue;
+    // phase1146 — DDGI (Dynamic Diffuse GI) GPU pipeline. Booted lazily
+    // after the first TLAS build; the per-frame dispatch is gated on
+    // fx.ddgi_on (default OFF, so the golden fixture path is untouched).
+    cd_studio::StudioDdgiPipeline                     ddgi;
+    // phase465-perprim: per-Sponza-prim representative reflection colour.
+    // One entry per gltf_prim_range[i]; matches the multi-geometry BLAS
+    // geometry ordering 1:1.  Used by rebuild_tlas_and_transition_depth's
+    // geom_albedos_for callback to populate the per-(instance, geom)
+    // SSBO so vegetation reflects green, fabric red, stone grey instead
+    // of every Sponza hit sharing the single sandstone tint.
+    std::vector<cd::math::Vec3f>             sponza_geom_albedos;
+    // phase843-W8-BE-rt-bindless-texture-sampling: parallel array to
+    // sponza_geom_albedos with the binding-13 slot index + binding-12
+    // index_offset for each Sponza prim. Populated once at boot
+    // (build path: after s.meshes loads) and stays static for the
+    // process lifetime.
+    std::vector<cd_studio::W8BEGeomMeta>     sponza_w8be_meta;
+    std::vector<cd::math::Vec3f>             cesium_geom_albedos;
+    // phase890-cesium-bindless-textures: per-geom W8BEGeomMeta for
+    // CesiumMan prims (mesh_id=1) and the bindless-array slot index
+    // where CesiumMan's albedos start. The shader uses
+    // (albedo_tex_slot, mesh_id) to pick (slot, VB/IB pair).
+    std::vector<cd_studio::W8BEGeomMeta>     cesium_w8be_meta;
+    std::uint32_t                            cesium_bindless_slot_base { 0u };
+    // phase1000-pbr-sphere-rt-texture: 1-element span returned by
+    // w8be_metadata_for() for PBR sphere entities that have
+    // ent.use_texture == true. mesh_id == 2 selects the shader's
+    // analytical spherical-UV bindless-sample path; albedo_tex_slot
+    // points at a known earth_albedo fallback slot in the bindless
+    // array. Filled at bindless-slot build time below (right after
+    // the fallback slot loop fills 255 with earth_albedo).
+    std::vector<cd_studio::W8BEGeomMeta>     pbr_sphere_textured_meta;
+
+    // World / scene / history
+    cd::ecs::World                           ecs_world;
+    cd::scene::Scene                         scene           { ecs_world };
+    cd::editor::EditHistory                  history;
+    std::deque<std::string>                  log;
+    cd::world_container::World               cd_world;
+    std::vector<SceneEntity>                 entities;
+    // phase508-generic-gltf-path: 3rd load path. One entry per .gltf
+    // discovered under assets/samples/Generic/ that was successfully run
+    // through cd::asset::gltf::load_scene + cd::render::scene::
+    // ingest_gltf_scene. Each GenericIngest owns the IngestResult so
+    // on_shutdown can free every GPU handle deterministically.
+    std::vector<cd_studio::GenericIngest>    generic_ingests;
+    int                                      selected        { 0 };
+    SelKind                                  selected_kind   { SelKind::kEntity };
+
+    // Selection outline + gizmo
+    cd::editor::SelectionOutline             outline;
+    cd::editor::AxisGizmo                    gizmo;
+    GizmoState                               gizmo_state;
+
+    // Camera
+    cd::camera::Camera                       cam;
+    cd::scene::SceneCameraController         scene_cam;
+    cd_studio::SampleAppState                app_state;
+
+    // Audio
+    cd_studio::AudioState                    audio_state;
+
+    // Net sim
+    cd::net::Throttle                        net_throttle    { 4.0F, 30.0F };
+    cd::net::SnapshotBuffer<float>           net_snapbuf;
+    cd::net::LatencyStats                    net_rtt;
+    bool                                     net_enabled     { true };
+    std::uint32_t                            net_sent        { 0 };
+    std::uint32_t                            net_recv        { 0 };
+    std::uint32_t                            net_drop        { 0 };
+    std::uint64_t                            net_raw_bytes   { 0 };
+    std::uint64_t                            net_wire_bytes  { 0 };
+    cd::math::Random                         net_rng         { 0xC0FFEE42u };
+    float                                    net_baseline    { 0.0F };
+    double                                   net_t           { 0.0 };
+    double                                   next_net_tick   { 0.0 };
+
+    // Lights
+    std::vector<LightRow>                    lights;
+    cd::light::ClusterGrid                   cluster_grid;
+    cd::light::ClusterGridDesc               cluster_desc;
+
+    // AsyncStreamer (lambda captures streamer_completed/failed by reference;
+    // EngineState is always heap-allocated so references are stable).
+    std::atomic<std::uint32_t>               streamer_completed { 0 };
+    std::atomic<std::uint32_t>               streamer_failed    { 0 };
+    cd::asset::AsyncStreamer                 streamer;
+    std::vector<cd::asset::AssetId>          streamer_tracked;
+    std::uint64_t                            streamer_next_id   { 1 };
+
+    // Random viz
+    cd::math::Random                         rand_rng           { 0xA1B2C3D4u };
+    Histogram                                hist_uniform;
+    Histogram                                hist_normal;
+    std::uint64_t                            next_random_refresh{ 0 };
+
+    // Counter table / command palette / FX
+    cd::core::CounterTable                   counters;
+    cd::editor::CommandPalette               palette;
+    bool                                     palette_visible    { false };
+    std::string                              palette_query;
+    cd_studio::StudioRenderFx                 fx;
+
+    // phase1174 — behavior_designer fold (ADR-20260614). A cd::ui::*
+    // overlay stack that renders the library BehaviorDesigner panel on top
+    // of the ImGui dev UI. The Submitter (Route B inline GLSL) co-exists
+    // with ImGui in the same composite/swapchain BGRA8 pass (depth OFF +
+    // alpha blend ON).
+    //
+    // Held via unique_ptr (not a by-value member): cd::ui::renderer_rhi::
+    // Submitter is PIMPL with an inline `= default` default ctor whose
+    // unique_ptr<Impl> member needs Impl complete at the point EngineState's
+    // own ctor is compiled — which it is not (Impl lives in the .cpp). The
+    // ADR scope guard forbids touching the library header, so we side-step
+    // the limitation consumer-side: unique_ptr<Submitter> only needs the
+    // out-of-line ~Submitter() (declared), never sizeof(Impl). Heap-stored
+    // after device_owner so it destructs before the device on teardown.
+    std::unique_ptr<cd::ui::renderer_rhi::Submitter> ui_submitter;
+    cd::ui::renderer::DrawBatcher            ui_batcher;
+    cd::ui::widgets::Theme                   ui_widget_theme;
+    cd::ui::font::Font                       ui_font;
+    cd::editor::panel::behavior_designer::BehaviorDesigner bd_panel;
+    // ZORUNLU golden invariant (ADR §5.1): the overlay record is gated by
+    // (!kHideEditorUiForGolden && show_behavior_designer) so it NEVER
+    // emits draws on a golden capture frame. Default OFF.
+    bool                                     show_behavior_designer { false };
+
+    // phase1177 — studio_ui fold (ADR-20260614 §3.4, Job C). The deleted
+    // samples/ui/studio_ui Button/Slider/Label/Flex demo, re-homed as a
+    // second consumer of the SAME ui_submitter/ui_batcher/ui_widget_theme/
+    // ui_font overlay stack (no second Submitter — one overlay feeds both
+    // panels). Same golden invariant: the record is gated by
+    // (!kHideEditorUiForGolden && show_ui_widgets) so it NEVER emits draws
+    // on a golden capture frame. Default OFF.
+    bool                                     show_ui_widgets { false };
+    cd::ui::layout::FlexTree                 uiw_tree;
+    cd::ui::layout::NodeId                   uiw_root   { cd::ui::layout::kInvalidNode };
+    cd::ui::layout::NodeId                   uiw_label  { cd::ui::layout::kInvalidNode };
+    cd::ui::layout::NodeId                   uiw_button { cd::ui::layout::kInvalidNode };
+    cd::ui::layout::NodeId                   uiw_slider { cd::ui::layout::kInvalidNode };
+    cd::ui::widgets::Button                  uiw_btn { "Click me" };
+    cd::ui::widgets::Slider                  uiw_sld { 0.5F };
+    int                                      uiw_click_count { 0 };
+    float                                    uiw_slider_val  { 0.5F };
+    bool                                     uiw_tree_built  { false };
+
+    // Post-fx settings (wired; dispatch queued)
+    cd::post::gtao::Settings                  fx_gtao;
+    cd::post::bloom::Settings                 fx_bloom;
+    cd::post::ssr::Settings                   fx_ssr;
+    cd::post::dof::CameraSettings             fx_dof;
+    cd::post::motion_blur::Settings           fx_mblur;
+    cd::post::taa::Settings                   fx_taa;
+    cd::post::smaa::Settings                  fx_smaa;
+
+    // Phase 511 — auto-exposure (Reinhard log-avg + EMA + EV→linear mul).
+    // Created in on_init when the HDR target extent is known. The helper
+    // stays default-constructed (no GpuReduction) when create() fails or
+    // the integrator hasn't wired the per-frame descriptor write yet; in
+    // that case current_ev() returns 0 and the bloom prefilter behaves as
+    // before (exp2(0) = 1.0 = no EV scaling). See
+    // engine/render/post/exposure/include/cd/post/exposure/Setup.hpp.
+    cd::post::exposure::Setup                 auto_exposure;
+
+    // GI wire-in (dispatch queued)
+    cd::restir_di::Reservoir                 fx_restir_di_reservoir;
+    cd::restir_gi::Reservoir                 fx_restir_gi_reservoir;
+    cd::ddgi::GridConfig                     fx_ddgi_grid;
+
+    // Camera feedback / TAA state
+    PrevCamBasis                             prev_cam_basis;
+    cd::math::Mat4f                          prev_vp_unjittered  { cd::math::Mat4f::identity() };
+    bool                                     prev_vp_valid       { false };
+    std::array<cd::rhi::ResourceState, 2>    history_states
+        { cd::rhi::ResourceState::kUndefined, cd::rhi::ResourceState::kUndefined };
+
+    // Queued libs (silenced via (void))
+    cd::atmosphere::Parameters               fx_atmosphere;
+    cd::light_shafts::Settings               fx_lshafts;
+    cd::volumetric::clouds::Settings          fx_clouds;
+    cd::volumetric::fog::GridConfig           fx_vfog;
+
+    // Frame-loop misc
+    bool                                     dock_initialised   { false };
+    bool                                     mod_ctrl           { false };
+    bool                                     mod_shift          { false };
+    bool                                     needs_rebuild      { false };
+    std::uint32_t                            frame_idx          { 0 };
+    bool                                     pie_playing        { false };
+    bool                                     anim_paused        { false };
+    float                                    anim_speed         { 1.0F };
+
+    // phase1178 — cd::ui InputState wiring (pointer flatten for overlay panels).
+    // Updated each frame in the event loop from platform OSEvents so the
+    // overlay record block (gated by !kHideEditorUiForGolden) can build a
+    // real InputState for uiw_btn/uiw_sld tick(). Golden-neutral: these
+    // fields are only USED inside the golden gate; mutation in the event loop
+    // is always safe (values don't affect rendered pixels when the gate is off).
+    float                                    ui_mouse_x         { 0.0F };
+    float                                    ui_mouse_y         { 0.0F };
+    bool                                     ui_lmb_down        { false };
+    bool                                     ui_lmb_prev_down   { false };
+
+    explicit EngineState()
+        : streamer(
+            [this](cd::asset::AssetId id) -> bool
+            {
+                const auto v = id.value();
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(
+                        120 + static_cast<std::int64_t>(v % 5) * 80));
+                const bool ok = (v % 17 != 0);
+                if (ok) streamer_completed.fetch_add(1, std::memory_order_relaxed);
+                else    streamer_failed.fetch_add(1, std::memory_order_relaxed);
+                return ok;
+            })
+    {}
+
+    EngineState(const EngineState&)            = delete;
+    EngineState& operator=(const EngineState&) = delete;
+    EngineState(EngineState&&)                 = delete;
+    EngineState& operator=(EngineState&&)      = delete;
+};
+
+// ---- Ctor / Dtor -----------------------------------------------------------
+StudioApp::StudioApp() noexcept
+    : cd::app::App(cd::app::AppConfig {
+          .title             = "CHROMODYNAMIC 3D ENGINE STUDIO",
+          .window_width      = 1600,
+          .window_height     = 900,
+          .start_maximized   = false,
+          .enable_validation = true,
+          .max_frames        = 0u,
+      })
+{
+}
+
+StudioApp::~StudioApp() = default;
+
+// ---- M2C: on_boot -----------------------------------------------------------
+cd::core::Result<void> StudioApp::on_boot()
+{
+    state_ = std::make_unique<EngineState>();
+    auto& s = *state_;
+    s.pie_playing = g_studio_start_pie;
+    if (s.pie_playing)
+    {
+        s.gizmo_state.visible = false;
+    }
+
+    // Window + Vulkan device + Renderer + ImGui
+    cd::platform::WindowDesc wd {};
+    wd.title  = "CHROMODYNAMIC 3D ENGINE STUDIO";
+    wd.width  = 1600;
+    wd.height = 900;
+    auto window_r = cd::platform::create_window(wd);
+    if (!window_r.has_value()) return std::unexpected(window_r.error());
+    s.window = std::move(*window_r);
+    auto& window = *s.window;
+
+    cd::rhi::vulkan::VulkanCreateInfo vci {};
+    auto dev_r = cd::rhi::vulkan::create_vulkan_device(vci);
+    if (!dev_r.has_value()) return std::unexpected(dev_r.error());
+    s.device_owner = std::move(*dev_r);
+    auto& device = *s.device_owner;
+
+    cd::render::RendererDesc rd {};
+    rd.device                    = &device;
+    rd.swapchain.window_handle   = window.native_window_handle();
+    rd.swapchain.display_handle  = window.native_display_handle();
+    rd.swapchain.extent          = { window.width(), window.height() };
+    rd.swapchain.format          = cd::rhi::Format::kBGRA8Unorm;
+    rd.swapchain.vsync           = false;
+    rd.frames_in_flight          = 2;
+    auto renderer_r = cd::render::Renderer::create(rd);
+    if (!renderer_r.has_value()) return std::unexpected(renderer_r.error());
+    s.renderer = std::move(*renderer_r);
+
+    cd::imgui::InitDesc imgui_id {};
+    imgui_id.window           = &window;
+    imgui_id.device           = &device;
+    imgui_id.color_format     = cd::rhi::Format::kBGRA8Unorm;
+    imgui_id.frames_in_flight = 2;
+    auto ctx_r = cd::imgui::Context::create(imgui_id);
+    if (!ctx_r.has_value()) return std::unexpected(ctx_r.error());
+    s.imgui_ctx = std::move(*ctx_r);
+
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
+    // phase1174 — behavior_designer fold (ADR-20260614, Job A boot wiring).
+    //
+    // Route B (create_with_inline_shader, Phase 554): an INLINE-compiled
+    // GLSL pipeline that records DrawBatcher quads straight into the
+    // composite/swapchain pass. color_format MUST match the swapchain
+    // (kBGRA8Unorm) — see ADR Kanıt 5 + §5.1 format contract. The
+    // create() never runs on the golden path's hot loop; a failure here is
+    // logged + skipped (overlay stays disabled) so the golden capture is
+    // unaffected (ADR §5.5).
+    {
+        const auto ttf = find_system_font_for_bd();
+        if (!ttf.empty() &&
+            s.ui_font.load_ttf_in_memory(
+                std::span<const std::uint8_t>(ttf.data(), ttf.size())))
+        {
+            static constexpr float         kPixelSize = 15.0F;
+            static constexpr std::uint32_t kAtlasDim  = 1024U;
+            (void)s.ui_font.rasterize_range(0x0020U, 0x00FFU, kPixelSize, kAtlasDim);
+        }
+        s.ui_widget_theme = build_dark_widget_theme();
+
+        // phase1177 — studio_ui fold: build the Button/Slider/Label demo
+        // tree once. Device-independent (pure CPU flex tree); rebuilt never.
+        uiw_build_tree(s.uiw_tree, s.uiw_root, s.uiw_label, s.uiw_button, s.uiw_slider);
+        s.uiw_tree_built = true;
+        s.uiw_btn.set_on_click([&s] { ++s.uiw_click_count; });
+        s.uiw_sld.set_on_change([&s](float v) { s.uiw_slider_val = v; });
+
+        cd::ui::renderer_rhi::SubmitterCreateInfo sci {};
+        sci.color_format = cd::rhi::Format::kBGRA8Unorm;
+        sci.max_vertices = 16384U;
+        sci.max_indices  = 65536U;
+        auto sub_r =
+            cd::ui::renderer_rhi::Submitter::create_with_inline_shader(device, sci);
+        if (sub_r.has_value())
+        {
+            s.ui_submitter = std::make_unique<cd::ui::renderer_rhi::Submitter>(
+                std::move(*sub_r));
+            // Seed a non-trivial BT panel state (mirrors the deleted
+            // studio_behavior_designer demo): demo BT root + child select +
+            // pan. Renders the Sprint-1 demo-node graph when toggled ON.
+            s.bd_panel.set_tree_root(1U);      // demo BT root
+            s.bd_panel.set_selected(2U);       // select Child A (accent border)
+            s.bd_panel.set_pan_offset(20.0F, 10.0F);
+            std::printf("chromodynamic_studio: BehaviorDesigner overlay ready "
+                        "(cd::ui Submitter Route B; toggle in R-Showcase).\n");
+        }
+        else
+        {
+            std::printf("chromodynamic_studio: BehaviorDesigner overlay disabled "
+                        "(Submitter create failed: %.*s).\n",
+                        static_cast<int>(sub_r.error().message.size()),
+                        sub_r.error().message.data());
+        }
+    }
+
+    // Shader compiler
+    s.compiler = cd::shader::make_glslang_compiler();
+    if (!s.compiler)
+        return std::unexpected(cd::core::ErrorCode { 0, 5, "shader compiler" });
+
+    // Render targets
+    using cd_studio::kDepthFormat;
+    if (int rc = cd_studio::create_render_targets(
+            device, { window.width(), window.height() }, s.rts); rc != 0)
+        return std::unexpected(
+            cd::core::ErrorCode { 0, static_cast<std::uint32_t>(rc), "render targets" });
+
+    // Materials
+    auto mat_r = cd_studio::spawn_materials(device, s.compiler.get());
+    if (!mat_r.has_value())
+        return std::unexpected(
+            cd::core::ErrorCode { 0,
+                static_cast<std::uint32_t>(mat_r.error().exit_code), "materials" });
+    s.materials = std::move(*mat_r);
+
+    // phase1058: debug-line GPU renderer via cd::debug_draw. The MRT
+    // fragment shader (4 attachments with neutral G-buffer writes)
+    // comes from LineShader.hpp; on-disk copies win for hot-reload.
+    {
+        constexpr std::array<cd::rhi::Format, 4> kLineColorFmts {
+            cd::rhi::Format::kRGBA16Float,
+            cd::rhi::Format::kRGBA16Float,
+            cd::rhi::Format::kRGBA8Unorm,
+            cd::rhi::Format::kRG8Unorm
+        };
+        cd::debug_draw::RendererDesc dd {};
+        dd.color_attachment_formats = kLineColorFmts;
+        dd.depth_attachment_format  = cd::rhi::Format::kD32Float;
+        dd.vertex_glsl   = cd::studio_rt::kLineVS;
+        dd.fragment_glsl = cd::studio_rt::kLineFS;
+#if STUDIO_USE_ON_DISK_SHADERS
+        // X5 step 2: source-tree resolution (same as the watch entry
+        // below). Locals must outlive Renderer::create (glsl_path is a
+        // view into them).
+        const std::string line_vert_path =
+            cd_studio::resolve_shader_path(cd_studio::kLineVertGlslPath);
+        const std::string line_frag_path =
+            cd_studio::resolve_shader_path(cd_studio::kLineFragGlslPath);
+        dd.vertex_glsl_path   = line_vert_path;
+        dd.fragment_glsl_path = line_frag_path;
+#endif
+        dd.name = "chromodynamic_studio/debug_line";
+        auto dd_r = cd::debug_draw::Renderer::create(
+            device, s.compiler.get(), dd);
+        if (!dd_r.has_value())
+            return std::unexpected(cd::core::ErrorCode { 0, 11U, "debug_line" });
+        s.debug_draw = std::move(*dd_r);
+#if STUDIO_USE_ON_DISK_SHADERS
+        // phase1060: line shaders join the X5 hot-reload watch. The
+        // closure rebuilds the SAME desc (statics — the boot-scope
+        // arrays would dangle) and swaps only the pipeline; VB +
+        // parked queue carry no shader state and stay put. A broken
+        // edit keeps the old pipeline (recreate_pipeline contract).
+        s.shader_watch.add_entry(
+            nullptr,
+            std::vector<std::string> {
+                cd_studio::resolve_shader_path(cd_studio::kLineVertGlslPath),
+                cd_studio::resolve_shader_path(cd_studio::kLineFragGlslPath) },
+            [this](cd::rhi::IDevice& d, cd::shader::ICompiler* c) -> bool
+            {
+                static constexpr std::array<cd::rhi::Format, 4> kFmts {
+                    cd::rhi::Format::kRGBA16Float,
+                    cd::rhi::Format::kRGBA16Float,
+                    cd::rhi::Format::kRGBA8Unorm,
+                    cd::rhi::Format::kRG8Unorm
+                };
+                cd::debug_draw::RendererDesc rd {};
+                rd.color_attachment_formats = kFmts;
+                rd.depth_attachment_format  = cd::rhi::Format::kD32Float;
+                rd.vertex_glsl   = cd::studio_rt::kLineVS;
+                rd.fragment_glsl = cd::studio_rt::kLineFS;
+                // X5 step 2: same source-tree resolution as the watch
+                // paths; locals must outlive recreate_pipeline (view).
+                const std::string rl_vert_path =
+                    cd_studio::resolve_shader_path(cd_studio::kLineVertGlslPath);
+                const std::string rl_frag_path =
+                    cd_studio::resolve_shader_path(cd_studio::kLineFragGlslPath);
+                rd.vertex_glsl_path   = rl_vert_path;
+                rd.fragment_glsl_path = rl_frag_path;
+                rd.name = "chromodynamic_studio/debug_line";
+                return state_->debug_draw.recreate_pipeline(d, c, rd);
+            },
+            "debug_line");
+#endif
+    }
+
+    // Shader hot-reload entries. X5 step 2: watch paths go through the
+    // SAME resolve_shader_path the *_recreate compile paths use, so the
+    // watched file and the compiled file can never diverge (dev builds
+    // watch the SOURCE tree; shipped builds fall back to exe-side).
+    s.shader_watch.add_entry(
+        &s.materials.prim,
+        std::vector<std::string> {
+            cd_studio::resolve_shader_path(cd_studio::kPrimVertGlslPath),
+            cd_studio::resolve_shader_path(cd_studio::kPrimFragGlslPath) },
+        [this](cd::rhi::IDevice& d, cd::shader::ICompiler* c) -> bool
+        {
+            // Boot/reload parity: spawn_materials passes prim_bindless_layout
+            // so the prim pipeline carries the dedicated set=1 bindless
+            // sampler-array layout (phase864). The reload closure MUST pass it
+            // too — omitting it recreates a pipeline WITHOUT set 1 and the
+            // bindless path breaks silently on the first prim hot-reload.
+            return cd_studio::prim_recreate(d, c, &state_->materials.prim,
+                                            state_->materials.prim_bindless_layout);
+        },
+        "prim");
+    s.shader_watch.add_entry(
+        &s.materials.shadow,
+        std::vector<std::string> {
+            cd_studio::resolve_shader_path(cd_studio::kShadowVertGlslPath),
+            cd_studio::resolve_shader_path(cd_studio::kShadowFragGlslPath) },
+        [this](cd::rhi::IDevice& d, cd::shader::ICompiler* c) -> bool
+        { return cd_studio::shadow_recreate(d, c, &state_->materials.shadow); },
+        "shadow");
+
+    // phase1129 (on_boot extraction batch 5): shadow/light/SSBO/IBL boot
+    // resources live in StudioBootGpu.hpp; the byte-size constants are
+    // shared from there (single definition for boot + descriptors).
+    if (auto gb = cd_studio::setup_boot_gpu_buffers(s, device); !gb.has_value())
+        return std::unexpected(gb.error());
+    constexpr std::uint32_t kLightUboBytes = cd_studio::kBootLightUboBytes;
+    using cd::studio_rt::kInstMatBytes;
+
+    // phase1140 (on_boot extraction batch 6): procedural textures +
+    // albedo sampler live in StudioBootGpu.hpp.
+    if (auto pt = cd_studio::setup_boot_procedural_textures(s, device);
+        !pt.has_value())
+        return std::unexpected(pt.error());
+
+    // phase1126 (on_boot extraction batch 4): prim instance + 10-binding
+    // boot descriptor write live in StudioBootBindless.hpp.
+    if (auto pr_r = cd_studio::init_prim_inst_descriptors(
+            s, device, kLightUboBytes, cd::studio_rt::kInstMatBytes);
+        !pr_r.has_value())
+        return std::unexpected(pr_r.error());
+
+    // phase1125 (on_boot extraction batch 3): composite/bloom/exposure
+    // instances + the bloom/composite descriptor binders live in
+    // StudioBootPostFx.hpp (binders shared with the on_frame resize path,
+    // which previously carried duplicated lambdas).
+    if (auto pf = cd_studio::setup_boot_postfx_instances(
+            s, device, { window.width(), window.height() });
+        !pf.has_value())
+        return std::unexpected(pf.error());
+    cd_studio::bind_bloom_descriptors(s);
+    cd_studio::bind_composite_hdr_descriptors(s);
+
+    // Meshes + glTF + BLAS
+    auto upload_alb_fn = [&device_ref = device](
+        const std::uint8_t* rgba, std::uint32_t w, std::uint32_t h)
+        -> std::pair<cd::rhi::TextureHandle, cd::rhi::TextureViewHandle>
+    {
+        auto t = create_texture_rgba8(device_ref, rgba, w, h);
+        return { t.image, t.view };
+    };
+    cd_studio::AlbedoSlot alb_slot {
+        .image_io = &s.albedo_tex.image,
+        .view_io  = &s.albedo_tex.view,
+        .sampler  = s.albedo_sampler,
+        .upload   = upload_alb_fn,
+    };
+    s.meshes = cd_studio::boot_meshes(device, alb_slot, s.prim_inst, s.materials.prim,
+                                      s.normal_tex.view, s.mr_tex.view);  // phase456: per-prim normal/MR fallback
+    if (s.meshes.build_exit_code != 0)
+        return std::unexpected(
+            cd::core::ErrorCode { 0, static_cast<std::uint32_t>(s.meshes.build_exit_code), "meshes" });
+    if (s.meshes.has_gltf_texture || s.meshes.has_cesium_texture)
+        s.has_gltf_texture = true;
+
+    // phase1124 (on_boot extraction batch 2): W8-BE bindless descriptor
+    // wiring + per-prim albedo/meta tables live in StudioBootBindless.hpp
+    // (chrome-probe golden net pins the behaviour).
+    cd_studio::wire_w8be_bindless_and_meta(
+        s, device, kLightUboBytes, cd::studio_rt::kInstMatBytes);
+
+
+    // phase1146 (on_boot extraction batch 7): world container + .cdproject
+    // adoption + CD_HDR_LANES env read live in StudioBootProject.hpp
+    // (phase1112/1113/1121 behaviours preserved verbatim). The entity
+    // spawns stay here — they use the file-local SceneEntity type.
+    cd_studio::setup_boot_world_and_project(s);
+    spawn_primitive_seeds(s.scene, s.entities);
+    // phase798-rt-chrome-sponza-probe: in fixture-#5 mode skip CesiumMan
+    // (4 m glowing humanoid at world origin) so it doesn't block the
+    // probe view. Sponza is the actually-tested geometry here.
+    const bool chrome_probe_mode =
+        cd::studio_rt::golden::enabled() &&
+        cd::studio_rt::golden::options().fixture_index == 5;
+    spawn_sponza_and_cesiumman_entities(
+        s.scene,
+        s.meshes.gltf,          s.meshes.gltf_loaded_name,
+        chrome_probe_mode ? cd::render::GpuMesh {} : s.meshes.gltf_cesium,
+        chrome_probe_mode ? std::string_view {}    : s.meshes.gltf_cesium_loaded_name,
+        s.entities);
+    spawn_pbr_grid_entities(s.scene, s.entities);
+
+    // phase797-rt-chrome-sponza-probe: opt-in chrome probe sphere inside
+    // Sponza nave, ONLY when CLI selected fixture #5 ("chrome_probe").
+    // Every other fixture + every interactive run is untouched.
+    if (chrome_probe_mode)
+    {
+        spawn_chrome_probe_entity(s.scene, s.entities);
+    }
+
+    // phase508-generic-gltf-path: 3rd load path, runs strictly AFTER the
+    // legacy Sponza + CesiumMan paths above so the generic ingest does not
+    // perturb any of their boot state. The user-facing contract is "drop
+    // any .gltf into assets/samples/Generic/ and it loads with no code
+    // changes" -- everything else (entities, GPU resources, AABB,
+    // suggested world xform) is auto-driven by the SceneLoader +
+    // SceneIngest libraries. See StudioSceneAssetIngest.hpp for the scope
+    // caveats (visible draws of these meshes are deferred to the full
+    // P1.3 migration; this phase exercises load + ingest + cleanup
+    // end-to-end and logs the result).
+    {
+        auto early_log = [&s](std::string msg)
+        {
+            s.log.emplace_back(std::move(msg));
+            while (s.log.size() > 64) s.log.pop_front();
+        };
+        s.generic_ingests = cd_studio::load_generic_gltf_scenes(
+            *s.device_owner, s.ecs_world, s.scene, early_log);
+    }
+
+    // phase435-vis8: suppress editor floor when Sponza is loaded.
+    // Sponza provides its own floor; the large 1000m editor grid quad
+    // bleeds through Sponza vegetation alpha-discards and overlaps
+    // column bases near y=0. Show grid only in empty/non-Sponza scenes.
+    if (!s.meshes.gltf_loaded_name.empty() &&
+        s.meshes.gltf_loaded_name.find("Sponza") != std::string::npos)
+    {
+        s.show_editor_floor = false;
+    }
+
+    auto log_push_fn = [&s](std::string msg)
+    {
+        s.log.emplace_back(std::move(msg));
+        while (s.log.size() > 64) s.log.pop_front();
+    };
+    log_push_fn(
+        std::string { "[boot] " } + std::to_string(s.entities.size()) +
+        " ECS entities spawned" +
+        (s.meshes.gltf_loaded_name.empty() ? ""
+            : std::string { " (incl. glTF: " } + s.meshes.gltf_loaded_name + ")"));
+
+    // Selection + gizmo
+    s.outline.style = cd::editor::OutlineStyle::kWireframe;
+
+    // phase1123 (on_boot extraction batch 1): camera defaults + the
+    // phase543/797 golden-fixture pin live in StudioBootScene.hpp.
+    cd_studio::setup_boot_camera(s, log_push_fn);
+
+    // Audio
+    cd_studio::init_audio(s.audio_state, square_wave, burst_noise);
+
+    // phase1123 (on_boot extraction batch 1): W8-BB light rig (Sponza
+    // indoor preset vs open-air defaults, phase455 calibration notes) +
+    // cluster grid config live in StudioBootScene.hpp.
+    cd_studio::setup_boot_lights_and_clusters(s);
+
+    // phase1146 (on_boot extraction batch 7): AsyncStreamer start + the
+    // random-viz histogram first fill live in StudioBootProject.hpp.
+    cd_studio::start_boot_streamer_and_random_viz(s);
+
+    // phase1146 (on_boot extraction batch 7): the fx/engineering palette
+    // buckets + edit/select/transform/camera/audio/net/random/help commands
+    // live in StudioBootProject.hpp. The Scene: Save/Load + Gizmo + Streamer
+    // commands below stay here — they close over the file-local SceneEntity
+    // / LightRow / PrimitiveKind types (StudioEngineCommands.hpp scope rule)
+    // and their registration order vs the duplicate FX ids must hold.
+    cd_studio::register_boot_palette_commands(s, log_push_fn);
+
+    constexpr const char* kSavePath = "studio_scene.cdscene.json";
+    auto kind_name_fn = [](PrimitiveKind k) -> const char*
+    {
+        switch (k)
+        {
+            case PrimitiveKind::kSphere:   return "Sphere";
+            case PrimitiveKind::kCone:     return "Cone";
+            case PrimitiveKind::kCylinder: return "Cylinder";
+            case PrimitiveKind::kTorus:    return "Torus";
+            case PrimitiveKind::kGltf:     return "Gltf";
+            case PrimitiveKind::kSponza:   return "Sponza";
+            case PrimitiveKind::kCube:     return "Cube";
+        }
+        return "Cube";
+    };
+    s.palette.register_command(80, "Scene: Save",
+        [&s, log_push_fn, kind_name_fn]() mutable
+        {
+            auto fe = [&s](cd::ecs::Entity e) -> const SceneEntity*
+            {
+                for (const auto& en : s.entities) if (en.handle.id == e.id) return &en;
+                return nullptr;
+            };
+            auto root = cd::scene::serialize_scene_with(s.scene,
+                [&](cd::ecs::Entity e, cd::asset::json::Object& obj)
+                {
+                    const auto* en = fe(e); if (!en) return;
+                    obj["name"] = cd::asset::json::Value { en->name };
+                    obj["kind"] = cd::asset::json::Value { std::string { kind_name_fn(en->kind) } };
+                    cd::asset::json::Array tint;
+                    tint.emplace_back(static_cast<double>(en->tint.x));
+                    tint.emplace_back(static_cast<double>(en->tint.y));
+                    tint.emplace_back(static_cast<double>(en->tint.z));
+                    obj["tint"] = cd::asset::json::Value { std::move(tint) };
+                });
+            {
+                cd::asset::json::Array la;
+                for (const auto& l : s.lights)
+                {
+                    cd::asset::json::Object lo;
+                    lo["name"]      = cd::asset::json::Value { l.name };
+                    lo["enabled"]   = cd::asset::json::Value { l.enabled };
+                    lo["type"]      = cd::asset::json::Value { static_cast<int>(l.light.type) };
+                    lo["kelvin"]    = cd::asset::json::Value { static_cast<double>(l.kelvin) };
+                    lo["intensity"] = cd::asset::json::Value { static_cast<double>(l.light.intensity) };
+                    lo["range"]     = cd::asset::json::Value { static_cast<double>(l.light.range) };
+                    cd::asset::json::Array pos;
+                    cd::asset::json::Array col;
+                    cd::asset::json::Array dir;
+                    pos.emplace_back(static_cast<double>(l.light.position.x));
+                    pos.emplace_back(static_cast<double>(l.light.position.y));
+                    pos.emplace_back(static_cast<double>(l.light.position.z));
+                    lo["position"] = cd::asset::json::Value { std::move(pos) };
+                    col.emplace_back(static_cast<double>(l.light.color.x));
+                    col.emplace_back(static_cast<double>(l.light.color.y));
+                    col.emplace_back(static_cast<double>(l.light.color.z));
+                    lo["color"]    = cd::asset::json::Value { std::move(col) };
+                    dir.emplace_back(static_cast<double>(l.light.direction.x));
+                    dir.emplace_back(static_cast<double>(l.light.direction.y));
+                    dir.emplace_back(static_cast<double>(l.light.direction.z));
+                    lo["direction"] = cd::asset::json::Value { std::move(dir) };
+                    la.emplace_back(std::move(lo));
+                }
+                root.as_object_mut()["lights"] = cd::asset::json::Value { std::move(la) };
+            }
+            const auto txt = cd::asset::json::serialize(root, true);
+            std::ofstream f { kSavePath, std::ios::binary | std::ios::trunc };
+            if (f)
+            {
+                f.write(txt.data(), static_cast<std::streamsize>(txt.size()));
+                log_push_fn("[scene] Saved " + std::to_string(s.entities.size()) +
+                    " entities + " + std::to_string(s.lights.size()) + " lights to " + kSavePath);
+            }
+            else log_push_fn("[scene] Save failed (ofstream)");
+        });
+    s.palette.register_command(95, "Gizmo: Toggle Visibility",
+        [&s, log_push_fn]() mutable
+        {
+            s.gizmo_state.visible = !s.gizmo_state.visible;
+            log_push_fn("[gizmo] visible=" + std::string(s.gizmo_state.visible ? "true" : "false"));
+        });
+    s.palette.register_command(90, "Streamer: Enqueue 8 burst",
+        [&s, log_push_fn]() mutable
+        {
+            for (int i = 0; i < 8; ++i)
+            {
+                cd::asset::AssetId id { s.streamer_next_id++ };
+                cd::asset::StreamRequest req; req.id = id; req.priority = i * 10;
+                s.streamer.enqueue(req); s.streamer_tracked.push_back(id);
+                if (s.streamer_tracked.size() > 32)
+                    s.streamer_tracked.erase(s.streamer_tracked.begin(),
+                                             s.streamer_tracked.begin() + 8);
+            }
+            log_push_fn("[palette] Streamer +8 burst");
+        });
+    s.palette.register_command(91, "Streamer: Enqueue 32 burst",
+        [&s, log_push_fn]() mutable
+        {
+            for (int i = 0; i < 32; ++i)
+            {
+                cd::asset::AssetId id { s.streamer_next_id++ };
+                cd::asset::StreamRequest req; req.id = id; req.priority = i % 4;
+                s.streamer.enqueue(req); s.streamer_tracked.push_back(id);
+                if (s.streamer_tracked.size() > 32)
+                    s.streamer_tracked.erase(s.streamer_tracked.begin(),
+                                             s.streamer_tracked.begin() + 8);
+            }
+            log_push_fn("[palette] Streamer +32 burst");
+        });
+    s.palette.register_command(81, "Scene: Load (replace world)",
+        [&s, log_push_fn]() mutable
+        {
+            auto r = cd::asset::json::load(kSavePath);
+            if (!r.has_value())
+            {
+                log_push_fn("[scene] Load failed: " + std::string { r.error().message });
+                return;
+            }
+            for (auto& en : s.entities) if (en.handle.is_valid()) s.scene.destroy_node(en.handle);
+            s.entities.clear();
+            std::vector<SceneEntity> loaded;
+            (void)cd::scene::deserialize_scene_with(s.scene, *r,
+                [&](cd::ecs::Entity e, const cd::asset::json::Object& obj)
+                {
+                    SceneEntity en; en.handle = e;
+                    en.kind = PrimitiveKind::kCube; en.tint = { 1,1,1 };
+                    if (auto it = obj.find("name"); it != obj.end() && it->second.is_string())
+                        en.name = it->second.as_string();
+                    if (auto it = obj.find("kind"); it != obj.end() && it->second.is_string())
+                        en.kind = kind_from_name(it->second.as_string());
+                    if (auto it = obj.find("tint"); it != obj.end() && it->second.is_array()
+                        && it->second.as_array().size() == 3)
+                    {
+                        const auto& a = it->second.as_array();
+                        if (a[0].is_number() && a[1].is_number() && a[2].is_number())
+                            en.tint = { static_cast<float>(a[0].as_number()),
+                                        static_cast<float>(a[1].as_number()),
+                                        static_cast<float>(a[2].as_number()) };
+                    }
+                    loaded.push_back(std::move(en));
+                });
+            s.entities = std::move(loaded);
+            if (r->is_object())
+            {
+                const auto& ro = r->as_object();
+                if (auto it = ro.find("lights");
+                    it != ro.end() && it->second.is_array())
+                {
+                    std::vector<LightRow> nl;
+                    for (const auto& lv : it->second.as_array())
+                    {
+                        if (!lv.is_object()) continue;
+                        const auto& lo = lv.as_object();
+                        LightRow row {};
+                        if (auto n = lo.find("name"); n != lo.end() && n->second.is_string())
+                            row.name = n->second.as_string();
+                        if (auto en2 = lo.find("enabled"); en2 != lo.end() && en2->second.is_bool())
+                            row.enabled = en2->second.as_bool();
+                        if (auto t = lo.find("type"); t != lo.end() && t->second.is_number())
+                            row.light.type = static_cast<cd::light::LightType>(
+                                static_cast<int>(t->second.as_number()));
+                        if (auto k = lo.find("kelvin"); k != lo.end() && k->second.is_number())
+                            row.kelvin = static_cast<float>(k->second.as_number());
+                        if (auto in = lo.find("intensity"); in != lo.end() && in->second.is_number())
+                            row.light.intensity = static_cast<float>(in->second.as_number());
+                        if (auto rg = lo.find("range"); rg != lo.end() && rg->second.is_number())
+                            row.light.range = static_cast<float>(rg->second.as_number());
+                        auto load3 = [&lo](const char* key, cd::math::Vec3f& out)
+                        {
+                            if (auto it2 = lo.find(key); it2 != lo.end() && it2->second.is_array()
+                                && it2->second.as_array().size() == 3)
+                            {
+                                const auto& a = it2->second.as_array();
+                                if (a[0].is_number() && a[1].is_number() && a[2].is_number())
+                                    out = { static_cast<float>(a[0].as_number()),
+                                            static_cast<float>(a[1].as_number()),
+                                            static_cast<float>(a[2].as_number()) };
+                            }
+                        };
+                        load3("position",  row.light.position);
+                        load3("direction", row.light.direction);
+                        load3("color",     row.light.color);
+                        if (row.light.color.x == 0 && row.light.color.y == 0 &&
+                            row.light.color.z == 0 && row.kelvin > 0.0F)
+                            row.light.color = cd::light::cct_to_linear_rgb(row.kelvin);
+                        nl.push_back(std::move(row));
+                    }
+                    if (!nl.empty()) s.lights = std::move(nl);
+                }
+            }
+            s.selected = s.entities.empty() ? -1 : 0;
+            s.history.clear();
+            log_push_fn("[scene] Loaded " + std::to_string(s.entities.size()) +
+                " entities + " + std::to_string(s.lights.size()) + " lights from " + kSavePath);
+        });
+
+    return {};
+}
+
+// ---- M2D: on_frame ----------------------------------------------------------
+void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
+{
+    auto& s      = *state_;
+    auto& window = *s.window;
+    auto& device = *s.device_owner;
+    auto& ctx    = *s.imgui_ctx;
+
+    constexpr cd::rhi::Extent2D kShadowMapSize { 2048, 2048 };
+    constexpr float kFloorY    = -0.55F;
+    constexpr float kShadowLift = 0.01F;
+    using cd_studio::kDepthFormat;
+    using cd_studio::kAudioRingFrames;
+    using cd::studio_rt::kInstMatBytes;
+
+    auto log_push_fn = [&s](std::string msg)
+    {
+        s.log.emplace_back(std::move(msg));
+        while (s.log.size() > 64) s.log.pop_front();
+    };
+
+    auto mesh_for = [&s](PrimitiveKind k) -> const GpuMesh&
+    {
+        switch (k)
+        {
+            case PrimitiveKind::kSphere:   return s.meshes.sphere;
+            case PrimitiveKind::kCone:     return s.meshes.cone;
+            case PrimitiveKind::kCylinder: return s.meshes.cyl;
+            case PrimitiveKind::kTorus:    return s.meshes.torus;
+            case PrimitiveKind::kSponza:
+                return s.meshes.gltf.vb.is_valid() ? s.meshes.gltf : s.meshes.knot;
+            case PrimitiveKind::kGltf:
+                return s.meshes.gltf_cesium.vb.is_valid() ? s.meshes.gltf_cesium : s.meshes.knot;
+            default:                       return s.meshes.cube;
+        }
+    };
+    auto blas_for_kind = [&s](PrimitiveKind k) -> cd::rhi::AccelStructureHandle
+    {
+        switch (k)
+        {
+            case PrimitiveKind::kSphere:   return s.meshes.blas_sphere;
+            case PrimitiveKind::kCone:     return s.meshes.blas_cone;
+            case PrimitiveKind::kCylinder: return s.meshes.blas_cyl;
+            case PrimitiveKind::kTorus:    return s.meshes.blas_torus;
+            case PrimitiveKind::kSponza:   return s.meshes.blas_gltf;
+            case PrimitiveKind::kGltf:     return s.meshes.blas_cesium;
+            default:                       return s.meshes.blas_cube;
+        }
+    };
+
+    // phase1125: bloom/composite descriptor binders moved to
+    // StudioBootPostFx.hpp (shared with on_boot — were duplicated here).
+    using clock = std::chrono::steady_clock;
+    const auto frame_loop_start = clock::now();
+    auto last_tick = frame_loop_start;
+    std::vector<cd::platform::OSEvent> events;
+    events.reserve(64);
+    if (g_studio_demo_all_phases)
+    {
+        cd::studio::load_studio_interactive_template(s, 1, log_push_fn);
+        cd::studio::studio_world().environment_modifiers.add_or_replace(
+            std::make_unique<cd::studio::FogModifier>());
+        (void)cd::studio::export_standalone_game_package(
+            s, "build/export/ChromodynamicGame", log_push_fn);
+    }
+    if (g_studio_start_pie)
+    {
+        s.pie_playing = true;
     }
 
     while (true)
     {
-        std::uint32_t fb_w { 1600U };
-        std::uint32_t fb_h { 900U };
-        if (window)
+        events.clear();
+        if (!window.pump_events(events)) break;
+
+        (void)s.shader_watch.poll_and_reload(device, s.compiler.get());
+
+        for (const auto& ev : events)
         {
-            fb_w = window->width()  > 0U ? window->width()  : fb_w;
-            fb_h = window->height() > 0U ? window->height() : fb_h;
-            events.clear();
-            if (!window->pump_events(events)) { break; }
-            pointer.left_down_prev = pointer.left_down;
-            for (const auto& e : events)
+            ctx.handle_event(ev);
+            if (ev.kind == cd::platform::OSEventKind::kKeyDown &&
+                ev.key == cd::platform::KeyCode::kEscape)
             {
-                apply_event(pointer, e);
-                const bool was_pie_playing = studio_workbench.pie_playing();
-                studio_workbench.on_event(e);
+                if (s.pie_playing)
+                { s.pie_playing = false; log_push_fn("[studio] Stopped Play-In-Editor (ESC)"); }
+                else if (s.gizmo.is_dragging())
+                { (void)s.gizmo.end_drag(); log_push_fn("[esc] gizmo drag cancelled"); }
+                else if (s.palette_visible)
+                { s.palette_visible = false; s.palette_query.clear();
+                  log_push_fn("[esc] palette closed"); }
+                else if (s.selected >= 0)
+                { s.selected = -1; log_push_fn("[esc] selection cleared"); }
+            }
+            else if (ev.kind == cd::platform::OSEventKind::kKeyDown &&
+                     ev.key == cd::platform::KeyCode::kF5)
+            {
+                s.pie_playing = true;
+                log_push_fn("[studio] Play-In-Editor started (F5)");
+            }
+            else if (ev.kind == cd::platform::OSEventKind::kKeyDown &&
+                     ev.key == cd::platform::KeyCode::kF8)
+            {
+                s.pie_playing = false;
+                log_push_fn("[studio] Play-In-Editor stopped (F8)");
+            }
+            else if (ev.kind == cd::platform::OSEventKind::kResize)
+            { s.needs_rebuild = true; }
+            else if (ev.kind == cd::platform::OSEventKind::kKeyDown &&
+                     ev.key == cd::platform::KeyCode::kF1)
+            {
+                s.palette_visible = !s.palette_visible;
+                if (s.palette_visible) s.palette_query.clear();
+            }
+            else if (ev.kind == cd::platform::OSEventKind::kKeyDown)
+            {
+                if (ev.key == cd::platform::KeyCode::kLCtrl ||
+                    ev.key == cd::platform::KeyCode::kRCtrl)  s.mod_ctrl  = true;
+                if (ev.key == cd::platform::KeyCode::kLShift ||
+                    ev.key == cd::platform::KeyCode::kRShift) s.mod_shift = true;
+                if (ev.key == cd::platform::KeyCode::kP && s.mod_ctrl && s.mod_shift)
+                { s.palette_visible = !s.palette_visible;
+                  if (s.palette_visible) s.palette_query.clear(); }
+            }
+            else if (ev.kind == cd::platform::OSEventKind::kKeyUp)
+            {
+                if (ev.key == cd::platform::KeyCode::kLCtrl ||
+                    ev.key == cd::platform::KeyCode::kRCtrl)  s.mod_ctrl  = false;
+                if (ev.key == cd::platform::KeyCode::kLShift ||
+                    ev.key == cd::platform::KeyCode::kRShift) s.mod_shift = false;
+            }
 
-                // phase785 / E5 — feed live input events into the Recorder.
-                // Translate OSEvent to InputEvent when a recording is active.
-                // kResize / kClose / kFocus* / kTextChar are window-management or
-                // text-input signals; we do not record them (no user-input payload).
-                if (g_input_recorder.is_recording())
+            const bool key_dn = (ev.kind == cd::platform::OSEventKind::kKeyDown);
+            const bool key_up = (ev.kind == cd::platform::OSEventKind::kKeyUp);
+            auto& fl = s.app_state.free_look;
+            if (key_dn || key_up)
+            {
+                const bool v = key_dn;
+                if (ev.key == cd::platform::KeyCode::kW)  fl.key_w = v;
+                if (ev.key == cd::platform::KeyCode::kA)  fl.key_a = v;
+                if (ev.key == cd::platform::KeyCode::kS)  fl.key_s = v;
+                if (ev.key == cd::platform::KeyCode::kD)  fl.key_d = v;
+                if (ev.key == cd::platform::KeyCode::kQ)  fl.key_q = v;
+                if (ev.key == cd::platform::KeyCode::kE)  fl.key_e = v;
+                if (ev.key == cd::platform::KeyCode::kLShift ||
+                    ev.key == cd::platform::KeyCode::kRShift) fl.key_shift = v;
+                if (ev.key == cd::platform::KeyCode::kLCtrl ||
+                    ev.key == cd::platform::KeyCode::kRCtrl)  fl.key_ctrl  = v;
+                if (key_dn && (ev.key == cd::platform::KeyCode::kW ||
+                               ev.key == cd::platform::KeyCode::kA ||
+                               ev.key == cd::platform::KeyCode::kS ||
+                               ev.key == cd::platform::KeyCode::kD ||
+                               ev.key == cd::platform::KeyCode::kQ ||
+                               ev.key == cd::platform::KeyCode::kE))
+                { fl.manual_mode = true; s.scene_cam.set_auto_spin(false); }
+            }
+            if (key_dn && ev.key == cd::platform::KeyCode::kF &&
+                s.selected >= 0 && std::cmp_less(s.selected, s.entities.size()))
+            {
+                if (auto* lt = s.scene.local(
+                        s.entities[static_cast<std::size_t>(s.selected)].handle))
                 {
-                    using namespace cd::game::input_recorder;
-                    using K = platform::OSEventKind;
-                    InputEvent ie {};
-                    bool       capture { true };
-
-                    // Wall-clock ms: monotonically increasing timestamp recorded
-                    // with each event so the Replayer can gate delivery exactly.
-                    using fpdur = std::chrono::duration<double, std::milli>;
-                    ie.timestamp_ms = std::chrono::duration_cast<fpdur>(
-                        std::chrono::steady_clock::now().time_since_epoch()).count();
-
-                    switch (e.kind)
-                    {
-                        case K::kKeyDown:
-                            ie.kind = InputEventKind::kKeyDown;
-                            ie.code = static_cast<std::uint32_t>(e.key);
-                            break;
-                        case K::kKeyUp:
-                            ie.kind = InputEventKind::kKeyUp;
-                            ie.code = static_cast<std::uint32_t>(e.key);
-                            break;
-                        case K::kMouseButtonDown:
-                            ie.kind       = InputEventKind::kMouseDown;
-                            ie.code       = static_cast<std::uint32_t>(e.mouse_button);
-                            ie.payload[0] = e.mouse_x;
-                            ie.payload[1] = e.mouse_y;
-                            break;
-                        case K::kMouseButtonUp:
-                            ie.kind       = InputEventKind::kMouseUp;
-                            ie.code       = static_cast<std::uint32_t>(e.mouse_button);
-                            ie.payload[0] = e.mouse_x;
-                            ie.payload[1] = e.mouse_y;
-                            break;
-                        case K::kMouseMove:
-                            // OSEvent carries absolute cursor position in mouse_x/y.
-                            // Store as payload[0]/[1]; a replay consumer interprets
-                            // these as absolute coordinates (matching the capture-side
-                            // coordinate system).
-                            ie.kind       = InputEventKind::kMouseMove;
-                            ie.payload[0] = e.mouse_x;
-                            ie.payload[1] = e.mouse_y;
-                            break;
-                        default:
-                            capture = false;
-                            break;
-                    }
-                    if (capture) { g_input_recorder.record(ie); }
+                    s.cam.target = { lt->value.position.x, lt->value.position.y,
+                                     lt->value.position.z };
+                    log_push_fn("[cam] focus " +
+                        s.entities[static_cast<std::size_t>(s.selected)].name);
                 }
-
-                // Track Ctrl modifier state.
-                if (e.kind == platform::OSEventKind::kKeyDown &&
-                    (e.key == platform::KeyCode::kLCtrl ||
-                     e.key == platform::KeyCode::kRCtrl))
+            }
+            if (key_dn && ev.key == cd::platform::KeyCode::kSpace &&
+                !ImGui::GetIO().WantCaptureKeyboard)
+            {
+                s.gizmo_state.mode = static_cast<GizmoMode>(
+                    (static_cast<std::uint8_t>(s.gizmo_state.mode) + 1u) % 3u);
+                const char* ms = "SCALE";
+                if (s.gizmo_state.mode == GizmoMode::kTranslate)
+                    ms = "TRANSLATE";
+                else if (s.gizmo_state.mode == GizmoMode::kRotate)
+                    ms = "ROTATE";
+                log_push_fn(std::string { "[gizmo] mode: " } + ms);
+            }
+            if (key_dn && ev.key == cd::platform::KeyCode::kDelete &&
+                !ImGui::GetIO().WantCaptureKeyboard && s.selected >= 0)
+            {
+                if (s.selected_kind == SelKind::kEntity &&
+                    std::cmp_less(s.selected, s.entities.size()))
                 {
-                    ctrl_down = true;
+                    const std::string nm =
+                        s.entities[static_cast<std::size_t>(s.selected)].name;
+                    s.scene.destroy_node(
+                        s.entities[static_cast<std::size_t>(s.selected)].handle);
+                    s.entities.erase(s.entities.begin() + s.selected);
+                    log_push_fn("[edit] entity deleted: " + nm);
                 }
-                else if (e.kind == platform::OSEventKind::kKeyUp &&
-                         (e.key == platform::KeyCode::kLCtrl ||
-                          e.key == platform::KeyCode::kRCtrl))
+                else if (s.selected_kind == SelKind::kLight &&
+                         std::cmp_less(s.selected, s.lights.size()))
                 {
-                    ctrl_down = false;
+                    const std::string nm =
+                        s.lights[static_cast<std::size_t>(s.selected)].name;
+                    s.lights.erase(s.lights.begin() + s.selected);
+                    log_push_fn("[edit] light deleted: " + nm);
                 }
-
-                if (e.kind == platform::OSEventKind::kKeyDown &&
-                    e.key  == platform::KeyCode::kEscape)
+                s.selected = -1;
+            }
+            if (ev.kind == cd::platform::OSEventKind::kMouseButtonDown)
+            {
+                if (ev.mouse_button == cd::platform::MouseButton::kRight)
                 {
-                    if (was_pie_playing)
+                    fl.right_drag = true; fl.manual_mode = true;
+                    fl.has_last_mouse = false;
+                    s.scene_cam.set_auto_spin(false);
+                    const float dx = s.cam.target.x - s.cam.eye.x;
+                    const float dy = s.cam.target.y - s.cam.eye.y;
+                    const float dz = s.cam.target.z - s.cam.eye.z;
+                    const float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+                    if (dist > 1e-3F)
                     {
-                        // Escape stopped PIE via studio_workbench.on_event(e) above.
+                        fl.dist  = dist;
+                        fl.pitch = std::asin(dy / dist);
+                        fl.yaw   = std::atan2(dx, -dz);
                     }
-                    else if (shortcut_overlay.is_visible())
-                    {
-                        shortcut_overlay.set_visible(false);
-                    }
+                }
+                else if (ev.mouse_button == cd::platform::MouseButton::kLeft &&
+                         !ImGui::GetIO().WantCaptureMouse)
+                {
+                    s.app_state.pick.pending = true;
+                    s.app_state.pick.x = ev.mouse_x;
+                    s.app_state.pick.y = ev.mouse_y;
+                }
+                // phase1178: track LMB down for cd::ui InputState flatten.
+                if (ev.mouse_button == cd::platform::MouseButton::kLeft)
+                    s.ui_lmb_down = true;
+            }
+            if (ev.kind == cd::platform::OSEventKind::kMouseButtonUp &&
+                ev.mouse_button == cd::platform::MouseButton::kRight)
+                fl.right_drag = false;
+            // phase1178: track LMB up for cd::ui InputState flatten.
+            if (ev.kind == cd::platform::OSEventKind::kMouseButtonUp &&
+                ev.mouse_button == cd::platform::MouseButton::kLeft)
+                s.ui_lmb_down = false;
+            if (ev.kind == cd::platform::OSEventKind::kMouseMove)
+            {
+                if (fl.right_drag && fl.has_last_mouse)
+                {
+                    const float ddx = ev.mouse_x - fl.last_mouse_x;
+                    const float ddy = ev.mouse_y - fl.last_mouse_y;
+                    fl.yaw   += ddx * cd_studio::kCamLookSpeed;
+                    fl.pitch -= ddy * cd_studio::kCamLookSpeed;
+                    constexpr float kHalfPi = 1.5707963F;
+                    fl.pitch = std::min(fl.pitch, kHalfPi - 0.05F);
+                    fl.pitch = std::max(fl.pitch, -kHalfPi + 0.05F);
+                }
+                fl.last_mouse_x = ev.mouse_x; fl.last_mouse_y = ev.mouse_y;
+                fl.has_last_mouse = true;
+                // phase1178: mirror cursor to ui_mouse for InputState flatten.
+                s.ui_mouse_x = ev.mouse_x;
+                s.ui_mouse_y = ev.mouse_y;
+            }
+            if (ev.kind == cd::platform::OSEventKind::kMouseWheel &&
+                !ImGui::GetIO().WantCaptureMouse)
+            {
+                fl.dist *= (ev.wheel > 0.0F) ? 0.9F : 1.1F;
+                fl.dist = std::max(fl.dist, 1.0F);
+                fl.dist = std::min(fl.dist, 100.0F);
+            }
+        }  // end event loop
+
+        if (s.needs_rebuild)
+        {
+            if (window.width() == 0 || window.height() == 0) continue;
+            if (!s.renderer.recreate_swapchain({ window.width(), window.height() }).has_value())
+                continue;
+            s.rts.destroy(device);
+            if (cd_studio::create_render_targets(
+                    device, { window.width(), window.height() }, s.rts) != 0)
+                continue;
+            s.history_states[0] = cd::rhi::ResourceState::kUndefined;
+            s.history_states[1] = cd::rhi::ResourceState::kUndefined;
+            if (!create_bloom_chain(device, { window.width(), window.height() }, s.bloom_chain))
+                continue;
+            cd_studio::bind_bloom_descriptors(s);
+            cd_studio::bind_composite_hdr_descriptors(s);
+            // phase1146: the HDR / depth / normal views the DDGI sample pass
+            // points at were just destroyed + recreated — force a rebind on
+            // the next frame against the fresh views.
+            s.ddgi.bound = false;
+            s.depth_initialised_on_gpu = false;
+            s.needs_rebuild = false;
+        }
+
+        const auto now = clock::now();
+        const float dt = std::chrono::duration<float>(now - last_tick).count();
+        last_tick = now;
+
+        // Tick audio
+        auto& as = s.audio_state;
+        if (!as.muted)
+        {
+            float peak = 0.0F;
+            float comp_db_min = 0.0F;
+            float lim_gain_min = 1.0F;
+            for (std::size_t si = 0; si < kAudioBufferLen; ++si, ++as.sample_t)
+            {
+                as.bus.mix(0, square_wave(as.sample_t, 440.0F));
+                as.bus.mix(1, burst_noise(as.sample_t));
+                float x = as.bus.pull();
+                x = as.comp.process(x);
+                comp_db_min = std::min(as.comp.gain_db(), comp_db_min);
+                const float wet = as.reverb.process(x);
+                x = 0.75F * x + 0.20F * wet;
+                x = as.lowpass.process(x);
+                x = as.limiter.process(x);
+                lim_gain_min = std::min(as.limiter.current_gain(), lim_gain_min);
+                peak = std::max(std::fabs(x), peak);
+                x = std::min(x, 1.0F);
+                x = std::max(x, -1.0F);
+                as.ring[as.ring_write] = static_cast<std::int16_t>(x * 32760.0F);
+                if (++as.ring_write >= kAudioRingFrames) as.ring_write = 0;
+                ++as.total_written;
+            }
+            as.peak_window = peak; as.comp_db_window = comp_db_min;
+            as.limiter_gain_min = lim_gain_min;
+            as.meter_history.push_back(peak);
+            while (as.meter_history.size() > 120) as.meter_history.pop_front();
+            s.counters.increment("audio_ticks");
+        }
+
+        // Tick net sim
+        if (s.net_enabled)
+        {
+            s.net_t += static_cast<double>(dt);
+            s.net_throttle.update(dt);
+            while (s.net_t >= s.next_net_tick)
+            {
+                s.next_net_tick += 1.0 / 60.0;
+                if (s.net_throttle.try_consume(1.0F))
+                {
+                    const float v = std::sin(static_cast<float>(s.net_t) * 1.2F);
+                    const std::byte cb[4] = {
+                        std::byte((std::uint32_t(v * 1e6F) >> 0)  & 0xFFu),
+                        std::byte((std::uint32_t(v * 1e6F) >> 8)  & 0xFFu),
+                        std::byte((std::uint32_t(v * 1e6F) >> 16) & 0xFFu),
+                        std::byte((std::uint32_t(v * 1e6F) >> 24) & 0xFFu) };
+                    const std::byte bb[4] = {
+                        std::byte((std::uint32_t(s.net_baseline * 1e6F) >> 0)  & 0xFFu),
+                        std::byte((std::uint32_t(s.net_baseline * 1e6F) >> 8)  & 0xFFu),
+                        std::byte((std::uint32_t(s.net_baseline * 1e6F) >> 16) & 0xFFu),
+                        std::byte((std::uint32_t(s.net_baseline * 1e6F) >> 24) & 0xFFu) };
+                    const auto delta = cd::net::write_delta(
+                        std::span<const std::byte>(bb),
+                        std::span<const std::byte>(cb));
+                    s.net_raw_bytes += 4; s.net_wire_bytes += delta.size();
+                    s.net_baseline = v; ++s.net_sent;
+                    if (s.net_rng.next_float() < 0.10F)
+                    { ++s.net_drop; }
                     else
                     {
-                        window->request_close();
-                    }
-                    chord_sm.reset();
-                }
-                else if (e.kind == platform::OSEventKind::kKeyDown &&
-                         ctrl_down &&
-                         e.key != platform::KeyCode::kLCtrl &&
-                         e.key != platform::KeyCode::kRCtrl)
-                {
-                    // phase776: chord feed. Map alpha KeyCode to char.
-                    char key_char = '\0';
-                    const auto kc = static_cast<int>(e.key);
-                    constexpr int kFirstAlpha =
-                        static_cast<int>(platform::KeyCode::kA);
-                    constexpr int kLastAlpha  =
-                        static_cast<int>(platform::KeyCode::kZ);
-                    if (kc >= kFirstAlpha && kc <= kLastAlpha)
-                    {
-                        key_char = static_cast<char>('A' + (kc - kFirstAlpha));
-                    }
-                    const std::uint8_t mods =
-                        ctrl_down ? static_cast<std::uint8_t>(kso_ns::ChordModifier::kCtrl)
-                                  : std::uint8_t{0U};
-                    const std::string chord =
-                        chord_sm.feed_key(mods, key_char, now_ms());
-                    if (!chord.empty())
-                    {
-                        if (chord == "Ctrl+K Ctrl+S")
-                        {
-                            std::printf("editor: chord -> Save Layout\n");
-                            std::fflush(stdout);
-                        }
-                        else if (chord == "Ctrl+K Ctrl+L")
-                        {
-                            std::printf("editor: chord -> Load Layout\n");
-                            std::fflush(stdout);
-                        }
-                        else if (chord == "Ctrl+K Ctrl+T")
-                        {
-                            std::printf("editor: chord -> Theme Picker\n");
-                            std::fflush(stdout);
-                        }
-                        else if (chord == "Ctrl+K Ctrl+H")
-                        {
-                            shortcut_overlay.set_visible(
-                                !shortcut_overlay.is_visible());
-                            std::printf("editor: chord -> Hotkey Overlay\n");
-                            std::fflush(stdout);
-                        }
-                    }
-                }
-                else if (e.kind == platform::OSEventKind::kTextChar)
-                {
-                    if (e.code_point == 0x3FU /* '?' */)
-                    {
-                        shortcut_overlay.set_visible(!shortcut_overlay.is_visible());
-                    }
-                    else if (e.code_point == 'w' || e.code_point == 'W')
-                    {
-                        g_gizmo_mode = 0;
-                        if (g_viewport_gizmo_ptr != nullptr)
-                        {
-                            g_viewport_gizmo_ptr->mode = cd::editor::ViewportGizmoMode::kTranslate;
-                        }
-                    }
-                    else if (e.code_point == 'e' || e.code_point == 'E')
-                    {
-                        g_gizmo_mode = 1;
-                        if (g_viewport_gizmo_ptr != nullptr)
-                        {
-                            g_viewport_gizmo_ptr->mode = cd::editor::ViewportGizmoMode::kRotate;
-                        }
-                    }
-                    else if (e.code_point == 'r' || e.code_point == 'R')
-                    {
-                        g_gizmo_mode = 2;
-                        if (g_viewport_gizmo_ptr != nullptr)
-                        {
-                            g_viewport_gizmo_ptr->mode = cd::editor::ViewportGizmoMode::kScale;
-                        }
-                    }
-                }
-                else if (e.kind == platform::OSEventKind::kResize)
-                {
-                    needs_rebuild = true;
-                }
-            }
-            chord_sm.tick(now_ms());
-            if (renderer && needs_rebuild)
-            {
-                if (window->width() == 0U || window->height() == 0U) { continue; }
-                if (!renderer->recreate_swapchain(
-                        rhi::Extent2D { window->width(), window->height() }).has_value())
-                {
-                    continue;
-                }
-                needs_rebuild = false;
-            }
-        }
-
-        if (cap_frames > 0U && frame_idx >= cap_frames)
-        {
-            if (window) { window->request_close(); }
-            if (!window) { break; }
-        }
-
-        // -- phase785 / E5 — input recorder stop-detection + auto-save ----------
-        {
-            const bool now_recording = g_input_recorder.is_recording();
-            if (was_recording && !now_recording)
-            {
-                const std::filesystem::path save_path = input_recording_save_path();
-                std::error_code ec;
-                std::filesystem::create_directories(save_path.parent_path(), ec);
-
-                if (g_input_recorder.save_to_file(save_path))
-                {
-                    std::printf("editor: input_recording saved %zu events -> %s\n",
-                                g_input_recorder.event_count(),
-                                save_path.string().c_str());
-                }
-                else
-                {
-                    std::fprintf(stderr,
-                                 "editor: WARNING — input_recording save FAILED -> %s\n",
-                                 save_path.string().c_str());
-                }
-                std::fflush(stdout);
-            }
-            was_recording = now_recording;
-        }
-
-        // -- phase785 / E5 — replayer per-frame tick ----------------------------
-        if (!g_input_replayer.is_finished())
-        {
-            using fpdur = std::chrono::duration<double, std::milli>;
-            const auto now_tp    = std::chrono::steady_clock::now();
-            const double frame_ms = std::chrono::duration_cast<fpdur>(
-                now_tp - prev_tp).count();
-            replay_elapsed_ms += frame_ms;
-
-            std::size_t dispatched { 0U };
-            while (true)
-            {
-                const auto ev = g_input_replayer.next_event(replay_elapsed_ms);
-                if (!ev.has_value()) { break; }
-                ++dispatched;
-            }
-            (void)dispatched;
-
-            if (g_input_replayer.is_finished())
-            {
-                replay_elapsed_ms = 0.0;
-                std::printf("editor: input_replay finished (%zu events).\n",
-                            g_input_replayer.event_count());
-                std::fflush(stdout);
-            }
-        }
-
-        // -- Dockspace layout + state tick --
-        // Reserve kTopToolbarH (26 px) at top for the Cockpit Toolbar and
-        // kStatusBarH (20 px) at bottom for the Status Bar ribbon.
-        const float dock_h = std::max(0.0F,
-                                      static_cast<float>(fb_h) - kTopToolbarH - kStatusBarH);
-        dockspace.set_rect(uw::Rect { 0.0F, kTopToolbarH,
-                                      static_cast<float>(fb_w),
-                                      dock_h });
-        uw::InputState input;
-        input.pointer   = flatten_pointer(pointer);
-        input.focused   = false;
-        g_frame_pointer = input.pointer;
-        dockspace.tick(input, 0.0F);
-
-        // -- Editor tick (drains queued input events, refreshes widgets) --
-        (void)editor.tick();
-
-        // -- Drain any pending drop and log it --
-        {
-            std::string dropped_path;
-            if (g_asset_drop_target_panel.consume_dropped_path(dropped_path))
-            {
-                std::printf("editor: AssetDropTarget consumed drop: %s\n",
-                            dropped_path.c_str());
-                std::fflush(stdout);
-            }
-        }
-
-        // -- phase744 — hot-reload FileWatcher poll + BuildPanel event emit ----
-        {
-            hot_reload_watcher.poll();
-
-            hot_reload_queue.drain([&](cd::asset::AssetId /*id*/)
-            {
-                using namespace cd::editor::panel::build;
-                namespace bpb = cd::editor::build_panel_bridge;
-
-                const double reload_t0 = hot_reload_now_ms();
-                BuildEvent ev_compiling;
-                ev_compiling.timestamp_ms = reload_t0;
-                ev_compiling.message      = "hot-reload: asset changed, processing...";
-                ev_compiling.severity     = Status::kCompiling;
-                bpb::set_status(Status::kCompiling);
-                bpb::push_event(ev_compiling);
-
-                const double reload_t1 = hot_reload_now_ms();
-                BuildEvent ev_success;
-                ev_success.timestamp_ms = reload_t1;
-                ev_success.message      =
-                    std::string("hot-reload: ok in ")
-                    + std::to_string(static_cast<int>(std::lround(reload_t1 - reload_t0)))
-                    + "ms";
-                ev_success.severity     = Status::kSuccess;
-                bpb::set_status(Status::kSuccess);
-                bpb::push_event(ev_success);
-
-                std::printf("editor: hot_reload event -> BuildPanel (%.2f ms)\n",
-                            reload_t1 - reload_t0);
-                std::fflush(stdout);
-            });
-        }
-
-        // -- per-frame dt measurement (phase674 / M12 W6B) -------------------
-        double last_dt_ms = 0.0;
-        float  last_dt_s  = 0.0F;
-        {
-            using namespace std::chrono;
-            const auto  now  = steady_clock::now();
-            const auto dt_s = static_cast<float>(
-                duration_cast<microseconds>(now - prev_tp).count()) / 1'000'000.0F;
-            prev_tp = now;
-            if (dt_s > 0.0F)
-            {
-                ft_ring.push(dt_s);
-                g_fps_sparkline.push(dt_s * 1000.0F);
-                g_anim_time_s += dt_s;
-            }
-            else
-            {
-                g_anim_time_s += 0.016F;
-            }
-            last_dt_ms = static_cast<double>(dt_s) * 1000.0;
-            last_dt_s  = dt_s;
-        }
-        const auto real_fps = static_cast<float>(ft_ring.stats().fps_mean());
-
-        // -- phase707 / M15 W6B — splash particle system tick -----------------
-        if (splash_particles.has_value())
-        {
-            const double splash_ms_now = boot_splash.elapsed_ms();
-            if (boot_splash.done(splash_ms_now))
-            {
-                splash_particles.reset();
-                particle_snap_count = 0U;
-                std::printf("editor: splash particle system destroyed (splash complete).\n");
-                std::fflush(stdout);
-            }
-            else
-            {
-                if (last_dt_s > 0.0F)
-                {
-                    splash_particles->tick(last_dt_s);
-                }
-                particle_snap_count = splash_particles->snapshot(
-                    std::span<ParticleSnapshot>(particle_snap_buf.data(),
-                                               particle_snap_buf.size()));
-            }
-        }
-
-        // Open the frame.draw CPU scope BEFORE the draw block below.
-        const auto frame_draw_handle = cpu_collector.begin("frame.draw");
-
-        // -- Draw via the CPU batcher + RHI submitter --
-        fgt_timeline.begin_frame();
-        using FgClock    = std::chrono::steady_clock;
-        using FgDuration = std::chrono::duration<double, std::milli>;
-        const auto fg_dock_start = FgClock::now();
-        batcher.begin_frame();
-
-        if (!local.legacy_dock)
-        {
-            studio_workbench.tick_and_draw(
-                batcher,
-                widget_theme,
-                fb_w,
-                fb_h,
-                flatten_pointer(pointer),
-                pointer.right_down,
-                last_dt_s > 0.0F ? last_dt_s : (1.0F / 60.0F),
-                real_fps > 0.0F ? real_fps : 60.0F,
-                route_taken,
-                active_stage,
-                pie_controller,
-                add_element_catalog,
-                cockpit_shell,
-                g_gizmo_mode,
-                g_cam_yaw,
-                g_cam_pitch,
-                &draw_ui_text_clipped,
-                &draw_ui_line);
-            const uw::Rect fb_rect {
-                0.0F, 0.0F,
-                static_cast<float>(fb_w), static_cast<float>(fb_h) };
-            shortcut_overlay.draw(batcher, widget_theme, fb_rect);
-        }
-        else
-        {
-        dockspace.draw(batcher, font.is_loaded() ? &font : nullptr, widget_theme);
-        draw_dock_node_tab_labels(dockspace.root(), batcher);
-
-        if (g_pie_controller_ptr != nullptr && g_active_stage_ptr != nullptr)
-        {
-            (void)g_pie_controller_ptr->tick_if_playing(
-                *g_active_stage_ptr,
-                last_dt_s > 0.0F ? last_dt_s : (1.0F / 60.0F));
-        }
-
-        // -- Top Studio Cockpit Toolbar (PIE + Showcase Switcher + Gizmo + Overlays) --
-        bool show_dbg_viz   = dbg_depth.is_visible();
-        bool show_shortcuts = shortcut_overlay.is_visible();
-        draw_top_cockpit_toolbar(batcher, widget_theme,
-                                 static_cast<float>(fb_w),
-                                 g_frame_pointer,
-                                 show_dbg_viz,
-                                 show_shortcuts);
-        if (show_dbg_viz != dbg_depth.is_visible())
-        {
-            dbg_depth.set_visible(show_dbg_viz);
-            dbg_normal.set_visible(show_dbg_viz);
-            dbg_bucket.set_visible(show_dbg_viz);
-        }
-        if (show_shortcuts != shortcut_overlay.is_visible())
-        {
-            shortcut_overlay.set_visible(show_shortcuts);
-        }
-
-        // -- phase598 / M6 W3 + phase631 + phase674 — floating overlays ------
-        if (g_show_floating_perf_hud)
-        {
-            const auto fbw_f = static_cast<float>(fb_w);
-            const auto fbh_f = static_cast<float>(fb_h);
-
-            // --- CPU overlay — "CPU" header + 120 px bar chart body --------
-            {
-                constexpr float kOverlayW = 300.0F;
-                constexpr float kOverlayH = 120.0F;
-                constexpr float kMargin   = 8.0F;
-                const float     ox        = fbw_f - kOverlayW - kMargin;
-                const float     oy        = kTopToolbarH + kMargin;
-
-                draw_overlay_header(batcher, widget_theme,
-                                    ox, oy, kOverlayW, OverlayKind::kCpu);
-
-                const cmo::Rect bounds {
-                    ox, oy + kOverlayHeaderH, kOverlayW, kOverlayH };
-
-                {
-                    using namespace std::chrono;
-                    const auto now_us_c = static_cast<double>(
-                        duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count());
-                    const double cutoff_c = (now_us_c / 1000.0) - 32.0;
-                    const auto real_cpu = cpu_collector.samples_since(cutoff_c);
-                    cpu_overlay.draw(batcher,
-                        std::span<const cmo::MarkerSample>(real_cpu.data(), real_cpu.size()),
-                        bounds);
-                }
-            }
-
-            // --- GPU overlay — "GPU" header + 100 px body, below CPU ------
-            {
-                constexpr float kOverlayW  = 300.0F;
-                constexpr float kOverlayH  = 100.0F;
-                constexpr float kMargin    = 8.0F;
-                constexpr float kCpuTotal  = kOverlayHeaderH + 120.0F;
-                constexpr float kGap       = 4.0F;
-                const float     ox         = fbw_f - kOverlayW - kMargin;
-                const float     oy         = kTopToolbarH + kMargin + kCpuTotal + kGap;
-
-                draw_overlay_header(batcher, widget_theme,
-                                    ox, oy, kOverlayW, OverlayKind::kGpu);
-
-                const auto gpu_samples = gpu_marker_recorder.samples();
-                draw_gpu_marker_overlay(batcher, gpu_samples,
-                    ox, oy + kOverlayHeaderH, kOverlayW, kOverlayH, 16.0);
-            }
-
-            // --- FRAME overlay — "FRAME" header + 80 px body, bottom-right -
-            {
-                constexpr float kOverlayW = 400.0F;
-                constexpr float kOverlayH = 80.0F;
-                constexpr float kMargin   = 8.0F;
-                const float     ox        = fbw_f - kOverlayW - kMargin;
-                const float     oy        = fbh_f - kOverlayH - kOverlayHeaderH
-                                            - kMargin - kStatusBarH;
-
-                draw_overlay_header(batcher, widget_theme,
-                                    ox, oy, kOverlayW, OverlayKind::kFrame);
-
-                const fgt::Rect bounds {
-                    ox, oy + kOverlayHeaderH, kOverlayW, kOverlayH };
-
-                const auto real_passes = fgt_timeline.last_frame_passes();
-                frame_graph_overlay.draw(batcher, real_passes, bounds);
-            }
-        }
-
-        // -- phase720 / M17 W3 — auto-save timer + dirty-flag propagation ----
-        //
-        // 1. Recompute the persisted-state hash; transition to kPendingDirty
-        //    on any change (and remain there until the next save).
-        // 2. Every kAutosaveIntervalMs, if dirty, write the .cdproj atomically
-        //    and transition through kSaving -> kJustSaved (or kError on fail).
-        // 3. Refresh the "Saved N s ago" counter while in kJustSaved.
-        //
-        // The tick is cheap: the hash is recomputed every frame but the actual
-        // .cdproj write only fires once per 30 s (and only when dirty).
-        {
-            using sc = std::chrono::steady_clock;
-            const auto now_tp = sc::now();
-
-            // (a) Dirty-flag detection.
-            const std::size_t current_hash = compute_state_hash();
-            const auto        prev_status  = g_auto_save_indicator.current_status();
-            if (current_hash != last_saved_state_hash &&
-                prev_status != auto_save_status::kPendingDirty &&
-                prev_status != auto_save_status::kSaving)
-            {
-                g_auto_save_indicator.mark_dirty();
-            }
-
-            // (b) Refresh "Saved N s ago" while showing the post-save status.
-            if (g_auto_save_indicator.current_status() == auto_save_status::kJustSaved)
-            {
-                using ms = std::chrono::duration<double, std::milli>;
-                const double elapsed_ms = std::chrono::duration_cast<ms>(
-                    now_tp - last_save_tp).count();
-                g_auto_save_indicator.set_last_save_ms_ago(elapsed_ms);
-            }
-
-            // (c) Auto-save check every kAutosaveIntervalMs.
-            using ms = std::chrono::duration<double, std::milli>;
-            const double since_last_check_ms = std::chrono::duration_cast<ms>(
-                now_tp - last_autosave_check_tp).count();
-            if (since_last_check_ms >= kAutosaveIntervalMs)
-            {
-                last_autosave_check_tp = now_tp;
-                if (current_hash != last_saved_state_hash)
-                {
-                    // Transition to kSaving for visibility before the atomic write.
-                    g_auto_save_indicator.set_status(auto_save_status::kSaving);
-
-                    // Capture window geometry into project_data so the write
-                    // matches the live editor state (mirrors the on-exit path).
-                    if (window)
-                    {
-                        project_data.window.w = static_cast<int>(window->width());
-                        project_data.window.h = static_cast<int>(window->height());
-                    }
-                    project_data.schema_version = 1;
-                    project_data.theme_name     = active_theme_name;
-                    project_data.dock_layout    = dock_layout_to_hex(dockspace.serialize());
-
-                    const bool ok = cd::editor::cdproj::write_cdproj(
-                        project_data, cdproj_path);
-
-                    if (ok)
-                    {
-                        g_auto_save_indicator.mark_saved();
-                        last_saved_state_hash = current_hash;
-                        last_save_tp          = now_tp;
-                        if (!autosave_logged_fired)
-                        {
-                            const double secs_since_boot =
-                                std::chrono::duration_cast<ms>(
-                                    now_tp - boot_splash.start_tp).count() / 1000.0;
-                            std::printf(
-                                "editor: autosave fired at %.1fs (.cdproj written to %s).\n",
-                                secs_since_boot, cdproj_path.string().c_str());
-                            std::fflush(stdout);
-                            autosave_logged_fired = true;
-                        }
-                    }
-                    else
-                    {
-                        g_auto_save_indicator.set_status(auto_save_status::kError);
-                        std::fprintf(stderr,
-                            "editor: autosave FAILED writing .cdproj to %s\n",
-                            cdproj_path.string().c_str());
+                        const double lat = 0.03 + 0.06 * static_cast<double>(
+                            s.net_rng.next_float());
+                        s.net_rtt.record(static_cast<std::uint32_t>(lat * 2.0 * 1e6));
+                        s.net_snapbuf.push(s.net_t + lat, v);
+                        ++s.net_recv;
                     }
                 }
             }
+            (void)s.net_snapbuf.sample(s.net_t - 0.10);
+            s.net_snapbuf.drop_older_than(s.net_t - 0.5);
+            s.counters.increment("net_ticks");
         }
 
-        // -- phase667 / M12 W2 + phase674 — status bar -----------------------
-        //
-        // phase674: FPS from FrameTimeRing (real wall-clock dt) replaces the
-        // 62.5 stand-in. vertex_count + draw_calls remain from DrawBatcher.
+        // Random viz refresh
+        if (s.frame_idx >= s.next_random_refresh)
         {
-            StatusBarStats stats {};
-            stats.validator_pass  = validator_pass;
-            stats.validator_warn  = validator_warn;
-            stats.validator_error = validator_error;
-            stats.fps             = real_fps > 0.0F ? real_fps : 62.5F;
-            stats.vertex_count    = static_cast<std::uint32_t>(batcher.vertex_count());
-            stats.draw_calls      = static_cast<std::uint32_t>(batcher.command_count());
-            stats.route_taken     = route_taken;
-
-            draw_status_bar(batcher, widget_theme, stats,
-                            static_cast<float>(fb_w),
-                            static_cast<float>(fb_h));
-        }
-
-        // -- phase745 (FINALE-3 W1A A2) — auto-save indicator (status-bar widget)
-        //    (supersedes phase720 / M17 W3 inline intent — now uses
-        //     cd::editor_panel_auto_save_indicator lib; no inline draw logic here)
-        //
-        // Pinned between the frame-stats meters and the theme picker. Width is
-        // 150 px so the badge reads as a self-contained "save state" pill
-        // without crowding the FPS / verts / draws strips.
-        // MOMENT: trust signal that work isn't lost — badge switches Idle →
-        // Unsaved changes (amber) → Saving... (yellow) → Saved Ns ago (green).
-        //
-        // Layout reference (existing draw_status_bar regions):
-        //   [0 .. kBadgeW=280]              validator badge
-        //   [292  .. 292 + kStatsW=360]     frame stats meters
-        //   [fb_w - kRouteW - 6]            route indicator (right anchor)
-        //   [fb_w - kRouteW - 12 - 204]     theme picker (3 slabs)
-        //
-        // The indicator slots in to the right of the frame stats meters with a
-        // 16 px gap — a small but visible separation so the status-bar reads as
-        // [badge | stats | save_state | picker | route] left-to-right.
-        {
-            constexpr float kSaveBadgeW = 150.0F;
-            constexpr float kStatsW     = 360.0F;
-            constexpr float kBadgeW     = 280.0F;
-            const auto save_x = static_cast<float>(0.0F) + kBadgeW + 12.0F
-                                 + kStatsW + 16.0F;
-            const auto save_y = static_cast<float>(fb_h) - kStatusBarH + 2.0F;
-            const uw::Rect save_rect {
-                save_x, save_y, kSaveBadgeW, kStatusBarH - 4.0F
-            };
-            const auto v2_theme = uth::theme_from_name(active_theme_name);
-            g_auto_save_indicator.draw(batcher, v2_theme, save_rect);
-            draw_ui_text_clipped(batcher,
-                                 save_x + 14.0F,
-                                 save_y + 5.0F,
-                                 "AUTOSAVE: READY",
-                                 ur::Color { 225U, 235U, 250U, 255U },
-                                 1.0F,
-                                 save_x + kSaveBadgeW - 4.0F);
-        }
-
-        // -- phase787 / FINALE-close-out H4 — FPS sparkline in status bar -----
-        //
-        // 200 px waveform pinned to the right of the auto-save indicator.
-        // Layout (left-to-right):
-        //   [badge=280] [stats=360] [gap=16] [save=150] [gap=8] [spark=200]
-        //   ... then theme picker + route indicator on the far right.
-        //
-        // Colour: accent_success if avg<16.67ms, accent_warning if <33.33ms,
-        //         accent_error otherwise.
-        // MOMENT: FPS history at a glance — dev spots hitches without profiler.
-        {
-            constexpr float kSaveBadgeW = 150.0F;
-            constexpr float kStatsW     = 360.0F;
-            constexpr float kBadgeW     = 280.0F;
-            constexpr float kSparkGap   =   8.0F;
-            const float spark_x = kBadgeW + 12.0F
-                                  + kStatsW + 16.0F
-                                  + kSaveBadgeW + kSparkGap;
-            const float spark_y = static_cast<float>(fb_h) - kStatusBarH + 2.0F;
-            const uw::Rect spark_rect {
-                spark_x, spark_y,
-                cd::editor::status_bar::FpsSparkline::kWidth,
-                kStatusBarH - 4.0F
-            };
-            g_fps_sparkline.draw(batcher, widget_theme, spark_rect);
-        }
-
-        // -- phase701 / M15 W3 — toast notification render --------------------
-        //
-        // Floating messages in the bottom-right above the status bar.
-        // Toasts fade out in their last 300 ms; the queue caps at 5 entries
-        // (FIFO eviction). The tick + draw call is cheap: per-frame O(n) with
-        // n bounded to 5.
-        {
-            const auto now = std::chrono::steady_clock::now();
-            toast_queue.tick(now);
-            draw_toasts(batcher, widget_theme, toast_queue,
-                        static_cast<float>(fb_w),
-                        static_cast<float>(fb_h),
-                        now);
-        }
-
-        // -- phase715 / M16 W6 — 200 ms theme cross-fade tick ------------------
-        //
-        // If a palette fade is active, compute elapsed time, lerp the V2
-        // palette, then rebuild widget_theme from the blended token set.
-        // After kThemeFadeMs the transition is snapped to `to` exactly and
-        // the flag is cleared so this block costs nothing in steady state.
-        {
-            using sc = std::chrono::steady_clock;
-            using ms = std::chrono::duration<float, std::milli>;
-            if (theme_fade_active)
+            std::vector<float> u; u.reserve(8192);
+            for (int i = 0; i < 8192; ++i) u.push_back(s.rand_rng.next_float());
+            s.hist_uniform.rebuild(u, 0.0F, 1.0F, 24);
+            std::vector<float> n; n.reserve(8192);
+            bool cv_ok = false; float cv = 0.0F;
+            for (int i = 0; i < 8192; ++i)
             {
-                const float elapsed = std::chrono::duration_cast<ms>(
-                    sc::now() - theme_fade_start_tp).count();
-                if (elapsed >= kThemeFadeMs)
-                {
-                    // Snap to target and stop.
-                    widget_theme     = build_widget_theme(active_theme_name);
-                    theme_fade_active = false;
-                }
-                else
-                {
-                    const float t = elapsed / kThemeFadeMs;
-                    const uth::Theme blended = uth::lerp_palette(theme_fade_from,
-                                                                 theme_fade_to, t);
-                    // Derive widget_theme colors from the blended V2 token set.
-                    // build_widget_theme() works from a name, so we build from
-                    // the target name first (for non-color slots) then patch the
-                    // palette-mapped colors using the blended surface token.
-                    //
-                    // Simple policy: use build_widget_theme(target) for structural
-                    // slots, then override the four primary widget colors from the
-                    // blended palette tokens: surface, on_surface, primary,
-                    // surface_variant. This keeps the rest of the widget struct
-                    // coherent while animating the visually dominant swatches.
-                    widget_theme = build_widget_theme(active_theme_name);
-                    const auto& p = blended.palette;
-                    using S = uth::PaletteSlot;
-                    widget_theme.background     = to_widget_color(p[static_cast<std::size_t>(S::kBackground)]);
-                    widget_theme.surface        = to_widget_color(p[static_cast<std::size_t>(S::kSurface)]);
-                    widget_theme.surface_hover  = to_widget_color(p[static_cast<std::size_t>(S::kSurfaceVariant)]);
-                    widget_theme.surface_press  = to_widget_color(p[static_cast<std::size_t>(S::kPrimaryContainer)]);
-                    widget_theme.surface_subtle = to_widget_color(p[static_cast<std::size_t>(S::kSurfaceVariant)]);
-                    widget_theme.accent         = to_widget_color(p[static_cast<std::size_t>(S::kPrimary)]);
-                    widget_theme.accent_hover   = to_widget_color(p[static_cast<std::size_t>(S::kPrimaryContainer)]);
-                    widget_theme.text           = to_widget_color(p[static_cast<std::size_t>(S::kOnSurface)]);
-                    widget_theme.text_dim       = to_widget_color(p[static_cast<std::size_t>(S::kOnSurfaceVariant)]);
-                    widget_theme.accent_error   = to_widget_color(p[static_cast<std::size_t>(S::kError)]);
-                }
+                if (cv_ok) { cv_ok = false; n.push_back(cv); continue; }
+                float u1 = s.rand_rng.next_float(); u1 = std::max(u1, 1e-7F);
+                float u2 = s.rand_rng.next_float();
+                float rr = std::sqrt(-2.0F * std::log(u1));
+                float t  = 2.0F * std::numbers::pi_v<float> * u2;
+                cv = rr * std::sin(t); cv_ok = true;
+                n.push_back(rr * std::cos(t));
+            }
+            s.hist_normal.rebuild(n, -3.0F, 3.0F, 24);
+            s.next_random_refresh = s.frame_idx + 120;
+        }
+
+        // CPU-LBS/DQS skinning for CesiumMan (animated character — kGltf entity).
+        // Sponza (kSponza) has no skin data; its mesh lives in s.meshes.gltf.
+        // CesiumMan skin data lives in s.meshes.cesium_skinned; VB is gltf_cesium.
+        const float anim_dt = s.anim_paused ? 0.0F : (std::max(dt, 1.0F / 120.0F) * s.anim_speed);
+        if (!cd_studio::update_skinned_animation(s.meshes.cesium_skinned, device,
+                                                  s.meshes.gltf_cesium.vb, anim_dt))
+        {
+            // W4-F fallback turntable: only for kGltf (CesiumMan) when it has
+            // no animation data (e.g. non-animated fallback mesh loaded).
+            // kSponza is always static — never rotated here.
+            static float cesium_yaw_t = 0.0F;
+            cesium_yaw_t += dt * 0.5F;
+            for (auto& ent : s.entities)
+            {
+                if (ent.kind != PrimitiveKind::kGltf) continue;
+                auto* lt = s.scene.local(ent.handle);
+                if (!lt) continue;
+                const float half = cesium_yaw_t * 0.5F;
+                const float sy = std::sin(half);
+                const float cy = std::cos(half);
+                const float qx1 = 0.0F;
+                const float qy1 = sy;
+                const float qz1 = 0.0F;
+                const float qw1 = cy;
+                const float qx2 = -0.7071068F;
+                const float qy2 = 0.0F;
+                const float qz2 = 0.0F;
+                const float qw2 = 0.7071068F;
+                lt->value.rotation = {
+                    qw1*qx2+qx1*qw2+qy1*qz2-qz1*qy2,
+                    qw1*qy2-qx1*qz2+qy1*qw2+qz1*qx2,
+                    qw1*qz2+qx1*qy2-qy1*qx2+qz1*qw2,
+                    qw1*qw2-qx1*qx2-qy1*qy2-qz1*qz2 };
+                break;
             }
         }
 
-        // -- phase695 / M14 W6A — theme picker (3 slabs in the status bar) ----
-        //
-        // Drawn after draw_status_bar so the slabs paint on top of the status
-        // ribbon background. A left-click on a slab starts a 200 ms cross-fade
-        // (phase715) and records active_theme_name for .cdproj save on exit.
+        cd_studio::update_free_look_camera(s.app_state.free_look, s.cam, s.scene_cam, dt);
+
+        if (s.app_state.pick.pending && s.gizmo_state.was_hovered)
+            s.app_state.pick.pending = false;
+        if (s.app_state.pick.pending)
         {
-            std::string new_theme_name;
-            const auto  ptr      = flatten_pointer(pointer);
-            const bool  clicked  = draw_theme_picker(
-                batcher,
-                widget_theme,
-                static_cast<float>(fb_w),
-                static_cast<float>(fb_h),
-                active_theme_name,
-                ptr.mouse_x, ptr.mouse_y,
-                ptr.left_pressed,
-                &new_theme_name);
-            if (clicked)
+            s.app_state.pick.pending = false;
+            const auto vw = static_cast<float>(window.width());
+            const auto vh = static_cast<float>(window.height());
+            if (vw > 0 && vh > 0)
             {
-                // phase715 — begin 200 ms cross-fade instead of instant swap.
-                theme_fade_from   = uth::theme_from_name(active_theme_name);
-                active_theme_name = new_theme_name;
-                theme_fade_to     = uth::theme_from_name(active_theme_name);
-                theme_fade_start_tp  = std::chrono::steady_clock::now();
-                theme_fade_active    = true;
-                std::printf("editor: theme fade started -> '%s'\n",
-                            active_theme_name.c_str());
-                std::fflush(stdout);
+                const bool wasd_active =
+                    s.app_state.free_look.key_w || s.app_state.free_look.key_a ||
+                    s.app_state.free_look.key_s || s.app_state.free_look.key_d ||
+                    s.app_state.free_look.key_q || s.app_state.free_look.key_e;
+                std::vector<cd_studio::EntityHit> ehits;
+                ehits.reserve(s.entities.size());
+                for (const auto& ent : s.entities) ehits.push_back({ ent.handle, ent.name });
+                std::vector<cd_studio::LightHit> lhits;
+                lhits.reserve(s.lights.size());
+                for (const auto& l : s.lights)
+                    lhits.push_back({ l.light.position, l.light.type, l.name });
+                cd_studio::PickInputs pin {
+                    .ndc_x          = (2.0F * s.app_state.pick.x / vw) - 1.0F,
+                    .ndc_y          = 1.0F - (2.0F * s.app_state.pick.y / vh),
+                    .aspect         = vw / vh,
+                    .cam            = s.cam,
+                    .cam_pitch      = s.app_state.free_look.pitch,
+                    .cam_yaw        = s.app_state.free_look.yaw,
+                    .wasd_active    = wasd_active,
+                    .cam_right_drag = s.app_state.free_look.right_drag,
+                    .gizmo_hovered  = false,
+                };
+                const auto pr = cd_studio::pick_entity_or_light(pin, ehits, lhits, s.scene);
+                if (pr.kind == cd_studio::PickKind::kLight)
+                { s.selected = pr.index; s.selected_kind = SelKind::kLight; log_push_fn(pr.log); }
+                else if (pr.kind == cd_studio::PickKind::kEntity)
+                { s.selected = pr.index; s.selected_kind = SelKind::kEntity; log_push_fn(pr.log); }
+                else if (s.selected >= 0)
+                { log_push_fn("[pick] cleared selection"); s.selected = -1; }
             }
         }
 
-        // -- phase684 / M13 W6A — debug viz thumbnail overlays ----------------
-        //
-        // Three ~200x150 px thumbnails stacked vertically in the top-right
-        // corner, below the profiling overlays.  Layout (from top):
-        //   [Depth]       at y = kDbgVizStartY
-        //   [Normal]      at y = kDbgVizStartY + 1 * (kDbgH + kDbgGap)
-        //   [AlphaBucket] at y = kDbgVizStartY + 2 * (kDbgH + kDbgGap)
-        //
-        // The stack starts below the GPU-marker overlay to avoid visual
-        // collision.  kDbgVizStartY = CPU header + CPU body + GPU header +
-        // GPU body + gap between GPU and first debug thumbnail.
+        auto frame_r = s.renderer.begin_frame();
+        if (!frame_r.has_value())
         {
-            const auto fbw_f = static_cast<float>(fb_w);
-            // Position constants — match the profiling overlay layout above.
-            constexpr float kDbgW       = 200.0F;
-            constexpr float kDbgH       = 150.0F;
-            constexpr float kDbgGap     = 4.0F;
-            constexpr float kDbgMargin  = 8.0F;
-            // CPU overlay: kOverlayHeaderH(14) + 120 body = 134.
-            // GPU overlay: kOverlayHeaderH(14) + 100 body = 114.
-            constexpr float kDbgVizStartY = kTopToolbarH + 8.0F;
-            const float     dbg_x         = fbw_f - kDbgW - kDbgMargin;
-
-            const std::array<DebugVizOverlay*, 3> dbg_overlays {
-                &dbg_depth, &dbg_normal, &dbg_bucket
-            };
-            static constexpr std::array<const char*, 3> kDbgLabels {
-                "GBUF DEPTH (LINEAR)",
-                "GBUF WORLD NORMAL",
-                "GBUF ALPHA BUCKET"
-            };
-
-            for (std::size_t i = 0; i < dbg_overlays.size(); ++i)
-            {
-                const float oy = kDbgVizStartY
-                                 + static_cast<float>(i) * (kDbgH + kDbgGap);
-                const uw::Rect dbg_bounds { dbg_x, oy, kDbgW, kDbgH };
-                dbg_overlays[i]->draw(batcher, dbg_bounds, widget_theme);
-                if (dbg_overlays[i]->is_visible())
-                {
-                    batcher.quad(dbg_x, oy, kDbgW, 14.0F, ur::Color { 14U, 18U, 26U, 220U });
-                    draw_ui_text_clipped(batcher, dbg_x + 6.0F, oy + 3.0F,
-                                         kDbgLabels[i], ur::Color { 220U, 232U, 250U, 255U },
-                                         1.0F, dbg_x + kDbgW - 6.0F);
-                }
-            }
+            if (frame_r.error().code ==
+                static_cast<std::uint32_t>(
+                    cd::render::render_errors::Code::kSwapchainOutOfDate))
+            { s.needs_rebuild = true; continue; }
+            break;
         }
+        auto& frame = *frame_r;
+        auto& cmd   = *frame.command_buffer;
 
-        // -- phase738 / FINALE-2 W3A B1 — material_preview live PBR RT poll --
-        {
-            if (g_material_preview_panel.is_dirty())
-            {
-                g_material_preview_panel.clear_dirty();
-            }
-        }
-
-        // -- phase690 / M14 W3 — popout_dock floating-internal panels ----------
-        //
-        // For every panel marked detached in `popout_dock`, render a floating-
-        // internal rectangle at the stored PopoutWindow::position. The body is
-        // the registered panel drawer; the border is drawn in palette
-        // accent_warning so the detached state reads at a glance.
-        //
-        // Sprint-1 internal: when cd::platform gains multi-window support, the
-        // same iteration drives native OS-window placement (zero API change).
-        // No panel is auto-detached today — the user invokes detach_panel via a
-        // future input handler. Loop is a no-op when nothing is detached.
-        {
-            const auto detached = popout_dock.detached_windows();
-            for (const auto& pw : detached)
-            {
-                if (!pw.is_active) { continue; }
-                const uw::Rect rect {
-                    pw.position[0], pw.position[1],
-                    pw.size[0],     pw.size[1] };
-
-                // 1) Solid panel body (same surface fill as a dock leaf).
-                batcher.quad(rect.x, rect.y, rect.w, rect.h,
-                             ur::Color { widget_theme.surface.r,
-                                         widget_theme.surface.g,
-                                         widget_theme.surface.b,
-                                         widget_theme.surface.a });
-
-                // 2) Border in palette accent_warning (visually distinct).
-                constexpr float kBorderPx = 2.0F;
-                const ur::Color border_c {
-                    widget_theme.accent_warning.r,
-                    widget_theme.accent_warning.g,
-                    widget_theme.accent_warning.b,
-                    widget_theme.accent_warning.a };
-                // top
-                batcher.quad(rect.x, rect.y, rect.w, kBorderPx, border_c);
-                // bottom
-                batcher.quad(rect.x, rect.y + rect.h - kBorderPx,
-                             rect.w, kBorderPx, border_c);
-                // left
-                batcher.quad(rect.x, rect.y, kBorderPx, rect.h, border_c);
-                // right
-                batcher.quad(rect.x + rect.w - kBorderPx, rect.y,
-                             kBorderPx, rect.h, border_c);
-            }
-        }
-
-        // -- phase690 / M14 W3 — keyboard_shortcut_overlay (full-window) -------
-        //
-        // The overlay is NOT a dock node — it is painted on top of the entire
-        // framebuffer when visible. Toggle is wired via the '?' key handler
-        // above; today the headless smoke run keeps it hidden so the smoke log
-        // simply records that 15 shortcuts were registered.
-        {
-            const uw::Rect fb_rect {
-                0.0F, 0.0F,
-                static_cast<float>(fb_w), static_cast<float>(fb_h) };
-            shortcut_overlay.draw(batcher, widget_theme, fb_rect);
-        }
-
-        // -- phase685 / M13 W6B — boot splash + first-launch welcome ----------
-        //
-        // Splash paints on top of dock + overlays + status bar for the first
-        // 2.5 s (solid) + 0.3 s (fade-out).  After the splash is done, if this
-        // is a first launch, the welcome dialog appears and blocks until the
-        // user clicks one of the three layout buttons.  Both are skipped in
-        // headless mode (no visible window).
-        if (window && !local.skip_splash)
-        {
-            const double splash_ms = boot_splash.elapsed_ms();
-            if (!boot_splash.done(splash_ms))
-            {
-                // phase775 — fire the boot chime once at t >= 300 ms.
-                if (splash_audio_cue.trigger_if_needed(
-                        splash_ms, splash_audio_result.backend.get()))
-                {
-                    std::printf("editor: splash audio chime fired (t=%.0f ms).\n",
-                                splash_ms);
-                    std::fflush(stdout);
-                }
-
-                draw_boot_splash(batcher, widget_theme,
-                                 static_cast<float>(fb_w),
-                                 static_cast<float>(fb_h),
-                                 boot_splash,
-                                 splash_ms,
-                                 std::span<const ParticleSnapshot>(
-                                     particle_snap_buf.data(),
-                                     particle_snap_count));
-            }
-            else if (first_launch && !welcome_dialog.decided())
-            {
-                // Activate the dialog on the first frame after the splash ends.
-                if (!welcome_dialog.active)
-                {
-                    welcome_dialog.show();
-                    std::printf("editor: splash done — showing first-launch welcome dialog.\n");
-                    std::fflush(stdout);
-                }
-
-                // phase788 / H5 — two-phase welcome:
-                //   Phase 1: main welcome dialog (4 buttons).
-                //   Phase 2: custom picker (only when Phase 1 returned kCustom).
-                if (welcome_dialog.custom_picker.active)
-                {
-                    // --- Phase 2: Custom picker ---
-                    const auto picker_result =
-                        draw_custom_picker(welcome_dialog.custom_picker,
-                                           batcher, widget_theme,
-                                           static_cast<float>(fb_w),
-                                           static_cast<float>(fb_h),
-                                           flatten_pointer(pointer));
-
-                    if (picker_result.has_value())
-                    {
-                        if (*picker_result)
-                        {
-                            // User confirmed — commit kCustom layout.
-                            welcome_dialog.choice = WelcomeChoice::kCustom;
-                            const std::vector<std::string> sel =
-                                welcome_dialog.custom_picker.selected_panels();
-
-                            apply_welcome_layout(dockspace,
-                                                 WelcomeChoice::kCustom, sel);
-
-                            // Persist: dock_layout + user_custom_layout in .cdproj.
-                            project_data.schema_version   = 1;
-                            project_data.dock_layout      =
-                                dock_layout_to_hex(dockspace.serialize());
-                            project_data.user_custom_layout = sel;
-
-                            if (cd::editor::cdproj::write_cdproj(
-                                    project_data, cdproj_path))
-                            {
-                                std::printf(
-                                    "editor: welcome choice 'Custom' (%zu panels) — "
-                                    "starter .cdproj written to %s\n",
-                                    sel.size(),
-                                    cdproj_path.string().c_str());
-                            }
-                            else
-                            {
-                                std::fprintf(stderr,
-                                    "editor: warning — could not write starter "
-                                    ".cdproj to %s\n",
-                                    cdproj_path.string().c_str());
-                            }
-                        }
-                        else
-                        {
-                            // User pressed Back — return to welcome dialog.
-                            welcome_dialog.custom_picker.active = false;
-                        }
-                        std::fflush(stdout);
-                    }
-                }
-                else
-                {
-                    // --- Phase 1: main welcome dialog ---
-                    const WelcomeChoice chosen =
-                        draw_welcome_dialog(batcher, widget_theme,
-                                            static_cast<float>(fb_w),
-                                            static_cast<float>(fb_h),
-                                            flatten_pointer(pointer));
-
-                    if (chosen == WelcomeChoice::kCustom)
-                    {
-                        // Open the panel-toggle picker next frame.
-                        welcome_dialog.custom_picker.open();
-                        std::printf("editor: Custom layout picker opened.\n");
-                        std::fflush(stdout);
-                    }
-                    else if (chosen != WelcomeChoice::kNone)
-                    {
-                        welcome_dialog.choice = chosen;
-
-                        // Apply the layout to the live DockSpace.
-                        apply_welcome_layout(dockspace, chosen);
-
-                        // Write a starter .cdproj so the next launch skips the dialog.
-                        project_data.schema_version   = 1;
-                        project_data.dock_layout      =
-                            dock_layout_to_hex(dockspace.serialize());
-                        project_data.user_custom_layout.clear();  // not custom
-
-                        if (cd::editor::cdproj::write_cdproj(project_data, cdproj_path))
-                        {
-                            const char* preset_name =
-                                (chosen == WelcomeChoice::kCompact) ? "Compact" :
-                                (chosen == WelcomeChoice::kFull)    ? "Full"    :
-                                                                       "Default";
-                            std::printf(
-                                "editor: welcome choice '%s' — starter .cdproj "
-                                "written to %s\n",
-                                preset_name, cdproj_path.string().c_str());
-                        }
-                        else
-                        {
-                            std::fprintf(stderr,
-                                "editor: warning — could not write starter "
-                                ".cdproj to %s\n",
-                                cdproj_path.string().c_str());
-                        }
-                        std::fflush(stdout);
-                    }
-                }
-            }
-        }
-        } // end else (local.legacy_dock)
-
-        // phase737 — record real DockDraw CPU duration then freeze the frame.
-        // phase736 — close frame.draw CPU scope + build FrameCapture.
-        {
-            const auto    fg_dock_end   = FgClock::now();
-            const double  dock_start_ms = 0.0;  // DockDraw begins at epoch
-            const double  dock_dur_ms   = FgDuration(fg_dock_end - fg_dock_start).count();
-            fgt_timeline.record_pass("DockDraw", dock_start_ms, dock_dur_ms, 0U);
-            fgt_timeline.end_frame();
-
-            // phase736 -- Steps 3-7: close CPU scope + harvest samples + capture.
-
-            // Step 3: close "frame.draw" CPU scope opened before the draw block.
-            cpu_collector.end(frame_draw_handle);
-
-            // Step 4: harvest CPU samples from the last 2 budget windows.
-            cd::editor::profile::FrameCapture cap;
-            cap.total_ms = last_dt_ms > 0.0 ? last_dt_ms : 16.67;
-            {
-                using namespace std::chrono;
-                const auto now_us = static_cast<double>(
-                    duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count());
-                const double cutoff_ms = (now_us / 1000.0) - 2.0 *
-                    static_cast<double>(g_perf_profiler_panel.budget_ms());
-                cap.cpu_markers = cpu_collector.samples_since(cutoff_ms);
-            }
-
-            // Step 5: fgt_timeline.end_frame() was just called above;
-            // last_frame_passes() now contains this frame's pass records.
-            {
-                const auto passes = fgt_timeline.last_frame_passes();
-                cap.gpu_passes.assign(passes.begin(), passes.end());
-            }
-            // Step 5b: gpu_markers — carry-forward from the previous frame's
-            // gpu_marker_recorder.resolve().  resolve() runs after capture_frame()
-            // in the Vulkan path; prev_gpu_markers holds N-1's resolved samples.
-            // Empty on NullDevice / headless (no Vulkan cmd buffer).
-            cap.gpu_markers = prev_gpu_markers;
-
-            // Step 6: capture into the rolling ring.
-            g_perf_profiler_panel.capture_frame(
-                cd::editor::profile::to_snapshot(std::move(cap)));
-        }
-
-        (void)pie_controller.tick_if_playing(active_stage, 1.0F / 60.0F);
-        (void)submitter.upload(batcher);
-
-        if (!local.capture_png.empty() &&
-            frame_idx + 1U == (cap_frames > 0U ? cap_frames : 3U))
-        {
-            dump_batcher_to_png(batcher, fb_w, fb_h, local.capture_png);
-        }
-
-        if (using_null || !renderer)
-        {
-            report_headless_frame(batcher, submitter, dockspace, frame_idx);
-        }
-        else
-        {
-            auto frame_r = renderer->begin_frame();
-            if (!frame_r.has_value())
-            {
-                if (frame_r.error().code ==
-                    static_cast<std::uint32_t>(
-                        render::render_errors::Code::kSwapchainOutOfDate))
-                {
-                    needs_rebuild = true;
-                    continue;
-                }
-                std::fprintf(stderr, "editor: begin_frame failed.\n");
-                return 5;
-            }
-            auto& frame = *frame_r;
-            auto& cmd   = *frame.command_buffer;
-            const rhi::TextureHandle captured_sc_image = frame.swapchain_image;
-            const rhi::Extent2D      captured_extent   = frame.extent;
-
-            std::array<rhi::ColorAttachmentInfo, 1> color_attach { rhi::ColorAttachmentInfo {
-                .view        = frame.swapchain_image_view,
-                .load_op     = rhi::LoadOp::kClear,
-                .store_op    = rhi::StoreOp::kStore,
-                .clear_color = { .f32 = { 0.06F, 0.07F, 0.10F, 1.0F } } } };
-            rhi::RenderPassBeginInfo rp {};
-            rp.render_area       = rhi::Rect2D { { 0, 0 }, frame.extent };
-            rp.color_attachments = color_attach;
-            cmd.begin_render_pass(rp);
-            cmd.set_viewport(rhi::Viewport {
-                0.0F, 0.0F,
-                static_cast<float>(frame.extent.width),
-                static_cast<float>(frame.extent.height),
-                0.0F, 1.0F });
-            cmd.set_scissor(rhi::Rect2D { { 0, 0 }, frame.extent });
-
-            // Phase 554 / M3 W1A: the submitter ALWAYS has a usable
-            // pipeline now -- either Route A (cd::material UI variants
-            // when CD_HAVE_MATERIAL_UI_VARIANTS is defined) or Route B
-            // (the inline GLSL fallback compiled at boot above). Record
-            // the per-frame draw commands the DrawBatcher produced so
-            // panel quads + theme palette actually reach the swapchain.
+        cd_studio::rebuild_tlas_and_transition_depth(
+            device, cmd, s.frame_idx, s.tlas_destroy_queue, s.current_tlas,
+            s.prim_inst, std::span<const SceneEntity>(s.entities),
+            blas_for_kind,
+            // phase434-vis7: Sponza entity tint {1,1,1} is white; chrome
+            // reflections off Sponza walls appear blown-out white. Return a
+            // warm sandstone representative color for the RT reflection SSBO
+            // without touching the raster path (which multiplies sampled
+            // texture * tint directly, so {1,1,1} is correct there).
             //
-            // phase736 / phase746: bracket the UI submit in a gpu_marker_recorder
-            // scope ("gpu.ui_submit"). After resolve(), the samples are persisted
-            // into prev_gpu_markers so the NEXT frame's FrameCapture receives real
-            // GPU timings (carry-forward pattern; same as Timeline::last_frame_passes()).
-            gpu_marker_recorder.clear();
+            // phase465-perprim: this instance-level fallback now applies
+            // ONLY to geom slots NOT covered by sponza_geom_albedos
+            // (e.g. a hit with geometry_index > #prim_ranges). Sponza's
+            // real per-prim colours flow through geom_albedos_for below.
+            [](const SceneEntity& e) -> cd::math::Vec3f {
+                if (e.kind == PrimitiveKind::kSponza)
+                    return { 0.72F, 0.60F, 0.48F };
+                return e.tint;
+            },
+            [](const SceneEntity& e) -> PrimitiveKind    { return e.kind; },
+            [&s](const SceneEntity& e) -> std::optional<cd::math::Mat4f>
             {
-                cd::profile::gpu_marker::Scope gpu_ui_scope(
-                    gpu_marker_recorder, cmd, "gpu.ui_submit");
-                submitter.record(cmd, frame.extent);
-            }
-            gpu_marker_recorder.resolve(*device);
-            // phase746: snapshot resolved samples into the carry-forward buffer.
+                auto* lt = s.scene.local(e.handle);
+                if (!lt) return std::nullopt;
+                return cd::math::to_mat4(lt->value);
+            },
+            // phase465-perprim: per-(instance, geom) override.  Returns the
+            // Sponza per-prim albedo span for the kSponza entity; empty
+            // span for every other entity (which makes the rebuild path
+            // replicate the instance tint across all geom slots — same
+            // as the pre-phase-465 behaviour).
+            [&s](const SceneEntity& e) -> std::span<const cd::math::Vec3f>
             {
-                const auto resolved = gpu_marker_recorder.samples();
-                prev_gpu_markers.assign(resolved.begin(), resolved.end());
-            }
+                if (e.kind == PrimitiveKind::kSponza)
+                    return { s.sponza_geom_albedos };
+                if (e.kind == PrimitiveKind::kGltf)
+                    return { s.cesium_geom_albedos };
+                return {};
+            },
+            // phase843-W8-BE-rt-bindless-texture-sampling: per-geom
+            // metadata. Sponza: albedo_tex_slot = slot index in the
+            // binding-13 sampler2D array (one per prim, set 1:1 with
+            // gltf_prim_ranges), index_offset = the prim's first
+            // index in the shared index buffer. Other entities:
+            // empty span -> sentinel path (W8-BD avg-colour
+            // fallback).
+            [&s](const SceneEntity& e) -> std::span<const cd_studio::W8BEGeomMeta>
+            {
+                if (e.kind == PrimitiveKind::kSponza)
+                    return { s.sponza_w8be_meta };
+                // phase890-cesium-bindless-textures: CesiumMan
+                // gets its own per-prim metadata pointing at the
+                // bindless slots N..N+M reserved for cesium albedos.
+                if (e.kind == PrimitiveKind::kGltf)
+                    return { s.cesium_w8be_meta };
+                // phase1000-pbr-sphere-rt-texture: a PBR sphere
+                // entity that has opted into texture sampling (via
+                // the Inspector "Albedo texture (PBR opt-in)"
+                // checkbox or the R-Showcase R2 blanket toggle)
+                // gets the 1-element span with mesh_id=2 + slot 255
+                // so the chrome RT reflection branch in
+                // prim.frag.glsl computes an analytical spherical UV
+                // from the hit position and samples earth_albedo.
+                // Sphere entities without use_texture stay on the
+                // empty-span (W8-BD avg-colour) path.
+                if (e.kind == PrimitiveKind::kSphere && e.is_pbr && e.use_texture)
+                    return { s.pbr_sphere_textured_meta };
+                return {};
+            },
+            s.meshes.blas_floor, s.meshes.blas_cesium,
+            s.meshes.cesium_skinned.valid, s.inst_mat_ssbo,
+            s.rts.depth.image, s.depth_initialised_on_gpu,
+            // phase866-2-bounce-sphere-normal: flag sphere primitives
+            // (PBR grid + procedural sphere seeds) so the per-geom
+            // SSBO row carries the analytical centre + radius the
+            // shader needs for the 2-bounce reflection path.
+            [](const SceneEntity& e) -> bool {
+                return e.kind == PrimitiveKind::kSphere;
+            });
 
-            cmd.end_render_pass();
+        // phase-descriptor-sync: propagate per-frame TLAS + inst_mat SSBO
+        // writes to every per-prim descriptor set (binding 2 + 10).
+        if (s.current_tlas.is_valid())
+        {
+            cd_studio::sync_perprim_tlas_and_ssbo(
+                s.meshes.gltf_prim_ranges,
+                s.current_tlas, s.inst_mat_ssbo,
+                cd::studio_rt::kInstMatBytes);
+            cd_studio::sync_perprim_tlas_and_ssbo(
+                s.meshes.gltf_cesium_prim_ranges,
+                s.current_tlas, s.inst_mat_ssbo,
+                cd::studio_rt::kInstMatBytes);
+        }
 
-            auto end_r = renderer->end_frame();
-            if (!end_r.has_value())
+        // phase1146 (P2/P3): boot + bind the DDGI GPU pipeline lazily. Boot
+        // once after the first TLAS exists (the trace pass needs ray-query);
+        // bind the sample pass to HDR (output, ADD) + depth (world-pos
+        // reconstruct) + G-buffer normal whenever the bound viewport extent
+        // changes (boot + window resize). This is pure resource setup — no
+        // dispatch is recorded here, so the golden fixture (ddgi OFF) path
+        // stays byte-identical regardless of whether the pipeline is booted.
+        const bool ddgi_wanted = (s.fx.ddgi_on || cd_studio::g_ddgi_force_on)
+                                 && s.current_tlas.is_valid()
+                                 && device.features().ray_query;
+        if (ddgi_wanted)
+        {
+            if (!s.ddgi.inited)
+                (void)s.ddgi.boot(device);
+            if (s.ddgi.inited &&
+                (!s.ddgi.bound ||
+                 s.ddgi.vp_w != frame.extent.width ||
+                 s.ddgi.vp_h != frame.extent.height))
             {
-                if (end_r.error().code ==
-                    static_cast<std::uint32_t>(
-                        render::render_errors::Code::kSwapchainOutOfDate))
-                {
-                    needs_rebuild = true;
-                    continue;
-                }
-                std::fprintf(stderr,
-                             "editor: end_frame failed (domain=%u code=%u): %.*s\n",
-                             end_r.error().domain, end_r.error().code,
-                             static_cast<int>(end_r.error().message.size()),
-                             end_r.error().message.data());
-                return 6;
-            }
-            if (!local.capture_window_png.empty() &&
-                frame_idx + 1U == (cap_frames > 0U ? cap_frames : 12U))
-            {
-                renderer->wait_idle();
-                capture_gpu_swapchain_to_png(*device,
-                                             captured_sc_image,
-                                             captured_extent.width,
-                                             captured_extent.height,
-                                             local.capture_window_png);
+                (void)s.ddgi.bind(device, s.rts.hdr.view, s.rts.depth.view,
+                                  s.rts.gbuf_normal.view,
+                                  frame.extent.width, frame.extent.height);
             }
         }
 
-        ++frame_idx;
-        if (cap_frames > 0U && frame_idx >= cap_frames) { break; }
-        if (window && window->should_close()) { break; }
-    }
+        const SunLight sun = resolve_sun_light(s.lights);
 
-    if (renderer) { renderer->wait_idle(); }
+        draw_shadow_map_pass(cmd, sun, device, s.shadow_ubo, s.shadow_target,
+                             s.shadow_initialised_on_gpu, s.materials.shadow,
+                             kShadowMapSize, s.entities, s.scene, mesh_for);
 
-    // -- On-exit .cdproj save -----------------------------------------------
-    // Capture window geometry and the live DockSpace layout (serialized to a
-    // hex-encoded string for JSON safety) and write the project file so the
-    // next launch can restore session state. phase679 / M13 W3 closes the
-    // round-trip: a user closes the editor mid-task, reopens it, the layout
-    // is EXACTLY as they left it (down to which tab in each tab strip was
-    // active). The save is best-effort: failure is logged but does not change
-    // the exit code.
-    {
-        if (window)
+        // phase1121 (X1-FU-F step 3): HDR pass over parallel lanes behind
+        // the fx toggle. Lane plan (CONTIGUOUS blocks; lane-order merge ==
+        // original serial order, so pixel parity holds by construction):
+        //   lane0  sky + prim state + floor/entities + planar shadows
+        //   lane1  prim state + 3D viewport overlays
+        //   lane2  debug-line flush
+        // v1 records lanes SEQUENTIALLY on the main thread: the GPU side
+        // (secondaries + vkCmdExecuteCommands) is fully exercised while
+        // s.counters / UBO uploads stay race-free. Worker-thread dispatch
+        // follows once the shared-state audit clears it (ADR-20260612).
+        constexpr std::uint32_t kHdrLaneCount = 3;
+        std::unique_ptr<cd::rhi::IParallelPassRecorder> hdr_rec;
+        HdrSceneFrame hdr_frame {};
+        if (s.fx.hdr_parallel_lanes)
         {
-            project_data.window.w = static_cast<int>(window->width());
-            project_data.window.h = static_cast<int>(window->height());
-        }
-        project_data.schema_version = 1;
-        // phase695 / M14 W6A — persist the active theme so next launch restores it.
-        project_data.theme_name  = active_theme_name;
-        // Serialize the live DockSpace tree -> hex string (JSON-safe payload).
-        project_data.dock_layout = dock_layout_to_hex(dockspace.serialize());
-        if (!cd::editor::cdproj::write_cdproj(project_data, cdproj_path))
-        {
-            std::fprintf(stderr,
-                         "editor: warning — could not save .cdproj to %s\n",
-                         cdproj_path.string().c_str());
+            auto opened = begin_hdr_scene_pass_lanes(
+                cmd, s.frame_idx, s.rts.hdr, s.rts.gbuf_normal, s.rts.gbuf_albedo,
+                s.rts.gbuf_mr, s.rts.depth, frame.extent, s.cam, s.fx.taa_amount,
+                kHdrLaneCount);
+            hdr_frame = opened.first;
+            hdr_rec   = std::move(opened.second);
+            // Engagement evidence (parity captures + user logs): emitted
+            // once so a silent serial fallback is distinguishable from a
+            // real lane run.
+            static bool lanes_logged = false;
+            if (!lanes_logged)
+            {
+                lanes_logged = true;
+                std::puts(hdr_rec
+                              ? "[lanes] HDR pass: parallel lanes ENGAGED (3 lanes)"
+                              : "[lanes] HDR pass: backend fallback to SERIAL");
+            }
         }
         else
         {
-            std::printf("editor: session saved to %s (dock_layout=%zu bytes hex)\n",
-                        cdproj_path.string().c_str(),
-                        project_data.dock_layout.size());
+            hdr_frame = begin_hdr_scene_pass(
+                cmd, s.frame_idx, s.rts.hdr, s.rts.gbuf_normal, s.rts.gbuf_albedo,
+                s.rts.gbuf_mr, s.rts.depth, frame.extent, s.cam, s.fx.taa_amount);
+        }
+        const float aspect           = hdr_frame.aspect;
+        const cd::math::Mat4f vp_unj = hdr_frame.vp_unjittered;
+        const cd::math::Mat4f vp     = hdr_frame.vp;
+
+        auto& hdr_lane0 = hdr_rec ? hdr_rec->lane(0)
+                                  : static_cast<cd::rhi::IDrawRecorder&>(cmd);
+        auto& hdr_lane1 = hdr_rec ? hdr_rec->lane(1)
+                                  : static_cast<cd::rhi::IDrawRecorder&>(cmd);
+        auto& hdr_lane2 = hdr_rec ? hdr_rec->lane(2)
+                                  : static_cast<cd::rhi::IDrawRecorder&>(cmd);
+        if (hdr_rec)
+            prep_hdr_lane(hdr_lane0, frame.extent);
+
+        draw_sky_pass(hdr_lane0, s.cam, aspect, sun, s.materials.sky);
+        upload_multi_light_ubo(device, s.lights_ubo, s.lights, s.counters);
+        s.materials.prim.apply(hdr_lane0);
+        s.prim_inst.bind(hdr_lane0, 0);
+        // phase864-bindless-dedicated-set: bind the dedicated bindless
+        // descriptor set at set index 1 alongside the per-prim set 0.
+        // The shader reads cd_bindless_albedo from (set=1, binding=0).
+        if (s.prim_bindless_set.is_valid())
+            hdr_lane0.bind_descriptor_set(1, s.prim_bindless_set);
+
+        draw_floor_and_entities(hdr_lane0, s.meshes.floor, kFloorY, vp, s.fx, sun, s.cam,
+                                s.entities, s.scene, s.has_gltf_texture,
+                                s.materials.prim, s.counters, mesh_for,
+                                [&s](PrimitiveKind k) -> std::span<const cd_studio::GltfPrimRange> {
+                                    if (k == PrimitiveKind::kSponza) return s.meshes.gltf_prim_ranges;
+                                    if (k == PrimitiveKind::kGltf) return s.meshes.gltf_cesium_prim_ranges;
+                                    return {};
+                                }, s.prim_inst,
+                                s.albedo_sampler, device, s.albedo_tex.view,
+                                s.normal_tex.view, s.mr_tex.view,  // phase456: per-prim restore
+                                s.show_editor_floor);  // phase435-vis8
+        draw_planar_shadows(hdr_lane0, sun, kFloorY, kShadowLift, s.entities,
+                            s.scene, vp, s.materials.prim, s.counters, mesh_for);
+        // phase1121: lane1 owns the 3D overlays — re-establish dynamic
+        // state + the prim pipeline/sets the overlays assume (a lane's
+        // secondary inherits nothing from lane0).
+        if (hdr_rec)
+        {
+            prep_hdr_lane(hdr_lane1, frame.extent);
+            s.materials.prim.apply(hdr_lane1);
+            s.prim_inst.bind(hdr_lane1, 0);
+            if (s.prim_bindless_set.is_valid())
+                hdr_lane1.bind_descriptor_set(1, s.prim_bindless_set);
+        }
+        cd_studio::draw_ddgi_probe_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_studio::draw_frustum_cull_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared, aspect);
+        cd_studio::draw_light_gizmo_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_studio::draw_decal_obb_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_studio::draw_csm_cascade_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_studio::draw_cluster_heatmap_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_studio::draw_bezier_curve_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_studio::draw_gpu_particles_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_studio::draw_quat_slerp_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_studio::draw_motion_vector_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_studio::draw_cubemap_globe_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_studio::draw_vg_lod_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_studio::draw_noise_heightfield_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_studio::draw_restir_reservoir_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_studio::draw_earth_globe_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_studio::draw_camera_basis_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_studio::draw_cct_sweep_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_studio::draw_attenuation_rail_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        // phase1031-debug-line-gpu: flush the per-frame
+        // cd::debug_line::LineBatch through the kLineList material.
+        // Runs LAST in the HDR pass (after every overlay that may
+        // append lines) so a single upload + draw covers all line
+        // consumers. VB is host-visible (kCpuToGpu) and grows by
+        // doubling when a frame outgrows it; upload_buffer handles
+        // host->device sync per the IDevice contract.
+        // phase1044-overlay-extract: the 7 pure-line overlays
+        // (phase-function polar / audio waveform / RNG histogram /
+        // BRDF LUT surface / BRDF lobes / SSS falloff / shafts ring,
+        // phases 1035-1041) moved to StudioDiagnosticOverlays.hpp -- they
+        // are pure functions of (fx, LineBatch), so the render loop
+        // shrinks to one umbrella call before the flush below.
+        cd_studio::append_pure_line_overlays(s.fx, s.debug_lines);
+        // phase1053-3d-viewport-vt-atlas: apply the panel's pending
+        // page request (one allocate per button press, serial-gated),
+        // mirror the lookup results back for the panel text, and
+        // draw the atlas grid overlay.
+        {
+            cd::virtual_textures::PageId q {};
+            q.x   = static_cast<std::uint16_t>(s.fx.vt_req[0]);
+            q.y   = static_cast<std::uint16_t>(s.fx.vt_req[1]);
+            q.mip = static_cast<std::uint8_t>(s.fx.vt_req[2]);
+            if (s.fx.vt_req_serial != s.vt_applied_serial)
+            {
+                (void)s.vt_table.allocate(q);
+                s.vt_applied_serial = s.fx.vt_req_serial;
+            }
+            s.fx.vt_resident_count =
+                static_cast<std::uint32_t>(s.vt_table.resident_count());
+            const auto* slot = s.vt_table.lookup(q);
+            s.fx.vt_lookup_found  = (slot != nullptr);
+            s.fx.vt_lookup_slot_x = (slot != nullptr) ? slot->slot_x : 0U;
+            s.fx.vt_lookup_slot_y = (slot != nullptr) ? slot->slot_y : 0U;
+            if (s.fx.vt_show_atlas_3d)
+                cd_studio::append_vt_atlas_overlay(
+                    s.fx, s.vt_table, s.debug_lines);
+        }
+        if (s.fx.ms_show_meshlets_3d)
+            cd_studio::append_meshlet_overlay(s.fx, s.debug_lines);
+        // phase1058: the whole upload/grow/park/draw dance is one
+        // library call now (cd::debug_draw::Renderer::flush).
+        if (!s.debug_lines.empty())
+            s.counters.increment("draws_debug_lines");
+        if (hdr_rec)
+            prep_hdr_lane(hdr_lane2, frame.extent);
+        s.debug_draw.flush(device, hdr_lane2, s.debug_lines, vp, s.frame_idx);
+        s.debug_lines.clear();
+
+        ctx.new_frame();
+
+        // phase797-rt-chrome-sponza-probe: in --golden-fixture capture mode
+        // we skip every editor panel + overlay + gizmo. The captured PNG
+        // shows the raw rendered scene, which is what the iteration loop
+        // needs in order to see the chrome reflection unobstructed by
+        // ImGui draw commands. The new_frame()/render() pair still runs so
+        // the ImGui per-frame state (font atlas, viewport setup) stays
+        // intact; only the panel-drawing block is gated.
+        const bool kHideEditorUiForGolden =
+            cd::studio_rt::golden::enabled();
+
+        if (!kHideEditorUiForGolden &&
+            (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_P) ||
+             ImGui::IsKeyChordPressed(ImGuiKey_F2) ||
+             ImGui::IsKeyChordPressed(ImGuiKey_GraveAccent)))
+        {
+            s.palette_visible = !s.palette_visible;
+            if (s.palette_visible) s.palette_query.clear();
+        }
+
+        if (!kHideEditorUiForGolden)
+        {
+        cd::studio::draw_studio_main_menu_bar(s, dt, log_push_fn);
+
+        if (s.pie_playing)
+        {
+            ImGui::SetNextWindowPos(ImVec2(18.0F, 36.0F), ImGuiCond_Always);
+            ImGui::SetNextWindowBgAlpha(0.72F);
+            if (ImGui::Begin("##pie_hud", nullptr,
+                    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                    ImGuiWindowFlags_NoNav))
+            {
+                ImGui::TextColored(ImVec4(0.35F, 1.0F, 0.45F, 1.0F),
+                                   "[>] PLAY-IN-EDITOR (PIE) LIVE  --  Press F8 or ESC to Return to Editor");
+                ImGui::TextUnformatted("WASD + Q/E: Move Camera | Right-Mouse Drag: Look | Scroll: Zoom");
+                ImGui::TextDisabled("Sponza Atrium + Skinned CesiumMan + Clustered PBR + CSM Shadows");
+            }
+            ImGui::End();
+        }
+        else
+        {
+        // DockSpace
+        {
+            const ImGuiViewport* mv = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(mv->WorkPos);
+            ImGui::SetNextWindowSize(mv->WorkSize);
+            ImGui::SetNextWindowViewport(mv->ID);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2 { 0, 0 });
+            ImGui::Begin("##cd_dockhost", nullptr,
+                ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
+                ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBackground);
+            ImGui::PopStyleVar(3);
+            const ImGuiID dock_id = ImGui::GetID("cd_engine_dock");
+            if (!s.dock_initialised && ImGui::DockBuilderGetNode(dock_id) == nullptr)
+            {
+                ImGui::DockBuilderRemoveNode(dock_id);
+                const int flags =
+                    static_cast<int>(ImGuiDockNodeFlags_DockSpace) |
+                    static_cast<int>(ImGuiDockNodeFlags_PassthruCentralNode);
+                ImGui::DockBuilderAddNode(dock_id, static_cast<ImGuiDockNodeFlags>(flags));
+                ImGui::DockBuilderSetNodeSize(dock_id, mv->WorkSize);
+                ImGuiID m = dock_id;
+                ImGuiID dl     = ImGui::DockBuilderSplitNode(m,  ImGuiDir_Left,  0.22F, nullptr, &m);
+                ImGuiID dr     = ImGui::DockBuilderSplitNode(m,  ImGuiDir_Right, 0.25F, nullptr, &m);
+                ImGuiID db     = ImGui::DockBuilderSplitNode(m,  ImGuiDir_Down,  0.19F, nullptr, &m);
+                ImGuiID dl_bot = ImGui::DockBuilderSplitNode(dl, ImGuiDir_Down,  0.34F, nullptr, &dl);
+                ImGui::DockBuilderDockWindow("Studio Workbench", dl);
+                ImGui::DockBuilderDockWindow("Scene",            dl_bot);
+                ImGui::DockBuilderDockWindow("Inspector",        dr);
+                ImGui::DockBuilderDockWindow("History",          db);
+                ImGui::DockBuilderFinish(dock_id);
+                s.dock_initialised = true;
+            }
+            ImGui::DockSpace(dock_id, ImVec2 { 0, 0 },
+                             ImGuiDockNodeFlags_PassthruCentralNode);
+            ImGui::End();
+        }
+
+        cd::studio::draw_clean_studio_workspace_panels(
+            s, dt, vp, frame.extent.width, frame.extent.height, log_push_fn);
+        draw_selection_outline_overlay(s.entities, s.selected, s.selected_kind,
+                                       s.outline, s.scene, vp, frame.extent);
+        draw_light_markers_overlay(s.lights, s.selected, s.selected_kind, vp, frame.extent);
+        update_and_draw_gizmo(s.gizmo, s.gizmo_state,
+                              s.app_state.pick.pending, s.selected, s.selected_kind,
+                              s.entities, s.lights, s.scene, s.history, log_push_fn,
+                              vp, s.cam, window, frame.extent);
+        draw_command_palette_popup(s.palette, s.palette_visible, s.palette_query,
+                                   frame.extent);
+        }  // else (!s.pie_playing)
+        }  // if (!kHideEditorUiForGolden) — phase797 golden capture gate
+
+        // phase1121: lanes join IN LANE ORDER (== serial order) and the
+        // pass closes inside finish(); the serial path closes as before.
+        if (hdr_rec)
+        {
+            hdr_rec->finish();
+            hdr_rec.reset();
+        }
+        else
+        {
+            cmd.end_render_pass();
+        }
+        {
+            std::array<cd::rhi::TextureBarrier, 4> hb {
+                cd::rhi::TextureBarrier { .texture = s.rts.hdr.image,
+                    .from = cd::rhi::ResourceState::kColorAttachment,
+                    .to   = cd::rhi::ResourceState::kShaderResource,
+                    .range = { 0, 1, 0, 1 } },
+                cd::rhi::TextureBarrier { .texture = s.rts.gbuf_normal.image,
+                    .from = cd::rhi::ResourceState::kColorAttachment,
+                    .to   = cd::rhi::ResourceState::kShaderResource,
+                    .range = { 0, 1, 0, 1 } },
+                cd::rhi::TextureBarrier { .texture = s.rts.gbuf_albedo.image,
+                    .from = cd::rhi::ResourceState::kColorAttachment,
+                    .to   = cd::rhi::ResourceState::kShaderResource,
+                    .range = { 0, 1, 0, 1 } },
+                cd::rhi::TextureBarrier { .texture = s.rts.gbuf_mr.image,
+                    .from = cd::rhi::ResourceState::kColorAttachment,
+                    .to   = cd::rhi::ResourceState::kShaderResource,
+                    .range = { 0, 1, 0, 1 } }
+            };
+            cmd.barrier({}, hb);
+        }
+
+        // phase1146 (P4): DDGI indirect bounce. Runs AFTER the HDR scene pass
+        // closed (hdr + gbuf_normal now kShaderResource, depth kDepthWrite)
+        // and BEFORE the composite reads HDR, so the diffuse GI ADDS into the
+        // HDR buffer. Gated on (fx.ddgi_on || force) && a valid TLAS — the
+        // golden fixture path leaves ddgi_on false so the chrome golden is
+        // untouched. Depth is bounced kDepthWrite -> kShaderResource for the
+        // dispatch (world-pos reconstruct) then restored to kDepthWrite so
+        // the velocity pass's kDepthWrite -> kDepthRead transition stays valid.
+        if (ddgi_wanted && s.ddgi.inited && s.ddgi.bound)
+        {
+            {
+                std::array<cd::rhi::TextureBarrier, 1> dsr {
+                    cd::rhi::TextureBarrier { .texture = s.rts.depth.image,
+                        .from = cd::rhi::ResourceState::kDepthWrite,
+                        .to   = cd::rhi::ResourceState::kShaderResource,
+                        .range = { 0, 1, 0, 1 } }
+                };
+                cmd.barrier({}, dsr);
+            }
+
+            // SunLight::dir is the direction light TRAVELS; the DDGI trace
+            // shader wants the direction TOWARD the sun (for N·L), so negate.
+            // Scale colour by the sun strength so the indirect bounce tracks
+            // the scene's direct-light intensity.
+            const cd::math::Vec3f ddgi_sun_dir { -sun.dir.x, -sun.dir.y, -sun.dir.z };
+            const float ddgi_sun_k = (sun.strength > 0.0F) ? sun.strength : 1.0F;
+            const cd::math::Vec3f ddgi_sun_col {
+                sun.col.x * ddgi_sun_k, sun.col.y * ddgi_sun_k, sun.col.z * ddgi_sun_k };
+            s.ddgi.execute_frame(
+                device, cmd, s.rts.hdr.image, s.rts.gbuf_normal.image,
+                s.current_tlas, vp, ddgi_sun_dir, ddgi_sun_col, s.frame_idx);
+
+            {
+                std::array<cd::rhi::TextureBarrier, 1> dre {
+                    cd::rhi::TextureBarrier { .texture = s.rts.depth.image,
+                        .from = cd::rhi::ResourceState::kShaderResource,
+                        .to   = cd::rhi::ResourceState::kDepthWrite,
+                        .range = { 0, 1, 0, 1 } }
+                };
+                cmd.barrier({}, dre);
+            }
+        }
+
+        velocity_gbuffer_pass(cmd, s.frame_idx, s.rts.gbuf_velocity, s.rts.depth,
+                              frame.extent, s.materials.velocity,
+                              s.entities, s.scene, s.prev_vp_unjittered, vp_unj, mesh_for);
+
+        // Phase 511 — feed scene auto-EV into bloom prefilter so threshold
+        // tracks scene auto-exposure. Setup::tick() (the GPU log-luminance
+        // reduction + EMA) is NOT called yet: the GpuReduction requires a
+        // per-frame descriptor write tying the HDR view + readback SSBO
+        // into its descriptor set, and that hook is not exposed by the
+        // sample-side framegraph yet. current_ev() therefore returns the
+        // default 0.0 and the shader sees exp2(0) = 1 = no EV scaling.
+        // Once the descriptor write API lands, replace this line with
+        // `const float exposure_mul = s.auto_exposure.tick(cmd, s.rts.hdr.view, dt);`
+        // and feed `s.auto_exposure.current_ev()` below.
+        const float scene_ev_stops = s.auto_exposure.current_ev();
+
+        run_bloom_chain(cmd, s.frame_idx, s.bloom_chain,
+                        s.materials.bloom_prefilter, s.bloom_prefilter_inst,
+                        s.materials.bloom_downsample, s.bloom_down_insts,
+                        s.materials.bloom_upsample, s.bloom_up_insts,
+                        scene_ev_stops);
+
+        begin_composite_pass(cmd, s.frame_idx, frame.swapchain_image_view,
+                             frame.extent, s.rts.history, s.history_states,
+                             s.materials.composite, s.composite_insts,
+                             s.fx, s.lights, s.cam, frame_loop_start,
+                             s.prev_cam_basis, s.prev_vp_unjittered, s.prev_vp_valid,
+                             vp_unj);
+
+        // phase1174 — behavior_designer fold (ADR-20260614, Job A overlay
+        // record + Job B panel bind). The cd::ui Submitter records the
+        // BehaviorDesigner node-graph into the OPEN composite/swapchain pass,
+        // BEFORE ctx.render(cmd) so ImGui stays on top (ADR §3.3 draw order:
+        // scene -> composite -> submitter -> ImGui). It co-exists with ImGui
+        // (same BGRA8 pass; Submitter pipeline is depth-OFF + alpha-blend-ON).
+        //
+        // ZORUNLU golden invariant (ADR §5.1): the upload/record pair is
+        // gated by (!kHideEditorUiForGolden && (panel toggles)). On a
+        // --golden-fixture capture golden::enabled() is true, so this block
+        // NEVER runs -> the composite output is byte-identical to baseline.
+        //
+        // phase1177 — studio_ui fold (ADR-20260614 §3.4, Job C). TWO panels
+        // share this ONE Submitter overlay: the BehaviorDesigner node-graph
+        // (Job A/B) and the folded studio_ui Button/Slider/Label/Flex demo.
+        // Both draw into the SAME ui_batcher within a single begin_frame ->
+        // upload -> record cycle; each panel is independently toggled but the
+        // outer gate keeps EITHER from emitting on a golden frame.
+        if (!kHideEditorUiForGolden &&
+            (s.show_behavior_designer || s.show_ui_widgets) &&
+            s.ui_submitter && s.ui_submitter->is_valid())
+        {
+            const cd::ui::widgets::Rect panel_rect {
+                0.0F,
+                0.0F,
+                static_cast<float>(frame.extent.width),
+                static_cast<float>(frame.extent.height)
+            };
+            s.ui_batcher.begin_frame();
+
+            if (s.show_behavior_designer)
+            {
+                s.bd_panel.draw(s.ui_batcher, s.ui_widget_theme, panel_rect);
+            }
+
+            // phase1177 — UI Widgets Demo. Solve the column-flex tree for a
+            // small panel anchored bottom-left, push the leaf rects onto the
+            // widgets, tick them on the (empty) input snapshot, and draw the
+            // header label / button / slider into the shared batcher.
+            if (s.show_ui_widgets && s.uiw_tree_built)
+            {
+                constexpr float kPanelW = 320.0F;
+                constexpr float kPanelH = 160.0F;
+                const float panel_x = 24.0F;
+                const float panel_y =
+                    static_cast<float>(frame.extent.height) - kPanelH - 24.0F;
+
+                s.uiw_tree.solve(s.uiw_root, kPanelW, kPanelH);
+
+                // Translate the solver's panel-local rects into the bottom-
+                // left anchor and feed the widgets.
+                auto shift = [&](cd::ui::layout::NodeId n) {
+                    cd::ui::layout::Rect r = s.uiw_tree.layout(n);
+                    r.x += panel_x;
+                    r.y += panel_y;
+                    return r;
+                };
+                const cd::ui::layout::Rect lr = shift(s.uiw_label);
+                s.uiw_btn.set_rect(uiw_to_widget_rect(shift(s.uiw_button)));
+                s.uiw_sld.set_rect(uiw_to_widget_rect(shift(s.uiw_slider)));
+
+                // phase1178 — flatten current frame's pointer state into
+                // InputState so Button/Slider tick() can respond to hover
+                // + click. Coordinates are absolute screen-space pixels;
+                // widget rects were already shifted to screen space above.
+                // This block is already inside !kHideEditorUiForGolden
+                // (outer gate) so golden captures are byte-identical.
+                cd::ui::widgets::InputState ui_input;
+                ui_input.pointer.mouse_x      = s.ui_mouse_x;
+                ui_input.pointer.mouse_y      = s.ui_mouse_y;
+                ui_input.pointer.left_down    = s.ui_lmb_down;
+                ui_input.pointer.left_pressed = s.ui_lmb_down && !s.ui_lmb_prev_down;
+                ui_input.pointer.left_released= !s.ui_lmb_down && s.ui_lmb_prev_down;
+                ui_input.focused              = false;
+                (void)s.uiw_btn.tick(ui_input);
+                (void)s.uiw_sld.tick(ui_input);
+
+                // Panel background + header label surface quad.
+                s.ui_batcher.quad(panel_x, panel_y, kPanelW, kPanelH,
+                                  cd::ui::renderer::Color {
+                                      s.ui_widget_theme.background.r,
+                                      s.ui_widget_theme.background.g,
+                                      s.ui_widget_theme.background.b,
+                                      s.ui_widget_theme.background.a });
+                s.ui_batcher.quad(lr.x, lr.y, lr.width, lr.height,
+                                  cd::ui::renderer::Color {
+                                      s.ui_widget_theme.surface.r,
+                                      s.ui_widget_theme.surface.g,
+                                      s.ui_widget_theme.surface.b,
+                                      s.ui_widget_theme.surface.a });
+                cd::ui::font::Font* fp =
+                    s.ui_font.is_loaded() ? &s.ui_font : nullptr;
+                s.uiw_btn.draw(s.ui_batcher, fp, s.ui_widget_theme);
+                s.uiw_sld.draw(s.ui_batcher, fp, s.ui_widget_theme);
+            }
+
+            if (s.ui_submitter->upload(s.ui_batcher))
+            {
+                s.ui_submitter->record(cmd, frame.extent);
+            }
+        }
+
+        ctx.render(cmd);
+        cmd.end_render_pass();
+
+        // ----------------------------------------------------------------
+        // T1.7 phase543 -- Sponza golden-image readback.
+        //
+        // When --golden-fixture was provided AND we have reached the
+        // configured "golden frame", schedule a swapchain -> host-buffer
+        // copy here (after end_render_pass, before end_frame). The post-
+        // end_frame block below downloads + writes the PNG + breaks.
+        // ----------------------------------------------------------------
+        const bool golden_active = cd::studio_rt::golden::enabled()
+            && !cd::studio_rt::golden::options().out_png_path.empty();
+        const bool studio_capture_active = !g_studio_capture_png.empty();
+        const bool capture_this_frame =
+            (golden_active && s.frame_idx == cd::studio_rt::golden::options().capture_at_frame)
+            || (studio_capture_active && s.frame_idx >= g_studio_capture_frame);
+        cd::rhi::BufferHandle golden_staging {};
+        std::uint32_t golden_w = 0;
+        std::uint32_t golden_h = 0;
+        if (capture_this_frame)
+        {
+            cd::rhi::BufferDesc bd {};
+            bd.size   = static_cast<std::uint64_t>(frame.extent.width)
+                      * frame.extent.height * 4U;
+            bd.usage  = cd::rhi::BufferUsage::kTransferDst;
+            bd.memory = cd::rhi::MemoryUsage::kGpuToCpu;
+            auto buf_r = device.create_buffer(bd);
+            if (buf_r.has_value())
+            {
+                const std::array<cd::rhi::TextureBarrier, 1> to_src {
+                    cd::rhi::TextureBarrier {
+                        .texture = frame.swapchain_image,
+                        .from = cd::rhi::ResourceState::kColorAttachment,
+                        .to   = cd::rhi::ResourceState::kTransferSrc,
+                        .range = { .base_mip = 0, .mip_count = 1,
+                                   .base_layer = 0, .layer_count = 1 },
+                    }
+                };
+                cmd.barrier({}, to_src);
+                const std::array<cd::rhi::BufferImageCopyRegion, 1> regions {
+                    cd::rhi::BufferImageCopyRegion {
+                        .buffer_offset = 0,
+                        .mip_level = 0,
+                        .base_layer = 0,
+                        .layer_count = 1,
+                        .image_offset = { 0, 0, 0 },
+                        .image_extent = { frame.extent.width,
+                                          frame.extent.height, 1 },
+                    }
+                };
+                cmd.copy_image_to_buffer(frame.swapchain_image, *buf_r, regions);
+                const std::array<cd::rhi::TextureBarrier, 1> back {
+                    cd::rhi::TextureBarrier {
+                        .texture = frame.swapchain_image,
+                        .from = cd::rhi::ResourceState::kTransferSrc,
+                        .to   = cd::rhi::ResourceState::kColorAttachment,
+                        .range = { .base_mip = 0, .mip_count = 1,
+                                   .base_layer = 0, .layer_count = 1 },
+                    }
+                };
+                cmd.barrier({}, back);
+                golden_staging = *buf_r;
+                golden_w = frame.extent.width;
+                golden_h = frame.extent.height;
+            }
+            else
+            {
+                std::fprintf(stderr,
+                    "[golden] staging buffer create failed; capture aborted\n");
+            }
+        }
+
+        auto end_r = s.renderer.end_frame();
+        if (!end_r.has_value())
+        {
+            if (end_r.error().code ==
+                static_cast<std::uint32_t>(
+                    cd::render::render_errors::Code::kSwapchainOutOfDate))
+            { s.needs_rebuild = true; continue; }
+            break;
+        }
+
+        // After end_frame: GPU has finished writing the staging buffer.
+        // Download bytes, BGRA->RGBA swap, write PNG, request shutdown.
+        if (capture_this_frame && golden_staging.is_valid())
+        {
+            s.renderer.wait_idle();  // belt-and-braces; end_frame already waited
+            const std::uint64_t bytes =
+                static_cast<std::uint64_t>(golden_w) * golden_h * 4U;
+            std::vector<std::byte> raw(static_cast<std::size_t>(bytes));
+            auto dl = device.download_buffer(
+                golden_staging, 0, std::span<std::byte> { raw });
+            device.destroy_buffer(golden_staging);
+            if (!dl.has_value())
+            {
+                std::fprintf(stderr,
+                    "[golden] download_buffer failed (code=%u)\n",
+                    static_cast<unsigned>(dl.error().code));
+                request_shutdown();
+                break;
+            }
+            // Swapchain format is BGRA8Unorm; PNG expects RGBA.
+            std::vector<std::uint8_t> rgba(static_cast<std::size_t>(bytes));
+            for (std::size_t i = 0; i < rgba.size(); i += 4)
+            {
+                rgba[i + 0] = static_cast<std::uint8_t>(raw[i + 2]);
+                rgba[i + 1] = static_cast<std::uint8_t>(raw[i + 1]);
+                rgba[i + 2] = static_cast<std::uint8_t>(raw[i + 0]);
+                rgba[i + 3] = static_cast<std::uint8_t>(raw[i + 3]);
+            }
+            const auto& out_path = studio_capture_active
+                ? g_studio_capture_png
+                : cd::studio_rt::golden::options().out_png_path;
+            auto wr = cd::asset::image::write_png_rgba(
+                out_path, rgba.data(), golden_w, golden_h);
+            if (!wr.has_value())
+            {
+                std::fprintf(stderr,
+                    "[golden] PNG write failed: %s\n", out_path.c_str());
+                request_shutdown();
+                break;
+            }
+            std::fprintf(stdout,
+                "[studio] captured swapchain PNG -> %s (%ux%u)\n",
+                out_path.c_str(), golden_w, golden_h);
+            request_shutdown();
+            break;
+        }
+
+        // phase1178 — advance LMB edge-detection state for next frame's
+        // InputState (left_pressed / left_released edge signals).
+        s.ui_lmb_prev_down = s.ui_lmb_down;
+        ++s.frame_idx;
+        s.counters.set("frame", s.frame_idx);
+    }  // while(true)
+
+    request_shutdown();
+}
+
+// ---- M2E: on_shutdown -------------------------------------------------------
+void StudioApp::on_shutdown() noexcept
+{
+    if (!state_) return;
+    auto& s      = *state_;
+    auto& device = *s.device_owner;
+
+    s.renderer.wait_idle();
+    s.streamer.stop();
+
+    // phase508-generic-gltf-path: free every GPU resource (vertex / index /
+    // texture handles) owned by the generic ingest list. Per
+    // destroy_ingest_result's contract the ECS entities are NOT destroyed
+    // here -- the surrounding World destruction handles that moments later.
+    cd_studio::destroy_generic_ingests(device, s.generic_ingests);
+
+    destroy_mesh(device, s.meshes.floor);
+    s.rts.destroy(device);
+    s.auto_exposure.destroy();  // phase 511 — release GpuReduction (idempotent)
+    s.bloom_chain.destroy(device);
+    s.shadow_target.destroy(device);
+    device.destroy_sampler(s.shadow_sampler);
+    device.destroy_buffer(s.shadow_ubo);
+    device.destroy_buffer(s.lights_ubo);
+    device.destroy_buffer(s.inst_mat_ssbo);
+    s.debug_draw.destroy(device);  // phase1058 — VB + parked + pipeline
+
+    if (s.albedo_tex.view.is_valid())  device.destroy_texture_view(s.albedo_tex.view);
+    if (s.albedo_tex.image.is_valid()) device.destroy_texture(s.albedo_tex.image);
+    device.destroy_sampler(s.albedo_sampler);
+    device.destroy_sampler(s.ibl_gpu.ibl_sampler);
+
+    if (s.ibl_gpu.gpu_spec_cube.view.is_valid())
+        device.destroy_texture_view(s.ibl_gpu.gpu_spec_cube.view);
+    if (s.ibl_gpu.gpu_spec_cube.image.is_valid())
+        device.destroy_texture(s.ibl_gpu.gpu_spec_cube.image);
+    if (s.ibl_gpu.gpu_diff_cube.view.is_valid())
+        device.destroy_texture_view(s.ibl_gpu.gpu_diff_cube.view);
+    if (s.ibl_gpu.gpu_diff_cube.image.is_valid())
+        device.destroy_texture(s.ibl_gpu.gpu_diff_cube.image);
+    if (s.ibl_gpu.gpu_brdf_lut.view.is_valid())
+        device.destroy_texture_view(s.ibl_gpu.gpu_brdf_lut.view);
+    if (s.ibl_gpu.gpu_brdf_lut.image.is_valid())
+        device.destroy_texture(s.ibl_gpu.gpu_brdf_lut.image);
+
+    if (s.normal_tex.view.is_valid())  device.destroy_texture_view(s.normal_tex.view);
+    if (s.normal_tex.image.is_valid()) device.destroy_texture(s.normal_tex.image);
+    if (s.mr_tex.view.is_valid())      device.destroy_texture_view(s.mr_tex.view);
+    if (s.mr_tex.image.is_valid())     device.destroy_texture(s.mr_tex.image);
+
+    device.wait_idle();
+    // phase1146: free the DDGI GPU pipeline (pipelines / atlases / UBOs /
+    // sampler) before the TLAS + device teardown.
+    s.ddgi.shutdown(device);
+    if (s.current_tlas.is_valid())
+        device.destroy_acceleration_structure(s.current_tlas);
+    while (!s.tlas_destroy_queue.empty())
+    {
+        device.destroy_acceleration_structure(s.tlas_destroy_queue.front().h);
+        s.tlas_destroy_queue.pop_front();
+    }
+    cd_studio::destroy_meshes(device, s.meshes);
+
+    // phase1174 — behavior_designer fold (ADR-20260614). Tear down the
+    // cd::ui Submitter explicitly while the device is still alive so the
+    // GPU resources are released deterministically (the dtor would also do
+    // it, but ordering it here matches the rest of on_shutdown).
+    if (s.ui_submitter) { s.ui_submitter->destroy(); }
+    s.ui_submitter.reset();
+    if (s.imgui_ctx) { s.imgui_ctx->destroy(); }
+    s.imgui_ctx.reset();
+
+    std::printf("chromodynamic_studio: clean exit (%u frames).\n", s.frame_idx);
+    state_.reset();
+}
+
+// ============================================================================
+// Studio entry point.
+// ============================================================================
+int main(int argc, char** argv)
+{
+    (void)cd::studio_rt::golden::parse(argc, argv);
+    bool headless_smoke = false;
+    for (int i = 1; i < argc; ++i)
+    {
+        if (argv[i] == nullptr) continue;
+        const std::string_view arg { argv[i] };
+        if (arg == "--ddgi-force-on")
+        {
+            cd_studio::g_ddgi_force_on = true;
+        }
+        else if (arg == "--pie-play")
+        {
+            g_studio_start_pie = true;
+        }
+        else if (arg == "--demo-all-phases")
+        {
+            g_studio_demo_all_phases = true;
+        }
+        else if (arg == "--capture-window-png" && i + 1 < argc && argv[i + 1] != nullptr)
+        {
+            g_studio_capture_png = argv[++i];
+        }
+        else if (arg == "--frames" && i + 1 < argc && argv[i + 1] != nullptr)
+        {
+            const int f = std::atoi(argv[++i]);
+            if (f > 0) g_studio_capture_frame = static_cast<std::uint32_t>(f);
+        }
+        else if (arg == "--headless" || arg == "--null")
+        {
+            headless_smoke = true;
         }
     }
-
-    // phase701 / M15 W3 — unwire the bridge so a post-shutdown push() is a no-op.
-    cd::editor::build_panel_bridge::register_target(nullptr);
-
-    std::printf("editor: clean exit (%u frames; dock nodes=%zu; "
-                "perf_profiler captured %zu/60 real frames).\n",
-                frame_idx, dockspace.node_count(),
-                g_perf_profiler_panel.recorded_frame_count());
-    std::fflush(stdout);
-    return 0;
+    if (headless_smoke && g_studio_capture_png.empty() && !cd::studio_rt::golden::enabled())
+    {
+        std::printf("chromodynamic_studio: headless smoke pass (PIE=%d)\n",
+                    g_studio_start_pie ? 1 : 0);
+        return 0;
+    }
+    return cd::app::run<StudioApp>(argc, argv);
 }
+// ============================================================================

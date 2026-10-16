@@ -1,0 +1,2908 @@
+// =============================================================================
+// CHROMODYNAMIC — cd/ui/ChromaUi.hpp
+//
+// Phase 11 (ChromaUI): Ultra-advanced GPU/CPU hybrid Immediate + Retained UI
+// library built natively on:
+//   * cd::ui::renderer::DrawBatcher   (CPU vertex/index/command batching)
+//   * cd::ui::renderer_rhi::Submitter (Vulkan 1.3 / RHI inline SDF & gradient GPU pipeline)
+//   * cd::ui::font::Font              (TTF font metrics + built-in greedy 2D stroke glyph engine)
+//   * cd::platform::OSEvent           (Cross-platform window input router)
+//
+// Provides:
+//   1. Multi-layer Vector & SDF Canvas (`DrawList`: thick AA lines, circles,
+//      triangles, GPU SDF rounded rects, drop shadows, linear gradients, crisp text).
+//   2. Responsive DockSpace with interactive draggable splitters, scrollable
+//      docked panels, floating HUD windows, and z-ordered popups/dropdowns.
+//   3. Rich Widget Catalog: Button, SmallButton, Checkbox, SliderFloat,
+//      X/Y/Z color-coded DragFloat3, ColorEdit3 with swatch, Combo dropdown,
+//      InputText/InputTextWithHint, Selectable, CollapsingHeader, TabBar/TabItem,
+//      N-column responsive Table, MainMenuBar/Menu/MenuItem, Tooltip, and
+//      native Drag-and-Drop payload system with floating ghost badges.
+//   4. Drop-in immediate-mode compatibility facade (`namespace ImGui`) so the
+//      entire CHROMODYNAMIC Studio Editor runs with 0% Dear ImGui dependency.
+// =============================================================================
+#pragma once
+
+#include <cd/core/ErrorCode.hpp>
+#include <cd/core/Result.hpp>
+#include <cd/platform/Window.hpp>
+#include <cd/rhi/Format.hpp>
+#include <cd/rhi/ICommandBuffer.hpp>
+#include <cd/rhi/IDevice.hpp>
+#include <cd/ui/font/Font.hpp>
+#include <cd/ui/renderer/DrawBatcher.hpp>
+#include <cd/ui/renderer_rhi/Submitter.hpp>
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdarg>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <memory>
+#include <numbers>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// =============================================================================
+// Fundamental 2D / Color / ID types
+// =============================================================================
+struct ImVec2
+{
+    float x { 0.0F };
+    float y { 0.0F };
+
+    constexpr ImVec2() noexcept = default;
+    constexpr ImVec2(float vx, float vy) noexcept : x(vx), y(vy) {}
+};
+
+struct ImVec4
+{
+    float x { 0.0F };
+    float y { 0.0F };
+    float z { 0.0F };
+    float w { 0.0F };
+
+    constexpr ImVec4() noexcept = default;
+    constexpr ImVec4(float vx, float vy, float vz, float vw) noexcept
+        : x(vx), y(vy), z(vz), w(vw) {}
+};
+
+using ImU32   = std::uint32_t;
+using ImGuiID = std::uint32_t;
+
+#ifndef IM_COL32
+#define IM_COL32(R, G, B, A)                                                   \
+    ((static_cast<ImU32>(static_cast<std::uint8_t>(A)) << 24U) |               \
+     (static_cast<ImU32>(static_cast<std::uint8_t>(B)) << 16U) |               \
+     (static_cast<ImU32>(static_cast<std::uint8_t>(G)) << 8U)  |               \
+     (static_cast<ImU32>(static_cast<std::uint8_t>(R)) << 0U))
+#endif
+
+#ifndef IM_ARRAYSIZE
+#define IM_ARRAYSIZE(_ARR) (static_cast<int>(sizeof(_ARR) / sizeof(*(_ARR))))
+#endif
+
+// =============================================================================
+// Flags & Enums
+// =============================================================================
+using ImGuiWindowFlags   = int;
+using ImGuiDockNodeFlags = int;
+using ImGuiTableFlags    = int;
+using ImGuiTreeNodeFlags = int;
+using ImGuiDragDropFlags = int;
+using ImGuiSelectableFlags = int;
+using ImGuiInputTextFlags  = int;
+using ImGuiCond          = int;
+using ImGuiDir           = int;
+using ImGuiStyleVar      = int;
+using ImGuiCol           = int;
+using ImGuiKey           = int;
+using ImGuiMouseButton   = int;
+
+enum ImGuiWindowFlags_ : int
+{
+    ImGuiWindowFlags_None                      = 0,
+    ImGuiWindowFlags_NoTitleBar                = 1 << 0,
+    ImGuiWindowFlags_NoResize                  = 1 << 1,
+    ImGuiWindowFlags_NoMove                    = 1 << 2,
+    ImGuiWindowFlags_NoScrollbar               = 1 << 3,
+    ImGuiWindowFlags_NoScrollWithMouse         = 1 << 4,
+    ImGuiWindowFlags_NoCollapse                = 1 << 5,
+    ImGuiWindowFlags_AlwaysAutoResize          = 1 << 6,
+    ImGuiWindowFlags_NoBackground              = 1 << 7,
+    ImGuiWindowFlags_NoSavedSettings           = 1 << 8,
+    ImGuiWindowFlags_NoMouseInputs             = 1 << 9,
+    ImGuiWindowFlags_MenuBar                   = 1 << 10,
+    ImGuiWindowFlags_HorizontalScrollbar       = 1 << 11,
+    ImGuiWindowFlags_NoFocusOnAppearing        = 1 << 12,
+    ImGuiWindowFlags_NoBringToFrontOnFocus     = 1 << 13,
+    ImGuiWindowFlags_AlwaysVerticalScrollbar   = 1 << 14,
+    ImGuiWindowFlags_AlwaysHorizontalScrollbar = 1 << 15,
+    ImGuiWindowFlags_NoNavInputs               = 1 << 16,
+    ImGuiWindowFlags_NoNavFocus                = 1 << 17,
+    ImGuiWindowFlags_NoDocking                 = 1 << 18,
+    ImGuiWindowFlags_NoNav       = ImGuiWindowFlags_NoNavInputs | ImGuiWindowFlags_NoNavFocus,
+    ImGuiWindowFlags_NoDecoration = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse
+};
+
+enum ImGuiDockNodeFlags_ : int
+{
+    ImGuiDockNodeFlags_None                = 0,
+    ImGuiDockNodeFlags_DockSpace           = 1 << 0,
+    ImGuiDockNodeFlags_PassthruCentralNode = 1 << 1
+};
+
+enum ImGuiTableFlags_ : int
+{
+    ImGuiTableFlags_None              = 0,
+    ImGuiTableFlags_SizingStretchSame = 1 << 0
+};
+
+enum ImGuiTreeNodeFlags_ : int
+{
+    ImGuiTreeNodeFlags_None        = 0,
+    ImGuiTreeNodeFlags_DefaultOpen = 1 << 0
+};
+
+enum ImGuiDragDropFlags_ : int
+{
+    ImGuiDragDropFlags_None              = 0,
+    ImGuiDragDropFlags_SourceAllowNullID = 1 << 0
+};
+
+enum ImGuiCond_ : int
+{
+    ImGuiCond_None         = 0,
+    ImGuiCond_Always       = 1 << 0,
+    ImGuiCond_Once         = 1 << 1,
+    ImGuiCond_FirstUseEver = 1 << 2,
+    ImGuiCond_Appearing    = 1 << 3
+};
+
+enum ImGuiDir_ : int
+{
+    ImGuiDir_None  = -1,
+    ImGuiDir_Left  = 0,
+    ImGuiDir_Right = 1,
+    ImGuiDir_Up    = 2,
+    ImGuiDir_Down  = 3
+};
+
+enum ImGuiStyleVar_ : int
+{
+    ImGuiStyleVar_Alpha = 0,
+    ImGuiStyleVar_WindowPadding,
+    ImGuiStyleVar_WindowRounding,
+    ImGuiStyleVar_WindowBorderSize,
+    ImGuiStyleVar_ItemSpacing
+};
+
+enum ImGuiCol_ : int
+{
+    ImGuiCol_Text = 0,
+    ImGuiCol_Button,
+    ImGuiCol_ButtonHovered,
+    ImGuiCol_ButtonActive,
+    ImGuiCol_WindowBg,
+    ImGuiCol_FrameBg,
+    ImGuiCol_Header
+};
+
+enum ImGuiConfigFlags_ : int
+{
+    ImGuiConfigFlags_None          = 0,
+    ImGuiConfigFlags_DockingEnable = 1 << 0
+};
+
+enum ImGuiMouseButton_ : int
+{
+    ImGuiMouseButton_Left   = 0,
+    ImGuiMouseButton_Right  = 1,
+    ImGuiMouseButton_Middle = 2
+};
+
+enum ImGuiKey_ : int
+{
+    ImGuiKey_None = 0,
+    ImGuiKey_1 = 1,
+    ImGuiKey_2 = 2,
+    ImGuiKey_3 = 3,
+    ImGuiKey_B = 10,
+    ImGuiKey_D = 11,
+    ImGuiKey_G = 12,
+    ImGuiKey_O = 13,
+    ImGuiKey_P = 14,
+    ImGuiKey_R = 15,
+    ImGuiKey_S = 16,
+    ImGuiKey_Y = 17,
+    ImGuiKey_Z = 18,
+    ImGuiKey_F1 = 30,
+    ImGuiKey_F2 = 31,
+    ImGuiKey_F5 = 32,
+    ImGuiKey_F8 = 33,
+    ImGuiKey_F9 = 34,
+    ImGuiKey_Enter = 40,
+    ImGuiKey_UpArrow = 41,
+    ImGuiKey_DownArrow = 42,
+    ImGuiKey_LeftArrow = 43,
+    ImGuiKey_RightArrow = 44,
+    ImGuiKey_PageUp = 45,
+    ImGuiKey_GraveAccent = 46,
+    ImGuiKey_Delete = 47,
+    ImGuiKey_Backspace = 48,
+    ImGuiKey_Space = 49,
+    ImGuiKey_Escape = 50,
+    ImGuiMod_Ctrl  = 1 << 12,
+    ImGuiMod_Shift = 1 << 13,
+    ImGuiMod_Alt   = 1 << 14
+};
+
+struct ImGuiViewport
+{
+    ImGuiID ID { 1U };
+    ImVec2  Pos { 0.0F, 0.0F };
+    ImVec2  Size { 1600.0F, 900.0F };
+    ImVec2  WorkPos { 0.0F, 68.0F };
+    ImVec2  WorkSize { 1600.0F, 832.0F };
+};
+
+struct ImGuiPayload
+{
+    const void* Data { nullptr };
+    int         DataSize { 0 };
+    char        DataType[32] {};
+};
+
+struct ImGuiIO
+{
+    ImVec2 MousePos { 0.0F, 0.0F };
+    ImVec2 DisplaySize { 1600.0F, 900.0F };
+    float  DeltaTime { 1.0F / 60.0F };
+    float  MouseWheel { 0.0F };
+    bool   WantCaptureMouse { false };
+    bool   WantCaptureKeyboard { false };
+    int    ConfigFlags { ImGuiConfigFlags_DockingEnable };
+};
+
+// =============================================================================
+// ChromaUI Core Engine (`cd::ui::chroma`)
+// =============================================================================
+namespace cd::ui::chroma
+{
+
+[[nodiscard]] inline cd::ui::renderer::Color unpack_u32(ImU32 col) noexcept
+{
+    return cd::ui::renderer::Color {
+        static_cast<std::uint8_t>((col >> 0U)  & 0xFFU),
+        static_cast<std::uint8_t>((col >> 8U)  & 0xFFU),
+        static_cast<std::uint8_t>((col >> 16U) & 0xFFU),
+        static_cast<std::uint8_t>((col >> 24U) & 0xFFU)
+    };
+}
+
+[[nodiscard]] inline ImU32 pack_vec4(const ImVec4& c) noexcept
+{
+    const auto r = static_cast<std::uint8_t>(std::clamp(c.x * 255.0F, 0.0F, 255.0F));
+    const auto g = static_cast<std::uint8_t>(std::clamp(c.y * 255.0F, 0.0F, 255.0F));
+    const auto b = static_cast<std::uint8_t>(std::clamp(c.z * 255.0F, 0.0F, 255.0F));
+    const auto a = static_cast<std::uint8_t>(std::clamp(c.w * 255.0F, 0.0F, 255.0F));
+    return IM_COL32(r, g, b, a);
+}
+
+[[nodiscard]] inline ImGuiID hash_str(std::string_view s, ImGuiID seed = 2166136261U) noexcept
+{
+    ImGuiID h = seed;
+    for (char c : s)
+    {
+        h ^= static_cast<ImGuiID>(static_cast<unsigned char>(c));
+        h *= 16777619U;
+    }
+    return h == 0U ? 1U : h;
+}
+
+/// Strip Dear ImGui-style `##id` suffix from display labels.
+[[nodiscard]] inline std::string_view visible_label(std::string_view raw) noexcept
+{
+    const auto pos = raw.find("##");
+    return (pos == std::string_view::npos) ? raw : raw.substr(0, pos);
+}
+
+// -----------------------------------------------------------------------------
+// Greedy 2D Rectangle-Decomposed 5x7 Vector-Quad Font Engine
+// -----------------------------------------------------------------------------
+struct GlyphStrokeRect
+{
+    std::uint8_t x { 0 };
+    std::uint8_t y { 0 };
+    std::uint8_t w { 1 };
+    std::uint8_t h { 1 };
+};
+
+struct DecomposedGlyph
+{
+    std::array<GlyphStrokeRect, 12> rects {};
+    std::uint8_t                    count { 0 };
+};
+
+[[nodiscard]] inline const std::array<DecomposedGlyph, 96>& glyph_stroke_table() noexcept
+{
+    static const std::array<DecomposedGlyph, 96> kTable = []()
+    {
+        // 5x7 bitmap rows (bit 4 = leftmost x=0, bit 0 = rightmost x=4) for ASCII 32..127
+        static constexpr std::uint8_t kFont5x7[96][7] = {
+            {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, // 32 ' '
+            {0x04,0x04,0x04,0x04,0x04,0x00,0x04}, // 33 '!'
+            {0x0A,0x0A,0x0A,0x00,0x00,0x00,0x00}, // 34 '"'
+            {0x0A,0x0A,0x1F,0x0A,0x1F,0x0A,0x0A}, // 35 '#'
+            {0x04,0x0F,0x14,0x0E,0x05,0x1E,0x04}, // 36 '$'
+            {0x18,0x19,0x02,0x04,0x08,0x13,0x03}, // 37 '%'
+            {0x0C,0x12,0x14,0x08,0x15,0x12,0x0D}, // 38 '&'
+            {0x04,0x04,0x08,0x00,0x00,0x00,0x00}, // 39 '''
+            {0x02,0x04,0x08,0x08,0x08,0x04,0x02}, // 40 '('
+            {0x08,0x04,0x02,0x02,0x02,0x04,0x08}, // 41 ')'
+            {0x00,0x04,0x15,0x0E,0x15,0x04,0x00}, // 42 '*'
+            {0x00,0x04,0x04,0x1F,0x04,0x04,0x00}, // 43 '+'
+            {0x00,0x00,0x00,0x00,0x04,0x04,0x08}, // 44 ','
+            {0x00,0x00,0x00,0x1F,0x00,0x00,0x00}, // 45 '-'
+            {0x00,0x00,0x00,0x00,0x00,0x0C,0x0C}, // 46 '.'
+            {0x01,0x01,0x02,0x04,0x08,0x10,0x10}, // 47 '/'
+            {0x0E,0x11,0x13,0x15,0x19,0x11,0x0E}, // 48 '0'
+            {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E}, // 49 '1'
+            {0x0E,0x11,0x01,0x06,0x08,0x10,0x1F}, // 50 '2'
+            {0x1F,0x02,0x04,0x06,0x01,0x11,0x0E}, // 51 '3'
+            {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02}, // 52 '4'
+            {0x1F,0x10,0x1E,0x01,0x01,0x11,0x0E}, // 53 '5'
+            {0x06,0x08,0x10,0x1E,0x11,0x11,0x0E}, // 54 '6'
+            {0x1F,0x01,0x02,0x04,0x08,0x08,0x08}, // 55 '7'
+            {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E}, // 56 '8'
+            {0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C}, // 57 '9'
+            {0x00,0x0C,0x0C,0x00,0x0C,0x0C,0x00}, // 58 ':'
+            {0x00,0x0C,0x0C,0x00,0x0C,0x04,0x08}, // 59 ';'
+            {0x02,0x04,0x08,0x10,0x08,0x04,0x02}, // 60 '<'
+            {0x00,0x00,0x1F,0x00,0x1F,0x00,0x00}, // 61 '='
+            {0x08,0x04,0x02,0x01,0x02,0x04,0x08}, // 62 '>'
+            {0x0E,0x11,0x01,0x02,0x04,0x00,0x04}, // 63 '?'
+            {0x0E,0x11,0x17,0x15,0x17,0x10,0x0E}, // 64 '@'
+            {0x0E,0x11,0x11,0x1F,0x11,0x11,0x11}, // 65 'A'
+            {0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E}, // 66 'B'
+            {0x0E,0x11,0x10,0x10,0x10,0x11,0x0E}, // 67 'C'
+            {0x1E,0x11,0x11,0x11,0x11,0x11,0x1E}, // 68 'D'
+            {0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F}, // 69 'E'
+            {0x1F,0x10,0x10,0x1E,0x10,0x10,0x10}, // 70 'F'
+            {0x0E,0x11,0x10,0x17,0x11,0x11,0x0F}, // 71 'G'
+            {0x11,0x11,0x11,0x1F,0x11,0x11,0x11}, // 72 'H'
+            {0x0E,0x04,0x04,0x04,0x04,0x04,0x0E}, // 73 'I'
+            {0x07,0x02,0x02,0x02,0x02,0x12,0x0C}, // 74 'J'
+            {0x11,0x12,0x14,0x18,0x14,0x12,0x11}, // 75 'K'
+            {0x10,0x10,0x10,0x10,0x10,0x10,0x1F}, // 76 'L'
+            {0x11,0x1B,0x15,0x15,0x11,0x11,0x11}, // 77 'M'
+            {0x11,0x19,0x15,0x13,0x11,0x11,0x11}, // 78 'N'
+            {0x0E,0x11,0x11,0x11,0x11,0x11,0x0E}, // 79 'O'
+            {0x1E,0x11,0x11,0x1E,0x10,0x10,0x10}, // 80 'P'
+            {0x0E,0x11,0x11,0x11,0x15,0x12,0x0D}, // 81 'Q'
+            {0x1E,0x11,0x11,0x1E,0x14,0x12,0x11}, // 82 'R'
+            {0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E}, // 83 'S'
+            {0x1F,0x04,0x04,0x04,0x04,0x04,0x04}, // 84 'T'
+            {0x11,0x11,0x11,0x11,0x11,0x11,0x0E}, // 85 'U'
+            {0x11,0x11,0x11,0x11,0x11,0x0A,0x04}, // 86 'V'
+            {0x11,0x11,0x11,0x15,0x15,0x15,0x0A}, // 87 'W'
+            {0x11,0x11,0x0A,0x04,0x0A,0x11,0x11}, // 88 'X'
+            {0x11,0x11,0x0A,0x04,0x04,0x04,0x04}, // 89 'Y'
+            {0x1F,0x01,0x02,0x04,0x08,0x10,0x1F}, // 90 'Z'
+            {0x0E,0x08,0x08,0x08,0x08,0x08,0x0E}, // 91 '['
+            {0x10,0x10,0x08,0x04,0x02,0x01,0x01}, // 92 '\'
+            {0x0E,0x02,0x02,0x02,0x02,0x02,0x0E}, // 93 ']'
+            {0x04,0x0A,0x11,0x00,0x00,0x00,0x00}, // 94 '^'
+            {0x00,0x00,0x00,0x00,0x00,0x00,0x1F}, // 95 '_'
+            {0x08,0x04,0x02,0x00,0x00,0x00,0x00}, // 96 '`'
+            {0x00,0x00,0x0E,0x01,0x0F,0x11,0x0F}, // 97 'a'
+            {0x10,0x10,0x1E,0x11,0x11,0x11,0x1E}, // 98 'b'
+            {0x00,0x00,0x0E,0x11,0x10,0x11,0x0E}, // 99 'c'
+            {0x01,0x01,0x0F,0x11,0x11,0x11,0x0F}, // 100 'd'
+            {0x00,0x00,0x0E,0x11,0x1F,0x10,0x0E}, // 101 'e'
+            {0x06,0x08,0x1E,0x08,0x08,0x08,0x08}, // 102 'f'
+            {0x00,0x00,0x0F,0x11,0x0F,0x01,0x0E}, // 103 'g'
+            {0x10,0x10,0x1E,0x11,0x11,0x11,0x11}, // 104 'h'
+            {0x04,0x00,0x0C,0x04,0x04,0x04,0x0E}, // 105 'i'
+            {0x02,0x00,0x06,0x02,0x02,0x12,0x0C}, // 106 'j'
+            {0x10,0x10,0x12,0x14,0x18,0x14,0x12}, // 107 'k'
+            {0x0C,0x04,0x04,0x04,0x04,0x04,0x0E}, // 108 'l'
+            {0x00,0x00,0x1A,0x15,0x15,0x11,0x11}, // 109 'm'
+            {0x00,0x00,0x1E,0x11,0x11,0x11,0x11}, // 110 'n'
+            {0x00,0x00,0x0E,0x11,0x11,0x11,0x0E}, // 111 'o'
+            {0x00,0x00,0x1E,0x11,0x1E,0x10,0x10}, // 112 'p'
+            {0x00,0x00,0x0F,0x11,0x0F,0x01,0x01}, // 113 'q'
+            {0x00,0x00,0x16,0x19,0x10,0x10,0x10}, // 114 'r'
+            {0x00,0x00,0x0F,0x10,0x0E,0x01,0x1E}, // 115 's'
+            {0x08,0x08,0x1E,0x08,0x08,0x09,0x06}, // 116 't'
+            {0x00,0x00,0x11,0x11,0x11,0x13,0x0D}, // 117 'u'
+            {0x00,0x00,0x11,0x11,0x11,0x0A,0x04}, // 118 'v'
+            {0x00,0x00,0x11,0x11,0x15,0x15,0x0A}, // 119 'w'
+            {0x00,0x00,0x11,0x0A,0x04,0x0A,0x11}, // 120 'x'
+            {0x00,0x00,0x11,0x11,0x0F,0x01,0x0E}, // 121 'y'
+            {0x00,0x00,0x1F,0x02,0x04,0x08,0x1F}, // 122 'z'
+            {0x02,0x04,0x04,0x08,0x04,0x04,0x02}, // 123 '{'
+            {0x04,0x04,0x04,0x04,0x04,0x04,0x04}, // 124 '|'
+            {0x08,0x04,0x04,0x02,0x04,0x04,0x08}, // 125 '}'
+            {0x00,0x00,0x08,0x15,0x02,0x00,0x00}, // 126 '~'
+            {0x1F,0x1F,0x1F,0x1F,0x1F,0x1F,0x1F}  // 127 DEL
+        };
+
+        std::array<DecomposedGlyph, 96> out {};
+        for (std::size_t gi = 0; gi < 96; ++gi)
+        {
+            bool grid[7][5] {};
+            for (int r = 0; r < 7; ++r)
+            {
+                for (int c = 0; c < 5; ++c)
+                {
+                    grid[r][c] = ((kFont5x7[gi][r] >> (4 - c)) & 1U) != 0U;
+                }
+            }
+
+            DecomposedGlyph dg {};
+            while (dg.count < dg.rects.size())
+            {
+                int best_area = 0;
+                GlyphStrokeRect best {};
+                for (int r = 0; r < 7; ++r)
+                {
+                    for (int c = 0; c < 5; ++c)
+                    {
+                        if (!grid[r][c]) continue;
+                        // Option A: expand horizontally then vertically
+                        int wA = 1;
+                        while (c + wA < 5 && grid[r][c + wA]) ++wA;
+                        int hA = 1;
+                        while (r + hA < 7)
+                        {
+                            bool ok = true;
+                            for (int cc = c; cc < c + wA; ++cc)
+                                if (!grid[r + hA][cc]) { ok = false; break; }
+                            if (!ok) break;
+                            ++hA;
+                        }
+                        if (wA * hA > best_area)
+                        {
+                            best_area = wA * hA;
+                            best = { static_cast<std::uint8_t>(c),
+                                     static_cast<std::uint8_t>(r),
+                                     static_cast<std::uint8_t>(wA),
+                                     static_cast<std::uint8_t>(hA) };
+                        }
+                        // Option B: expand vertically then horizontally
+                        int hB = 1;
+                        while (r + hB < 7 && grid[r + hB][c]) ++hB;
+                        int wB = 1;
+                        while (c + wB < 5)
+                        {
+                            bool ok = true;
+                            for (int rr = r; rr < r + hB; ++rr)
+                                if (!grid[rr][c + wB]) { ok = false; break; }
+                            if (!ok) break;
+                            ++wB;
+                        }
+                        if (wB * hB > best_area)
+                        {
+                            best_area = wB * hB;
+                            best = { static_cast<std::uint8_t>(c),
+                                     static_cast<std::uint8_t>(r),
+                                     static_cast<std::uint8_t>(wB),
+                                     static_cast<std::uint8_t>(hB) };
+                        }
+                    }
+                }
+                if (best_area == 0) break;
+                dg.rects[dg.count++] = best;
+                for (int rr = best.y; rr < best.y + best.h; ++rr)
+                    for (int cc = best.x; cc < best.x + best.w; ++cc)
+                        grid[rr][cc] = false;
+            }
+            out[gi] = dg;
+        }
+        return out;
+    }();
+    return kTable;
+}
+
+}  // namespace cd::ui::chroma
+
+// =============================================================================
+// ImDrawList — Vector & SDF Canvas backed by cd::ui::renderer::DrawBatcher
+// =============================================================================
+class ImDrawList
+{
+public:
+    enum class CmdKind : std::uint8_t
+    {
+        kSolidQuad,
+        kRoundedRect,
+        kDropShadow,
+        kLinearGrad,
+        kPolyQuad,
+        kTriangle,
+        kText,
+        kPushScissor,
+        kPopScissor
+    };
+
+    struct RecordedCmd
+    {
+        CmdKind                   kind { CmdKind::kSolidQuad };
+        float                     x0 { 0.0F };
+        float                     y0 { 0.0F };
+        float                     x1 { 0.0F };
+        float                     y1 { 0.0F };
+        float                     x2 { 0.0F };
+        float                     y2 { 0.0F };
+        float                     x3 { 0.0F };
+        float                     y3 { 0.0F };
+        ImU32                     col0 { 0xFFFFFFFFU };
+        ImU32                     col1 { 0xFFFFFFFFU };
+        float                     param0 { 0.0F }; // radius / scale
+        float                     param1 { 0.0F }; // border / spread
+        bool                      flag { false };
+        std::string               text {};
+        cd::ui::renderer::ScissorRect scissor {};
+    };
+
+    void clear()
+    {
+        cmds_.clear();
+    }
+
+    void PushClipRect(ImVec2 mn, ImVec2 mx)
+    {
+        RecordedCmd rc {};
+        rc.kind = CmdKind::kPushScissor;
+        rc.scissor.x = static_cast<std::int32_t>(std::max(0.0F, mn.x));
+        rc.scissor.y = static_cast<std::int32_t>(std::max(0.0F, mn.y));
+        rc.scissor.width  = static_cast<std::uint32_t>(std::max(1.0F, mx.x - mn.x));
+        rc.scissor.height = static_cast<std::uint32_t>(std::max(1.0F, mx.y - mn.y));
+        cmds_.push_back(std::move(rc));
+    }
+
+    void PopClipRect()
+    {
+        RecordedCmd rc {};
+        rc.kind = CmdKind::kPopScissor;
+        cmds_.push_back(std::move(rc));
+    }
+
+    void AddRectFilled(ImVec2 p_min, ImVec2 p_max, ImU32 col, float rounding = 0.0F)
+    {
+        const float w = p_max.x - p_min.x;
+        const float h = p_max.y - p_min.y;
+        if (w <= 0.0F || h <= 0.0F) return;
+        RecordedCmd rc {};
+        if (rounding >= 1.5F)
+        {
+            rc.kind   = CmdKind::kRoundedRect;
+            rc.param0 = rounding;
+            rc.param1 = 0.0F;
+        }
+        else
+        {
+            rc.kind = CmdKind::kSolidQuad;
+        }
+        rc.x0   = p_min.x;
+        rc.y0   = p_min.y;
+        rc.x1   = w;
+        rc.y1   = h;
+        rc.col0 = col;
+        cmds_.push_back(std::move(rc));
+    }
+
+    void AddRect(ImVec2 p_min, ImVec2 p_max, ImU32 col, float rounding = 0.0F,
+                 int /*flags*/ = 0, float thickness = 1.0F)
+    {
+        const float w = p_max.x - p_min.x;
+        const float h = p_max.y - p_min.y;
+        if (w <= 0.0F || h <= 0.0F) return;
+        if (rounding >= 1.5F)
+        {
+            RecordedCmd rc {};
+            rc.kind   = CmdKind::kRoundedRect;
+            rc.x0     = p_min.x;
+            rc.y0     = p_min.y;
+            rc.x1     = w;
+            rc.y1     = h;
+            rc.col0   = col;
+            rc.param0 = rounding;
+            rc.param1 = std::max(1.0F, thickness);
+            cmds_.push_back(std::move(rc));
+        }
+        else
+        {
+            const float t = std::max(1.0F, thickness);
+            AddRectFilled(p_min, ImVec2(p_max.x, p_min.y + t), col);
+            AddRectFilled(ImVec2(p_min.x, p_max.y - t), p_max, col);
+            AddRectFilled(ImVec2(p_min.x, p_min.y + t), ImVec2(p_min.x + t, p_max.y - t), col);
+            AddRectFilled(ImVec2(p_max.x - t, p_min.y + t), ImVec2(p_max.x, p_max.y - t), col);
+        }
+    }
+
+    void AddShadow(ImVec2 p_min, ImVec2 p_max, float blur_radius, float spread, ImU32 col)
+    {
+        const float w = p_max.x - p_min.x;
+        const float h = p_max.y - p_min.y;
+        if (w <= 0.0F || h <= 0.0F) return;
+        RecordedCmd rc {};
+        rc.kind   = CmdKind::kDropShadow;
+        rc.x0     = p_min.x;
+        rc.y0     = p_min.y;
+        rc.x1     = w;
+        rc.y1     = h;
+        rc.col0   = col;
+        rc.param0 = blur_radius;
+        rc.param1 = spread;
+        cmds_.push_back(std::move(rc));
+    }
+
+    void AddGradient(ImVec2 p_min, ImVec2 p_max, ImU32 c0, ImU32 c1, bool horizontal = false)
+    {
+        const float w = p_max.x - p_min.x;
+        const float h = p_max.y - p_min.y;
+        if (w <= 0.0F || h <= 0.0F) return;
+        RecordedCmd rc {};
+        rc.kind = CmdKind::kLinearGrad;
+        rc.x0   = p_min.x;
+        rc.y0   = p_min.y;
+        rc.x1   = w;
+        rc.y1   = h;
+        rc.col0 = c0;
+        rc.col1 = c1;
+        rc.flag = horizontal;
+        cmds_.push_back(std::move(rc));
+    }
+
+    void AddLine(ImVec2 p1, ImVec2 p2, ImU32 col, float thickness = 1.0F)
+    {
+        const float dx = p2.x - p1.x;
+        const float dy = p2.y - p1.y;
+        const float len = std::sqrt(dx * dx + dy * dy);
+        if (len < 0.001F) return;
+        const float ht = std::max(0.6F, thickness * 0.5F);
+        const float nx = (-dy / len) * ht;
+        const float ny = ( dx / len) * ht;
+
+        RecordedCmd rc {};
+        rc.kind = CmdKind::kPolyQuad;
+        rc.x0 = p1.x + nx; rc.y0 = p1.y + ny;
+        rc.x1 = p2.x + nx; rc.y1 = p2.y + ny;
+        rc.x2 = p2.x - nx; rc.y2 = p2.y - ny;
+        rc.x3 = p1.x - nx; rc.y3 = p1.y - ny;
+        rc.col0 = col;
+        cmds_.push_back(std::move(rc));
+    }
+
+    void AddTriangleFilled(ImVec2 a, ImVec2 b, ImVec2 c, ImU32 col)
+    {
+        RecordedCmd rc {};
+        rc.kind = CmdKind::kTriangle;
+        rc.x0 = a.x; rc.y0 = a.y;
+        rc.x1 = b.x; rc.y1 = b.y;
+        rc.x2 = c.x; rc.y2 = c.y;
+        rc.col0 = col;
+        cmds_.push_back(std::move(rc));
+    }
+
+    void AddCircle(ImVec2 center, float radius, ImU32 col, int num_segments = 16, float thickness = 1.0F)
+    {
+        if (radius <= 0.5F) return;
+        const int segs = std::clamp(num_segments, 8, 28);
+        const float step = (2.0F * std::numbers::pi_v<float>) / static_cast<float>(segs);
+        ImVec2 prev { center.x + radius, center.y };
+        for (int i = 1; i <= segs; ++i)
+        {
+            const float a = static_cast<float>(i) * step;
+            const ImVec2 cur { center.x + std::cos(a) * radius,
+                               center.y + std::sin(a) * radius };
+            AddLine(prev, cur, col, thickness);
+            prev = cur;
+        }
+    }
+
+    void AddCircleFilled(ImVec2 center, float radius, ImU32 col, int /*num_segments*/ = 16)
+    {
+        if (radius <= 0.5F) return;
+        // Render as GPU SDF rounded box with corner_radius == radius (true anti-aliased circle!)
+        RecordedCmd rc {};
+        rc.kind   = CmdKind::kRoundedRect;
+        rc.x0     = center.x - radius;
+        rc.y0     = center.y - radius;
+        rc.x1     = radius * 2.0F;
+        rc.y1     = radius * 2.0F;
+        rc.col0   = col;
+        rc.param0 = radius;
+        rc.param1 = 0.0F;
+        cmds_.push_back(std::move(rc));
+    }
+
+    void AddText(ImVec2 pos, ImU32 col, const char* text_begin, const char* text_end = nullptr,
+                 float scale = 1.30F)
+    {
+        if (text_begin == nullptr || *text_begin == '\0') return;
+        RecordedCmd rc {};
+        rc.kind   = CmdKind::kText;
+        rc.x0     = std::floor(pos.x);
+        rc.y0     = std::floor(pos.y);
+        rc.col0   = col;
+        rc.param0 = scale;
+        if (text_end != nullptr)
+            rc.text.assign(text_begin, static_cast<std::size_t>(text_end - text_begin));
+        else
+            rc.text.assign(text_begin);
+        cmds_.push_back(std::move(rc));
+    }
+
+    void replay_into(cd::ui::renderer::DrawBatcher& batcher) const
+    {
+        const auto& table = cd::ui::chroma::glyph_stroke_table();
+        for (const auto& cmd : cmds_)
+        {
+            switch (cmd.kind)
+            {
+                case CmdKind::kPushScissor:
+                    (void)batcher.push_scissor(cmd.scissor);
+                    break;
+                case CmdKind::kPopScissor:
+                    batcher.pop_scissor();
+                    break;
+                case CmdKind::kSolidQuad:
+                    batcher.quad(cmd.x0, cmd.y0, cmd.x1, cmd.y1,
+                                 cd::ui::chroma::unpack_u32(cmd.col0));
+                    break;
+                case CmdKind::kRoundedRect:
+                    batcher.rounded_rect(cmd.x0, cmd.y0, cmd.x1, cmd.y1,
+                                         cmd.param0,
+                                         cd::ui::chroma::unpack_u32(cmd.col0),
+                                         cmd.param1);
+                    break;
+                case CmdKind::kDropShadow:
+                    batcher.drop_shadow(cmd.x0, cmd.y0, cmd.x1, cmd.y1,
+                                        cmd.param0, cmd.param1,
+                                        cd::ui::chroma::unpack_u32(cmd.col0));
+                    break;
+                case CmdKind::kLinearGrad:
+                    batcher.linear_gradient(cmd.x0, cmd.y0, cmd.x1, cmd.y1,
+                                            cd::ui::chroma::unpack_u32(cmd.col0),
+                                            cd::ui::chroma::unpack_u32(cmd.col1),
+                                            cmd.flag);
+                    break;
+                case CmdKind::kPolyQuad:
+                    batcher.quad_poly(cmd.x0, cmd.y0, cmd.x1, cmd.y1,
+                                      cmd.x2, cmd.y2, cmd.x3, cmd.y3,
+                                      cd::ui::chroma::unpack_u32(cmd.col0));
+                    break;
+                case CmdKind::kTriangle:
+                    batcher.triangle(cmd.x0, cmd.y0, cmd.x1, cmd.y1,
+                                     cmd.x2, cmd.y2,
+                                     cd::ui::chroma::unpack_u32(cmd.col0));
+                    break;
+                case CmdKind::kText:
+                {
+                    const auto c = cd::ui::chroma::unpack_u32(cmd.col0);
+                    const float s = std::max(1.0F, cmd.param0);
+                    const float adv = std::round(5.5F * s);
+                    float cx = cmd.x0;
+                    float cy = cmd.y0;
+                    for (std::size_t i = 0; i < cmd.text.size(); ++i)
+                    {
+                        const unsigned char ch = static_cast<unsigned char>(cmd.text[i]);
+                        if (ch == '\n')
+                        {
+                            cx = cmd.x0;
+                            cy += std::round(9.0F * s);
+                            continue;
+                        }
+                        if (ch < 32U) continue;
+                        const std::size_t idx = (ch < 128U) ? static_cast<std::size_t>(ch - 32U) : 31U; // '?' for non-ASCII bytes
+                        const auto& dg = table[idx];
+                        for (std::uint8_t ri = 0; ri < dg.count; ++ri)
+                        {
+                            const auto& r = dg.rects[ri];
+                            batcher.quad(cx + static_cast<float>(r.x) * s,
+                                         cy + static_cast<float>(r.y) * s,
+                                         static_cast<float>(r.w) * s,
+                                         static_cast<float>(r.h) * s,
+                                         c);
+                        }
+                        cx += adv;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+private:
+    std::vector<RecordedCmd> cmds_ {};
+};
+
+// =============================================================================
+// ChromaUI Theme & Runtime State
+// =============================================================================
+namespace cd::ui::chroma
+{
+
+struct ThemePalette
+{
+    ImU32 window_bg       { IM_COL32(18, 22, 31, 244) };
+    ImU32 window_header0  { IM_COL32(30, 37, 54, 255) };
+    ImU32 window_header1  { IM_COL32(22, 27, 40, 255) };
+    ImU32 window_border   { IM_COL32(46, 56, 78, 230) };
+    ImU32 child_bg        { IM_COL32(14, 17, 25, 220) };
+    ImU32 button          { IM_COL32(35, 44, 64, 255) };
+    ImU32 button_hover    { IM_COL32(52, 92, 168, 255) };
+    ImU32 button_active   { IM_COL32(34, 130, 230, 255) };
+    ImU32 frame_bg        { IM_COL32(12, 15, 22, 255) };
+    ImU32 frame_hover     { IM_COL32(26, 34, 50, 255) };
+    ImU32 accent          { IM_COL32(45, 145, 255, 255) };
+    ImU32 accent_bright   { IM_COL32(80, 195, 255, 255) };
+    ImU32 text            { IM_COL32(238, 243, 252, 255) };
+    ImU32 text_disabled   { IM_COL32(132, 146, 170, 255) };
+    ImU32 separator       { IM_COL32(44, 54, 74, 220) };
+    ImU32 popup_bg        { IM_COL32(22, 27, 39, 252) };
+};
+
+[[nodiscard]] inline ThemePalette make_theme(int preset) noexcept
+{
+    ThemePalette t {};
+    if (preset == 1) // Cyber Neon Glass
+    {
+        t.window_bg      = IM_COL32(11, 15, 26, 236);
+        t.window_header0 = IM_COL32(22, 32, 58, 255);
+        t.window_header1 = IM_COL32(14, 20, 38, 255);
+        t.window_border  = IM_COL32(0, 210, 255, 150);
+        t.button         = IM_COL32(24, 38, 68, 255);
+        t.button_hover   = IM_COL32(0, 165, 215, 255);
+        t.button_active  = IM_COL32(0, 220, 255, 255);
+        t.accent         = IM_COL32(0, 225, 255, 255);
+        t.accent_bright  = IM_COL32(130, 250, 255, 255);
+    }
+    else if (preset == 2) // Daylight CAD
+    {
+        t.window_bg      = IM_COL32(240, 243, 248, 250);
+        t.window_header0 = IM_COL32(222, 228, 238, 255);
+        t.window_header1 = IM_COL32(210, 217, 230, 255);
+        t.window_border  = IM_COL32(175, 186, 204, 255);
+        t.child_bg       = IM_COL32(248, 250, 253, 255);
+        t.button         = IM_COL32(216, 224, 238, 255);
+        t.button_hover   = IM_COL32(180, 205, 245, 255);
+        t.button_active  = IM_COL32(45, 125, 235, 255);
+        t.frame_bg       = IM_COL32(255, 255, 255, 255);
+        t.frame_hover    = IM_COL32(232, 240, 252, 255);
+        t.accent         = IM_COL32(25, 110, 220, 255);
+        t.accent_bright  = IM_COL32(55, 140, 245, 255);
+        t.text           = IM_COL32(24, 30, 42, 255);
+        t.text_disabled  = IM_COL32(105, 116, 136, 255);
+        t.separator      = IM_COL32(190, 200, 216, 255);
+        t.popup_bg       = IM_COL32(248, 250, 254, 255);
+    }
+    return t;
+}
+
+struct WindowLayout
+{
+    std::string name {};
+    ImVec2      pos { 0.0F, 0.0F };
+    ImVec2      size { 320.0F, 240.0F };
+    ImVec2      cursor { 0.0F, 0.0F };
+    ImVec2      prev_item_min { 0.0F, 0.0F };
+    ImVec2      prev_item_max { 0.0F, 0.0F };
+    float       line_height { 20.0F };
+    float       indent { 0.0F };
+    float       scroll_y { 0.0F };
+    float       content_max_x { 0.0F };
+    float       content_max_y { 0.0F };
+    float       bg_alpha { 1.0F };
+    ImGuiWindowFlags flags { 0 };
+    bool        is_popup { false };
+    bool        is_child { false };
+    bool        appearing { false };
+    bool        skip { false };
+    ImDrawList* draw_list { nullptr };
+};
+
+struct TableState
+{
+    int   cols { 1 };
+    int   col_idx { 0 };
+    float start_x { 0.0F };
+    float width { 200.0F };
+    float row_y { 0.0F };
+    float row_max_y { 0.0F };
+};
+
+struct State
+{
+    ImGuiIO        io {};
+    ImGuiViewport  main_viewport {};
+    ThemePalette   theme { make_theme(0) };
+    int            theme_index { 0 };
+
+    // Input state
+    bool mouse_down[3] { false, false, false };
+    bool mouse_clicked[3] { false, false, false };
+    bool mouse_released[3] { false, false, false };
+    ImVec2 mouse_delta { 0.0F, 0.0F };
+    ImVec2 prev_mouse_pos { 0.0F, 0.0F };
+    bool   has_prev_mouse { false };
+    bool   keys_down[128] {};
+    bool   keys_pressed[128] {};
+    bool   mod_ctrl { false };
+    bool   mod_shift { false };
+    bool   mod_alt { false };
+    std::string input_chars {};
+
+    // Dock ratios (draggable!)
+    float dock_left_w_ratio { 0.22F };
+    float dock_right_w_ratio { 0.25F };
+    float dock_bottom_h_ratio { 0.19F };
+    float dock_left_split_ratio { 0.65F };
+    int   dragging_splitter { 0 }; // 1=left, 2=right, 3=bottom, 4=left_mid
+    bool  dock_node_created { false };
+
+    // Layers
+    ImDrawList bg_dl {};
+    ImDrawList win_dl {};
+    ImDrawList popup_dl {};
+    ImDrawList fg_dl {};
+
+    // Stacks & persistent widget states
+    std::vector<WindowLayout> window_stack {};
+    std::unordered_map<ImGuiID, float> scroll_map {};
+    std::unordered_map<ImGuiID, ImVec2> auto_size_map {};
+    std::unordered_map<ImGuiID, bool> collapse_map {};
+    std::unordered_map<ImGuiID, int> tab_map {};
+    std::vector<ImGuiID> id_stack { 2166136261U };
+    std::vector<std::pair<ImGuiCol, ImU32>> color_stack {};
+    std::vector<float> item_width_stack {};
+    float next_item_width { 0.0F };
+
+    // Next window overrides
+    bool   has_next_win_pos { false };
+    ImVec2 next_win_pos { 0.0F, 0.0F };
+    ImVec2 next_win_pivot { 0.0F, 0.0F };
+    bool   has_next_win_size { false };
+    ImVec2 next_win_size { 0.0F, 0.0F };
+    bool   has_next_win_alpha { false };
+    float  next_win_alpha { 1.0F };
+
+    // Active / Hovered item tracking
+    ImGuiID hovered_id { 0U };
+    ImGuiID active_id { 0U };
+    ImGuiID focused_input_id { 0U };
+    ImGuiID last_item_id { 0U };
+    ImVec2  last_item_min { 0.0F, 0.0F };
+    ImVec2  last_item_max { 0.0F, 0.0F };
+    bool    last_item_hovered { false };
+    bool    any_item_hovered { false };
+    bool    mouse_in_any_window { false };
+    bool    focus_next_input { false };
+
+    // Table & Tab state
+    std::vector<TableState> table_stack {};
+    std::vector<ImGuiID>    tab_bar_stack {};
+    std::unordered_map<ImGuiID, int> tab_bar_col_cursor {};
+    std::unordered_map<ImGuiID, ImVec2> tab_bar_pos {};
+
+    // Menus & Popups
+    std::string active_menu_name {};
+    float       menu_bar_cursor_x { 12.0F };
+    float       current_menu_x { 12.0F };
+    bool        in_menu_bar { false };
+    bool        in_open_menu { false };
+    ImGuiID     open_popup_id { 0U };
+    ImVec2      open_popup_pos { 0.0F, 0.0F };
+
+    // Drag & Drop state
+    bool         dnd_active { false };
+    bool         dnd_in_source { false };
+    bool         dnd_in_target { false };
+    ImGuiPayload dnd_payload {};
+    std::vector<std::uint8_t> dnd_buffer {};
+    std::string  dnd_label {};
+};
+
+[[nodiscard]] inline State& state() noexcept
+{
+    static State s {};
+    return s;
+}
+
+[[nodiscard]] inline ImGuiKey map_os_key(cd::platform::KeyCode k) noexcept
+{
+    using cd::platform::KeyCode;
+    switch (k)
+    {
+        case KeyCode::k1:         return ImGuiKey_1;
+        case KeyCode::k2:         return ImGuiKey_2;
+        case KeyCode::k3:         return ImGuiKey_3;
+        case KeyCode::kB:         return ImGuiKey_B;
+        case KeyCode::kD:         return ImGuiKey_D;
+        case KeyCode::kG:         return ImGuiKey_G;
+        case KeyCode::kO:         return ImGuiKey_O;
+        case KeyCode::kP:         return ImGuiKey_P;
+        case KeyCode::kR:         return ImGuiKey_R;
+        case KeyCode::kS:         return ImGuiKey_S;
+        case KeyCode::kY:         return ImGuiKey_Y;
+        case KeyCode::kZ:         return ImGuiKey_Z;
+        case KeyCode::kF1:        return ImGuiKey_F1;
+        case KeyCode::kF2:        return ImGuiKey_F2;
+        case KeyCode::kF5:        return ImGuiKey_F5;
+        case KeyCode::kF8:        return ImGuiKey_F8;
+        case KeyCode::kF9:        return ImGuiKey_F9;
+        case KeyCode::kEnter:     return ImGuiKey_Enter;
+        case KeyCode::kUp:        return ImGuiKey_UpArrow;
+        case KeyCode::kDown:      return ImGuiKey_DownArrow;
+        case KeyCode::kLeft:      return ImGuiKey_LeftArrow;
+        case KeyCode::kRight:     return ImGuiKey_RightArrow;
+        case KeyCode::kDelete:    return ImGuiKey_Delete;
+        case KeyCode::kBackspace: return ImGuiKey_Backspace;
+        case KeyCode::kSpace:     return ImGuiKey_Space;
+        case KeyCode::kEscape:    return ImGuiKey_Escape;
+        default:                  return ImGuiKey_None;
+    }
+}
+
+// =============================================================================
+// ChromaUi GPU/CPU Context (Replaces `cd::imgui::Context`)
+// =============================================================================
+struct InitDesc
+{
+    cd::platform::IWindow* window { nullptr };
+    cd::rhi::IDevice*      device { nullptr };
+    cd::rhi::Format        color_format { cd::rhi::Format::kBGRA8Unorm };
+    std::uint32_t          frames_in_flight { 2U };
+};
+
+class Context
+{
+public:
+    Context() noexcept = default;
+    ~Context() { destroy(); }
+
+    Context(const Context&) = delete;
+    Context& operator=(const Context&) = delete;
+    Context(Context&&) noexcept = default;
+    Context& operator=(Context&&) noexcept = default;
+
+    [[nodiscard]] static cd::core::Result<std::unique_ptr<Context>>
+    create(const InitDesc& desc)
+    {
+        auto ctx = std::make_unique<Context>();
+        ctx->window_ = desc.window;
+        ctx->device_ = desc.device;
+        if (desc.device != nullptr)
+        {
+            cd::ui::renderer_rhi::SubmitterCreateInfo sci {};
+            sci.color_format = desc.color_format;
+            sci.max_vertices = cd::ui::renderer::kMaxVertices;
+            sci.max_indices  = cd::ui::renderer::kMaxVertices * 6U;
+            auto sub_r = cd::ui::renderer_rhi::Submitter::create_with_inline_shader(*desc.device, sci);
+            if (!sub_r.has_value())
+            {
+                return std::unexpected(sub_r.error());
+            }
+            ctx->submitter_ = std::move(*sub_r);
+        }
+        return ctx;
+    }
+
+    void destroy() noexcept
+    {
+        submitter_.destroy();
+    }
+
+    void handle_event(const cd::platform::OSEvent& ev) noexcept
+    {
+        auto& st = state();
+        using cd::platform::OSEventKind;
+        switch (ev.kind)
+        {
+            case OSEventKind::kMouseMove:
+                st.io.MousePos = ImVec2 { ev.mouse_x, ev.mouse_y };
+                break;
+            case OSEventKind::kMouseButtonDown:
+                st.io.MousePos = ImVec2 { ev.mouse_x, ev.mouse_y };
+                if (static_cast<int>(ev.mouse_button) < 3)
+                {
+                    const int b = static_cast<int>(ev.mouse_button);
+                    st.mouse_down[b]    = true;
+                    st.mouse_clicked[b] = true;
+                }
+                break;
+            case OSEventKind::kMouseButtonUp:
+                st.io.MousePos = ImVec2 { ev.mouse_x, ev.mouse_y };
+                if (static_cast<int>(ev.mouse_button) < 3)
+                {
+                    const int b = static_cast<int>(ev.mouse_button);
+                    st.mouse_down[b]     = false;
+                    st.mouse_released[b] = true;
+                }
+                break;
+            case OSEventKind::kMouseWheel:
+                st.io.MouseWheel += ev.wheel;
+                break;
+            case OSEventKind::kKeyDown:
+            {
+                if (ev.key == cd::platform::KeyCode::kLCtrl || ev.key == cd::platform::KeyCode::kRCtrl)
+                    st.mod_ctrl = true;
+                if (ev.key == cd::platform::KeyCode::kLShift || ev.key == cd::platform::KeyCode::kRShift)
+                    st.mod_shift = true;
+                if (ev.key == cd::platform::KeyCode::kLAlt || ev.key == cd::platform::KeyCode::kRAlt)
+                    st.mod_alt = true;
+                const ImGuiKey ik = map_os_key(ev.key);
+                if (ik > 0 && ik < 128)
+                {
+                    st.keys_down[ik]    = true;
+                    st.keys_pressed[ik] = true;
+                }
+                break;
+            }
+            case OSEventKind::kKeyUp:
+            {
+                if (ev.key == cd::platform::KeyCode::kLCtrl || ev.key == cd::platform::KeyCode::kRCtrl)
+                    st.mod_ctrl = false;
+                if (ev.key == cd::platform::KeyCode::kLShift || ev.key == cd::platform::KeyCode::kRShift)
+                    st.mod_shift = false;
+                if (ev.key == cd::platform::KeyCode::kLAlt || ev.key == cd::platform::KeyCode::kRAlt)
+                    st.mod_alt = false;
+                const ImGuiKey ik = map_os_key(ev.key);
+                if (ik > 0 && ik < 128)
+                {
+                    st.keys_down[ik] = false;
+                }
+                break;
+            }
+            case OSEventKind::kTextChar:
+                if (ev.code_point >= 32U && ev.code_point < 127U)
+                {
+                    st.input_chars.push_back(static_cast<char>(ev.code_point));
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    void new_frame() noexcept
+    {
+        auto& st = state();
+        const float w = (window_ != nullptr && window_->width() > 0)
+                            ? static_cast<float>(window_->width())
+                            : 1600.0F;
+        const float h = (window_ != nullptr && window_->height() > 0)
+                            ? static_cast<float>(window_->height())
+                            : 900.0F;
+        st.io.DisplaySize      = ImVec2 { w, h };
+        st.main_viewport.Pos   = ImVec2 { 0.0F, 0.0F };
+        st.main_viewport.Size  = ImVec2 { w, h };
+        st.main_viewport.WorkPos  = ImVec2 { 0.0F, 68.0F };
+        st.main_viewport.WorkSize = ImVec2 { w, std::max(100.0F, h - 68.0F) };
+
+        if (st.has_prev_mouse)
+        {
+            st.mouse_delta = ImVec2 { st.io.MousePos.x - st.prev_mouse_pos.x,
+                                      st.io.MousePos.y - st.prev_mouse_pos.y };
+        }
+        else
+        {
+            st.mouse_delta = ImVec2 { 0.0F, 0.0F };
+            st.has_prev_mouse = true;
+        }
+        st.prev_mouse_pos = st.io.MousePos;
+
+        st.bg_dl.clear();
+        st.win_dl.clear();
+        st.popup_dl.clear();
+        st.fg_dl.clear();
+
+        st.window_stack.clear();
+        st.table_stack.clear();
+        st.tab_bar_stack.clear();
+        st.id_stack.assign(1, 2166136261U);
+
+        st.hovered_id = 0U;
+        st.any_item_hovered = false;
+        st.mouse_in_any_window = false;
+        if (!st.mouse_down[0])
+        {
+            st.active_id = 0U;
+            st.dragging_splitter = 0;
+            if (st.dnd_active && st.mouse_released[0])
+            {
+                // Keep dnd_active for this frame so AcceptDragDropPayload can consume it on mouse release!
+            }
+            else if (!st.mouse_released[0])
+            {
+                st.dnd_active = false;
+            }
+        }
+    }
+
+    void render(cd::rhi::ICommandBuffer& cmd) noexcept
+    {
+        auto& st = state();
+
+        // Draw floating Drag-and-Drop ghost badge if dragging
+        if (st.dnd_active)
+        {
+            const std::string badge = st.dnd_label.empty()
+                                          ? std::string("[DRAGGING PAYLOAD]")
+                                          : ("[DRAGGING] " + st.dnd_label);
+            const float bw = static_cast<float>(badge.size()) * 9.0F + 20.0F;
+            const float bh = 28.0F;
+            const ImVec2 p0 { st.io.MousePos.x + 12.0F, st.io.MousePos.y + 12.0F };
+            const ImVec2 p1 { p0.x + bw, p0.y + bh };
+            st.fg_dl.AddShadow(p0, p1, 10.0F, 2.0F, IM_COL32(0, 0, 0, 180));
+            st.fg_dl.AddRectFilled(p0, p1, st.theme.button_active, 6.0F);
+            st.fg_dl.AddRect(p0, p1, st.theme.accent_bright, 6.0F, 0, 1.5F);
+            st.fg_dl.AddText(ImVec2 { p0.x + 10.0F, p0.y + 8.0F }, st.theme.text, badge.c_str(), nullptr, 1.45F);
+        }
+
+        // Replay all 4 layers into the GPU DrawBatcher in strict z-order
+        batcher_.begin_frame();
+        st.bg_dl.replay_into(batcher_);
+        st.win_dl.replay_into(batcher_);
+        st.popup_dl.replay_into(batcher_);
+        st.fg_dl.replay_into(batcher_);
+
+        if (submitter_.is_valid() && submitter_.upload(batcher_))
+        {
+            const cd::rhi::Extent2D ext {
+                static_cast<std::uint32_t>(std::max(1.0F, st.io.DisplaySize.x)),
+                static_cast<std::uint32_t>(std::max(1.0F, st.io.DisplaySize.y))
+            };
+            submitter_.record(cmd, ext);
+        }
+
+        // Update IO capture flags & clear edge triggers for next frame
+        st.io.WantCaptureMouse    = st.mouse_in_any_window || st.any_item_hovered || !st.active_menu_name.empty() || st.open_popup_id != 0U;
+        st.io.WantCaptureKeyboard = (st.focused_input_id != 0U);
+        if (st.mouse_released[0])
+        {
+            st.dnd_active = false;
+        }
+        for (int b = 0; b < 3; ++b)
+        {
+            st.mouse_clicked[b]  = false;
+            st.mouse_released[b] = false;
+        }
+        for (bool& kp : st.keys_pressed) kp = false;
+        st.io.MouseWheel = 0.0F;
+        st.input_chars.clear();
+    }
+
+private:
+    cd::platform::IWindow*         window_ { nullptr };
+    cd::rhi::IDevice*              device_ { nullptr };
+    cd::ui::renderer::DrawBatcher  batcher_ {};
+    cd::ui::renderer_rhi::Submitter submitter_ {};
+};
+
+}  // namespace cd::ui::chroma
+
+namespace cd::imgui
+{
+using InitDesc = cd::ui::chroma::InitDesc;
+using Context  = cd::ui::chroma::Context;
+}  // namespace cd::imgui
+
+// =============================================================================
+// Immediate-Mode UI Facade (`namespace ImGui` powered 100% by ChromaUI)
+// =============================================================================
+namespace ImGui
+{
+
+[[nodiscard]] inline ImGuiIO& GetIO() noexcept
+{
+    return cd::ui::chroma::state().io;
+}
+
+[[nodiscard]] inline const ImGuiViewport* GetMainViewport() noexcept
+{
+    return &cd::ui::chroma::state().main_viewport;
+}
+
+[[nodiscard]] inline ImDrawList* GetBackgroundDrawList() noexcept
+{
+    return &cd::ui::chroma::state().bg_dl;
+}
+
+[[nodiscard]] inline ImDrawList* GetForegroundDrawList() noexcept
+{
+    return &cd::ui::chroma::state().fg_dl;
+}
+
+[[nodiscard]] inline ImVec2 GetMousePos() noexcept
+{
+    return cd::ui::chroma::state().io.MousePos;
+}
+
+[[nodiscard]] inline ImU32 ColorConvertFloat4ToU32(const ImVec4& in) noexcept
+{
+    return cd::ui::chroma::pack_vec4(in);
+}
+
+[[nodiscard]] inline ImGuiID GetID(const char* str_id) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    return cd::ui::chroma::hash_str(str_id != nullptr ? str_id : "", st.id_stack.back());
+}
+
+inline void PushID(int int_id) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    const ImGuiID h = st.id_stack.back() ^ (static_cast<ImGuiID>(int_id) * 2654435761U + 17U);
+    st.id_stack.push_back(h == 0U ? 1U : h);
+}
+
+inline void PushID(const char* str_id) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    st.id_stack.push_back(GetID(str_id));
+}
+
+inline void PopID() noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.id_stack.size() > 1U) st.id_stack.pop_back();
+}
+
+inline void PushStyleVar(ImGuiStyleVar /*idx*/, float /*val*/) noexcept {}
+inline void PushStyleVar(ImGuiStyleVar /*idx*/, const ImVec2& /*val*/) noexcept {}
+inline void PopStyleVar(int /*count*/ = 1) noexcept {}
+
+inline void PushStyleColor(ImGuiCol idx, const ImVec4& col) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    const ImU32 packed = cd::ui::chroma::pack_vec4(col);
+    if (idx == ImGuiCol_Button)
+    {
+        st.color_stack.emplace_back(idx, st.theme.button);
+        st.theme.button = packed;
+    }
+    else
+    {
+        st.color_stack.emplace_back(idx, 0U);
+    }
+}
+
+inline void PopStyleColor(int count = 1) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    for (int i = 0; i < count && !st.color_stack.empty(); ++i)
+    {
+        const auto [idx, prev] = st.color_stack.back();
+        st.color_stack.pop_back();
+        if (idx == ImGuiCol_Button) st.theme.button = prev;
+    }
+}
+
+inline void SetNextWindowPos(const ImVec2& pos, ImGuiCond /*cond*/ = 0,
+                             const ImVec2& pivot = ImVec2(0.0F, 0.0F)) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    st.has_next_win_pos = true;
+    st.next_win_pos     = pos;
+    st.next_win_pivot   = pivot;
+}
+
+inline void SetNextWindowSize(const ImVec2& size, ImGuiCond /*cond*/ = 0) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    st.has_next_win_size = true;
+    st.next_win_size     = size;
+}
+
+inline void SetNextWindowViewport(ImGuiID /*viewport_id*/) noexcept {}
+
+inline void SetNextWindowBgAlpha(float alpha) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    st.has_next_win_alpha = true;
+    st.next_win_alpha     = std::clamp(alpha, 0.0F, 1.0F);
+}
+
+inline void SetNextItemWidth(float item_width) noexcept
+{
+    cd::ui::chroma::state().next_item_width = item_width;
+}
+
+inline void PushItemWidth(float item_width) noexcept
+{
+    cd::ui::chroma::state().item_width_stack.push_back(item_width);
+}
+
+inline void PopItemWidth() noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (!st.item_width_stack.empty()) st.item_width_stack.pop_back();
+}
+
+inline void SetKeyboardFocusHere(int /*offset*/ = 0) noexcept
+{
+    cd::ui::chroma::state().focus_next_input = true;
+}
+
+[[nodiscard]] inline bool IsMouseDown(ImGuiMouseButton button) noexcept
+{
+    return (button >= 0 && button < 3) ? cd::ui::chroma::state().mouse_down[button] : false;
+}
+
+[[nodiscard]] inline bool IsMouseClicked(ImGuiMouseButton button) noexcept
+{
+    return (button >= 0 && button < 3) ? cd::ui::chroma::state().mouse_clicked[button] : false;
+}
+
+[[nodiscard]] inline bool IsMouseReleased(ImGuiMouseButton button) noexcept
+{
+    return (button >= 0 && button < 3) ? cd::ui::chroma::state().mouse_released[button] : false;
+}
+
+[[nodiscard]] inline bool IsKeyDown(ImGuiKey key) noexcept
+{
+    const int k = key & 0xFF;
+    return (k > 0 && k < 128) ? cd::ui::chroma::state().keys_down[k] : false;
+}
+
+[[nodiscard]] inline bool IsKeyPressed(ImGuiKey key, bool /*repeat*/ = true) noexcept
+{
+    const int k = key & 0xFF;
+    return (k > 0 && k < 128) ? cd::ui::chroma::state().keys_pressed[k] : false;
+}
+
+[[nodiscard]] inline bool IsKeyChordPressed(int key_chord) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if ((key_chord & ImGuiMod_Ctrl) != 0 && !st.mod_ctrl) return false;
+    if ((key_chord & ImGuiMod_Shift) != 0 && !st.mod_shift) return false;
+    if ((key_chord & ImGuiMod_Alt) != 0 && !st.mod_alt) return false;
+    const int k = key_chord & 0xFF;
+    return (k > 0 && k < 128) ? st.keys_pressed[k] : false;
+}
+
+[[nodiscard]] inline bool IsItemHovered() noexcept
+{
+    return cd::ui::chroma::state().last_item_hovered;
+}
+
+[[nodiscard]] inline bool IsAnyItemHovered() noexcept
+{
+    return cd::ui::chroma::state().any_item_hovered;
+}
+
+[[nodiscard]] inline bool IsWindowAppearing() noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    return !st.window_stack.empty() && st.window_stack.back().appearing;
+}
+
+[[nodiscard]] inline float GetWindowWidth() noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    return st.window_stack.empty() ? 320.0F : st.window_stack.back().size.x;
+}
+
+// -----------------------------------------------------------------------------
+// DockBuilder & DockSpace (with interactive draggable splitters!)
+// -----------------------------------------------------------------------------
+[[nodiscard]] inline void* DockBuilderGetNode(ImGuiID /*node_id*/) noexcept
+{
+    return cd::ui::chroma::state().dock_node_created ? reinterpret_cast<void*>(1) : nullptr;
+}
+
+inline void DockBuilderRemoveNode(ImGuiID /*node_id*/) noexcept {}
+
+inline ImGuiID DockBuilderAddNode(ImGuiID node_id = 0, ImGuiDockNodeFlags /*flags*/ = 0) noexcept
+{
+    cd::ui::chroma::state().dock_node_created = true;
+    return node_id;
+}
+
+inline void DockBuilderSetNodeSize(ImGuiID /*node_id*/, ImVec2 /*size*/) noexcept {}
+
+inline ImGuiID DockBuilderSplitNode(ImGuiID node_id, ImGuiDir dir, float /*size_ratio_for_node_at_dir*/,
+                                    ImGuiID* out_id_at_dir, ImGuiID* out_id_at_opposite_dir) noexcept
+{
+    const ImGuiID split_id = node_id * 31U + static_cast<ImGuiID>(dir + 2);
+    if (out_id_at_dir != nullptr) *out_id_at_dir = split_id;
+    if (out_id_at_opposite_dir != nullptr) *out_id_at_opposite_dir = node_id;
+    return split_id;
+}
+
+inline void DockBuilderDockWindow(const char* /*window_name*/, ImGuiID /*node_id*/) noexcept {}
+inline void DockBuilderFinish(ImGuiID /*root_id*/) noexcept {}
+
+inline ImGuiID DockSpace(ImGuiID id, const ImVec2& /*size*/ = ImVec2(0, 0),
+                         ImGuiDockNodeFlags /*flags*/ = 0) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    const float W = st.io.DisplaySize.x;
+    const float H = st.io.DisplaySize.y;
+    const float top_y = 68.0F;
+    const float work_h = std::max(100.0F, H - top_y);
+
+    const float lx = std::round(W * st.dock_left_w_ratio);
+    const float rx = std::round(W * (1.0F - st.dock_right_w_ratio));
+    const float by = std::round(top_y + work_h * (1.0F - st.dock_bottom_h_ratio));
+    const float lmy = std::round(top_y + work_h * st.dock_left_split_ratio);
+
+    const ImVec2 mp = st.io.MousePos;
+    const bool hover_l = (mp.y >= top_y && std::fabs(mp.x - lx) <= 4.0F);
+    const bool hover_r = (mp.y >= top_y && std::fabs(mp.x - rx) <= 4.0F);
+    const bool hover_b = (mp.x >= lx && mp.x <= rx && std::fabs(mp.y - by) <= 4.0F);
+    const bool hover_lm = (mp.x <= lx && std::fabs(mp.y - lmy) <= 4.0F);
+
+    if (st.mouse_clicked[0])
+    {
+        if (hover_l) st.dragging_splitter = 1;
+        else if (hover_r) st.dragging_splitter = 2;
+        else if (hover_b) st.dragging_splitter = 3;
+        else if (hover_lm) st.dragging_splitter = 4;
+    }
+
+    if (st.mouse_down[0] && st.dragging_splitter != 0)
+    {
+        if (st.dragging_splitter == 1)
+            st.dock_left_w_ratio = std::clamp(mp.x / W, 0.14F, 0.36F);
+        else if (st.dragging_splitter == 2)
+            st.dock_right_w_ratio = std::clamp((W - mp.x) / W, 0.16F, 0.38F);
+        else if (st.dragging_splitter == 3)
+            st.dock_bottom_h_ratio = std::clamp((H - mp.y) / work_h, 0.10F, 0.38F);
+        else if (st.dragging_splitter == 4)
+            st.dock_left_split_ratio = std::clamp((mp.y - top_y) / work_h, 0.25F, 0.80F);
+    }
+
+    // Draw subtle interactive splitter grips
+    const ImU32 grip_col = st.theme.window_border;
+    const ImU32 grip_hi  = st.theme.accent;
+    st.win_dl.AddRectFilled(ImVec2(lx - 1.5F, top_y), ImVec2(lx + 1.5F, H),
+                            (hover_l || st.dragging_splitter == 1) ? grip_hi : grip_col);
+    st.win_dl.AddRectFilled(ImVec2(rx - 1.5F, top_y), ImVec2(rx + 1.5F, H),
+                            (hover_r || st.dragging_splitter == 2) ? grip_hi : grip_col);
+    st.win_dl.AddRectFilled(ImVec2(lx, by - 1.5F), ImVec2(rx, by + 1.5F),
+                            (hover_b || st.dragging_splitter == 3) ? grip_hi : grip_col);
+    st.win_dl.AddRectFilled(ImVec2(0.0F, lmy - 1.5F), ImVec2(lx, lmy + 1.5F),
+                            (hover_lm || st.dragging_splitter == 4) ? grip_hi : grip_col);
+    return id;
+}
+
+// -----------------------------------------------------------------------------
+// Window & Child Management
+// -----------------------------------------------------------------------------
+inline bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags flags = 0)
+{
+    auto& st = cd::ui::chroma::state();
+    cd::ui::chroma::WindowLayout wl {};
+    wl.name      = name != nullptr ? name : "Window";
+    wl.flags     = flags;
+    wl.draw_list = &st.win_dl;
+    wl.bg_alpha  = st.has_next_win_alpha ? st.next_win_alpha : 1.0F;
+
+    const ImGuiID win_id = cd::ui::chroma::hash_str(wl.name);
+    wl.appearing = (st.auto_size_map.find(win_id) == st.auto_size_map.end());
+
+    const float W = st.io.DisplaySize.x;
+    const float H = st.io.DisplaySize.y;
+    const float top_y = 68.0F;
+    const float work_h = std::max(100.0F, H - top_y);
+    const float lx = std::round(W * st.dock_left_w_ratio);
+    const float rx = std::round(W * (1.0F - st.dock_right_w_ratio));
+    const float by = std::round(top_y + work_h * (1.0F - st.dock_bottom_h_ratio));
+    const float lmy = std::round(top_y + work_h * st.dock_left_split_ratio);
+
+    // Resolve docked vs floating rect
+    bool is_docked = false;
+    if (wl.name == "Studio Workbench")
+    {
+        wl.pos  = ImVec2 { 0.0F, top_y };
+        wl.size = ImVec2 { lx - 1.0F, lmy - top_y - 1.0F };
+        is_docked = true;
+    }
+    else if (wl.name == "Scene")
+    {
+        wl.pos  = ImVec2 { 0.0F, lmy + 1.0F };
+        wl.size = ImVec2 { lx - 1.0F, H - lmy - 1.0F };
+        is_docked = true;
+    }
+    else if (wl.name == "Inspector")
+    {
+        wl.pos  = ImVec2 { rx + 1.0F, top_y };
+        wl.size = ImVec2 { W - rx - 1.0F, H - top_y };
+        is_docked = true;
+    }
+    else if (wl.name == "History")
+    {
+        wl.pos  = ImVec2 { lx + 1.0F, by + 1.0F };
+        wl.size = ImVec2 { rx - lx - 2.0F, H - by - 1.0F };
+        is_docked = true;
+    }
+    else
+    {
+        if (st.has_next_win_size)
+        {
+            wl.size = st.next_win_size;
+        }
+        else if ((flags & ImGuiWindowFlags_AlwaysAutoResize) != 0)
+        {
+            auto it = st.auto_size_map.find(win_id);
+            wl.size = (it != st.auto_size_map.end()) ? it->second : ImVec2 { 490.0F, 88.0F };
+        }
+        if (st.has_next_win_pos)
+        {
+            wl.pos = ImVec2 {
+                st.next_win_pos.x - wl.size.x * st.next_win_pivot.x,
+                st.next_win_pos.y - wl.size.y * st.next_win_pivot.y
+            };
+        }
+    }
+
+    st.has_next_win_pos   = false;
+    st.next_win_pivot     = ImVec2 { 0.0F, 0.0F };
+    st.has_next_win_size  = false;
+    st.has_next_win_alpha = false;
+
+    if ((flags & ImGuiWindowFlags_NoBackground) != 0)
+    {
+        wl.skip = true;
+        wl.cursor = ImVec2 { wl.pos.x + 8.0F, wl.pos.y + 8.0F };
+        st.window_stack.push_back(std::move(wl));
+        return true;
+    }
+
+    // Track mouse hover & wheel scrolling inside this window
+    const ImVec2 mp = st.io.MousePos;
+    const bool hovered = (mp.x >= wl.pos.x && mp.x <= wl.pos.x + wl.size.x &&
+                          mp.y >= wl.pos.y && mp.y <= wl.pos.y + wl.size.y);
+    if (hovered)
+    {
+        st.mouse_in_any_window = true;
+        if (std::fabs(st.io.MouseWheel) > 0.01F && (flags & ImGuiWindowFlags_NoScrollbar) == 0)
+        {
+            st.scroll_map[win_id] = std::max(0.0F, st.scroll_map[win_id] - st.io.MouseWheel * 28.0F);
+        }
+    }
+    wl.scroll_y = st.scroll_map[win_id];
+
+    // Draw panel surface
+    auto bg_c = cd::ui::chroma::unpack_u32(st.theme.window_bg);
+    bg_c.a = static_cast<std::uint8_t>(static_cast<float>(bg_c.a) * wl.bg_alpha);
+    const ImU32 bg_u32 = IM_COL32(bg_c.r, bg_c.g, bg_c.b, bg_c.a);
+
+    if (!is_docked)
+    {
+        wl.draw_list->AddShadow(wl.pos, ImVec2(wl.pos.x + wl.size.x, wl.pos.y + wl.size.y),
+                                10.0F, 2.0F, IM_COL32(0, 0, 0, 145));
+    }
+    wl.draw_list->AddRectFilled(wl.pos, ImVec2(wl.pos.x + wl.size.x, wl.pos.y + wl.size.y),
+                                bg_u32, is_docked ? 0.0F : 6.0F);
+    wl.draw_list->AddRect(wl.pos, ImVec2(wl.pos.x + wl.size.x, wl.pos.y + wl.size.y),
+                          st.theme.window_border, is_docked ? 0.0F : 6.0F, 0, 1.0F);
+
+    float content_top = wl.pos.y + 8.0F;
+    if ((flags & ImGuiWindowFlags_NoTitleBar) == 0)
+    {
+        const float title_h = 26.0F;
+        wl.draw_list->AddGradient(wl.pos, ImVec2(wl.pos.x + wl.size.x, wl.pos.y + title_h),
+                                  st.theme.window_header0, st.theme.window_header1, false);
+        // Glowing dock-tab underline
+        wl.draw_list->AddRectFilled(ImVec2(wl.pos.x, wl.pos.y + title_h - 2.0F),
+                                    ImVec2(wl.pos.x + 128.0F, wl.pos.y + title_h),
+                                    st.theme.accent);
+        wl.draw_list->AddRectFilled(ImVec2(wl.pos.x + 128.0F, wl.pos.y + title_h - 1.0F),
+                                    ImVec2(wl.pos.x + wl.size.x, wl.pos.y + title_h),
+                                    st.theme.window_border);
+        const auto vis = cd::ui::chroma::visible_label(wl.name);
+        wl.draw_list->AddText(ImVec2(wl.pos.x + 10.0F, wl.pos.y + 7.0F),
+                              st.theme.text, vis.data(), vis.data() + vis.size(), 1.38F);
+
+        if (p_open != nullptr)
+        {
+            const ImVec2 cb_min { wl.pos.x + wl.size.x - 22.0F, wl.pos.y + 4.0F };
+            const ImVec2 cb_max { wl.pos.x + wl.size.x - 4.0F,  wl.pos.y + 22.0F };
+            const bool cb_hov = (mp.x >= cb_min.x && mp.x <= cb_max.x && mp.y >= cb_min.y && mp.y <= cb_max.y);
+            if (cb_hov)
+            {
+                st.any_item_hovered = true;
+                wl.draw_list->AddRectFilled(cb_min, cb_max, IM_COL32(210, 50, 50, 220), 4.0F);
+                if (st.mouse_clicked[0]) *p_open = false;
+            }
+            wl.draw_list->AddText(ImVec2(cb_min.x + 5.0F, cb_min.y + 4.0F), st.theme.text, "X", nullptr, 1.30F);
+        }
+        content_top = wl.pos.y + title_h + 8.0F;
+    }
+
+    wl.draw_list->PushClipRect(ImVec2(wl.pos.x + 2.0F, content_top - 4.0F),
+                               ImVec2(wl.pos.x + wl.size.x - 2.0F, wl.pos.y + wl.size.y - 2.0F));
+    wl.cursor = ImVec2 { wl.pos.x + 10.0F, content_top - wl.scroll_y };
+    wl.content_max_x = wl.cursor.x;
+    wl.content_max_y = wl.cursor.y;
+    st.window_stack.push_back(std::move(wl));
+    return true;
+}
+
+inline void End()
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty()) return;
+    auto wl = std::move(st.window_stack.back());
+    st.window_stack.pop_back();
+    if (wl.skip) return;
+
+    wl.draw_list->PopClipRect();
+
+    const ImGuiID win_id = cd::ui::chroma::hash_str(wl.name);
+    const float used_w = wl.content_max_x - wl.pos.x + 12.0F;
+    const float used_h = (wl.content_max_y + wl.scroll_y) - wl.pos.y + 8.0F;
+    if ((wl.flags & ImGuiWindowFlags_AlwaysAutoResize) != 0)
+    {
+        st.auto_size_map[win_id] = ImVec2 { std::clamp(used_w, 260.0F, 920.0F),
+                                            std::clamp(used_h, 36.0F, 520.0F) };
+    }
+    else
+    {
+        st.auto_size_map[win_id] = wl.size;
+        // Draw scrollbar thumb if content exceeds window height
+        if (used_h > wl.size.y + 8.0F)
+        {
+            const float track_y0 = wl.pos.y + 28.0F;
+            const float track_h  = std::max(20.0F, wl.size.y - 32.0F);
+            const float ratio    = std::clamp(wl.size.y / used_h, 0.12F, 1.0F);
+            const float thumb_h  = track_h * ratio;
+            const float max_scr  = std::max(1.0F, used_h - wl.size.y);
+            st.scroll_map[win_id] = std::clamp(wl.scroll_y, 0.0F, max_scr);
+            const float thumb_y  = track_y0 + (st.scroll_map[win_id] / max_scr) * (track_h - thumb_h);
+            wl.draw_list->AddRectFilled(ImVec2(wl.pos.x + wl.size.x - 5.0F, thumb_y),
+                                        ImVec2(wl.pos.x + wl.size.x - 2.0F, thumb_y + thumb_h),
+                                        st.theme.accent, 2.0F);
+        }
+    }
+}
+
+inline bool BeginChild(const char* str_id, const ImVec2& size = ImVec2(0, 0), bool border = false)
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty()) return false;
+    auto& parent = st.window_stack.back();
+
+    cd::ui::chroma::WindowLayout child {};
+    child.name      = str_id != nullptr ? str_id : "child";
+    child.is_child  = true;
+    child.draw_list = parent.draw_list;
+    child.pos       = parent.cursor;
+    const float avail_w = std::max(60.0F, (parent.pos.x + parent.size.x - 10.0F) - parent.cursor.x);
+    const float avail_h = std::max(40.0F, (parent.pos.y + parent.size.y - 8.0F) - parent.cursor.y);
+    child.size.x = (size.x > 0.0F) ? size.x : avail_w;
+    child.size.y = (size.y > 0.0F) ? size.y : ((size.y < 0.0F) ? std::max(40.0F, avail_h + size.y) : avail_h);
+
+    const ImGuiID cid = GetID(child.name.c_str());
+    const ImVec2 mp = st.io.MousePos;
+    if (mp.x >= child.pos.x && mp.x <= child.pos.x + child.size.x &&
+        mp.y >= child.pos.y && mp.y <= child.pos.y + child.size.y &&
+        std::fabs(st.io.MouseWheel) > 0.01F)
+    {
+        st.scroll_map[cid] = std::max(0.0F, st.scroll_map[cid] - st.io.MouseWheel * 24.0F);
+    }
+    child.scroll_y = st.scroll_map[cid];
+
+    if (border)
+    {
+        child.draw_list->AddRectFilled(child.pos, ImVec2(child.pos.x + child.size.x, child.pos.y + child.size.y),
+                                       st.theme.child_bg, 4.0F);
+        child.draw_list->AddRect(child.pos, ImVec2(child.pos.x + child.size.x, child.pos.y + child.size.y),
+                                 st.theme.window_border, 4.0F, 0, 1.0F);
+    }
+    child.draw_list->PushClipRect(child.pos, ImVec2(child.pos.x + child.size.x, child.pos.y + child.size.y));
+    child.cursor = ImVec2 { child.pos.x + 6.0F, child.pos.y + 6.0F - child.scroll_y };
+    child.content_max_x = child.cursor.x;
+    child.content_max_y = child.cursor.y;
+
+    // Advance parent cursor past child
+    parent.prev_item_min = child.pos;
+    parent.prev_item_max = ImVec2 { child.pos.x + child.size.x, child.pos.y + child.size.y };
+    parent.cursor.y      = child.pos.y + child.size.y + 5.0F;
+    parent.content_max_x = std::max(parent.content_max_x, parent.prev_item_max.x);
+    parent.content_max_y = std::max(parent.content_max_y, parent.cursor.y);
+
+    st.window_stack.push_back(std::move(child));
+    return true;
+}
+
+inline void EndChild()
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || !st.window_stack.back().is_child) return;
+    auto child = std::move(st.window_stack.back());
+    st.window_stack.pop_back();
+    child.draw_list->PopClipRect();
+}
+
+// -----------------------------------------------------------------------------
+// Layout cursor helpers
+// -----------------------------------------------------------------------------
+namespace detail
+{
+inline void advance_item(cd::ui::chroma::WindowLayout& w, ImVec2 item_min, ImVec2 item_max) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    w.prev_item_min = item_min;
+    w.prev_item_max = item_max;
+    w.line_height   = item_max.y - item_min.y;
+    w.content_max_x = std::max(w.content_max_x, item_max.x);
+    if (st.in_menu_bar && !st.in_open_menu)
+    {
+        w.cursor.x = item_max.x + 6.0F;
+        w.cursor.y = 4.0F;
+    }
+    else if (!st.table_stack.empty())
+    {
+        const auto& ts = st.table_stack.back();
+        const float col_w = ts.width / static_cast<float>(ts.cols);
+        w.cursor.x = ts.start_x + static_cast<float>(ts.col_idx) * col_w;
+        w.cursor.y = item_max.y + 4.0F;
+    }
+    else
+    {
+        w.cursor.x = w.pos.x + 10.0F + w.indent;
+        w.cursor.y = item_max.y + 4.0F;
+    }
+    w.content_max_y = std::max(w.content_max_y, item_max.y + 2.0F);
+
+    st.last_item_min = item_min;
+    st.last_item_max = item_max;
+    const ImVec2 mp  = st.io.MousePos;
+    st.last_item_hovered = (mp.x >= item_min.x && mp.x <= item_max.x &&
+                            mp.y >= item_min.y && mp.y <= item_max.y);
+    if (st.last_item_hovered) st.any_item_hovered = true;
+}
+
+[[nodiscard]] inline float resolve_item_width(const cd::ui::chroma::WindowLayout& w) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    float avail = std::max(50.0F, (w.pos.x + w.size.x - 10.0F) - w.cursor.x);
+    if (!st.table_stack.empty())
+    {
+        const auto& ts = st.table_stack.back();
+        avail = std::max(40.0F, (ts.width / static_cast<float>(ts.cols)) - 6.0F);
+    }
+    if (st.next_item_width != 0.0F)
+    {
+        const float req = st.next_item_width;
+        st.next_item_width = 0.0F;
+        return (req < 0.0F) ? std::max(40.0F, avail + req) : std::min(avail, req);
+    }
+    if (!st.item_width_stack.empty())
+    {
+        const float req = st.item_width_stack.back();
+        return (req < 0.0F) ? std::max(40.0F, avail + req) : std::min(avail, req);
+    }
+    return std::max(60.0F, avail * 0.62F);
+}
+}  // namespace detail
+
+inline void SameLine(float offset_from_start_x = 0.0F, float spacing = -1.0F) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty()) return;
+    auto& w = st.window_stack.back();
+    const float sp = (spacing < 0.0F) ? 5.0F : spacing;
+    if (offset_from_start_x > 0.0F)
+        w.cursor.x = w.pos.x + offset_from_start_x;
+    else
+        w.cursor.x = w.prev_item_max.x + sp;
+    w.cursor.y = w.prev_item_min.y;
+}
+
+inline void Indent(float indent_w = 0.0F) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty()) return;
+    auto& w = st.window_stack.back();
+    w.indent += (indent_w > 0.0F) ? indent_w : 12.0F;
+    w.cursor.x = w.pos.x + 10.0F + w.indent;
+}
+
+inline void Unindent(float indent_w = 0.0F) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty()) return;
+    auto& w = st.window_stack.back();
+    w.indent = std::max(0.0F, w.indent - ((indent_w > 0.0F) ? indent_w : 12.0F));
+    w.cursor.x = w.pos.x + 10.0F + w.indent;
+}
+
+inline void Separator() noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty()) return;
+    auto& w = st.window_stack.back();
+    if (st.in_menu_bar && !st.in_open_menu)
+    {
+        const float x = w.cursor.x + 2.0F;
+        w.draw_list->AddRectFilled(ImVec2(x, 5.0F), ImVec2(x + 1.0F, 23.0F), st.theme.separator);
+        w.cursor.x += 8.0F;
+        return;
+    }
+    const float x0 = w.cursor.x;
+    const float x1 = w.pos.x + w.size.x - 10.0F;
+    const float y  = w.cursor.y + 3.0F;
+    w.draw_list->AddRectFilled(ImVec2(x0, y), ImVec2(x1, y + 1.0F), st.theme.separator);
+    detail::advance_item(w, ImVec2(x0, w.cursor.y), ImVec2(x1, w.cursor.y + 6.0F));
+}
+
+inline void SeparatorText(const char* label) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty()) return;
+    auto& w = st.window_stack.back();
+    const auto vis = cd::ui::chroma::visible_label(label != nullptr ? label : "");
+    const float x0 = w.cursor.x;
+    const float y0 = w.cursor.y + 2.0F;
+    const float x1 = w.pos.x + w.size.x - 10.0F;
+    // Left glowing accent pill + section label + horizontal rule
+    w.draw_list->AddRectFilled(ImVec2(x0, y0 + 1.0F), ImVec2(x0 + 3.0F, y0 + 13.0F), st.theme.accent);
+    w.draw_list->AddText(ImVec2(x0 + 8.0F, y0 + 2.0F), st.theme.accent_bright,
+                         vis.data(), vis.data() + vis.size(), 1.32F);
+    const float text_w = static_cast<float>(vis.size()) * 7.2F + 14.0F;
+    if (x0 + text_w < x1)
+    {
+        w.draw_list->AddRectFilled(ImVec2(x0 + text_w, y0 + 7.0F), ImVec2(x1, y0 + 8.0F), st.theme.separator);
+    }
+    detail::advance_item(w, ImVec2(x0, y0), ImVec2(x1, y0 + 16.0F));
+}
+
+// -----------------------------------------------------------------------------
+// Text Widgets
+// -----------------------------------------------------------------------------
+inline void TextUnformatted(const char* text) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || text == nullptr) return;
+    auto& w = st.window_stack.back();
+    const std::string_view sv { text };
+    w.draw_list->AddText(ImVec2(w.cursor.x, w.cursor.y + 2.0F), st.theme.text,
+                         sv.data(), sv.data() + sv.size(), 1.28F);
+    const float tw = static_cast<float>(sv.size()) * 7.1F;
+    detail::advance_item(w, w.cursor, ImVec2(w.cursor.x + tw, w.cursor.y + 15.0F));
+}
+
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wformat-nonliteral"
+#pragma clang diagnostic ignored "-Wdouble-promotion"
+#endif
+
+inline void Text(const char* fmt, ...) noexcept
+{
+    if (fmt == nullptr) return;
+    char buf[512] {};
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    TextUnformatted(buf);
+}
+
+inline void TextDisabled(const char* fmt, ...) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || fmt == nullptr) return;
+    char buf[512] {};
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    auto& w = st.window_stack.back();
+    const std::string_view sv { buf };
+    w.draw_list->AddText(ImVec2(w.cursor.x, w.cursor.y + 2.0F), st.theme.text_disabled,
+                         sv.data(), sv.data() + sv.size(), 1.25F);
+    const float tw = static_cast<float>(sv.size()) * 7.0F;
+    detail::advance_item(w, w.cursor, ImVec2(w.cursor.x + tw, w.cursor.y + 14.0F));
+}
+
+inline void TextColored(const ImVec4& col, const char* fmt, ...) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || fmt == nullptr) return;
+    char buf[512] {};
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    auto& w = st.window_stack.back();
+    const std::string_view sv { buf };
+    w.draw_list->AddText(ImVec2(w.cursor.x, w.cursor.y + 2.0F), cd::ui::chroma::pack_vec4(col),
+                         sv.data(), sv.data() + sv.size(), 1.28F);
+    const float tw = static_cast<float>(sv.size()) * 7.1F;
+    detail::advance_item(w, w.cursor, ImVec2(w.cursor.x + tw, w.cursor.y + 15.0F));
+}
+
+// -----------------------------------------------------------------------------
+// Buttons, Checkboxes, Selectables, CollapsingHeaders
+// -----------------------------------------------------------------------------
+inline bool Button(const char* label, const ImVec2& size_arg = ImVec2(0, 0)) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || label == nullptr) return false;
+    auto& w = st.window_stack.back();
+    const auto vis = cd::ui::chroma::visible_label(label);
+    float avail_w = std::max(40.0F, (w.pos.x + w.size.x - 10.0F) - w.cursor.x);
+    if (!st.table_stack.empty())
+    {
+        const auto& ts = st.table_stack.back();
+        avail_w = std::max(40.0F, (ts.width / static_cast<float>(ts.cols)) - 6.0F);
+    }
+    const float bw = (size_arg.x > 0.0F)
+                         ? size_arg.x
+                         : ((size_arg.x < 0.0F) ? avail_w : (static_cast<float>(vis.size()) * 7.1F + 14.0F));
+    const float bh = (size_arg.y > 0.0F) ? size_arg.y : 22.0F;
+
+    const ImVec2 p0 = w.cursor;
+    const ImVec2 p1 { p0.x + bw, p0.y + bh };
+    const ImGuiID id = GetID(label);
+    st.last_item_id = id;
+    detail::advance_item(w, p0, p1);
+
+    const bool hov = st.last_item_hovered;
+    if (hov && st.mouse_clicked[0]) st.active_id = id;
+    const bool act = (st.active_id == id && st.mouse_down[0]);
+    const bool clicked = (hov && st.mouse_clicked[0]);
+
+    const ImU32 bg = act ? st.theme.button_active : (hov ? st.theme.button_hover : st.theme.button);
+    w.draw_list->AddRectFilled(p0, p1, bg, 4.0F);
+    w.draw_list->AddRect(p0, p1, hov ? st.theme.accent_bright : st.theme.window_border, 4.0F, 0, 1.0F);
+
+    const float tw = static_cast<float>(vis.size()) * 7.1F;
+    const float tx = p0.x + std::max(5.0F, (bw - tw) * 0.5F);
+    const float ty = p0.y + std::max(3.0F, (bh - 9.0F) * 0.5F);
+    w.draw_list->AddText(ImVec2(tx, ty), st.theme.text, vis.data(), vis.data() + vis.size(), 1.28F);
+    return clicked;
+}
+
+inline bool SmallButton(const char* label) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || label == nullptr) return false;
+    const auto vis = cd::ui::chroma::visible_label(label);
+    return Button(label, ImVec2(static_cast<float>(vis.size()) * 7.1F + 10.0F, 18.0F));
+}
+
+inline bool Checkbox(const char* label, bool* v) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || label == nullptr || v == nullptr) return false;
+    auto& w = st.window_stack.back();
+    const auto vis = cd::ui::chroma::visible_label(label);
+    const float box_sz = 16.0F;
+    const ImVec2 p0 = w.cursor;
+    const ImVec2 box_max { p0.x + box_sz, p0.y + box_sz };
+    const ImVec2 p1 { box_max.x + 7.0F + static_cast<float>(vis.size()) * 7.1F, p0.y + box_sz };
+
+    const ImGuiID id = GetID(label);
+    st.last_item_id = id;
+    detail::advance_item(w, p0, p1);
+
+    const bool hov = st.last_item_hovered;
+    bool changed = false;
+    if (hov && st.mouse_clicked[0])
+    {
+        *v = !(*v);
+        changed = true;
+    }
+
+    w.draw_list->AddRectFilled(p0, box_max, *v ? st.theme.accent : st.theme.frame_bg, 3.0F);
+    w.draw_list->AddRect(p0, box_max, hov ? st.theme.accent_bright : st.theme.window_border, 3.0F, 0, 1.0F);
+    if (*v)
+    {
+        w.draw_list->AddLine(ImVec2(p0.x + 3.0F, p0.y + 8.5F),
+                             ImVec2(p0.x + 6.5F, p0.y + 12.5F), IM_COL32(255, 255, 255, 255), 2.0F);
+        w.draw_list->AddLine(ImVec2(p0.x + 6.5F, p0.y + 12.5F),
+                             ImVec2(p0.x + 13.0F, p0.y + 4.0F), IM_COL32(255, 255, 255, 255), 2.0F);
+    }
+    w.draw_list->AddText(ImVec2(box_max.x + 6.0F, p0.y + 3.0F), st.theme.text,
+                         vis.data(), vis.data() + vis.size(), 1.28F);
+    return changed;
+}
+
+inline bool Selectable(const char* label, bool selected = false,
+                       ImGuiSelectableFlags /*flags*/ = 0, const ImVec2& size_arg = ImVec2(0, 0)) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || label == nullptr) return false;
+    auto& w = st.window_stack.back();
+    const auto vis = cd::ui::chroma::visible_label(label);
+    const float avail_w = std::max(60.0F, (w.pos.x + w.size.x - 10.0F) - w.cursor.x);
+    const float sw = (size_arg.x > 0.0F) ? size_arg.x : avail_w;
+    const float sh = (size_arg.y > 0.0F) ? size_arg.y : 19.0F;
+
+    const ImVec2 p0 = w.cursor;
+    const ImVec2 p1 { p0.x + sw, p0.y + sh };
+    const ImGuiID id = GetID(label);
+    st.last_item_id = id;
+    detail::advance_item(w, p0, p1);
+
+    const bool hov = st.last_item_hovered;
+    if (selected || hov)
+    {
+        const ImU32 bg = selected ? IM_COL32(38, 105, 210, 185) : st.theme.frame_hover;
+        w.draw_list->AddRectFilled(p0, p1, bg, 3.0F);
+        if (selected)
+        {
+            w.draw_list->AddRectFilled(p0, ImVec2(p0.x + 3.0F, p1.y), st.theme.accent_bright);
+        }
+    }
+    w.draw_list->AddText(ImVec2(p0.x + 7.0F, p0.y + 4.0F), st.theme.text,
+                         vis.data(), vis.data() + vis.size(), 1.28F);
+    return hov && st.mouse_clicked[0];
+}
+
+inline bool CollapsingHeader(const char* label, ImGuiTreeNodeFlags flags = 0) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || label == nullptr) return false;
+    auto& w = st.window_stack.back();
+    const auto vis = cd::ui::chroma::visible_label(label);
+    const ImGuiID id = GetID(label);
+    auto it = st.collapse_map.find(id);
+    if (it == st.collapse_map.end())
+    {
+        const bool def_open = (flags & ImGuiTreeNodeFlags_DefaultOpen) != 0;
+        it = st.collapse_map.emplace(id, def_open).first;
+    }
+
+    const float avail_w = std::max(80.0F, (w.pos.x + w.size.x - 10.0F) - w.cursor.x);
+    const ImVec2 p0 = w.cursor;
+    const ImVec2 p1 { p0.x + avail_w, p0.y + 22.0F };
+    st.last_item_id = id;
+    detail::advance_item(w, p0, p1);
+
+    if (st.last_item_hovered && st.mouse_clicked[0])
+    {
+        it->second = !it->second;
+    }
+
+    const bool open = it->second;
+    w.draw_list->AddGradient(p0, p1,
+                             st.last_item_hovered ? st.theme.button_hover : st.theme.window_header0,
+                             st.theme.window_header1, false);
+    w.draw_list->AddRect(p0, p1, st.theme.window_border, 4.0F, 0, 1.0F);
+    w.draw_list->AddText(ImVec2(p0.x + 8.0F, p0.y + 6.0F), st.theme.accent_bright,
+                         open ? "v" : ">", nullptr, 1.28F);
+    w.draw_list->AddText(ImVec2(p0.x + 20.0F, p0.y + 6.0F), st.theme.text,
+                         vis.data(), vis.data() + vis.size(), 1.28F);
+    return open;
+}
+
+// -----------------------------------------------------------------------------
+// Sliders, DragFloat3 (X/Y/Z Color-Coded), ColorEdit3, Combo, InputText
+// -----------------------------------------------------------------------------
+inline bool SliderFloat(const char* label, float* v, float v_min, float v_max,
+                        const char* format = "%.3f") noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || label == nullptr || v == nullptr) return false;
+    auto& w = st.window_stack.back();
+    const auto vis = cd::ui::chroma::visible_label(label);
+    const float iw = detail::resolve_item_width(w);
+    const float ih = 19.0F;
+    const ImVec2 p0 = w.cursor;
+    const ImVec2 bar_max { p0.x + iw, p0.y + ih };
+    const ImVec2 p1 { bar_max.x + (vis.empty() ? 0.0F : (static_cast<float>(vis.size()) * 7.1F + 6.0F)), p0.y + ih };
+
+    const ImGuiID id = GetID(label);
+    st.last_item_id = id;
+    detail::advance_item(w, p0, p1);
+
+    const ImVec2 mp = st.io.MousePos;
+    const bool bar_hov = (mp.x >= p0.x && mp.x <= bar_max.x && mp.y >= p0.y && mp.y <= bar_max.y);
+    if (bar_hov && st.mouse_clicked[0]) st.active_id = id;
+
+    bool changed = false;
+    if (st.active_id == id && st.mouse_down[0])
+    {
+        const float t = std::clamp((mp.x - p0.x) / std::max(1.0F, iw), 0.0F, 1.0F);
+        const float nv = v_min + t * (v_max - v_min);
+        if (std::fabs(nv - *v) > 1e-6F) { *v = nv; changed = true; }
+    }
+
+    const float norm = (v_max > v_min) ? std::clamp((*v - v_min) / (v_max - v_min), 0.0F, 1.0F) : 0.0F;
+    w.draw_list->AddRectFilled(p0, bar_max, st.theme.frame_bg, 4.0F);
+    if (norm > 0.01F)
+    {
+        w.draw_list->AddRectFilled(ImVec2(p0.x + 1.0F, p0.y + 1.0F),
+                                   ImVec2(p0.x + std::max(6.0F, iw * norm), bar_max.y - 1.0F),
+                                   IM_COL32(38, 118, 225, 190), 3.0F);
+    }
+    const float kx = p0.x + norm * (iw - 8.0F);
+    w.draw_list->AddRectFilled(ImVec2(kx, p0.y + 1.0F), ImVec2(kx + 8.0F, bar_max.y - 1.0F),
+                               st.theme.accent_bright, 3.0F);
+    w.draw_list->AddRect(p0, bar_max, bar_hov ? st.theme.accent : st.theme.window_border, 4.0F, 0, 1.0F);
+
+    char vbuf[64] {};
+    std::snprintf(vbuf, sizeof(vbuf), format != nullptr ? format : "%.2f", static_cast<double>(*v));
+    const std::string_view vsv { vbuf };
+    w.draw_list->AddText(ImVec2(p0.x + (iw - static_cast<float>(vsv.size()) * 7.1F) * 0.5F, p0.y + 4.0F),
+                         st.theme.text, vsv.data(), vsv.data() + vsv.size(), 1.25F);
+    if (!vis.empty())
+    {
+        w.draw_list->AddText(ImVec2(bar_max.x + 6.0F, p0.y + 4.0F),
+                             st.theme.text, vis.data(), vis.data() + vis.size(), 1.28F);
+    }
+    return changed;
+}
+
+inline bool DragFloat3(const char* label, float v[3], float v_speed = 0.05F,
+                       float v_min = 0.0F, float v_max = 0.0F,
+                       const char* format = "%.2f") noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || label == nullptr || v == nullptr) return false;
+    auto& w = st.window_stack.back();
+    const auto vis = cd::ui::chroma::visible_label(label);
+    const float total_w = detail::resolve_item_width(w);
+    const float gap = 4.0F;
+    const float box_w = std::max(38.0F, (total_w - gap * 2.0F) / 3.0F);
+    const float ih = 19.0F;
+    const ImVec2 p0 = w.cursor;
+    const ImGuiID base_id = GetID(label);
+
+    static constexpr ImU32 kAxisCols[3] = {
+        IM_COL32(230, 65, 65, 255),   // X Red
+        IM_COL32(75, 195, 85, 255),   // Y Green
+        IM_COL32(55, 140, 245, 255)   // Z Blue
+    };
+
+    bool changed = false;
+    const ImVec2 mp = st.io.MousePos;
+    for (int i = 0; i < 3; ++i)
+    {
+        const ImVec2 bmin { p0.x + static_cast<float>(i) * (box_w + gap), p0.y };
+        const ImVec2 bmax { bmin.x + box_w, p0.y + ih };
+        const ImGuiID cid = base_id + static_cast<ImGuiID>(i + 1);
+        const bool hov = (mp.x >= bmin.x && mp.x <= bmax.x && mp.y >= bmin.y && mp.y <= bmax.y);
+        if (hov && st.mouse_clicked[0]) st.active_id = cid;
+        if (st.active_id == cid && st.mouse_down[0] && std::fabs(st.mouse_delta.x) > 0.01F)
+        {
+            float nv = v[i] + st.mouse_delta.x * (v_speed > 0.0F ? v_speed : 0.05F);
+            if (v_max > v_min) nv = std::clamp(nv, v_min, v_max);
+            v[i] = nv;
+            changed = true;
+        }
+        w.draw_list->AddRectFilled(bmin, bmax, hov ? st.theme.frame_hover : st.theme.frame_bg, 3.0F);
+        w.draw_list->AddRectFilled(bmin, ImVec2(bmin.x + 3.5F, bmax.y), kAxisCols[i]);
+        w.draw_list->AddRect(bmin, bmax, (st.active_id == cid) ? st.theme.accent_bright : st.theme.window_border, 3.0F, 0, 1.0F);
+
+        char buf[32] {};
+        std::snprintf(buf, sizeof(buf), format != nullptr ? format : "%.2f", static_cast<double>(v[i]));
+        w.draw_list->AddText(ImVec2(bmin.x + 6.0F, bmin.y + 4.0F), st.theme.text, buf, nullptr, 1.25F);
+    }
+
+    const ImVec2 p1 { p0.x + total_w + (vis.empty() ? 0.0F : (static_cast<float>(vis.size()) * 7.1F + 6.0F)), p0.y + ih };
+    if (!vis.empty())
+    {
+        w.draw_list->AddText(ImVec2(p0.x + total_w + 6.0F, p0.y + 4.0F),
+                             st.theme.text, vis.data(), vis.data() + vis.size(), 1.28F);
+    }
+    st.last_item_id = base_id;
+    detail::advance_item(w, p0, p1);
+    return changed;
+}
+
+inline bool ColorEdit3(const char* label, float col[3]) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || label == nullptr || col == nullptr) return false;
+    auto& w = st.window_stack.back();
+    const auto vis = cd::ui::chroma::visible_label(label);
+    const float total_w = detail::resolve_item_width(w);
+    const float swatch_w = 22.0F;
+    const float gap = 4.0F;
+    const float box_w = std::max(32.0F, (total_w - swatch_w - gap * 3.0F) / 3.0F);
+    const float ih = 19.0F;
+    const ImVec2 p0 = w.cursor;
+    const ImGuiID base_id = GetID(label);
+
+    bool changed = false;
+    const ImVec2 mp = st.io.MousePos;
+    for (int i = 0; i < 3; ++i)
+    {
+        const ImVec2 bmin { p0.x + static_cast<float>(i) * (box_w + gap), p0.y };
+        const ImVec2 bmax { bmin.x + box_w, p0.y + ih };
+        const ImGuiID cid = base_id + static_cast<ImGuiID>(i + 10);
+        const bool hov = (mp.x >= bmin.x && mp.x <= bmax.x && mp.y >= bmin.y && mp.y <= bmax.y);
+        if (hov && st.mouse_clicked[0]) st.active_id = cid;
+        if (st.active_id == cid && st.mouse_down[0] && std::fabs(st.mouse_delta.x) > 0.01F)
+        {
+            col[i] = std::clamp(col[i] + st.mouse_delta.x * 0.005F, 0.0F, 1.0F);
+            changed = true;
+        }
+        w.draw_list->AddRectFilled(bmin, bmax, st.theme.frame_bg, 3.0F);
+        w.draw_list->AddRect(bmin, bmax, st.theme.window_border, 3.0F, 0, 1.0F);
+        char buf[24] {};
+        std::snprintf(buf, sizeof(buf), "%.2f", static_cast<double>(col[i]));
+        w.draw_list->AddText(ImVec2(bmin.x + 4.0F, bmin.y + 4.0F), st.theme.text, buf, nullptr, 1.25F);
+    }
+
+    // Live color swatch preview
+    const ImVec2 smin { p0.x + 3.0F * (box_w + gap), p0.y };
+    const ImVec2 smax { smin.x + swatch_w, p0.y + ih };
+    const ImU32 swatch_col = cd::ui::chroma::pack_vec4(ImVec4(col[0], col[1], col[2], 1.0F));
+    w.draw_list->AddRectFilled(smin, smax, swatch_col, 4.0F);
+    w.draw_list->AddRect(smin, smax, IM_COL32(255, 255, 255, 180), 4.0F, 0, 1.0F);
+
+    if (!vis.empty())
+    {
+        w.draw_list->AddText(ImVec2(smax.x + 6.0F, p0.y + 4.0F),
+                             st.theme.text, vis.data(), vis.data() + vis.size(), 1.28F);
+    }
+    detail::advance_item(w, p0, ImVec2(smax.x + 6.0F + static_cast<float>(vis.size()) * 7.1F, p0.y + ih));
+    return changed;
+}
+
+inline bool Combo(const char* label, int* current_item, const char* const items[], int items_count) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || label == nullptr || current_item == nullptr || items == nullptr || items_count <= 0)
+        return false;
+    auto& w = st.window_stack.back();
+    const auto vis = cd::ui::chroma::visible_label(label);
+    const float iw = detail::resolve_item_width(w);
+    const float ih = 20.0F;
+    const ImVec2 p0 = w.cursor;
+    const ImVec2 bmax { p0.x + iw, p0.y + ih };
+    const ImGuiID id = GetID(label);
+    st.last_item_id = id;
+    detail::advance_item(w, p0, ImVec2(bmax.x + (vis.empty() ? 0.0F : (static_cast<float>(vis.size()) * 7.1F + 6.0F)), bmax.y));
+
+    const ImVec2 mp = st.io.MousePos;
+    const bool hov = (mp.x >= p0.x && mp.x <= bmax.x && mp.y >= p0.y && mp.y <= bmax.y);
+    if (hov && st.mouse_clicked[0])
+    {
+        st.open_popup_id  = (st.open_popup_id == id) ? 0U : id;
+        st.open_popup_pos = ImVec2 { p0.x, bmax.y + 2.0F };
+    }
+
+    w.draw_list->AddRectFilled(p0, bmax, hov ? st.theme.frame_hover : st.theme.frame_bg, 4.0F);
+    w.draw_list->AddRect(p0, bmax, hov ? st.theme.accent : st.theme.window_border, 4.0F, 0, 1.0F);
+    const int cur = std::clamp(*current_item, 0, items_count - 1);
+    w.draw_list->AddText(ImVec2(p0.x + 7.0F, p0.y + 5.0F), st.theme.text, items[cur], nullptr, 1.28F);
+    w.draw_list->AddText(ImVec2(bmax.x - 14.0F, p0.y + 5.0F), st.theme.accent_bright, "v", nullptr, 1.28F);
+    if (!vis.empty())
+    {
+        w.draw_list->AddText(ImVec2(bmax.x + 6.0F, p0.y + 5.0F), st.theme.text, vis.data(), vis.data() + vis.size(), 1.28F);
+    }
+
+    bool changed = false;
+    if (st.open_popup_id == id)
+    {
+        const float ph = static_cast<float>(items_count) * 21.0F + 8.0F;
+        const ImVec2 pp0 = st.open_popup_pos;
+        const ImVec2 pp1 { pp0.x + iw, pp0.y + ph };
+        st.popup_dl.AddShadow(pp0, pp1, 10.0F, 2.0F, IM_COL32(0, 0, 0, 180));
+        st.popup_dl.AddRectFilled(pp0, pp1, st.theme.popup_bg, 5.0F);
+        st.popup_dl.AddRect(pp0, pp1, st.theme.accent, 5.0F, 0, 1.0F);
+        for (int i = 0; i < items_count; ++i)
+        {
+            const ImVec2 r0 { pp0.x + 4.0F, pp0.y + 4.0F + static_cast<float>(i) * 21.0F };
+            const ImVec2 r1 { pp1.x - 4.0F, r0.y + 19.0F };
+            const bool rhov = (mp.x >= r0.x && mp.x <= r1.x && mp.y >= r0.y && mp.y <= r1.y);
+            if (rhov) st.any_item_hovered = true;
+            if (rhov || i == cur)
+            {
+                st.popup_dl.AddRectFilled(r0, r1, rhov ? st.theme.button_hover : st.theme.button, 3.0F);
+            }
+            st.popup_dl.AddText(ImVec2(r0.x + 6.0F, r0.y + 4.0F), st.theme.text, items[i], nullptr, 1.28F);
+            if (rhov && st.mouse_clicked[0])
+            {
+                *current_item = i;
+                changed = true;
+                st.open_popup_id = 0U;
+            }
+        }
+    }
+    return changed;
+}
+
+inline bool InputTextWithHint(const char* label, const char* hint, char* buf, std::size_t buf_size,
+                              ImGuiInputTextFlags /*flags*/ = 0) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || label == nullptr || buf == nullptr || buf_size == 0) return false;
+    auto& w = st.window_stack.back();
+    const auto vis = cd::ui::chroma::visible_label(label);
+    const float iw = detail::resolve_item_width(w);
+    const float ih = 21.0F;
+    const ImVec2 p0 = w.cursor;
+    const ImVec2 bmax { p0.x + iw, p0.y + ih };
+    const ImGuiID id = GetID(label);
+    st.last_item_id = id;
+    detail::advance_item(w, p0, ImVec2(bmax.x + (vis.empty() ? 0.0F : (static_cast<float>(vis.size()) * 7.1F + 6.0F)), bmax.y));
+
+    if (st.focus_next_input)
+    {
+        st.focused_input_id = id;
+        st.focus_next_input = false;
+    }
+    if (st.last_item_hovered && st.mouse_clicked[0])
+    {
+        st.focused_input_id = id;
+    }
+    else if (!st.last_item_hovered && st.mouse_clicked[0] && st.focused_input_id == id)
+    {
+        st.focused_input_id = 0U;
+    }
+
+    bool changed = false;
+    const bool focused = (st.focused_input_id == id);
+    if (focused)
+    {
+        std::size_t len = std::strlen(buf);
+        for (char c : st.input_chars)
+        {
+            if (len + 1 < buf_size)
+            {
+                buf[len++] = c;
+                buf[len]   = '\0';
+                changed    = true;
+            }
+        }
+        if (st.keys_pressed[ImGuiKey_Backspace] && len > 0)
+        {
+            buf[--len] = '\0';
+            changed = true;
+        }
+    }
+
+    w.draw_list->AddRectFilled(p0, bmax, st.theme.frame_bg, 4.0F);
+    w.draw_list->AddRect(p0, bmax, focused ? st.theme.accent_bright : st.theme.window_border, 4.0F, 0, focused ? 1.5F : 1.0F);
+
+    if (buf[0] != '\0')
+    {
+        w.draw_list->AddText(ImVec2(p0.x + 7.0F, p0.y + 5.0F), st.theme.text, buf, nullptr, 1.28F);
+    }
+    else if (hint != nullptr && hint[0] != '\0')
+    {
+        w.draw_list->AddText(ImVec2(p0.x + 7.0F, p0.y + 5.0F), st.theme.text_disabled, hint, nullptr, 1.28F);
+    }
+    if (!vis.empty())
+    {
+        w.draw_list->AddText(ImVec2(bmax.x + 6.0F, p0.y + 5.0F), st.theme.text, vis.data(), vis.data() + vis.size(), 1.28F);
+    }
+    return changed;
+}
+
+inline bool InputText(const char* label, char* buf, std::size_t buf_size, ImGuiInputTextFlags flags = 0) noexcept
+{
+    return InputTextWithHint(label, "", buf, buf_size, flags);
+}
+
+// -----------------------------------------------------------------------------
+// TabBar & Tables
+// -----------------------------------------------------------------------------
+inline bool BeginTabBar(const char* str_id) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty()) return false;
+    auto& w = st.window_stack.back();
+    const ImGuiID id = GetID(str_id != nullptr ? str_id : "tabs");
+    st.tab_bar_stack.push_back(id);
+    st.tab_bar_col_cursor[id] = 0;
+    st.tab_bar_pos[id]        = w.cursor;
+    // Reserve a 26px horizontal strip for tab headers
+    w.prev_item_min = w.cursor;
+    w.prev_item_max = ImVec2 { w.cursor.x, w.cursor.y + 23.0F };
+    w.cursor.y += 27.0F;
+    return true;
+}
+
+inline void EndTabBar() noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (!st.tab_bar_stack.empty()) st.tab_bar_stack.pop_back();
+}
+
+inline bool BeginTabItem(const char* label) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || st.tab_bar_stack.empty() || label == nullptr) return false;
+    auto& w = st.window_stack.back();
+    const ImGuiID bar_id = st.tab_bar_stack.back();
+    const int idx = st.tab_bar_col_cursor[bar_id]++;
+    const int active_idx = st.tab_map[bar_id];
+
+    const auto vis = cd::ui::chroma::visible_label(label);
+    const float tab_w = std::max(64.0F, static_cast<float>(vis.size()) * 7.0F + 12.0F);
+    ImVec2& tpos = st.tab_bar_pos[bar_id];
+    const ImVec2 tmin = tpos;
+    const ImVec2 tmax { tmin.x + tab_w, tmin.y + 22.0F };
+    tpos.x = tmax.x + 3.0F;
+
+    const ImVec2 mp = st.io.MousePos;
+    const bool hov = (mp.x >= tmin.x && mp.x <= tmax.x && mp.y >= tmin.y && mp.y <= tmax.y);
+    if (hov)
+    {
+        st.any_item_hovered = true;
+        if (st.mouse_clicked[0]) st.tab_map[bar_id] = idx;
+    }
+
+    const bool is_active = (st.tab_map[bar_id] == idx);
+    w.draw_list->AddRectFilled(tmin, tmax, is_active ? st.theme.button_hover : st.theme.button, 4.0F);
+    if (is_active)
+    {
+        w.draw_list->AddRectFilled(ImVec2(tmin.x + 2.0F, tmax.y - 2.5F),
+                                   ImVec2(tmax.x - 2.0F, tmax.y), st.theme.accent_bright);
+    }
+    w.draw_list->AddText(ImVec2(tmin.x + 6.0F, tmin.y + 6.0F),
+                         is_active ? st.theme.text : st.theme.text_disabled,
+                         vis.data(), vis.data() + vis.size(), 1.25F);
+    (void)active_idx;
+    return is_active;
+}
+
+inline void EndTabItem() noexcept {}
+
+inline bool BeginTable(const char* /*str_id*/, int column, ImGuiTableFlags /*flags*/ = 0) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || column <= 0) return false;
+    auto& w = st.window_stack.back();
+    cd::ui::chroma::TableState ts {};
+    ts.cols      = column;
+    ts.col_idx   = -1;
+    ts.start_x   = w.cursor.x;
+    ts.width     = std::max(60.0F, (w.pos.x + w.size.x - 10.0F) - w.cursor.x);
+    ts.row_y     = w.cursor.y;
+    ts.row_max_y = w.cursor.y;
+    st.table_stack.push_back(ts);
+    return true;
+}
+
+inline void TableNextColumn() noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || st.table_stack.empty()) return;
+    auto& w  = st.window_stack.back();
+    auto& ts = st.table_stack.back();
+    ts.row_max_y = std::max(ts.row_max_y, w.cursor.y);
+    ++ts.col_idx;
+    if (ts.col_idx >= ts.cols)
+    {
+        ts.col_idx = 0;
+        ts.row_y   = ts.row_max_y + 2.0F;
+    }
+    const float col_w = ts.width / static_cast<float>(ts.cols);
+    w.cursor.x = ts.start_x + static_cast<float>(ts.col_idx) * col_w;
+    w.cursor.y = ts.row_y;
+}
+
+inline void EndTable() noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || st.table_stack.empty()) return;
+    auto& w  = st.window_stack.back();
+    auto  ts = st.table_stack.back();
+    st.table_stack.pop_back();
+    w.cursor.x = ts.start_x;
+    w.cursor.y = std::max(ts.row_max_y, w.cursor.y) + 3.0F;
+}
+
+// -----------------------------------------------------------------------------
+// MainMenuBar, Menus, Popups & Tooltips
+// -----------------------------------------------------------------------------
+inline bool BeginMainMenuBar() noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    const float W = st.io.DisplaySize.x;
+    st.win_dl.AddGradient(ImVec2(0.0F, 0.0F), ImVec2(W, 28.0F),
+                          st.theme.window_header0, st.theme.window_header1, false);
+    st.win_dl.AddRectFilled(ImVec2(0.0F, 27.0F), ImVec2(W, 28.0F), st.theme.window_border);
+
+    cd::ui::chroma::WindowLayout wl {};
+    wl.name      = "##MainMenuBar";
+    wl.pos       = ImVec2 { 0.0F, 0.0F };
+    wl.size      = ImVec2 { W, 28.0F };
+    wl.cursor    = ImVec2 { 10.0F, 4.0F };
+    wl.draw_list = &st.win_dl;
+    st.window_stack.push_back(std::move(wl));
+    st.in_menu_bar = true;
+    st.menu_bar_cursor_x = 10.0F;
+
+    if (st.io.MousePos.y <= 28.0F) st.mouse_in_any_window = true;
+    return true;
+}
+
+inline void EndMainMenuBar() noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    st.in_menu_bar = false;
+    if (!st.window_stack.empty()) st.window_stack.pop_back();
+}
+
+inline bool BeginMenu(const char* label, bool /*enabled*/ = true) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || label == nullptr) return false;
+    auto& w = st.window_stack.back();
+    const auto vis = cd::ui::chroma::visible_label(label);
+    const float mw = static_cast<float>(vis.size()) * 7.1F + 14.0F;
+    const ImVec2 p0 = w.cursor;
+    const ImVec2 p1 { p0.x + mw, p0.y + 20.0F };
+
+    const ImVec2 mp = st.io.MousePos;
+    const bool hov = (mp.x >= p0.x && mp.x <= p1.x && mp.y >= p0.y && mp.y <= p1.y);
+    if (hov)
+    {
+        st.any_item_hovered = true;
+        if (st.mouse_clicked[0])
+        {
+            st.active_menu_name = (st.active_menu_name == vis) ? "" : std::string(vis);
+            st.current_menu_x   = p0.x;
+        }
+        else if (!st.active_menu_name.empty())
+        {
+            st.active_menu_name = std::string(vis);
+            st.current_menu_x   = p0.x;
+        }
+    }
+
+    const bool open = (st.active_menu_name == vis);
+    if (open || hov)
+    {
+        w.draw_list->AddRectFilled(p0, p1, open ? st.theme.button_active : st.theme.button_hover, 4.0F);
+    }
+    w.draw_list->AddText(ImVec2(p0.x + 7.0F, p0.y + 5.0F), st.theme.text,
+                         vis.data(), vis.data() + vis.size(), 1.28F);
+    w.prev_item_min = p0;
+    w.prev_item_max = p1;
+    w.cursor.x      = p1.x + 5.0F;
+
+    if (open)
+    {
+        cd::ui::chroma::WindowLayout mpw {};
+        mpw.name      = std::string("##menu_") + std::string(vis);
+        mpw.is_popup  = true;
+        mpw.pos       = ImVec2 { p0.x, 29.0F };
+        mpw.size      = ImVec2 { 270.0F, 260.0F };
+        mpw.cursor    = ImVec2 { p0.x + 8.0F, 35.0F };
+        mpw.draw_list = &st.popup_dl;
+        st.popup_dl.AddShadow(mpw.pos, ImVec2(mpw.pos.x + mpw.size.x, mpw.pos.y + mpw.size.y),
+                              12.0F, 2.0F, IM_COL32(0, 0, 0, 190));
+        st.popup_dl.AddRectFilled(mpw.pos, ImVec2(mpw.pos.x + mpw.size.x, mpw.pos.y + mpw.size.y),
+                                  st.theme.popup_bg, 5.0F);
+        st.popup_dl.AddRect(mpw.pos, ImVec2(mpw.pos.x + mpw.size.x, mpw.pos.y + mpw.size.y),
+                            st.theme.accent, 5.0F, 0, 1.0F);
+        st.window_stack.push_back(std::move(mpw));
+        st.in_open_menu = true;
+        return true;
+    }
+    return false;
+}
+
+inline void EndMenu() noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.in_open_menu && !st.window_stack.empty())
+    {
+        st.window_stack.pop_back();
+        st.in_open_menu = false;
+    }
+}
+
+inline bool MenuItem(const char* label, const char* shortcut = nullptr,
+                     bool selected = false, bool enabled = true) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || label == nullptr) return false;
+    auto& w = st.window_stack.back();
+    const auto vis = cd::ui::chroma::visible_label(label);
+    const float rw = w.size.x - 16.0F;
+    const ImVec2 p0 = w.cursor;
+    const ImVec2 p1 { p0.x + rw, p0.y + 20.0F };
+    detail::advance_item(w, p0, p1);
+
+    const bool hov = st.last_item_hovered && enabled;
+    if (hov || selected)
+    {
+        w.draw_list->AddRectFilled(p0, p1, hov ? st.theme.button_hover : st.theme.button, 3.0F);
+    }
+    w.draw_list->AddText(ImVec2(p0.x + 6.0F, p0.y + 4.0F),
+                         enabled ? st.theme.text : st.theme.text_disabled,
+                         vis.data(), vis.data() + vis.size(), 1.38F);
+    if (shortcut != nullptr && shortcut[0] != '\0')
+    {
+        const std::string_view ssv { shortcut };
+        w.draw_list->AddText(ImVec2(p1.x - static_cast<float>(ssv.size()) * 8.2F - 6.0F, p0.y + 4.0F),
+                             st.theme.text_disabled, ssv.data(), ssv.data() + ssv.size(), 1.32F);
+    }
+    if (hov && st.mouse_clicked[0])
+    {
+        st.active_menu_name.clear();
+        st.open_popup_id = 0U;
+        return true;
+    }
+    return false;
+}
+
+inline bool MenuItem(const char* label, const char* shortcut,
+                     bool* p_selected, bool enabled = true) noexcept
+{
+    const bool cur = (p_selected != nullptr) ? *p_selected : false;
+    if (MenuItem(label, shortcut, cur, enabled))
+    {
+        if (p_selected != nullptr) *p_selected = !(*p_selected);
+        return true;
+    }
+    return false;
+}
+
+inline void OpenPopup(const char* str_id) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    st.open_popup_id  = GetID(str_id);
+    st.open_popup_pos = st.io.MousePos;
+}
+
+inline bool BeginPopup(const char* str_id) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    const ImGuiID id = GetID(str_id);
+    if (st.open_popup_id != id) return false;
+
+    cd::ui::chroma::WindowLayout pw {};
+    pw.name      = str_id != nullptr ? str_id : "popup";
+    pw.is_popup  = true;
+    pw.pos       = st.open_popup_pos;
+    pw.size      = ImVec2 { 250.0F, 210.0F };
+    pw.cursor    = ImVec2 { pw.pos.x + 8.0F, pw.pos.y + 8.0F };
+    pw.draw_list = &st.popup_dl;
+    st.popup_dl.AddShadow(pw.pos, ImVec2(pw.pos.x + pw.size.x, pw.pos.y + pw.size.y),
+                          12.0F, 2.0F, IM_COL32(0, 0, 0, 185));
+    st.popup_dl.AddRectFilled(pw.pos, ImVec2(pw.pos.x + pw.size.x, pw.pos.y + pw.size.y),
+                              st.theme.popup_bg, 5.0F);
+    st.popup_dl.AddRect(pw.pos, ImVec2(pw.pos.x + pw.size.x, pw.pos.y + pw.size.y),
+                        st.theme.accent, 5.0F, 0, 1.0F);
+    st.window_stack.push_back(std::move(pw));
+    return true;
+}
+
+inline bool BeginPopupContextItem(const char* str_id = nullptr) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    const ImGuiID id = (str_id != nullptr) ? GetID(str_id) : (st.last_item_id ^ 0x9E3779B9U);
+    if (st.last_item_hovered && st.mouse_clicked[1])
+    {
+        st.open_popup_id  = id;
+        st.open_popup_pos = st.io.MousePos;
+    }
+    if (st.open_popup_id != id) return false;
+
+    cd::ui::chroma::WindowLayout pw {};
+    pw.name      = str_id != nullptr ? str_id : "ctx_popup";
+    pw.is_popup  = true;
+    pw.pos       = st.open_popup_pos;
+    pw.size      = ImVec2 { 230.0F, 150.0F };
+    pw.cursor    = ImVec2 { pw.pos.x + 8.0F, pw.pos.y + 8.0F };
+    pw.draw_list = &st.popup_dl;
+    st.popup_dl.AddShadow(pw.pos, ImVec2(pw.pos.x + pw.size.x, pw.pos.y + pw.size.y),
+                          12.0F, 2.0F, IM_COL32(0, 0, 0, 185));
+    st.popup_dl.AddRectFilled(pw.pos, ImVec2(pw.pos.x + pw.size.x, pw.pos.y + pw.size.y),
+                              st.theme.popup_bg, 5.0F);
+    st.popup_dl.AddRect(pw.pos, ImVec2(pw.pos.x + pw.size.x, pw.pos.y + pw.size.y),
+                        st.theme.accent, 5.0F, 0, 1.0F);
+    st.window_stack.push_back(std::move(pw));
+    return true;
+}
+
+inline void EndPopup() noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (!st.window_stack.empty() && st.window_stack.back().is_popup)
+    {
+        st.window_stack.pop_back();
+    }
+}
+
+inline void SetTooltip(const char* fmt, ...) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (fmt == nullptr) return;
+    char buf[256] {};
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+
+    const std::string_view sv { buf };
+    const float tw = static_cast<float>(sv.size()) * 8.6F + 16.0F;
+    const ImVec2 p0 { st.io.MousePos.x + 14.0F, st.io.MousePos.y + 18.0F };
+    const ImVec2 p1 { p0.x + tw, p0.y + 24.0F };
+    st.fg_dl.AddShadow(p0, p1, 8.0F, 1.0F, IM_COL32(0, 0, 0, 180));
+    st.fg_dl.AddRectFilled(p0, p1, st.theme.popup_bg, 4.0F);
+    st.fg_dl.AddRect(p0, p1, st.theme.accent_bright, 4.0F, 0, 1.0F);
+    st.fg_dl.AddText(ImVec2(p0.x + 8.0F, p0.y + 6.0F), st.theme.text,
+                     sv.data(), sv.data() + sv.size(), 1.38F);
+}
+
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+
+// -----------------------------------------------------------------------------
+// Native Drag & Drop Engine
+// -----------------------------------------------------------------------------
+inline bool BeginDragDropSource(ImGuiDragDropFlags /*flags*/ = 0) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if ((st.last_item_hovered || st.active_id == st.last_item_id) && st.mouse_down[0])
+    {
+        st.dnd_in_source = true;
+        return true;
+    }
+    return false;
+}
+
+inline bool SetDragDropPayload(const char* type, const void* data, std::size_t sz) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (!st.dnd_in_source || type == nullptr || data == nullptr || sz == 0) return false;
+    st.dnd_active = true;
+    st.dnd_buffer.resize(sz);
+    std::memcpy(st.dnd_buffer.data(), data, sz);
+    st.dnd_payload.Data     = st.dnd_buffer.data();
+    st.dnd_payload.DataSize = static_cast<int>(sz);
+    std::snprintf(st.dnd_payload.DataType, sizeof(st.dnd_payload.DataType), "%s", type);
+    st.dnd_label = type;
+    return true;
+}
+
+inline void EndDragDropSource() noexcept
+{
+    cd::ui::chroma::state().dnd_in_source = false;
+}
+
+inline bool BeginDragDropTarget() noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (!st.dnd_active || st.window_stack.empty()) return false;
+    const auto& w = st.window_stack.back();
+    const ImVec2 mp = st.io.MousePos;
+    const bool in_win = (mp.x >= w.pos.x && mp.x <= w.pos.x + w.size.x &&
+                         mp.y >= w.pos.y && mp.y <= w.pos.y + w.size.y);
+    if (in_win || st.last_item_hovered)
+    {
+        st.dnd_in_target = true;
+        return true;
+    }
+    return false;
+}
+
+inline const ImGuiPayload* AcceptDragDropPayload(const char* type) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (!st.dnd_active || !st.dnd_in_target || type == nullptr) return nullptr;
+    if (std::strcmp(st.dnd_payload.DataType, type) != 0) return nullptr;
+    if (st.mouse_released[0])
+    {
+        st.dnd_active = false;
+        return &st.dnd_payload;
+    }
+    return nullptr;
+}
+
+inline void EndDragDropTarget() noexcept
+{
+    cd::ui::chroma::state().dnd_in_target = false;
+}
+
+}  // namespace ImGui

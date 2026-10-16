@@ -177,3 +177,21 @@
 - [x] **Wave 10.2 — Crash Reporter (`MiniDumpWriteDump` / Signal Backtrace + Sembolleme — `v2.0.3`)**.
 - [x] **Wave 10.3 — CPack/InnoSetup Kurulum Paketi, 24s `cd_stress` Kapısı ve `docs/ENGINE_GUIDE.md` (`Faz 3` & `v2.0.7–v2.0.8`)**.
 
+---
+
+## FAZ 11 — ChromaUI (`cd::ui::chroma`) GPU/CPU Hibrit UI Kütüphanesi & Dear ImGui'nin Komple Kaldırılması
+
+- [x] **Wave 11.1 — GPU/CPU Hibrit Çizim Hattı, Vektör Geometri & Font/Glyph Rasterizer (`cd::ui::renderer` + `cd::ui::renderer_rhi` + `cd::ui::ChromaUi`)**:
+  - `cd::ui::renderer::DrawBatcher` + `cd::ui::renderer_rhi::Submitter` üzerinden 65.532 tepe noktalı yüksek kapasiteli GPU/CPU hibrit çizim hattı.
+  - Keskin vektör/piksel-quad tabanlı yerleşik 5x7 / 7x9 ölçeklenebilir glif motoru + `cd::ui::font::Font` metrikleri, kalın çizgi (`AddLine`), çember (`AddCircle`/`AddCircleFilled`), yuvarlatılmış dikdörtgen (`AddRect`/`AddRectFilled`), gradyan ve gölge üretimi.
+- [x] **Wave 11.2 — Esnek Hibrit UI Motoru (`engine/ui/widgets/include/cd/ui/ChromaUi.hpp`) — Docking, Layout, Drag & Drop, Tema ve 25+ Widget**:
+  - `DockSpace` + etkileşimli panel bölücüler (Sol Palette/Hierarchy, Sağ Inspector/World, Alt Asset/Status, Üst MenuBar + Quick-Action Toolbar, Yüzen HUD pencereleri ve z-sıralı sağ-tık `Popup`/`Modal` katmanları).
+  - Tam Widget Seti: `Button`, `SmallButton`, `Checkbox`, `RadioButton`, `SliderFloat`, `SliderInt`, `DragFloat`, `DragFloat3` (X/Y/Z renk şeritli sürüklenebilir sayısal kutular), `ColorEdit3` (etkileşimli renk seçici + RGB/HSV), `Combo` (açılır liste), `InputText` / `InputTextWithHint` (klavye düzenleme + imleç), `CollapsingHeader`, `TabBar`/`TabItem`, `Table` (esnek N-sütunlu ızgara), `PlotLines`, `Tooltip`, `Selectable`, `ProgressBar`.
+  - Yerel Sürükle-Bırak (`BeginDragDropSource` / `AcceptDragDropPayload`) + yüzen hayalet rozet (ghost badge) ve tema motoru (*Chroma Studio Dark*, *Cyber Glass*, *Solarized Light*).
+- [x] **Wave 11.3 — `apps/editor/` İçinden Dear ImGui (`cd::imgui_backend`, `<imgui.h>`) Bağımlılığının %100 Kaldırılması**:
+  - `apps/editor/CMakeLists.txt` içinden `cd::imgui_backend` hedefinin tamamen çıkarılması.
+  - `apps/editor/main.cpp`, `StudioToolbar.hpp`, `StudioModifierClasses.hpp`, `StudioPhysicsSolver.hpp` ve `StudioWorkspacePanels.hpp` içindeki tüm UI, pencere, menü, sürükle-bırak, 3D collider tel-kafes (wireframe) ve girdi (`OSEvent`) akışının `%100 cd::ui::ChromaUi` üzerinden çalıştırılması.
+- [x] **Wave 11.4 — Birim Testleri, CTest Doğrulaması ve Gerçek Vulkan 1.3 GPU Ekran Görüntüsü Kanıtı**:
+  - `cd_app_editor` hedefinin sıfır ImGui bağımlılığıyla derlenmesi, tüm editör CTest testlerinin geçmesi ve gerçek Vulkan 1.3 GPU üzerinde `studio_chromaui_clean.png` ile `studio_chromaui_physics.png` ekran görüntülerinin alınıp doğrulanması.
+
+

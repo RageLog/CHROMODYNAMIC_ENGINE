@@ -60,9 +60,11 @@ layout(push_constant) uniform PushConstants {
 layout(location = 0) in vec2 in_pos;
 layout(location = 1) in vec2 in_uv;
 layout(location = 2) in vec4 in_color;   // RGBA8 normalized -> vec4
+layout(location = 3) in vec4 in_flags;   // (variant, pad0=radius, pad1=border/spread, pad2) normalized
 
 layout(location = 0) out vec4 v_color;
 layout(location = 1) out vec2 v_uv;
+layout(location = 2) flat out vec4 v_flags;
 
 void main()
 {
@@ -71,6 +73,7 @@ void main()
     gl_Position = vec4(ndc, 0.0, 1.0);
     v_color = in_color;
     v_uv    = in_uv;
+    v_flags = in_flags;
 }
 )glsl";
 
@@ -78,12 +81,56 @@ constexpr const char* kInlineFS = R"glsl(
 #version 450
 layout(location = 0) in vec4 v_color;
 layout(location = 1) in vec2 v_uv;
+layout(location = 2) flat in vec4 v_flags;
 layout(location = 0) out vec4 out_color;
+
+float sdRoundBox(vec2 p, vec2 b, float r)
+{
+    vec2 q = abs(p) - b + vec2(r);
+    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
+}
 
 void main()
 {
-    // v1 fallback: no atlas sampler. Glyph rendering requires the
-    // cd::material UI variant (Route A) -- it lands with M3 W1B.
+    uint variant = uint(floor(v_flags.r * 255.0 + 0.5));
+    float radius = v_flags.g * 255.0;
+    float border = v_flags.b * 255.0;
+
+    if (variant == 7u) // kRoundedRect (GPU SDF)
+    {
+        vec2 duv = max(fwidth(v_uv), vec2(1e-4));
+        vec2 half_size = 0.5 / duv;
+        vec2 p = (v_uv - 0.5) * 2.0 * half_size;
+        float r = min(radius, min(half_size.x, half_size.y));
+        float d = sdRoundBox(p, half_size - vec2(0.5), r);
+        float alpha = 1.0 - smoothstep(-0.65, 0.65, d);
+        if (border > 0.5)
+        {
+            float inner_a = 1.0 - smoothstep(-0.65, 0.65, d + border);
+            alpha = max(0.0, alpha - inner_a);
+        }
+        out_color = vec4(v_color.rgb, v_color.a * alpha);
+        return;
+    }
+    else if (variant == 6u) // kShadow (GPU SDF Gaussian-like elevation shadow)
+    {
+        vec2 duv = max(fwidth(v_uv), vec2(1e-4));
+        vec2 half_size = 0.5 / duv;
+        vec2 p = (v_uv - 0.5) * 2.0 * half_size;
+        float blur_r = max(radius, 2.0);
+        float spread = border;
+        vec2 inner_half = max(half_size - vec2(blur_r), vec2(1.0));
+        float d = sdRoundBox(p, inner_half, min(6.0 + spread, min(inner_half.x, inner_half.y)));
+        float falloff = 1.0 - smoothstep(-2.0, blur_r, d);
+        out_color = vec4(v_color.rgb, v_color.a * falloff * falloff);
+        return;
+    }
+    else if (variant == 5u) // kBlur (Frosted glass panel surface)
+    {
+        float edge = 1.0 - 0.12 * length(v_uv - vec2(0.5));
+        out_color = vec4(v_color.rgb * edge, v_color.a);
+        return;
+    }
     out_color = v_color;
 }
 )glsl";
@@ -371,7 +418,7 @@ Submitter::create_with_inline_shader(cd::rhi::IDevice& device, const SubmitterCr
                                  static_cast<std::uint32_t>(sizeof(cd::ui::renderer::Vertex)),
                                  false }
     };
-    const std::array<cd::rhi::VertexAttribute, 3> v_attrs {
+    const std::array<cd::rhi::VertexAttribute, 4> v_attrs {
         // location 0 : pos (vec2 float)
         cd::rhi::VertexAttribute { 0U, 0U, cd::rhi::Format::kRG32Float,
             static_cast<std::uint32_t>(offsetof(cd::ui::renderer::Vertex, pos_x)) },
@@ -381,6 +428,9 @@ Submitter::create_with_inline_shader(cd::rhi::IDevice& device, const SubmitterCr
         // location 2 : color (RGBA8 unorm -> vec4)
         cd::rhi::VertexAttribute { 2U, 0U, cd::rhi::Format::kRGBA8Unorm,
             static_cast<std::uint32_t>(offsetof(cd::ui::renderer::Vertex, r)) },
+        // location 3 : flags (variant, pad0, pad1, pad2 -> RGBA8 unorm vec4)
+        cd::rhi::VertexAttribute { 3U, 0U, cd::rhi::Format::kRGBA8Unorm,
+            static_cast<std::uint32_t>(offsetof(cd::ui::renderer::Vertex, variant)) },
     };
 
     // 5) Pipeline state. Alpha blend on, depth disabled, no culling
