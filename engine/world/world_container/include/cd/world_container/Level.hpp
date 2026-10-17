@@ -72,12 +72,31 @@ public:
         return nullptr;
     }
 
+    [[nodiscard]] const Layer* find_layer(std::string_view n) const noexcept
+    {
+        for (const auto& l : layers_)
+            if (l && l->name() == n) return l.get();
+        return nullptr;
+    }
+
     /// phase1108: path (project-relative) to this level's entity
     /// payload — a .cdscene file in the cd::scene::Serializer format
     /// (the same family the hello_editor <-> hello_engine bridge
     /// reads). Empty = level has no baked content yet.
     [[nodiscard]] std::string_view scene_path() const noexcept { return scene_path_; }
     void set_scene_path(std::string p) { scene_path_ = std::move(p); }
+
+    /// Logical World grouping within a multi-world Project.
+    [[nodiscard]] std::string_view world_name() const noexcept { return world_name_; }
+    void set_world_name(std::string w) { world_name_ = std::move(w); }
+
+    /// Human-readable description shown in the Studio Level Browser / Hub.
+    [[nodiscard]] std::string_view description() const noexcept { return description_; }
+    void set_description(std::string d) { description_ = std::move(d); }
+
+    /// Optional interactive showcase template ID (0 = custom / none).
+    [[nodiscard]] int template_id() const noexcept { return template_id_; }
+    void set_template_id(int id) noexcept { template_id_ = id; }
 
     /// Index of the active (spawn-destination) layer. v1.6 editor
     /// surface uses this when the asset palette drops a new entity.
@@ -90,6 +109,9 @@ public:
 private:
     std::string                          name_         { "Untitled Level" };
     std::string                          scene_path_   {};
+    std::string                          world_name_   { "Default World" };
+    std::string                          description_  {};
+    int                                  template_id_  { 0 };
     LevelBounds                          bounds_       {};
     std::vector<std::unique_ptr<Layer>>  layers_;
     std::size_t                          active_layer_ { 0 };

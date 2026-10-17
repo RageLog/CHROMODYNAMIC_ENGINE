@@ -56,6 +56,18 @@ public:
     {
         if (i >= levels_.size()) return false;
         levels_.erase(levels_.begin() + static_cast<std::ptrdiff_t>(i));
+        if (levels_.empty())
+        {
+            active_level_ = 0;
+        }
+        else if (i < active_level_)
+        {
+            --active_level_;
+        }
+        else if (active_level_ >= levels_.size())
+        {
+            active_level_ = levels_.size() - 1;
+        }
         return true;
     }
 
@@ -69,10 +81,66 @@ public:
         return nullptr;
     }
 
+    [[nodiscard]] const Level* find_level(std::string_view n) const noexcept
+    {
+        for (const auto& l : levels_)
+            if (l && l->name() == n) return l.get();
+        return nullptr;
+    }
+
+    [[nodiscard]] std::size_t active_level() const noexcept { return active_level_; }
+    void set_active_level(std::size_t i) noexcept
+    {
+        if (i < levels_.size()) active_level_ = i;
+    }
+    bool set_active_level(std::string_view n) noexcept
+    {
+        for (std::size_t i = 0; i < levels_.size(); ++i)
+        {
+            if (levels_[i] && levels_[i]->name() == n)
+            {
+                active_level_ = i;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Returns distinct logical world names across all levels in order of appearance.
+    [[nodiscard]] std::vector<std::string> world_names() const
+    {
+        std::vector<std::string> out;
+        for (const auto& l : levels_)
+        {
+            if (!l) continue;
+            const std::string_view wn = l->world_name();
+            bool found = false;
+            for (const auto& existing : out)
+            {
+                if (existing == wn) { found = true; break; }
+            }
+            if (!found) out.emplace_back(wn);
+        }
+        return out;
+    }
+
+    /// Returns indices of all levels belonging to `world_name`.
+    [[nodiscard]] std::vector<std::size_t> levels_in_world(std::string_view world_name) const
+    {
+        std::vector<std::size_t> out;
+        for (std::size_t i = 0; i < levels_.size(); ++i)
+        {
+            if (levels_[i] && levels_[i]->world_name() == world_name)
+                out.push_back(i);
+        }
+        return out;
+    }
+
 private:
-    std::string                          name_     { "Untitled Project" };
-    ProjectSettings                      settings_ {};
+    std::string                          name_         { "Untitled Project" };
+    ProjectSettings                      settings_     {};
     std::vector<std::unique_ptr<Level>>  levels_;
+    std::size_t                          active_level_ { 0 };
 };
 
 }  // namespace cd::world_container

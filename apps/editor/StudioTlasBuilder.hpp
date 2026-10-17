@@ -113,7 +113,8 @@ rebuild_tlas_and_transition_depth(
     // instance so the shader's 2-bounce path can fire a second
     // reflection ray with a meaningful normal. Default is "never a
     // sphere" so the legacy single-bounce + IBL-shine path stays.
-    IsSphereFor                             is_sphere_for = {})
+    IsSphereFor                             is_sphere_for = {},
+    bool                                    rebuild_needed = true)
 {
     // 1) tick deferred destroy queue (3-frame margin beyond fif=2).
     while (!destroy_queue.empty()
@@ -123,6 +124,8 @@ rebuild_tlas_and_transition_depth(
         destroy_queue.pop_front();
     }
 
+    if (rebuild_needed || !current_tlas.is_valid())
+    {
     // 2) collect instances (ECS entities + floor + skinned gltf).
     //
     // Phase N2A (Marathon Run 23): the parallel scatter + serial
@@ -328,6 +331,7 @@ rebuild_tlas_and_transition_depth(
         };
         (void)prim_inst.update(ssbo_writes);
     }
+    }  // if (rebuild_needed || !current_tlas.is_valid())
 
     // ---- Depth target ring barrier --------------------------------------
     // First frame: kUndefined -> kDepthWrite. Subsequent frames: composite-

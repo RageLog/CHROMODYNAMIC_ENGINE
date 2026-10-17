@@ -135,6 +135,78 @@ void main()
 }
 )glsl";
 
+constexpr const char* kInlineFSWithAtlas = R"glsl(
+#version 450
+layout(set = 0, binding = 0) uniform sampler2D u_atlas;
+
+layout(location = 0) in vec4 v_color;
+layout(location = 1) in vec2 v_uv;
+layout(location = 2) flat in vec4 v_flags;
+layout(location = 0) out vec4 out_color;
+
+float sdRoundBox(vec2 p, vec2 b, float r)
+{
+    vec2 q = abs(p) - b + vec2(r);
+    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
+}
+
+void main()
+{
+    uint variant = uint(floor(v_flags.r * 255.0 + 0.5));
+    float radius = v_flags.g * 255.0;
+    float border = v_flags.b * 255.0;
+
+    if (variant == 2u) // kGlyph (TrueType anti-aliased glyph atlas)
+    {
+        vec4 s = texture(u_atlas, v_uv);
+        float cov = pow(clamp(s.a, 0.0, 1.0), 0.82);
+        out_color = vec4(v_color.rgb, v_color.a * cov);
+        return;
+    }
+    else if (variant == 1u || variant == 3u) // kTextured / kNinePatch
+    {
+        out_color = texture(u_atlas, v_uv) * v_color;
+        return;
+    }
+    else if (variant == 7u) // kRoundedRect (GPU SDF)
+    {
+        vec2 duv = max(fwidth(v_uv), vec2(1e-4));
+        vec2 half_size = 0.5 / duv;
+        vec2 p = (v_uv - 0.5) * 2.0 * half_size;
+        float r = min(radius, min(half_size.x, half_size.y));
+        float d = sdRoundBox(p, half_size - vec2(0.5), r);
+        float alpha = 1.0 - smoothstep(-0.65, 0.65, d);
+        if (border > 0.5)
+        {
+            float inner_a = 1.0 - smoothstep(-0.65, 0.65, d + border);
+            alpha = max(0.0, alpha - inner_a);
+        }
+        out_color = vec4(v_color.rgb, v_color.a * alpha);
+        return;
+    }
+    else if (variant == 6u) // kShadow (GPU SDF Gaussian-like elevation shadow)
+    {
+        vec2 duv = max(fwidth(v_uv), vec2(1e-4));
+        vec2 half_size = 0.5 / duv;
+        vec2 p = (v_uv - 0.5) * 2.0 * half_size;
+        float blur_r = max(radius, 2.0);
+        float spread = border;
+        vec2 inner_half = max(half_size - vec2(blur_r), vec2(1.0));
+        float d = sdRoundBox(p, inner_half, min(6.0 + spread, min(inner_half.x, inner_half.y)));
+        float falloff = 1.0 - smoothstep(-2.0, blur_r, d);
+        out_color = vec4(v_color.rgb, v_color.a * falloff * falloff);
+        return;
+    }
+    else if (variant == 5u) // kBlur (Frosted glass panel surface)
+    {
+        float edge = 1.0 - 0.12 * length(v_uv - vec2(0.5));
+        out_color = vec4(v_color.rgb * edge, v_color.a);
+        return;
+    }
+    out_color = v_color;
+}
+)glsl";
+
 }  // namespace
 
 struct Submitter::Impl
@@ -148,11 +220,13 @@ struct Submitter::Impl
 
     // Phase 554 -- inline pipeline (Route B). Stays empty when create()
     // was used; both factories share the same Impl + destroy() path.
-    bool                            inline_pipeline_owned { false };
-    cd::rhi::ShaderModuleHandle     vs {};
-    cd::rhi::ShaderModuleHandle     fs {};
-    cd::rhi::PipelineLayoutHandle   pipeline_layout {};
-    cd::rhi::GraphicsPipelineHandle pipeline {};
+    bool                                  inline_pipeline_owned { false };
+    cd::rhi::ShaderModuleHandle           vs {};
+    cd::rhi::ShaderModuleHandle           fs {};
+    cd::rhi::DescriptorSetLayoutHandle    inline_dsl {};
+    cd::rhi::DescriptorSetHandle          inline_ds {};
+    cd::rhi::PipelineLayoutHandle         pipeline_layout {};
+    cd::rhi::GraphicsPipelineHandle       pipeline {};
 
     // Phase 608 / M7 W3 -- Route A pipeline source. When set, `record()`
     // binds `material_variant->material().pipeline()` and pushes the
@@ -182,6 +256,7 @@ struct Submitter::Impl
         cd::rhi::TextureViewHandle                      view {};
         cd::rhi::SamplerHandle                          sampler {};
         std::unique_ptr<cd::material::MaterialInstance> instance {};
+        cd::rhi::DescriptorSetHandle                    inline_set {};
     };
     std::vector<TextureSlotEntry> texture_slots {};
 
@@ -214,6 +289,13 @@ void Submitter::destroy() noexcept
     if (!impl_) return;
     if (impl_->device != nullptr)
     {
+        for (auto& ts : impl_->texture_slots)
+        {
+            if (ts.inline_set.is_valid())
+            {
+                impl_->device->destroy_descriptor_set(ts.inline_set);
+            }
+        }
         // Tear down inline pipeline resources (Route B) in reverse-create
         // order so dependents go first. Route A leaves these handles
         // invalid -- destroy_* is a no-op for null handles.
@@ -226,6 +308,14 @@ void Submitter::destroy() noexcept
             if (impl_->pipeline_layout.is_valid())
             {
                 impl_->device->destroy_pipeline_layout(impl_->pipeline_layout);
+            }
+            if (impl_->inline_ds.is_valid())
+            {
+                impl_->device->destroy_descriptor_set(impl_->inline_ds);
+            }
+            if (impl_->inline_dsl.is_valid())
+            {
+                impl_->device->destroy_descriptor_set_layout(impl_->inline_dsl);
             }
             if (impl_->fs.is_valid())
             {
@@ -352,8 +442,10 @@ Submitter::create_with_inline_shader(cd::rhi::IDevice& device, const SubmitterCr
         return std::unexpected(vs_compile.error());
     }
 
+    const bool use_atlas = info.atlas_view.is_valid() && info.atlas_sampler.is_valid();
+
     cd::shader::CompileDesc fs_desc {};
-    fs_desc.source       = kInlineFS;
+    fs_desc.source       = use_atlas ? kInlineFSWithAtlas : kInlineFS;
     fs_desc.stage        = cd::shader::ShaderStage::kFragment;
     fs_desc.lang         = cd::shader::ShaderLanguage::kGlsl;
     fs_desc.source_name  = "cd_ui_submitter_inline.frag";
@@ -394,13 +486,68 @@ Submitter::create_with_inline_shader(cd::rhi::IDevice& device, const SubmitterCr
     out.impl_->fs = *fs_r;
 
     // 3) Pipeline layout: one push-constant range carrying the viewport
-    //    size (two floats). No descriptor sets in Route B (no sampler).
+    //    size (two floats), plus optional descriptor set 0 binding 0 when
+    //    an atlas view + sampler are provided.
+    if (use_atlas)
+    {
+        const std::array<cd::rhi::DescriptorSetLayoutBinding, 1> dsl_bindings {
+            cd::rhi::DescriptorSetLayoutBinding {
+                0U,
+                cd::rhi::DescriptorType::kCombinedImageSampler,
+                1U,
+                cd::rhi::ShaderStage::kFragment,
+                false }
+        };
+        cd::rhi::DescriptorSetLayoutDesc dsl_desc {};
+        dsl_desc.bindings = std::span<const cd::rhi::DescriptorSetLayoutBinding>(
+            dsl_bindings.data(), dsl_bindings.size());
+        auto dsl_r = device.create_descriptor_set_layout(dsl_desc);
+        if (!dsl_r.has_value())
+        {
+            out.destroy();
+            return std::unexpected(dsl_r.error());
+        }
+        out.impl_->inline_dsl = *dsl_r;
+
+        auto ds_r = device.allocate_descriptor_set(out.impl_->inline_dsl);
+        if (!ds_r.has_value())
+        {
+            out.destroy();
+            return std::unexpected(ds_r.error());
+        }
+        out.impl_->inline_ds = *ds_r;
+
+        cd::rhi::DescriptorWrite w {};
+        w.binding       = 0U;
+        w.array_element = 0U;
+        w.type          = cd::rhi::DescriptorType::kCombinedImageSampler;
+        w.view          = info.atlas_view;
+        w.sampler       = info.atlas_sampler;
+        const std::array<cd::rhi::DescriptorWrite, 1> writes { w };
+        auto upd_r = device.update_descriptor_set(
+            out.impl_->inline_ds,
+            std::span<const cd::rhi::DescriptorWrite>(writes.data(), writes.size()));
+        if (!upd_r.has_value())
+        {
+            out.destroy();
+            return std::unexpected(upd_r.error());
+        }
+    }
+
     const std::array<cd::rhi::PushConstantRange, 1> pcr {
         cd::rhi::PushConstantRange {
             cd::rhi::ShaderStage::kVertex, 0U,
             static_cast<std::uint32_t>(2U * sizeof(float)) }
     };
+    const std::array<cd::rhi::DescriptorSetLayoutHandle, 1> set_layouts {
+        out.impl_->inline_dsl
+    };
     cd::rhi::PipelineLayoutDesc pld {};
+    if (use_atlas)
+    {
+        pld.set_layouts = std::span<const cd::rhi::DescriptorSetLayoutHandle>(
+            set_layouts.data(), set_layouts.size());
+    }
     pld.push_constants = std::span<const cd::rhi::PushConstantRange>(pcr.data(), pcr.size());
     auto pl_r = device.create_pipeline_layout(pld);
     if (!pl_r.has_value())
@@ -655,13 +802,37 @@ bool Submitter::set_texture_slot(std::uint32_t              slot,
     }
     if (entry == nullptr)
     {
-        impl_->texture_slots.push_back(Impl::TextureSlotEntry { slot, view, sampler, nullptr });
+        impl_->texture_slots.push_back(Impl::TextureSlotEntry { slot, view, sampler, nullptr, {} });
         entry = &impl_->texture_slots.back();
     }
     else
     {
         entry->view    = view;
         entry->sampler = sampler;
+    }
+
+    if (impl_->inline_pipeline_owned && impl_->inline_dsl.is_valid())
+    {
+        if (!entry->inline_set.is_valid())
+        {
+            auto ds_r = impl_->device->allocate_descriptor_set(impl_->inline_dsl);
+            if (!ds_r.has_value())
+            {
+                return false;
+            }
+            entry->inline_set = *ds_r;
+        }
+        cd::rhi::DescriptorWrite tex_w {};
+        tex_w.binding       = 0U;
+        tex_w.array_element = 0U;
+        tex_w.type          = cd::rhi::DescriptorType::kCombinedImageSampler;
+        tex_w.view          = view;
+        tex_w.sampler       = sampler;
+        const std::array<cd::rhi::DescriptorWrite, 1> tex_writes { tex_w };
+        auto upd = impl_->device->update_descriptor_set(
+            entry->inline_set,
+            std::span<const cd::rhi::DescriptorWrite>(tex_writes.data(), tex_writes.size()));
+        if (!upd.has_value()) return false;
     }
 
     if (impl_->material_pipeline_owned && impl_->material_variant && impl_->has_sdf_sampler)
@@ -780,6 +951,10 @@ void Submitter::record(cd::rhi::ICommandBuffer& cmd,
                            0U,
                            static_cast<std::uint32_t>(vp_size.size() * sizeof(float)),
                            vp_size.data());
+        if (impl_->inline_ds.is_valid())
+        {
+            cmd.bind_descriptor_set(0U, impl_->inline_ds);
+        }
     }
     else if (impl_->material_pipeline_owned && impl_->material_variant)
     {
@@ -820,6 +995,80 @@ void Submitter::record(cd::rhi::ICommandBuffer& cmd,
 
     cmd.bind_vertex_buffer(0U, impl_->vb, 0U);
     cmd.bind_index_buffer(impl_->ib, 0U, cd::rhi::IndexType::kUInt16);
+
+    if (impl_->inline_pipeline_owned)
+    {
+        cd::rhi::DescriptorSetHandle last_ds = impl_->inline_ds;
+        bool has_last_scissor = false;
+        cd::ui::renderer::ScissorRect last_sc {};
+
+        auto resolve_inline_ds = [&](std::uint32_t slot) noexcept -> cd::rhi::DescriptorSetHandle
+        {
+            if (slot != 0xFFFFFFFFu && impl_->inline_dsl.is_valid())
+            {
+                for (const auto& entry : impl_->texture_slots)
+                {
+                    if (entry.slot == slot && entry.inline_set.is_valid())
+                    {
+                        return entry.inline_set;
+                    }
+                }
+            }
+            return impl_->inline_ds;
+        };
+
+        for (std::size_t i = 0; i < impl_->commands.size();)
+        {
+            const auto& dc = impl_->commands[i];
+            const cd::rhi::DescriptorSetHandle ds = resolve_inline_ds(dc.texture_slot);
+            std::uint32_t merged_count = dc.index_count;
+            std::size_t j = i + 1U;
+            while (j < impl_->commands.size())
+            {
+                const auto& nxt = impl_->commands[j];
+                if (resolve_inline_ds(nxt.texture_slot) != ds ||
+                    nxt.scissor.x != dc.scissor.x ||
+                    nxt.scissor.y != dc.scissor.y ||
+                    nxt.scissor.width != dc.scissor.width ||
+                    nxt.scissor.height != dc.scissor.height ||
+                    (dc.index_offset + merged_count) != nxt.index_offset)
+                {
+                    break;
+                }
+                merged_count += nxt.index_count;
+                ++j;
+            }
+
+            if (ds.is_valid() && ds != last_ds)
+            {
+                cmd.bind_descriptor_set(0U, ds);
+                last_ds = ds;
+            }
+            if (!has_last_scissor ||
+                dc.scissor.x != last_sc.x ||
+                dc.scissor.y != last_sc.y ||
+                dc.scissor.width != last_sc.width ||
+                dc.scissor.height != last_sc.height)
+            {
+                cd::rhi::Rect2D s {};
+                if (dc.scissor.width == 0xFFFFFFFFu && dc.scissor.height == 0xFFFFFFFFu)
+                {
+                    s.extent = viewport_extent;
+                }
+                else
+                {
+                    s.offset = { dc.scissor.x, dc.scissor.y };
+                    s.extent = { dc.scissor.width, dc.scissor.height };
+                }
+                cmd.set_scissor(s);
+                last_sc = dc.scissor;
+                has_last_scissor = true;
+            }
+            cmd.draw_indexed(merged_count, 1U, dc.index_offset, 0, 0U);
+            i = j;
+        }
+        return;
+    }
 
     for (const auto& dc : impl_->commands)
     {

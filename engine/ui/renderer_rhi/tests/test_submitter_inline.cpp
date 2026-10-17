@@ -136,3 +136,64 @@ TEST(SubmitterInline, RecordEmitsExpectedDrawCallCount)
     sub.record(*cmd, cd::rhi::Extent2D { 800U, 600U });
     cmd->end();
 }
+
+// (c) -- create_with_inline_shader with atlas_view + atlas_sampler compiles
+//        kInlineFSWithAtlas, allocates descriptor set 0, supports secondary
+//        texture slots via set_texture_slot(), and records kGlyph + kTextured
+//        commands cleanly.
+TEST(SubmitterInline, CreateWithInlineShaderAndAtlasBindsGlyphAndTextureSlots)
+{
+    auto vk = try_make_vulkan();
+    if (vk == nullptr)
+    {
+        GTEST_SKIP() << "no Vulkan ICD; atlas inline shader test requires a real device";
+    }
+
+    cd::rhi::TextureDesc td {};
+    td.type   = cd::rhi::TextureType::k2D;
+    td.format = cd::rhi::Format::kRGBA8Unorm;
+    td.extent = { 16U, 16U, 1U };
+    td.usage  = cd::rhi::TextureUsage::kSampled | cd::rhi::TextureUsage::kTransferDst;
+    auto tex_r = vk->create_texture(td);
+    ASSERT_TRUE(tex_r.has_value());
+    auto view_r = vk->create_texture_view(cd::rhi::TextureViewDesc { *tex_r });
+    ASSERT_TRUE(view_r.has_value());
+    auto samp_r = vk->create_sampler(cd::rhi::SamplerDesc {});
+    ASSERT_TRUE(samp_r.has_value());
+
+    rh::SubmitterCreateInfo info {};
+    info.max_vertices  = 1024U;
+    info.max_indices   = 4096U;
+    info.color_format  = cd::rhi::Format::kBGRA8Unorm;
+    info.atlas_view    = *view_r;
+    info.atlas_sampler = *samp_r;
+
+    auto r = rh::Submitter::create_with_inline_shader(*vk, info);
+    ASSERT_TRUE(r.has_value())
+        << "create_with_inline_shader(atlas) failed: msg=" << std::string(r.error().message);
+    auto& sub = *r;
+    EXPECT_TRUE(sub.is_valid());
+    EXPECT_TRUE(sub.set_texture_slot(1U, *view_r, *samp_r));
+    EXPECT_TRUE(sub.has_texture_slot(1U));
+
+    ur::DrawBatcher batcher;
+    batcher.begin_frame();
+    batcher.quad(0.0F, 0.0F, 32.0F, 32.0F, ur::Color::white());
+    batcher.glyph(36.0F, 0.0F, 12.0F, 16.0F, 0U, ur::AtlasUv { 0.0F, 0.0F, 0.5F, 0.5F }, ur::Color::white());
+    batcher.textured_quad(60.0F, 0.0F, 32.0F, 32.0F, 1U, ur::AtlasUv { 0.0F, 0.0F, 1.0F, 1.0F }, ur::Color::white());
+
+    EXPECT_TRUE(sub.upload(batcher));
+    EXPECT_EQ(sub.command_count(), 3U);
+
+    auto cmd = vk->create_command_buffer(cd::rhi::QueueType::kGraphics);
+    ASSERT_NE(cmd, nullptr);
+    cmd->begin();
+    sub.record(*cmd, cd::rhi::Extent2D { 800U, 600U });
+    cmd->end();
+
+    sub.destroy();
+    vk->destroy_sampler(*samp_r);
+    vk->destroy_texture_view(*view_r);
+    vk->destroy_texture(*tex_r);
+}
+

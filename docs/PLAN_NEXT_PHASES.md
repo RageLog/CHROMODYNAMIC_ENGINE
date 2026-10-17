@@ -194,4 +194,113 @@
 - [x] **Wave 11.4 — Birim Testleri, CTest Doğrulaması ve Gerçek Vulkan 1.3 GPU Ekran Görüntüsü Kanıtı**:
   - `cd_app_editor` hedefinin sıfır ImGui bağımlılığıyla derlenmesi, tüm editör CTest testlerinin geçmesi ve gerçek Vulkan 1.3 GPU üzerinde `studio_chromaui_clean.png` ile `studio_chromaui_physics.png` ekran görüntülerinin alınıp doğrulanması.
 
+---
 
+## FAZ 12 — ChromaUI 2.0: Gerçek GPU TrueType/SDF Font Atlası, UTF-8 Orantısal Tipografi & Vektör İkon Motoru
+
+- [x] **Wave 12.1 — `Submitter` Inline Shader Doku/Atlas Bağlama Hattı (`cd::ui::renderer_rhi::Submitter`)**:
+  - `Submitter::create_with_inline_shader` içinde `info.atlas_view` ve `info.atlas_sampler` geçerli olduğunda `DescriptorSetLayout` + `DescriptorSet` (`set=0, binding=0, sampler2D u_atlas`) oluşturulması; `set_texture_slot` ile çoklu doku bağlama desteği.
+  - Fragment shader (`kInlineFSWithAtlas`) içinde `variant == 2u` (`kGlyph` — gerçek TrueType anti-aliased alfa/SDF örneklemesi), `variant == 1u` (`kTextured`), `variant == 3u` (`kNinePatch`), `variant == 4u` (`kLinearGrad`), `variant == 5u` (`kBlur`), `variant == 6u` (`kShadow`) ve `variant == 7u` (`kRoundedRect`) tam desteği.
+- [x] **Wave 12.2 — Gerçek TrueType (`Segoe UI` / TTF) GPU Font Atlası, UTF-8 Çözümleyici ve Hassas `CalcTextSize`**:
+  - `ChromaUi::Context::create` içinde `cd::ui::font::Font` üzerinden gerçek TrueType font yükleme (`rasterize_range(0x0020U, 0x017FU, 15.0F, 512U)`, ASCII + Latin-1 + Türkçe `ğüşıöçĞÜŞİÖÇ`), `512x512` RGBA8 GPU doku yüklemesi ve `Submitter` bağlantısı (TTF bulunmayan headless test ortamlarında otomatik yerleşik glif geri dönüşü).
+  - Orantısal (proportional) glif metrikleri (`bearing_x`, `bearing_y`, `advance`, `kerning`) ile çalışan `ImGui::CalcTextSize`, `AddText`, `AddBezierCubic` (kalın anti-aliased Bezier eğrileri) ve prosedürel vektör ikon çizicileri (`DrawIcon`: Play, Pause, Stop, Cube, Sphere, Light, Folder, Gear, Search, Eye, Check, Warning, Node, Curve).
+
+---
+
+## FAZ 13 — Dinamik DockSpace Ağacı, Sekmeli (Tabbed) Paneller, Sürüklenebilir Yüzen Pencereler ve Popup/Alt-Menü Motoru
+
+- [x] **Wave 13.1 — Dinamik DockSpace & Çok-Sekmeli (Multi-Tab) Panel Yöneticisi**:
+  - Sabit pencere ismi (`"Studio Workbench"` vb.) kontrolünün yanında gerçek `DockBuilderDockWindow` tabanlı esnek dock yuvalarının (`LeftTop`, `LeftBottom`, `Right`, `Bottom`, `Center`) çalıştırılması.
+  - Sürüklenebilir, sağ-alt köşeden yeniden boyutlandırılabilir (resizable), başlık çubuğundan kapatılabilir bağımsız **Floating Pencereler**.
+- [x] **Wave 13.2 — Etkileşimli Kaydırma Çubukları (Scrollbar Drag) & Hatasız Popup / Alt-Menü (Submenu) Sistemi**:
+  - Tüm pencerelerde ve `BeginChild` alanlarında fare ile tutulup sürüklenebilen dikey kaydırma çubuğu (`ScrollbarThumb`).
+  - Dinamik içerik boyutuna göre otomatik büyüyen `BeginMenu` / `BeginPopup` / `BeginPopupContextItem`; sağ-tık menüsü içindeki alt menülerin (`BeginMenu` inside `BeginPopup`) ebeveyn menünün sağında doğru konumda açılması; dışarı tıklandığında veya `ESC` basıldığında otomatik kapanma.
+  - `InputText`, `Combo`, `Button`, `Selectable`, `SliderFloat`, `DragFloat` ve `DragFloat3` hücrelerinde metin taşmasını (overflow/collision) tamamen engelleyen donanım makaslama (`PushClipRect`/`PopClipRect`) koruması.
+
+---
+
+## FAZ 14 — Zengin Widget Kataloğu 2.0 (Uygulama, Editör ve Araç Geliştirme İçin Tam Set)
+
+- [x] **Wave 14.1 — Gelişmiş Metin, Sayısal Giriş, Renk Seçici (HSV/RGB Popup) ve Döner Düğme (`Knob`) Widget'ları**:
+  - `InputText` / `InputTextWithHint`: Yanıp sönen imleç (blinking caret), Sol/Sağ ok, `Home`/`End`, `Backspace`/`Delete`, yatay kaydırma ve fare tıklamasıyla odaklanma desteği.
+  - `SliderFloat`: Çift tıklama veya `Ctrl+Sol Tık` ile doğrudan klavyeden sayı yazma (inline numeric text input) modu!
+  - `ColorEdit3`: Renk kutusuna tıklandığında açılan canlı R/G/B gradyan sürgüleri ve `#RRGGBB` Hex göstergeli popup renk seçici.
+  - `ToggleSwitch` (animasyonlu hap anahtar), `RadioButton`, `KnobFloat` (dairesel açısal kontrol düğmesi), `ProgressBar`, `TreeNode` / `TreeNodeEx` / `TreePop` ve `PlotLines`.
+- [x] **Wave 14.2 — Görsel Düğüm Editörü (`NodeGraph`), Eğri Editörü (`CurveEditor`), Zaman Çizelgesi (`Timeline`) ve Bildirim (`Toast`) Sistemi**:
+  - `ImGui::CurveEditor`: Kontrol noktaları fareyle sürüklenebilen, ızgaralı interaktif Bezier eğri editörü.
+  - `ImGui::BeginNodeGraph` / `BeginNode` / `NodePin` / `NodeLink`: Kaydırılabilir ızgara tuvali üzerinde sürüklenebilir düğümler, giriş/çıkış soketleri ve kübik Bezier bağlantı eğrileri.
+  - `ImGui::TimelineScrubber`: Anahtar kare (keyframe) ve oynatma başlığı (playhead) zaman çizelgesi.
+  - `ImGui::PushToast`: Sağ-alt köşede animasyonlu beliren ve kendiliğinden sönen bildirim balonları.
+
+---
+
+## FAZ 15 — Oyun-İçi HUD & 3D Dünya-Uzayı UI Çatısı (`cd::ui::chroma::hud`)
+
+- [x] **Wave 15.1 — Oyun-İçi HUD Widget'ları ve Etkileşimli Envanter/Hotbar Sistemi**:
+  - `DrawHealthShieldBar` (HP / Shield / Stamina barları).
+  - Kuzey işaretli, görüş konili (FOV cone) ve canlı varlık radar noktalı `DrawMinimapRadar`.
+  - Dinamik yayılmalı (spread) `DrawDynamicCrosshair` nişangah ve kısayol/bekleme süreli (cooldown) **Envanter & Hotbar Izgarası (`DrawInventoryHotbar`)**.
+  - **3D Dünya-Uzayı Yüzen Etiketler (`DrawWorldSpaceEntityTag`)**: 3D sahnedeki nesnelerin ve karakterlerin üzerinde kamera-projeksiyonlu isim plakası, mesafe (`[m]`) ve mini sağlık çubuğu gösterimi.
+
+---
+
+## FAZ 16 — Bağımsız Uygulama Çatısı, Üst Şerit Araç Çubuğu & Gerçek GPU Doğrulaması
+
+- [x] **Wave 16.1 — Üst Şerit (Ribbon Toolbar), 3 Canlı Çalışma Alanı Modu (`3D Studio` / `In-Game HUD` / `Node & App Lab`) ve 5 Tema**:
+  - Üst menü altındaki `40px` boşluğu ortadan kaldıran tam genişlikli **Studio Ribbon Toolbar** (`y = 28..60`): Çalışma Alanı Seçici (`3D Studio`, `In-Game HUD`, `Node & App Lab`), Gizmo/Snap kontrolleri, Fizik oynatıcı, Kamera yer imleri ve 5 Tema (`Chroma Carbon Dark`, `Unreal Slate Pro`, `Blender Graphite`, `Cyberpunk Neon`, `High-Contrast Daylight`).
+  - Bağımsız uygulama geliştiricileri için `Node & App Lab` çalışma alanı ve alt dock içinde `Console & Physics`, `Shader Node Graph`, `Timeline & Curves` sekmeli panellerinin bağlanması.
+- [x] **Wave 16.2 — Kapsamlı Birim Testleri (`cd_test_ui_widgets` + `cd_test_submitter_inline`) ve Gerçek GPU Doğrulaması**:
+  - `ChromaUi` tüm widget, layout, font, dock, node-graph, curve-editor ve HUD bileşenlerini doğrulayan kapsamlı birim testlerinin koşulması (`21/21` CTest %100 yeşil).
+  - Gerçek Vulkan 1.3 GPU üzerinde 3 çalışma alanı (`ui_after_studio.png`, `ui_after_ingame_hud.png`, `ui_after_node_studio.png`) için ekran görüntülerinin alınıp görsel olarak sıfır taşma/hata ile doğrulanması.
+
+---
+
+# BÖLÜM III — TAM DONANIMLI OYUN MOTORU EDİTÖRÜ, ÇOKLU-DÜNYA/SEVİYE VİTRİNİ & ULTRA-YÜKSEK FPS MİMARİSİ (FAZ 17)
+
+## FAZ 17 — Çoklu Proje / Çoklu Dünya (`World`) / Çoklu Seviye (`Level`) / Katman (`Layer`) Konteyneri ve Ultra-Yüksek FPS Darboğaz Eliminasyonu
+
+- [x] **Wave 17.1 — Motor Çekirdeği `cd::world_container` (`Project` / `World` / `Level` / `Layer`) Çoklu-Dünya Genişletmesi**:
+  - `engine/world/world_container/include/cd/world_container/Level.hpp`, `Project.hpp`, `ProjectIo.hpp` ve `World.hpp` içinde her `Level` nesnesine `world_name`, `description` ve `template_id` meta verilerinin eklenmesi.
+  - `Project` sınıfına `active_level()`, `set_active_level()`, `world_names()` ve `levels_in_world()` sorgularının; `ProjectIo` JSON serileştiricisine `active_level`, `world`, `description` ve `template_id` alanlarının; `World` sınıfına `active_level_ptr()` erişimcisinin eklenmesi ve `cd_test_world_container` birim testleriyle %100 doğrulanması.
+  - `ChromaUi` (`engine/ui/widgets/include/cd/ui/ChromaUi.hpp`) içine tam açılır liste (`ImGui::BeginCombo` / `ImGui::EndCombo`) widget çiftinin eklenmesi ve `cd_test_ui_widgets` (49/49 test) ile doğrulanması.
+- [x] **Wave 17.2 — 5 Dünya (`Worlds`), 12 Seviye (`Levels`) ve 12 `.cdproj` Vitrin Kataloğunun Studio Editörüne Bağlanması**:
+  - `StudioSceneBuilder.hpp`, `StudioToolbar.hpp` ve `StudioWorkspacePanels.hpp` içinde 5 Dünya (`World 1: Physics & Destruction Lab`, `World 2: Photoreal PBR & Sponza GI`, `World 3: Vehicle & Multi-Body Dynamics`, `World 4: Skinned Characters & Combat`, `World 5: Volumetric Atmosphere & Nature`) ve 12 etkileşimli 3D seviyenin (`template_id = 0..11`) inşası.
+  - Üst menüye `Projects & Worlds` menüsünün, Ribbon Toolbar'a `[World/Level: ...]` hızlı geçiş açılır penceresinin, sol `Scene` dock paneline `[Hierarchy & Entities | Worlds & Levels | Layers]` sekmelerinin, sağ `Inspector` paneline canlı `Layer` açılır kutusunun ve alt dock paneline `Showcase & Project Hub (12)` + `Frame & GPU Profiler` sekmelerinin eklenmesi.
+- [x] **Wave 17.3 — ~100 FPS Boş Sahne Darboğazının Kök Neden Analizi ve Ultra-Yüksek FPS Optimizasyonu**:
+  - **UI Draw Call Birleştirme (`Submitter.cpp`)**: Inline UI shader hattında aynı `DescriptorSetHandle` ve `ScissorRect` paylaşan ardışık `DrawCommand`'ların tek `vkCmdDrawIndexed` çağrısında birleştirilmesi (~450 UI draw call → ~8 draw call).
+  - **Statik Sahne TLAS & Descriptor Dirty-Gating (`main.cpp`, `StudioTlasCompaction.hpp`, `StudioTlasBuilder.hpp`)**: FNV-1a `tlas_scene_hash` ile sahne dönüşümleri/materyalleri değişmediğinde her kare yapılan `vkCreateAccelerationStructureKHR`, 512 KB SSBO yığın tahsisi ve 100+ `vkUpdateDescriptorSets` çağrısının atlanması.
+  - **Boşta Post-FX, Gölge, Ses DSP ve RNG Döngüsü Bypass'ı (`main.cpp`, `StudioPhysicsSolver.hpp`)**: Statik karelerde CSM gölge geçişinin, TAA/MotionBlur kapalıyken `velocity_gbuffer_pass`'in, Bloom kapalıyken 7-geçişli `run_bloom_chain`'in, 3D ses/RNG görünümü kapalıyken 512-örnek DSP ve 16.384-örnek Box-Muller RNG döngülerinin atlanması; `frames_in_flight = 3` ve `swapchain.image_count = 4` ile DWM çit (fence) beklemelerinin giderilmesi.
+
+---
+
+# BÖLÜM IV — AKADEMİK SOTA OYUN MOTORU ARAŞTIRMASI VE MAKALE-DESTEKLİ BRDF UYGULAMASI (FAZ 18)
+
+## FAZ 18 — SOTA Oyun Motoru Teknolojileri Akademik İncelemesi (ADR) ve Turquin (2019) + Belcour-Barla (2017) BRDF Uygulaması
+
+- [x] **Wave 18.1 — Akademik SOTA Oyun Motoru Teknolojileri Araştırması ve Iglberger ADR Dokümantasyonu**:
+  - [`docs/ADR/ADR-20261017-sota-game-engine-technologies-and-turquin-multiscatter-brdf.md`](ADR/ADR-20261017-sota-game-engine-technologies-and-turquin-multiscatter-brdf.md) içinde 5 SOTA oyun motoru teknolojisinin (1. Nanite Cluster-DAG Sanal Geometri, 2. ReSTIR DI/GI Uzay-Zamansal Rezervuar Örneklemesi, 3. Ray-Traced DDGI İrradyans Kesişim Alanları, 4. Neural Radiance Caching, 5. Turquin 2019 / Kulla-Conty 2017 Çoklu-Saçılım Mikrofaset Enerji Telafisi + Belcour-Barla 2017 İnce-Film İridesans) akademik literatür, matematiksel formülasyon, avantajlar (Pros) ve dezavantajlar (Cons) matrisiyle belgelenmesi ve `check_human_voice.py` (`PASS — 0 issues`) ile doğrulanması.
+- [x] **Wave 18.2 — `cd::brdf_multiscatter` (`engine/render/brdf`) C++23 Kütüphanesi ve Birim Testleri**:
+  - `engine/render/brdf/include/cd/brdf/multiscatter/TurquinMultiScatter.hpp` içinde `directional_albedo_ggx`, `average_albedo_ggx`, `fresnel_average_schlick`, `turquin_energy_compensation` (Turquin 2019 Eq. 11), `kulla_conty_multiscatter_lobe` (Kulla-Conty 2017), `belcour_barla_iridescence_fresnel` (Belcour & Barla SIGGRAPH 2017 Airy girişimi) ve `evaluate_turquin_iridescent_ggx` fonksiyonlarının gerçeklenmesi.
+  - `cd_test_brdf_multiscatter` ve `cd_test_brdf` şemsiye testleriyle beyaz-fırın (white-furnace) enerji korunumu ($\forall \alpha \in [0,1],\; E(\mu,\alpha)\cdot F_{\text{ms}}(\mathbf{1}) = 1$), Helmholtz karşılıklılığı (reciprocity) ve spektral sınırların %100 doğrulanması.
+- [x] **Wave 18.3 — Vulkan 1.3 Canlı PBR Shader (`prim.frag.glsl` + `PrimShader_kPrimFS.inl`) ve Studio Editör Entegrasyonu**:
+  - `PbrMaterialModifier` (`StudioModifierClasses.hpp`) içine `Turquin Multi-Scatter` (`0..1`) ve `Thin-Film Iridescence (nm)` (`0..800 nm`) sürgülerinin ve `Turquin Rough Gold`, `Bismuth (380nm)`, `Soap Film (520nm)` hazır ayarlarının eklenmesi.
+  - `prim.frag.glsl` ve `PrimShader_kPrimFS.inl` içinde `cd_belcour_barla_iridescence` ve `turquin_ms_comp` hesaplamalarının canlı güneş, nokta/spot/alan ışıkları ve IBL kanallarına bağlanması; Seviye `2.1 PBR 5x5 Sphere Matrix` (`template_id = 4`) üzerinde çoklu-saçılım ve ince-film iridesans kürelerinin gerçek GPU ekran görüntüsüyle doğrulanması.
+
+---
+
+# BÖLÜM V — KLASÖR AĞACI & İÇERİK/VARLIK TARAYICISI, DOKU/MESH ATAMA, GRAFİKSEL HATA DÜZELTMELERİ VE CLI KORUMASI (FAZ 19)
+
+## FAZ 19 — Klasör Ağacı (`Folder Tree`) + İçerik/Varlık Tarayıcısı (`Content/Asset Browser`), Sürükle-Bırak Mesh/Texture Atama ve Grafiksel/Görsel İyileştirmeler
+
+- [x] **Wave 19.1 — Klasör Ağacı (`Folder Tree`) ve İçerik/Varlık Tarayıcısı (`Content Browser`) Penceresi (`StudioWorkspacePanels.hpp`, `StudioModifierClasses.hpp`)**:
+  - Alt Dock (`History` penceresi) içine varsayılan ilk sekme olarak **`Content Browser & Folder Tree`** panelinin eklenmesi.
+  - Sol bölmede gerçek çalışma alanı dizinlerini (`assets/`, `assets/meshes/`, `assets/textures/`, `assets/samples/Sponza/`, `assets/samples/Sponza/textures/`, `assets/samples/Generic/`, `showcases/`, `apps/editor/shaders/`, `docs/ADR/`) gezen etkileşimli **Workspace Folder Tree** ve üstte `[Root: assets/]`, `[Meshes]`, `[Textures]`, `[Sponza glTF]`, `[Showcases]` hızlı ekmek kırıntısı (breadcrumb) düğmeleri.
+  - Sağ bölmede `std::filesystem::directory_iterator` ile diskteki gerçek dosyaları (`.gltf`, `.glb`, `.jpg`, `.png`, `.glsl`, `.cdproj`, `.md`) ve yerleşik 3D Mesh/PBR Doku varlıklarını tarayan, arama (`Search`) ve tür filtresi (`All | Meshes | Textures | Materials`) destekleyen **4 Sütunlu Varlık Kartları Izgarası (`asset_cards_grid_4col`)**.
+- [x] **Wave 19.2 — 3D Nesnelere Dosya Dizininden Doku (`Texture`) ve Mesh Atama (`StudioSceneBuilder.hpp`, `StudioPhysicsSolver.hpp`, `prim.frag.glsl`)**:
+  - **Sürükle-Bırak (`CD_ASSET_MESH` / `CD_ASSET_TEXTURE`) ve 1-Tık Atama**: Varlık kartlarından herhangi bir `.mesh` / `.gltf` / `.glb` veya `.tex` / `.jpg` / `.png` / `.pbr` öğesini doğrudan **3D Sahne Görünümüne (Viewport)**, **Sol `Scene` Hiyerarşi Satırına** veya **Sağ `Inspector` -> `Mesh & Surface Texture Assets (Drop Target)`** yuvalarına sürükleyip bırakarak ya da 1-tıkla anında atama (`assign_mesh_asset_to_entity`, `assign_texture_asset_to_entity`).
+  - **GPU Shader Doku Yuvaları (`prim.frag.glsl` + `PrimShader_kPrimFS.inl`)**: Her varlık için `pc.fx_params.y` üzerinden 6 farklı doku yuvası: Slot `1` (`cd_albedo_tex` GPU doku örneklemesi), Slot `2` (`UV_Checkerboard_2K` kenar-yumuşatmalı UV dama tahtası), Slot `3` (`Brick_Wall_PBR` derzli tuğla duvar), Slot `4` (`Carbon_Fiber_Twill` 2x2 dimi karbon fiber dokuma), Slot `5` (`Carrara_Marble` damarlı mermer) ve Slot `6` (`Oak_Wood_Planks` meşe ahşap kaplama).
+  - **Yeni Vitrin Seviyesi (`template_id = 12` — `2.4 Asset Browser & Texture/Mesh Lab`)**: UV dama küresi, Sponza tuğla küpü, karbon fiber silindir, Carrara mermer torus, meşe ahşap koni ve altın küre içeren hazır test sahnesi.
+- [x] **Wave 19.3 — Grafiksel Hataların (`Z-Fighting`, RT Yansıma Kusuru, Normal Haritası Bozulması, UI Kırpılması) ve CLI/Subagent Takılma Sorununun Giderilmesi**:
+  - **Z-Fighting ve RT Yansıma Kusuru Çözümü (`main.cpp`)**: `Ground_Floor` (`y = -0.25, sy = 0.25` -> üst yüzeyi `y = 0.0`) ile `s.floor_mesh` (`y = 0.0`) arasındaki eş-düzlemli derinlik çatışmasının (Z-fighting) ve RT TLAS içinde kürelerin alt yarısını griye boyayan 20m kutu yansımasının `Ground_Floor` görsel/TLAS çizimini atlayarak (fizik çarpışmasını koruyarak) tamamen giderilmesi.
+  - **Küre Yüzeyi Normal Bozulması ve Yeşil Tel-Kafes Kalabalığı Çözümü (`prim.frag.glsl`, `StudioSceneBuilder.hpp`)**: PBR vitrin kürelerinde prosedürel tümsek (bump) normal haritasının kapatılarak pürüzsüz mikrofaset/iridesans yansımalarının elde edilmesi; `show_all_collider_wires` seçeneğinin yalnızca fizik seviyelerinde (`1, 2, 3, 7`) açılması; tüm 25 kürenin kadraja tam sığması için kamera konumunun optimize edilmesi.
+  - **CLI & Subagent Takılma Koruması (`main.cpp`)**: `g_studio_max_frames` ve `--frames` / `--max-frames` / `--studio-capture-png` / `--capture-png` bayrak takma adlarıyla `editor.exe` sürecinin yakalama sonrası deterministik olarak kapanmasının garanti altına alınması.

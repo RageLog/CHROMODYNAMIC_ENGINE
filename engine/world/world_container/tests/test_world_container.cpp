@@ -40,6 +40,19 @@ TEST(WorldContainer, ProjectLevelLifecycle)
     EXPECT_EQ(p.level_count(), 1U);
     EXPECT_TRUE(p.remove_level(0));
     EXPECT_EQ(p.level_count(), 0U);
+
+    // Removing a level prior to active_level_ must preserve the active level identity.
+    p.add_level("L0");
+    p.add_level("L1");
+    p.add_level("L2");
+    p.add_level("L3");
+    p.set_active_level(2U);
+    ASSERT_NE(p.level(p.active_level()), nullptr);
+    EXPECT_EQ(p.level(p.active_level())->name(), "L2");
+    EXPECT_TRUE(p.remove_level(0U));
+    EXPECT_EQ(p.active_level(), 1U);
+    ASSERT_NE(p.level(p.active_level()), nullptr);
+    EXPECT_EQ(p.level(p.active_level())->name(), "L2");
 }
 
 TEST(WorldContainer, LevelHasDefaultLayer)
@@ -1022,6 +1035,67 @@ TEST(LevelStreamer, HasActiveAndTrackedCountBeforeFirstActivate)
     EXPECT_EQ(streamer.tracked_count(), 0U);
     // active_index() == 0 by default (meaningless until has_active() is true).
     EXPECT_EQ(streamer.active_index(), 0U);
+}
+
+TEST(MultiWorldProject, WorldNamesAndLevelsInWorldGrouping)
+{
+    Project proj { "Master Showcase" };
+    Level* l0 = proj.add_level("Empty Sandbox");
+    l0->set_world_name("Sandbox World");
+    l0->set_description("Ultra-high-FPS clean starter level");
+    l0->set_template_id(0);
+
+    Level* l1 = proj.add_level("Sponza Atrium");
+    l1->set_world_name("Photoreal GI World");
+    l1->set_description("Sponza + Clustered PBR + DDGI");
+    l1->set_template_id(4);
+
+    Level* l2 = proj.add_level("PBR Material Grid");
+    l2->set_world_name("Photoreal GI World");
+    l2->set_description("Cook-Torrance + Clearcoat + SSS");
+    l2->set_template_id(1);
+
+    Level* l3 = proj.add_level("Jolt Physics Stack");
+    l3->set_world_name("Physics & Vehicle World");
+    l3->set_description("RigidBody stack + Vehicle suspension");
+    l3->set_template_id(2);
+
+    const auto worlds = proj.world_names();
+    ASSERT_EQ(worlds.size(), 3U);
+    EXPECT_EQ(worlds[0], "Sandbox World");
+    EXPECT_EQ(worlds[1], "Photoreal GI World");
+    EXPECT_EQ(worlds[2], "Physics & Vehicle World");
+
+    const auto gi_levels = proj.levels_in_world("Photoreal GI World");
+    ASSERT_EQ(gi_levels.size(), 2U);
+    EXPECT_EQ(gi_levels[0], 1U);
+    EXPECT_EQ(gi_levels[1], 2U);
+
+    EXPECT_TRUE(proj.levels_in_world("Nonexistent World").empty());
+
+    proj.set_active_level(2U);
+    EXPECT_EQ(proj.active_level(), 2U);
+    proj.set_active_level(99U);
+    EXPECT_EQ(proj.active_level(), 2U);
+
+    const auto json = cd::world_container::serialize_project(proj);
+    const auto parsed = cd::asset::json::parse(cd::asset::json::serialize(json, true));
+    ASSERT_TRUE(parsed.has_value());
+    auto loaded_r = cd::world_container::deserialize_project(*parsed);
+    ASSERT_TRUE(loaded_r.has_value());
+    const Project& loaded = **loaded_r;
+    EXPECT_EQ(loaded.active_level(), 2U);
+    ASSERT_EQ(loaded.level_count(), 4U);
+    EXPECT_EQ(loaded.level(1)->world_name(), "Photoreal GI World");
+    EXPECT_EQ(loaded.level(1)->description(), "Sponza + Clustered PBR + DDGI");
+    EXPECT_EQ(loaded.level(1)->template_id(), 4);
+    EXPECT_NE(loaded.find_level("Jolt Physics Stack"), nullptr);
+
+    World w;
+    EXPECT_EQ(w.active_level_ptr(), nullptr);
+    w.set_project(std::move(*loaded_r));
+    ASSERT_NE(w.active_level_ptr(), nullptr);
+    EXPECT_EQ(w.active_level_ptr()->name(), "PBR Material Grid");
 }
 
 }  // namespace

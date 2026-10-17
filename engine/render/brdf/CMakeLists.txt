@@ -34,11 +34,20 @@ cd_add_library(brdf_sss
     cd::math
 )
 
+# ── cd::brdf_multiscatter ──────────────────────────────────────────────────
+cd_add_library(brdf_multiscatter
+  TYPE INTERFACE
+  PUBLIC_DEPS
+    cd::core
+    cd::math
+)
+
 # ── cd::brdf (umbrella) ────────────────────────────────────────────────────
 cd_add_library(brdf
   TYPE INTERFACE
   PUBLIC_DEPS
     cd::brdf_ltc
+    cd::brdf_multiscatter
     cd::brdf_sheen_clearcoat
     cd::brdf_sss
 )
@@ -47,6 +56,7 @@ cd_add_library(brdf
 if(CD_ENABLE_TESTING)
   add_subdirectory(tests)
   add_subdirectory(tests/ltc)
+  add_subdirectory(tests/multiscatter)
   add_subdirectory(tests/sheen_clearcoat)
   add_subdirectory(tests/sss)
 endif()

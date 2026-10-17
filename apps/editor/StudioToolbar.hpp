@@ -442,6 +442,82 @@ inline void draw_studio_main_menu_bar(StateT& s, float dt, LogFn&& log_push)
         ImGui::EndMenu();
     }
 
+    if (ImGui::BeginMenu("UI & Themes"))
+    {
+        auto& cst = cd::ui::chroma::state();
+        if (ImGui::BeginMenu("Color Theme Presets (5)"))
+        {
+            if (ImGui::MenuItem("0: Chroma Carbon Dark (Default)", nullptr, cst.theme_index == 0))
+                ImGui::ApplyTheme(0);
+            if (ImGui::MenuItem("1: Unreal Slate Pro", nullptr, cst.theme_index == 1))
+                ImGui::ApplyTheme(1);
+            if (ImGui::MenuItem("2: Blender Graphite", nullptr, cst.theme_index == 2))
+                ImGui::ApplyTheme(2);
+            if (ImGui::MenuItem("3: Cyberpunk Neon", nullptr, cst.theme_index == 3))
+                ImGui::ApplyTheme(3);
+            if (ImGui::MenuItem("4: High-Contrast Daylight", nullptr, cst.theme_index == 4))
+                ImGui::ApplyTheme(4);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Workspace Layout Mode"))
+        {
+            if (ImGui::MenuItem("0: 3D Studio Editor (DockSpace)", nullptr, cst.workspace_mode == 0))
+                cst.workspace_mode = 0;
+            if (ImGui::MenuItem("1: In-Game HUD & 3D World UI", nullptr, cst.workspace_mode == 1))
+                cst.workspace_mode = 1;
+            if (ImGui::MenuItem("2: Standalone Node & Curve Lab", nullptr, cst.workspace_mode == 2))
+                cst.workspace_mode = 2;
+            ImGui::EndMenu();
+        }
+        ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Projects & Worlds"))
+    {
+        auto& w = studio_world();
+        ImGui::TextColored(ImVec4(0.45F, 0.90F, 1.0F, 1.0F),
+                           "Active Project: %s", w.active_project_name.c_str());
+        ImGui::TextDisabled("World: %s", w.active_world_name.c_str());
+        ImGui::TextDisabled("Level: %s", w.active_level_name.c_str());
+        ImGui::Separator();
+
+        if (const auto* proj = s.cd_world.project())
+        {
+            for (const auto& wname : proj->world_names())
+            {
+                if (ImGui::BeginMenu(wname.c_str()))
+                {
+                    for (std::size_t li : proj->levels_in_world(wname))
+                    {
+                        const auto* lvl = proj->level(li);
+                        if (!lvl) continue;
+                        const bool is_cur = (w.active_level_name == lvl->name());
+                        if (ImGui::MenuItem(std::string(lvl->name()).c_str(), nullptr, is_cur))
+                        {
+                            (void)switch_to_project_level(s, lvl->name(), log_push);
+                        }
+                    }
+                    ImGui::EndMenu();
+                }
+            }
+        }
+
+        ImGui::Separator();
+        if (ImGui::BeginMenu("Open Showcase Project (.cdproj) [12]"))
+        {
+            for (std::size_t si = 0; si < kShowcaseCatalog.size(); ++si)
+            {
+                const bool is_active_proj = (w.active_project_name == kShowcaseCatalog[si].id);
+                if (ImGui::MenuItem(kShowcaseCatalog[si].title, kShowcaseCatalog[si].id, is_active_proj))
+                {
+                    load_showcase_project_by_index(s, si, log_push);
+                }
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::EndMenu();
+    }
+
     ImGui::Separator();
     // Play-In-Editor (PIE) button directly on the main menu bar
     if (s.pie_playing)
@@ -471,15 +547,25 @@ inline void draw_studio_main_menu_bar(StateT& s, float dt, LogFn&& log_push)
     if (ImGui::SmallButton("Theme"))
     {
         auto& cst = cd::ui::chroma::state();
-        cst.theme_index = (cst.theme_index + 1) % 3;
-        cst.theme       = cd::ui::chroma::make_theme(cst.theme_index);
+        ImGui::ApplyTheme((cst.theme_index + 1) % 5);
+        ImGui::PushToast("ChromaUI Theme", "Switched UI Theme Preset", 0, 2.0F);
         log_push("[ChromaUI] Switched UI Theme preset");
     }
 
-    const double fps = (dt > 1e-5F) ? (1.0 / static_cast<double>(dt)) : 60.0;
-    ImGui::SameLine(ImGui::GetWindowWidth() - 485.0F);
-    ImGui::TextDisabled("ChromaUI GPU | Z-Buf: D32 | Entities: %zu | Lights: %zu | %5.1f FPS",
-                        s.entities.size(), s.lights.size(), fps);
+    const auto& w = studio_world();
+    const double fps = (w.smoothed_fps > 1.0F)
+        ? static_cast<double>(w.smoothed_fps)
+        : ((dt > 1e-5F) ? (1.0 / static_cast<double>(dt)) : 60.0);
+    const double frame_ms = (w.smoothed_frame_ms > 0.01F)
+        ? static_cast<double>(w.smoothed_frame_ms)
+        : static_cast<double>(dt * 1000.0F);
+    char telem_buf[192]{};
+    std::snprintf(telem_buf, sizeof(telem_buf),
+                  "Entities: %zu | Lights: %zu | %5.0f FPS (%.2f ms)",
+                  s.entities.size(), s.lights.size(), fps, frame_ms);
+    const float telem_w = ImGui::CalcTextSize(telem_buf).x + 18.0F;
+    ImGui::SameLine( std::max(560.0F, ImGui::GetWindowWidth() - telem_w) );
+    ImGui::TextColored(ImVec4(0.45F, 0.95F, 0.65F, 1.0F), "%s", telem_buf);
 
     ImGui::EndMainMenuBar();
 }

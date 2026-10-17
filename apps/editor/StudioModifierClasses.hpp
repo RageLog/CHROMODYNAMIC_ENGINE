@@ -52,7 +52,11 @@
 #include <cd/physics/IPhysicsWorld.hpp>
 #include <cd/physics/Sphere.hpp>
 #include <cd/scene/Scene.hpp>
+#include <cd/scene/Serializer.hpp>
 #include <cd/ui/ChromaUi.hpp>
+#include <cd/world_container/LayerMember.hpp>
+#include <cd/world_container/ProjectIo.hpp>
+#include <cd/world_container/World.hpp>
 
 #include <algorithm>
 #include <array>
@@ -188,8 +192,8 @@ public:
     float exposure         { 1.05F };
     float saturation_boost { 1.18F };
     int   tonemap_op       { 2 }; // 0=Narkowicz, 1=Hill ACES, 2=Hable, 3=AgX
-    float taa_amount       { 0.85F };
-    float motion_blur      { 0.15F };
+    float taa_amount       { 0.00F };
+    float motion_blur      { 0.00F };
 
     [[nodiscard]] std::string_view class_name() const noexcept override { return "TonemapCameraModifier"; }
     [[nodiscard]] std::string_view display_name() const noexcept override { return "Tonemap & Exposure"; }
@@ -238,23 +242,33 @@ public:
     }
 };
 
-/// Standalone Cook-Torrance PBR Material Modifier class for any 3D Entity.
+/// Standalone Cook-Torrance PBR Material Modifier class for any 3D Entity
+/// (enhanced with Turquin 2019 Multi-Scattering Energy Compensation & Belcour-Barla 2017 Thin-Film Iridescence).
 class PbrMaterialModifier final : public IStudioModifier
 {
 public:
-    cd::math::Vec3f base_color  { 0.85F, 0.86F, 0.88F };
-    float           metallic    { 0.15F };
-    float           roughness   { 0.35F };
-    bool            use_texture { false };
+    cd::math::Vec3f base_color         { 0.85F, 0.86F, 0.88F };
+    float           metallic           { 0.15F };
+    float           roughness          { 0.35F };
+    bool            use_texture        { false };
+    int             texture_slot       { 0 };    // 0=None, 1=Earth/Disk, 2=Checker, 3=Brick, 4=Carbon, 5=Marble, 6=Wood
+    std::string     texture_asset_path {};
+    float           multiscatter_comp  { 1.0F }; // Turquin (2019) energy compensation [0..1]
+    float           iridescence_nm     { 0.0F }; // Belcour-Barla (2017) thin-film thickness [0..1000 nm]
 
     PbrMaterialModifier() noexcept = default;
-    PbrMaterialModifier(cd::math::Vec3f col, float m, float r, bool tex = false) noexcept
+    PbrMaterialModifier(cd::math::Vec3f col, float m, float r, bool tex = false,
+                        float ms = 1.0F, float irid_nm = 0.0F, int tex_slot = 0,
+                        std::string tex_path = {}) noexcept
         : base_color { col }, metallic { m }, roughness { r }, use_texture { tex }
+        , texture_slot { tex_slot != 0 ? tex_slot : (tex ? 1 : 0) }
+        , texture_asset_path { std::move(tex_path) }
+        , multiscatter_comp { ms }, iridescence_nm { irid_nm }
     {
     }
 
     [[nodiscard]] std::string_view class_name() const noexcept override { return "PbrMaterialModifier"; }
-    [[nodiscard]] std::string_view display_name() const noexcept override { return "PBR Surface Material"; }
+    [[nodiscard]] std::string_view display_name() const noexcept override { return "PBR Material (Turquin MS + Irid)"; }
     [[nodiscard]] ModifierCategory category() const noexcept override { return ModifierCategory::kMaterial; }
 
     [[nodiscard]] std::unique_ptr<IStudioModifier> clone() const override
@@ -267,17 +281,34 @@ public:
         ImGui::ColorEdit3("Albedo Color", &base_color.x);
         ImGui::SliderFloat("Metallic", &metallic, 0.0F, 1.0F, "%.2f");
         ImGui::SliderFloat("Roughness", &roughness, 0.04F, 1.0F, "%.2f");
-        ImGui::Checkbox("Bind Albedo Texture Map", &use_texture);
+        ImGui::SliderFloat("Turquin Multi-Scatter", &multiscatter_comp, 0.0F, 1.0F, "%.2f");
+        ImGui::SliderFloat("Thin-Film Iridescence (nm)", &iridescence_nm, 0.0F, 800.0F, "%.0f nm");
+        const char* tex_slots[] = {
+            "0: None (Solid Tint)",
+            "1: Earth / Disk Image",
+            "2: UV Checkerboard 2K",
+            "3: Brick & Mortar Wall",
+            "4: Carbon Fiber Twill",
+            "5: Carrara Vein Marble",
+            "6: Warm Oak Wood Planks"
+        };
+        if (ImGui::Combo("Texture Map", &texture_slot, tex_slots, 7))
+        {
+            use_texture = (texture_slot > 0);
+        }
+        if (!texture_asset_path.empty())
+        {
+            ImGui::TextDisabled("Bound Asset: %s", texture_asset_path.c_str());
+        }
         ImGui::TextDisabled("Quick Surface Presets:");
-        if (ImGui::SmallButton("Chrome"))    { base_color = { 0.96F, 0.97F, 0.99F }; metallic = 1.0F; roughness = 0.04F; }
+        if (ImGui::SmallButton("Chrome"))    { base_color = { 0.96F, 0.97F, 0.99F }; metallic = 1.0F; roughness = 0.04F; multiscatter_comp = 1.0F; iridescence_nm = 0.0F; }
         ImGui::SameLine();
-        if (ImGui::SmallButton("24K Gold"))  { base_color = { 1.00F, 0.78F, 0.34F }; metallic = 1.0F; roughness = 0.14F; }
+        if (ImGui::SmallButton("24K Gold"))  { base_color = { 1.00F, 0.78F, 0.34F }; metallic = 1.0F; roughness = 0.14F; multiscatter_comp = 1.0F; iridescence_nm = 0.0F; }
         ImGui::SameLine();
-        if (ImGui::SmallButton("Copper"))    { base_color = { 0.95F, 0.50F, 0.36F }; metallic = 0.95F; roughness = 0.25F; }
+        if (ImGui::SmallButton("Rough Gold")) { base_color = { 1.00F, 0.78F, 0.34F }; metallic = 1.0F; roughness = 0.78F; multiscatter_comp = 1.0F; iridescence_nm = 0.0F; }
+        if (ImGui::SmallButton("Bismuth (380nm)"))    { base_color = { 0.88F, 0.90F, 0.95F }; metallic = 1.0F; roughness = 0.18F; multiscatter_comp = 1.0F; iridescence_nm = 380.0F; }
         ImGui::SameLine();
-        if (ImGui::SmallButton("Ceramic"))   { base_color = { 0.92F, 0.95F, 0.98F }; metallic = 0.04F; roughness = 0.08F; }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Matte"))     { base_color = { 0.24F, 0.26F, 0.30F }; metallic = 0.05F; roughness = 0.85F; }
+        if (ImGui::SmallButton("Soap Film (520nm)"))  { base_color = { 0.92F, 0.95F, 0.98F }; metallic = 0.15F; roughness = 0.08F; multiscatter_comp = 1.0F; iridescence_nm = 520.0F; }
     }
 };
 
@@ -683,6 +714,29 @@ struct StudioRuntimeWorld
     ImVec2                                                rmb_down_pos              { 0.0F, 0.0F };
     cd::math::Vec3f                                       context_menu_world_pos    { 0.0F, 0.0F, 0.0F };
     char                                                  hierarchy_filter[64]      {};
+    // Real-time smoothed FPS & Frame Profiler telemetry
+    float                                                 smoothed_fps              { 0.0F };
+    float                                                 smoothed_frame_ms         { 1.0F };
+    float                                                 peak_fps                  { 0.0F };
+    std::array<float, 64>                                 frame_ms_history          {};
+    std::size_t                                           frame_ms_cursor           { 0 };
+    // Multi-Project, Multi-World, Multi-Level & Layer Ecosystem state
+    std::string                                           active_project_name       { "ChromodynamicMasterShowcase" };
+    std::string                                           active_world_name         { "World 1: Ultra-FPS & Physics" };
+    std::string                                           active_level_name         { "1.1 Clean Empty Sandbox (Ultra-FPS)" };
+    std::string                                           active_layer_name         { "Default" };
+    char                                                  new_layer_name_buf[32]    { "Gameplay" };
+    char                                                  new_level_name_buf[48]    { "Custom_Arena" };
+    // Folder Tree & Content/Asset Browser (Context Window) state
+    std::string                                           current_content_folder    { "assets" };
+    char                                                  content_search_filter[64] {};
+    int                                                   content_type_filter       { 0 }; // 0=All, 1=Meshes, 2=Textures, 3=Materials, 4=Scenes/Shaders
+    std::string                                           selected_content_asset    { "assets/samples/Sponza/Sponza.gltf" };
+    std::string                                           last_asset_status_msg     { "Ready — Select or Drag Mesh/Texture onto any 3D Object" };
+    bool                                                  is_dragging_asset_mesh    { false };
+    std::string                                           drag_asset_mesh_id        {};
+    bool                                                  is_dragging_asset_texture { false };
+    std::string                                           drag_asset_texture_id     {};
 };
 
 inline StudioRuntimeWorld& studio_world() noexcept

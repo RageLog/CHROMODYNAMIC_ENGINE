@@ -37,5 +37,10 @@ int main()
     for (std::size_t i = 1; i < k.weights.size(); ++i) sum += 2.0F * k.weights[i];
     if (std::abs(sum - 1.0F) > 1e-3F) return 8;
 
+    // MultiScatter + Thin-Film Iridescence reachable via umbrella (Turquin 2019 / Belcour-Barla 2017).
+    const float e_ggx = cd::brdf::multiscatter::directional_albedo_ggx(0.5F, 0.8F);
+    const auto ms = cd::brdf::multiscatter::turquin_energy_compensation({ 1.0F, 1.0F, 1.0F }, e_ggx, 1.0F);
+    if (std::abs(e_ggx * ms.x - 1.0F) > 1e-4F) return 9;
+
     return 0;
 }

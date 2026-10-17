@@ -51,6 +51,7 @@
 #include <cd/audio/SimpleReverb.hpp>
 #include <cd/audio/WasapiBackend.hpp>
 #include <cd/brdf/ltc/Ltc.hpp>
+#include <cd/brdf/multiscatter/TurquinMultiScatter.hpp>
 #include <cd/brdf/sheen_clearcoat/SheenClearcoat.hpp>
 #include <cd/brdf/sss/Sss.hpp>
 #include <cd/camera/Camera.hpp>
@@ -274,6 +275,8 @@ struct SceneEntity
     cd::math::Vec3f tint { 1.0F, 1.0F, 1.0F };
     float metallic { 0.0F };
     float roughness { 0.5F };
+    float multiscatter_comp { 0.0F }; // Turquin (2019) energy compensation [0..1]
+    float iridescence_nm { 0.0F };    // Belcour-Barla (2017) thin-film thickness [0..1000 nm]
     PrimitiveKind kind { PrimitiveKind::kCube };
     bool is_pbr { false };
     // phase983-pbr-texture-fix: per-entity opt-in for albedo texture
@@ -285,6 +288,11 @@ struct SceneEntity
     // and multiplies by tint instead of using the vertex-coloured
     // procedural path.
     bool use_texture { false };
+    int custom_texture_id { 0 }; // 0=None, 1=Earth/Disk, 2=Checker, 3=Brick, 4=Carbon, 5=Marble, 6=Wood
+    std::string custom_texture_path {};
+    std::string custom_mesh_path {};
+    bool visible { true };
+    bool locked { false };
     cd::math::Mat4f prev_model { cd::math::Mat4f::identity() };
     bool prev_model_valid { false };
 };
@@ -387,10 +395,12 @@ struct PrevCamBasis
 
 namespace
 {
-std::string   g_studio_capture_png     {};
-std::uint32_t g_studio_capture_frame   { 8U };
-bool          g_studio_start_pie       { false };
-bool          g_studio_demo_all_phases { false };
+std::string   g_studio_capture_png      {};
+std::uint32_t g_studio_capture_frame    { 8U };
+std::uint32_t g_studio_max_frames       { 0U };
+bool          g_studio_start_pie        { false };
+bool          g_studio_demo_all_phases  { false };
+int           g_studio_initial_template { -1 };
 
 
 // ============================================================================
@@ -1272,11 +1282,18 @@ inline void upload_multi_light_ubo(cd::rhi::IDevice& device,
             continue;
         ++ubo.count;
     }
-    (void)device.upload_buffer(
-        lights_ubo,
-        0,
-        std::span<const std::byte>(reinterpret_cast<const std::byte*>(&ubo), sizeof(ubo))
-    );
+    static LightUboGpu s_prev_ubo {};
+    static cd::rhi::BufferHandle s_prev_buf {};
+    if (lights_ubo != s_prev_buf || std::memcmp(&ubo, &s_prev_ubo, sizeof(ubo)) != 0)
+    {
+        (void)device.upload_buffer(
+            lights_ubo,
+            0,
+            std::span<const std::byte>(reinterpret_cast<const std::byte*>(&ubo), sizeof(ubo))
+        );
+        s_prev_ubo = ubo;
+        s_prev_buf = lights_ubo;
+    }
     counters.set("lights_active", ubo.count);
 }
 
@@ -1470,27 +1487,39 @@ inline void draw_planar_shadows(cd::rhi::IDrawRecorder& cmd,
 
     std::vector<PrimPush> plan_push(entities.size());
     std::vector<std::uint8_t> plan_valid(entities.size(), 0u);
-    cd::concurrency::parallel_for(
-        std::size_t { 0 },
-        entities.size(),
-        [&](std::size_t i)
-        {
-            const auto& ent = entities[i];
-            const auto& mesh = mesh_for(ent.kind);
-            if (!mesh.vb.is_valid())
-                return;
-            auto* lt = scene.local(ent.handle);
-            if (lt == nullptr)
-                return;
-            const auto model = cd::math::to_mat4(lt->value);
-            const auto shadow_model = S * model;
-            PrimPush& dst = plan_push[i];
-            dst = sp;
-            dst.mvp = vp * shadow_model;
-            dst.model = shadow_model;
-            plan_valid[i] = 1u;
-        }
-    );
+    auto prep_planar_one = [&](std::size_t i)
+    {
+        const auto& ent = entities[i];
+        if (!ent.visible || ent.kind == PrimitiveKind::kSponza)
+            return;
+        const auto& mesh = mesh_for(ent.kind);
+        if (!mesh.vb.is_valid())
+            return;
+        auto* lt = scene.local(ent.handle);
+        if (lt == nullptr)
+            return;
+        // Skip large ground/floor slabs sitting at or near floor_y to avoid
+        // full-screen planar shadow self-overdraw.
+        if ((lt->value.scale.x >= 10.0F && lt->value.scale.z >= 10.0F) ||
+            ent.name.find("Floor") != std::string::npos)
+            return;
+        const auto model = cd::math::to_mat4(lt->value);
+        const auto shadow_model = S * model;
+        PrimPush& dst = plan_push[i];
+        dst = sp;
+        dst.mvp = vp * shadow_model;
+        dst.model = shadow_model;
+        plan_valid[i] = 1u;
+    };
+    if (entities.size() >= 256u)
+    {
+        cd::concurrency::parallel_for(std::size_t { 0 }, entities.size(), prep_planar_one);
+    }
+    else
+    {
+        for (std::size_t i = 0; i < entities.size(); ++i)
+            prep_planar_one(i);
+    }
     for (std::size_t i = 0; i < entities.size(); ++i)
     {
         if (plan_valid[i] == 0u)
@@ -1530,8 +1559,12 @@ inline void draw_shadow_map_pass(cd::rhi::ICommandBuffer& cmd,
                                  cd::rhi::Extent2D shadow_map_size,
                                  const std::vector<SceneEntity>& entities,
                                  const cd::scene::Scene& scene,
-                                 const MeshFor& mesh_for)
+                                 const MeshFor& mesh_for,
+                                 bool shadow_dirty = true)
 {
+    if (!shadow_dirty && shadow_initialised_on_gpu)
+        return;
+
     cd::math::Vec3f sd = sun.has_sun ? sun.dir : cd::math::Vec3f { -0.4F, -0.9F, -0.2F };
     {
         const float sd_len = std::sqrt(sd.x * sd.x + sd.y * sd.y + sd.z * sd.z);
@@ -1583,8 +1616,9 @@ inline void draw_shadow_map_pass(cd::rhi::ICommandBuffer& cmd,
             shadow_material.apply(cmd);
             std::vector<cd::math::Mat4f> csm_light_mvp(entities.size());
             std::vector<std::uint8_t> csm_valid(entities.size(), 0u);
-            cd::concurrency::parallel_for(std::size_t { 0 }, entities.size(), [&](std::size_t i) {
+            auto prep_csm_one = [&](std::size_t i) {
                 const auto& ent = entities[i];
+                if (!ent.visible) return;
                 const auto& mesh = mesh_for(ent.kind);
                 if (!mesh.vb.is_valid()) return;
                 auto* lt = scene.local(ent.handle);
@@ -1592,7 +1626,16 @@ inline void draw_shadow_map_pass(cd::rhi::ICommandBuffer& cmd,
                 const auto model = cd::math::to_mat4(lt->value);
                 csm_light_mvp[i] = light_vp * model;
                 csm_valid[i] = 1u;
-            });
+            };
+            if (entities.size() >= 256u)
+            {
+                cd::concurrency::parallel_for(std::size_t { 0 }, entities.size(), prep_csm_one);
+            }
+            else
+            {
+                for (std::size_t i = 0; i < entities.size(); ++i)
+                    prep_csm_one(i);
+            }
             for (std::size_t i = 0; i < entities.size(); ++i)
             {
                 if (csm_valid[i] == 0u) continue;
@@ -1651,7 +1694,10 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
         {
             if (std::cmp_greater_equal(selected,entities.size()))
                 return nullptr;
-            if (auto* lt = scene.local(entities[static_cast<std::size_t>(selected)].handle))
+            const auto& sel_ent = entities[static_cast<std::size_t>(selected)];
+            if (!sel_ent.visible || sel_ent.locked)
+                return nullptr;
+            if (auto* lt = scene.local(sel_ent.handle))
                 return &lt->value.position;
             return nullptr;
         }
@@ -2356,7 +2402,8 @@ inline void velocity_gbuffer_pass(cd::rhi::ICommandBuffer& cmd,
                                   const cd::scene::Scene& scene,
                                   const cd::math::Mat4f& prev_vp_unjittered,
                                   const cd::math::Mat4f& vp_unjittered,
-                                  const MeshFor& mesh_for)
+                                  const MeshFor& mesh_for,
+                                  bool force_first_frame = false)
 {
     // R3 phase 227 - velocity G-Buffer pass. Re-draws every entity
     // mesh using velocity_material; FS writes (curr_uv - prev_uv).
@@ -2364,7 +2411,7 @@ inline void velocity_gbuffer_pass(cd::rhi::ICommandBuffer& cmd,
     // the HDR pass's visible surface per pixel (no overdraw soup).
     {
         const cd::rhi::ResourceState vel_prev =
-            (frame_idx == 0) ? cd::rhi::ResourceState::kUndefined : cd::rhi::ResourceState::kShaderResource;
+            (frame_idx == 0 || force_first_frame) ? cd::rhi::ResourceState::kUndefined : cd::rhi::ResourceState::kShaderResource;
         std::array<cd::rhi::TextureBarrier, 2> vb {
             cd::rhi::TextureBarrier { .texture = gbuf_velocity.image,
                                      .from = vel_prev,
@@ -2416,6 +2463,8 @@ inline void velocity_gbuffer_pass(cd::rhi::ICommandBuffer& cmd,
         // their position attribute without a re-bind shape change.
         for (auto& ent : entities)
         {
+            if (!ent.visible)
+                continue;
             const auto& mesh = mesh_for(ent.kind);
             if (!mesh.vb.is_valid())
                 continue;
@@ -2491,7 +2540,8 @@ inline void run_bloom_chain(cd::rhi::ICommandBuffer& cmd,
                             std::array<cd::material::MaterialInstance, 3>& bloom_down_insts,
                             cd::material::Material& bloom_upsample_material,
                             std::array<cd::material::MaterialInstance, 3>& bloom_up_insts,
-                            float ev_stops = 0.0F)
+                            float ev_stops = 0.0F,
+                            bool force_first_frame = false)
 {
     auto run_bloom_pass = [&](cd::material::Material& mat,
                               cd::material::MaterialInstance& inst,
@@ -2547,7 +2597,7 @@ inline void run_bloom_chain(cd::rhi::ICommandBuffer& cmd,
         cmd.barrier({}, tb2);
     };
 
-    const bool bloom_first_frame = (frame_idx == 0);
+    const bool bloom_first_frame = (frame_idx == 0 || force_first_frame);
     // 1) Prefilter: HDR -> mip0 (soft-knee threshold, EV-scaled per phase 511).
     {
         BloomPrefilterPush bpp {};
@@ -3207,107 +3257,86 @@ inline void draw_floor_and_entities(cd::rhi::IDrawRecorder& cmd,
     // (ADR-015 / Vulkan spec 5.1) so submission stays serial; the
     // win is the prep phase parallelizes and the scaling story
     // unlocks when entity count grows past the worker count.
-    std::vector<PrimPush> ent_push_scratch(entities.size());
-    std::vector<std::uint8_t> ent_push_valid(entities.size(), 0u);
-    cd::concurrency::parallel_for(
-        std::size_t { 0 },
-        entities.size(),
-        [&](std::size_t i)
+    static thread_local std::vector<PrimPush> ent_push_scratch;
+    static thread_local std::vector<std::uint8_t> ent_push_valid;
+    ent_push_scratch.resize(entities.size());
+    ent_push_valid.assign(entities.size(), 0u);
+    auto prep_entity_push = [&](std::size_t i)
+    {
+        const auto& ent = entities[i];
+        if (!ent.visible)
+            return;
+        if (show_editor_floor && ent.name.find("Ground_Floor") != std::string::npos &&
+            !ent.use_texture && ent.custom_texture_id == 0)
+            return;
+        const auto& mesh = mesh_for(ent.kind);
+        if (!mesh.vb.is_valid())
+            return;
+        auto* lt = scene.local(ent.handle);
+        if (lt == nullptr)
+            return;
+        const auto model = cd::math::to_mat4(lt->value);
+        const auto mvp = vp * model;
+        PrimPush& pp = ent_push_scratch[i];
+        pp.mvp = mvp;
+        pp.model = model;
+        pp.tint[0] = ent.tint.x;
+        pp.tint[1] = ent.tint.y;
+        pp.tint[2] = ent.tint.z;
+        const bool is_gltf_prim = (ent.kind == PrimitiveKind::kSponza ||
+                                   ent.kind == PrimitiveKind::kGltf);
+        pp.tint[3] = 1.0F;
+        if (ent.is_pbr)
+            pp.tint[3] = 3.0F;
+        else if (is_gltf_prim)
+            pp.tint[3] = 4.0F;
+        fill_prim_push_shared(pp, fx, sun, cam);
+        const bool gltf_tex_path = (!ent.is_pbr && (ent.kind == PrimitiveKind::kGltf) && has_gltf_texture);
+        const bool pbr_tex_path  = (ent.is_pbr && ent.use_texture);
+        const float tex_slot_val = static_cast<float>(std::max(1, ent.custom_texture_id));
+        pp.fx_params[1] = pbr_tex_path ? tex_slot_val : (gltf_tex_path ? 1.0F : 0.0F);
+        if (ent.is_pbr)
         {
-            const auto& ent = entities[i];
-            const auto& mesh = mesh_for(ent.kind);
-            if (!mesh.vb.is_valid())
-                return;
-            auto* lt = scene.local(ent.handle);
-            if (lt == nullptr)
-                return;
-            const auto model = cd::math::to_mat4(lt->value);
-            const auto mvp = vp * model;
-            PrimPush& pp = ent_push_scratch[i];
-            pp.mvp = mvp;
-            pp.model = model;
-            // W8-AR sentinel routing (see pre-X1D comment for the
-            // full rationale): tint.w==3.0 routes through Cook-
-            // Torrance, 1.0 stays on the standard Lambert + textured
-            // path.
-            // phase446-vis9: tint.w==4.0 for glTF prims (Sponza/CesiumMan)
-            // — they sample real per-prim albedo but the shared
-            // cd_normal_tex / cd_mr_tex are procedural Earth which is the
-            // WRONG material at Sponza UVs (made stone look chrome) and
-            // CesiumMan UVs (made polygon facets visible from Earth bumps).
-            // tint.w==4.0 keeps the textured albedo path but forces stone-
-            // like MR (rough 0.85, metal 0), skips procedural normal map,
-            // skips BRDF rim lobes, and reduces hemi ambient so sun direct
-            // contribution dominates indoor contrast.
-            pp.tint[0] = ent.tint.x;
-            pp.tint[1] = ent.tint.y;
-            pp.tint[2] = ent.tint.z;
-            const bool is_gltf_prim = (ent.kind == PrimitiveKind::kSponza ||
-                                       ent.kind == PrimitiveKind::kGltf);
-            pp.tint[3] = 1.0F;
-            if (ent.is_pbr)
-                pp.tint[3] = 3.0F;
-            else if (is_gltf_prim)
-                pp.tint[3] = 4.0F;
-            fill_prim_push_shared(pp, fx, sun, cam);
-            // ECS override: per-entity texture-path flag in fx_params[1]
-            // kSponza: per-prim textures dispatched below; set 0 here (overridden per prim).
-            // kGltf (CesiumMan): single texture if available.
-            // phase983-pbr-texture-fix: PBR entities (is_pbr) can now opt in
-            // via ent.use_texture. The shader's pc.fx_params.y > 0.5 gate then
-            // samples cd_albedo_tex (bound at descriptor binding 4 -- the
-            // earth_albedo texture) and multiplies by ent.tint. Without this
-            // gate every PBR sphere was procedural-color-only despite the
-            // texture descriptor being live.
-            const bool gltf_tex_path = (!ent.is_pbr && (ent.kind == PrimitiveKind::kGltf) && has_gltf_texture);
-            const bool pbr_tex_path  = (ent.is_pbr && ent.use_texture);
-            pp.fx_params[1] = (gltf_tex_path || pbr_tex_path) ? 1.0F : 0.0F;
-            // phase448-arch: fx_params4 reinterpretation matrix —
-            //   tint.w==3.0 (PBR demo sphere): (metallic, roughness, 0, view_mode)
-            //   tint.w==4.0 (glTF prim, data-driven): (metallic, roughness, normal_strength, view_mode)
-            //     - For Sponza, sub_pp OVERRIDES this per-prim inside the
-            //       draw loop below using gltf_prim_ranges[i].metallic etc.
-            //     - For CesiumMan (kGltf, single draw), this entity-level
-            //       push IS the final value; we seed it from the first
-            //       prim_range so the data-driven material lands at the GPU.
-            //   tint.w==1.0 (default Lit): (clearcoat, sheen, sss, view_mode)
-            //     UI sliders carry scene-wide BRDF strengths for showcase.
-            if (ent.is_pbr)
-            {
-                pp.fx_params4[0] = ent.metallic;
-                pp.fx_params4[1] = ent.roughness;
-                pp.fx_params4[2] = 0.0F;
-            }
-            else if (is_gltf_prim)
-            {
-                // Default to "stone-ish" (matte dielectric) so unfilled
-                // prim_ranges still look sensible; gets overridden per-prim
-                // or kept as-is for single draw.
-                float m = 0.0F;
-                float r = 0.9F;
-                float ns = 0.0F;
-                const auto ranges = prim_ranges_for(ent.kind);
-                if (!ranges.empty())
-                {
-                    // seed from first prim_range so the glTF material's authored factors flow to the GPU.
-                    m  = ranges.front().metallic;
-                    r  = ranges.front().roughness;
-                    ns = ranges.front().normal_strength;
-                }
-                pp.fx_params4[0] = m;
-                pp.fx_params4[1] = r;
-                pp.fx_params4[2] = ns;
-            }
-            else
-            {
-                pp.fx_params4[0] = fx.clearcoat_strength;
-                pp.fx_params4[1] = fx.sheen_strength;
-                pp.fx_params4[2] = fx.sss_strength;
-            }
-            pp.fx_params4[3] = static_cast<float>(fx.view_mode);
-            ent_push_valid[i] = 1u;
+            pp.fx_params4[0] = ent.metallic;
+            pp.fx_params4[1] = ent.roughness;
+            const float irid_int = std::floor(std::clamp(ent.iridescence_nm, 0.0F, 1000.0F));
+            const float ms_frac  = std::clamp(ent.multiscatter_comp * 0.99F, 0.0F, 0.99F);
+            pp.fx_params4[2]     = irid_int + ms_frac;
         }
-    );
+        else if (is_gltf_prim)
+        {
+            float m = 0.0F;
+            float r = 0.9F;
+            float ns = 0.0F;
+            const auto ranges = prim_ranges_for(ent.kind);
+            if (!ranges.empty())
+            {
+                m  = ranges.front().metallic;
+                r  = ranges.front().roughness;
+                ns = ranges.front().normal_strength;
+            }
+            pp.fx_params4[0] = m;
+            pp.fx_params4[1] = r;
+            pp.fx_params4[2] = ns;
+        }
+        else
+        {
+            pp.fx_params4[0] = fx.clearcoat_strength;
+            pp.fx_params4[1] = fx.sheen_strength;
+            pp.fx_params4[2] = fx.sss_strength;
+        }
+        pp.fx_params4[3] = static_cast<float>(fx.view_mode);
+        ent_push_valid[i] = 1u;
+    };
+    if (entities.size() >= 256u)
+    {
+        cd::concurrency::parallel_for(std::size_t { 0 }, entities.size(), prep_entity_push);
+    }
+    else
+    {
+        for (std::size_t i = 0; i < entities.size(); ++i)
+            prep_entity_push(i);
+    }
     for (std::size_t i = 0; i < entities.size(); ++i)
     {
         if (ent_push_valid[i] == 0u)
@@ -3329,6 +3358,7 @@ inline void draw_floor_and_entities(cd::rhi::IDrawRecorder& cmd,
         const auto ranges = prim_ranges_for(ent.kind);
         if (!ranges.empty())
         {
+            bool dirty_shared_prim_inst = false;
             for (const auto& pr : ranges)
             {
                 if (pr.index_count == 0)
@@ -3338,10 +3368,6 @@ inline void draw_floor_and_entities(cd::rhi::IDrawRecorder& cmd,
                     if (pr.prim_inst.is_valid())
                     {
                         // Per-prim descriptor set (pre-built at boot by boot_meshes).
-                        // Avoids Vulkan descriptor-aliasing: each textured prim owns
-                        // its own VkDescriptorSet with the correct albedo in binding 4,
-                        // so the GPU sees the right texture for EVERY draw rather than
-                        // the last-written shared descriptor state.
                         pr.prim_inst.bind(cmd, 0);
                     }
                     else
@@ -3356,21 +3382,15 @@ inline void draw_floor_and_entities(cd::rhi::IDrawRecorder& cmd,
                         };
                         (void)prim_inst.update(tw);
                         prim_inst.bind(cmd, 0);
+                        dirty_shared_prim_inst = true;
                     }
                 }
-                // PrimPush fx_params[1] = 1.0 when this prim has a texture.
-                // fx_params[3] = alpha_cutoff (> 0 enables GLSL discard).
-                // phase448-arch: per-prim PBR material from the glTF file —
-                // metallic/roughness/normal_strength flow straight from
-                // GltfMaterial via GltfPrimRange. NO per-asset sentinel; ANY
-                // glTF prim that lands here gets its authored PBR factors.
                 PrimPush sub_pp = ent_push_scratch[i];
                 sub_pp.fx_params[1]  = pr.has_texture ? 1.0F : 0.0F;
                 sub_pp.fx_params[3]  = pr.alpha_cutoff;
                 sub_pp.fx_params4[0] = pr.metallic;
                 sub_pp.fx_params4[1] = pr.roughness;
                 sub_pp.fx_params4[2] = pr.normal_strength;
-                // fx_params4[3] view_mode untouched (debug overlay).
                 cmd.push_constants(
                     prim_material.pipeline_layout(),
                     cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
@@ -3381,18 +3401,7 @@ inline void draw_floor_and_entities(cd::rhi::IDrawRecorder& cmd,
                 cmd.draw_indexed(pr.index_count, 1, pr.index_offset, 0, 0);
                 counters.increment("draws_prim");
             }
-            // phase427-vis4 + phase456: restore binding=4 (albedo) AND
-            // bindings 8 (normal) + 9 (MR) on the SHARED prim_inst so
-            // subsequent entity draws (CesiumMan, PBR spheres) sample the
-            // global procedural maps rather than the last Sponza prim's
-            // material. Without this restore, the next entity bound to
-            // prim_inst would inherit whatever the per-prim descriptor sets
-            // (4/8/9) last held — and since the per-prim instance is a
-            // separate VkDescriptorSet, this isn't even shared state for
-            // the next BIND — but the shared prim_inst itself may have
-            // been mutated by legacy fallback paths above, so we
-            // defensively re-write all three bindings here.
-            if (global_albedo_view.is_valid())
+            if (dirty_shared_prim_inst && global_albedo_view.is_valid())
             {
                 std::vector<cd::rhi::DescriptorWrite> rw;
                 rw.reserve(3);
@@ -3421,8 +3430,8 @@ inline void draw_floor_and_entities(cd::rhi::IDrawRecorder& cmd,
                         .sampler = albedo_sampler });
                 }
                 (void)prim_inst.update(rw);
-                prim_inst.bind(cmd, 0);
             }
+            prim_inst.bind(cmd, 0);
             (void)device;
         }
         else
@@ -3709,6 +3718,9 @@ struct StudioApp::EngineState
     bool                                     mod_ctrl           { false };
     bool                                     mod_shift          { false };
     bool                                     needs_rebuild      { false };
+    bool                                     velocity_initialised_on_gpu { false };
+    bool                                     bloom_initialised_on_gpu    { false };
+    std::uint64_t                            last_tlas_scene_hash        { 0 };
     std::uint32_t                            frame_idx          { 0 };
     bool                                     pie_playing        { false };
     bool                                     anim_paused        { false };
@@ -3753,7 +3765,7 @@ StudioApp::StudioApp() noexcept
           .window_width      = 1600,
           .window_height     = 900,
           .start_maximized   = false,
-          .enable_validation = true,
+          .enable_validation = (cd::core::compat::read_env_var("CD_VK_VALIDATION") == "1"),
           .max_frames        = 0u,
       })
 {
@@ -3783,6 +3795,7 @@ cd::core::Result<void> StudioApp::on_boot()
     auto& window = *s.window;
 
     cd::rhi::vulkan::VulkanCreateInfo vci {};
+    vci.enable_validation = (cd::core::compat::read_env_var("CD_VK_VALIDATION") == "1");
     auto dev_r = cd::rhi::vulkan::create_vulkan_device(vci);
     if (!dev_r.has_value()) return std::unexpected(dev_r.error());
     s.device_owner = std::move(*dev_r);
@@ -3794,8 +3807,9 @@ cd::core::Result<void> StudioApp::on_boot()
     rd.swapchain.display_handle  = window.native_display_handle();
     rd.swapchain.extent          = { window.width(), window.height() };
     rd.swapchain.format          = cd::rhi::Format::kBGRA8Unorm;
+    rd.swapchain.image_count     = 4;
     rd.swapchain.vsync           = false;
-    rd.frames_in_flight          = 2;
+    rd.frames_in_flight          = 3;
     auto renderer_r = cd::render::Renderer::create(rd);
     if (!renderer_r.has_value()) return std::unexpected(renderer_r.error());
     s.renderer = std::move(*renderer_r);
@@ -3804,7 +3818,7 @@ cd::core::Result<void> StudioApp::on_boot()
     imgui_id.window           = &window;
     imgui_id.device           = &device;
     imgui_id.color_format     = cd::rhi::Format::kBGRA8Unorm;
-    imgui_id.frames_in_flight = 2;
+    imgui_id.frames_in_flight = 3;
     auto ctx_r = cd::imgui::Context::create(imgui_id);
     if (!ctx_r.has_value()) return std::unexpected(ctx_r.error());
     s.imgui_ctx = std::move(*ctx_r);
@@ -4418,7 +4432,10 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
         events.clear();
         if (!window.pump_events(events)) break;
 
-        (void)s.shader_watch.poll_and_reload(device, s.compiler.get());
+        if ((s.frame_idx & 63u) == 0u)
+        {
+            (void)s.shader_watch.poll_and_reload(device, s.compiler.get());
+        }
 
         for (const auto& ev : events)
         {
@@ -4628,6 +4645,9 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
             // the next frame against the fresh views.
             s.ddgi.bound = false;
             s.depth_initialised_on_gpu = false;
+            s.velocity_initialised_on_gpu = false;
+            s.bloom_initialised_on_gpu = false;
+            s.last_tlas_scene_hash = 0;
             s.needs_rebuild = false;
         }
 
@@ -4635,9 +4655,9 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
         const float dt = std::chrono::duration<float>(now - last_tick).count();
         last_tick = now;
 
-        // Tick audio
+        // Tick audio (only when 3D audio waveform overlay is visible or on initial seed frame)
         auto& as = s.audio_state;
-        if (!as.muted)
+        if (!as.muted && (s.frame_idx == 0 || s.fx.audio_show_wave_3d))
         {
             float peak = 0.0F;
             float comp_db_min = 0.0F;
@@ -4711,8 +4731,8 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
             s.counters.increment("net_ticks");
         }
 
-        // Random viz refresh
-        if (s.frame_idx >= s.next_random_refresh)
+        // Random viz refresh (only when 3D RNG overlay is visible or on initial seed frame)
+        if ((s.frame_idx == 0 || s.fx.rng_show_hist_3d) && s.frame_idx >= s.next_random_refresh)
         {
             std::vector<float> u; u.reserve(8192);
             for (int i = 0; i < 8192; ++i) u.push_back(s.rand_rng.next_float());
@@ -4733,11 +4753,26 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
             s.next_random_refresh = s.frame_idx + 120;
         }
 
+        if (g_studio_initial_template >= 0 && s.frame_idx == 1u)
+        {
+            cd::studio::init_clean_studio_workspace(s, log_push_fn);
+            cd::studio::load_studio_interactive_template(s, g_studio_initial_template, log_push_fn);
+            g_studio_initial_template = -1;
+        }
+
         // CPU-LBS/DQS skinning for CesiumMan (animated character — kGltf entity).
         // Sponza (kSponza) has no skin data; its mesh lives in s.meshes.gltf.
         // CesiumMan skin data lives in s.meshes.cesium_skinned; VB is gltf_cesium.
+        bool has_gltf_entity   = false;
+        bool has_sponza_entity = false;
+        for (const auto& ent : s.entities)
+        {
+            if (ent.kind == PrimitiveKind::kGltf)   has_gltf_entity   = true;
+            if (ent.kind == PrimitiveKind::kSponza) has_sponza_entity = true;
+        }
         const float anim_dt = s.anim_paused ? 0.0F : (std::max(dt, 1.0F / 120.0F) * s.anim_speed);
-        if (!cd_studio::update_skinned_animation(s.meshes.cesium_skinned, device,
+        if (has_gltf_entity &&
+            !cd_studio::update_skinned_animation(s.meshes.cesium_skinned, device,
                                                   s.meshes.gltf_cesium.vb, anim_dt))
         {
             // W4-F fallback turntable: only for kGltf (CesiumMan) when it has
@@ -4825,20 +4860,55 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
         auto& frame = *frame_r;
         auto& cmd   = *frame.command_buffer;
 
+        // Compute lightweight FNV-1a scene hash over entity transforms/materials
+        // so static frames skip TLAS recreation, 512 KB SSBO heap allocation,
+        // and 100+ vkUpdateDescriptorSets calls.
+        std::uint64_t tlas_scene_hash = 14695981039346656037ULL;
+        auto hash_mix = [&](std::uint64_t v) noexcept
+        {
+            tlas_scene_hash ^= v;
+            tlas_scene_hash *= 1099511628211ULL;
+        };
+        auto hash_f32 = [&](float f) noexcept
+        {
+            hash_mix(static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(f)));
+        };
+        const SunLight sun = resolve_sun_light(s.lights);
+        hash_mix(s.entities.size());
+        hash_mix(sun.has_sun ? 1u : 0u);
+        hash_f32(sun.dir.x); hash_f32(sun.dir.y); hash_f32(sun.dir.z);
+        if (has_gltf_entity && !s.anim_paused)
+        {
+            hash_mix(static_cast<std::uint64_t>(s.frame_idx));
+        }
+        for (const auto& ent : s.entities)
+        {
+            hash_mix(static_cast<std::uint64_t>(ent.handle.id));
+            hash_mix(static_cast<std::uint64_t>(ent.kind));
+            hash_mix(ent.visible ? 1u : 0u);
+            hash_mix(ent.is_pbr ? 1u : 0u);
+            hash_mix(ent.use_texture ? 1u : 0u);
+            hash_f32(ent.tint.x); hash_f32(ent.tint.y); hash_f32(ent.tint.z);
+            hash_f32(ent.metallic); hash_f32(ent.roughness);
+            hash_f32(ent.multiscatter_comp); hash_f32(ent.iridescence_nm);
+            if (const auto* lt = s.scene.local(ent.handle))
+            {
+                hash_f32(lt->value.position.x); hash_f32(lt->value.position.y); hash_f32(lt->value.position.z);
+                hash_f32(lt->value.rotation.x); hash_f32(lt->value.rotation.y); hash_f32(lt->value.rotation.z); hash_f32(lt->value.rotation.w);
+                hash_f32(lt->value.scale.x);    hash_f32(lt->value.scale.y);    hash_f32(lt->value.scale.z);
+            }
+        }
+        const bool tlas_dirty =
+            !s.current_tlas.is_valid() || (tlas_scene_hash != s.last_tlas_scene_hash);
+        if (tlas_dirty)
+        {
+            s.last_tlas_scene_hash = tlas_scene_hash;
+        }
+
         cd_studio::rebuild_tlas_and_transition_depth(
             device, cmd, s.frame_idx, s.tlas_destroy_queue, s.current_tlas,
             s.prim_inst, std::span<const SceneEntity>(s.entities),
             blas_for_kind,
-            // phase434-vis7: Sponza entity tint {1,1,1} is white; chrome
-            // reflections off Sponza walls appear blown-out white. Return a
-            // warm sandstone representative color for the RT reflection SSBO
-            // without touching the raster path (which multiplies sampled
-            // texture * tint directly, so {1,1,1} is correct there).
-            //
-            // phase465-perprim: this instance-level fallback now applies
-            // ONLY to geom slots NOT covered by sponza_geom_albedos
-            // (e.g. a hit with geometry_index > #prim_ranges). Sponza's
-            // real per-prim colours flow through geom_albedos_for below.
             [](const SceneEntity& e) -> cd::math::Vec3f {
                 if (e.kind == PrimitiveKind::kSponza)
                     return { 0.72F, 0.60F, 0.48F };
@@ -4847,15 +4917,12 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
             [](const SceneEntity& e) -> PrimitiveKind    { return e.kind; },
             [&s](const SceneEntity& e) -> std::optional<cd::math::Mat4f>
             {
+                if (!e.visible || e.name.find("Ground_Floor") != std::string::npos)
+                    return std::nullopt;
                 auto* lt = s.scene.local(e.handle);
                 if (!lt) return std::nullopt;
                 return cd::math::to_mat4(lt->value);
             },
-            // phase465-perprim: per-(instance, geom) override.  Returns the
-            // Sponza per-prim albedo span for the kSponza entity; empty
-            // span for every other entity (which makes the rebuild path
-            // replicate the instance tint across all geom slots — same
-            // as the pre-phase-465 behaviour).
             [&s](const SceneEntity& e) -> std::span<const cd::math::Vec3f>
             {
                 if (e.kind == PrimitiveKind::kSponza)
@@ -4864,59 +4931,42 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                     return { s.cesium_geom_albedos };
                 return {};
             },
-            // phase843-W8-BE-rt-bindless-texture-sampling: per-geom
-            // metadata. Sponza: albedo_tex_slot = slot index in the
-            // binding-13 sampler2D array (one per prim, set 1:1 with
-            // gltf_prim_ranges), index_offset = the prim's first
-            // index in the shared index buffer. Other entities:
-            // empty span -> sentinel path (W8-BD avg-colour
-            // fallback).
             [&s](const SceneEntity& e) -> std::span<const cd_studio::W8BEGeomMeta>
             {
                 if (e.kind == PrimitiveKind::kSponza)
                     return { s.sponza_w8be_meta };
-                // phase890-cesium-bindless-textures: CesiumMan
-                // gets its own per-prim metadata pointing at the
-                // bindless slots N..N+M reserved for cesium albedos.
                 if (e.kind == PrimitiveKind::kGltf)
                     return { s.cesium_w8be_meta };
-                // phase1000-pbr-sphere-rt-texture: a PBR sphere
-                // entity that has opted into texture sampling (via
-                // the Inspector "Albedo texture (PBR opt-in)"
-                // checkbox or the R-Showcase R2 blanket toggle)
-                // gets the 1-element span with mesh_id=2 + slot 255
-                // so the chrome RT reflection branch in
-                // prim.frag.glsl computes an analytical spherical UV
-                // from the hit position and samples earth_albedo.
-                // Sphere entities without use_texture stay on the
-                // empty-span (W8-BD avg-colour) path.
                 if (e.kind == PrimitiveKind::kSphere && e.is_pbr && e.use_texture)
                     return { s.pbr_sphere_textured_meta };
                 return {};
             },
             s.meshes.blas_floor, s.meshes.blas_cesium,
-            s.meshes.cesium_skinned.valid, s.inst_mat_ssbo,
+            has_gltf_entity && s.meshes.cesium_skinned.valid, s.inst_mat_ssbo,
             s.rts.depth.image, s.depth_initialised_on_gpu,
-            // phase866-2-bounce-sphere-normal: flag sphere primitives
-            // (PBR grid + procedural sphere seeds) so the per-geom
-            // SSBO row carries the analytical centre + radius the
-            // shader needs for the 2-bounce reflection path.
             [](const SceneEntity& e) -> bool {
                 return e.kind == PrimitiveKind::kSphere;
-            });
+            },
+            tlas_dirty);
 
         // phase-descriptor-sync: propagate per-frame TLAS + inst_mat SSBO
-        // writes to every per-prim descriptor set (binding 2 + 10).
-        if (s.current_tlas.is_valid())
+        // writes to active per-prim descriptor sets (binding 2 + 10) when dirty.
+        if (tlas_dirty && s.current_tlas.is_valid())
         {
-            cd_studio::sync_perprim_tlas_and_ssbo(
-                s.meshes.gltf_prim_ranges,
-                s.current_tlas, s.inst_mat_ssbo,
-                cd::studio_rt::kInstMatBytes);
-            cd_studio::sync_perprim_tlas_and_ssbo(
-                s.meshes.gltf_cesium_prim_ranges,
-                s.current_tlas, s.inst_mat_ssbo,
-                cd::studio_rt::kInstMatBytes);
+            if (has_sponza_entity)
+            {
+                cd_studio::sync_perprim_tlas_and_ssbo(
+                    s.meshes.gltf_prim_ranges,
+                    s.current_tlas, s.inst_mat_ssbo,
+                    cd::studio_rt::kInstMatBytes);
+            }
+            if (has_gltf_entity)
+            {
+                cd_studio::sync_perprim_tlas_and_ssbo(
+                    s.meshes.gltf_cesium_prim_ranges,
+                    s.current_tlas, s.inst_mat_ssbo,
+                    cd::studio_rt::kInstMatBytes);
+            }
         }
 
         // phase1146 (P2/P3): boot + bind the DDGI GPU pipeline lazily. Boot
@@ -4944,11 +4994,10 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
             }
         }
 
-        const SunLight sun = resolve_sun_light(s.lights);
-
         draw_shadow_map_pass(cmd, sun, device, s.shadow_ubo, s.shadow_target,
                              s.shadow_initialised_on_gpu, s.materials.shadow,
-                             kShadowMapSize, s.entities, s.scene, mesh_for);
+                             kShadowMapSize, s.entities, s.scene, mesh_for,
+                             tlas_dirty);
 
         // phase1121 (X1-FU-F step 3): HDR pass over parallel lanes behind
         // the fx toggle. Lane plan (CONTIGUOUS blocks; lane-order merge ==
@@ -5023,8 +5072,11 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                                 s.albedo_sampler, device, s.albedo_tex.view,
                                 s.normal_tex.view, s.mr_tex.view,  // phase456: per-prim restore
                                 s.show_editor_floor);  // phase435-vis8
-        draw_planar_shadows(hdr_lane0, sun, kFloorY, kShadowLift, s.entities,
-                            s.scene, vp, s.materials.prim, s.counters, mesh_for);
+        if (s.entities.size() > 1U)
+        {
+            draw_planar_shadows(hdr_lane0, sun, kFloorY, kShadowLift, s.entities,
+                                s.scene, vp, s.materials.prim, s.counters, mesh_for);
+        }
         // phase1121: lane1 owns the 3D overlays — re-establish dynamic
         // state + the prim pipeline/sets the overlays assume (a lane's
         // secondary inherits nothing from lane0).
@@ -5174,7 +5226,7 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                 ImGuiID dl     = ImGui::DockBuilderSplitNode(m,  ImGuiDir_Left,  0.22F, nullptr, &m);
                 ImGuiID dr     = ImGui::DockBuilderSplitNode(m,  ImGuiDir_Right, 0.25F, nullptr, &m);
                 ImGuiID db     = ImGui::DockBuilderSplitNode(m,  ImGuiDir_Down,  0.19F, nullptr, &m);
-                ImGuiID dl_bot = ImGui::DockBuilderSplitNode(dl, ImGuiDir_Down,  0.34F, nullptr, &dl);
+                ImGuiID dl_bot = ImGui::DockBuilderSplitNode(dl, ImGuiDir_Down,  0.32F, nullptr, &dl);
                 ImGui::DockBuilderDockWindow("Studio Workbench", dl);
                 ImGui::DockBuilderDockWindow("Scene",            dl_bot);
                 ImGui::DockBuilderDockWindow("Inspector",        dr);
@@ -5182,20 +5234,26 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                 ImGui::DockBuilderFinish(dock_id);
                 s.dock_initialised = true;
             }
-            ImGui::DockSpace(dock_id, ImVec2 { 0, 0 },
-                             ImGuiDockNodeFlags_PassthruCentralNode);
+            if (cd::ui::chroma::state().workspace_mode == 0)
+            {
+                ImGui::DockSpace(dock_id, ImVec2 { 0, 0 },
+                                 ImGuiDockNodeFlags_PassthruCentralNode);
+            }
             ImGui::End();
         }
 
         cd::studio::draw_clean_studio_workspace_panels(
             s, dt, vp, frame.extent.width, frame.extent.height, log_push_fn);
-        draw_selection_outline_overlay(s.entities, s.selected, s.selected_kind,
-                                       s.outline, s.scene, vp, frame.extent);
-        draw_light_markers_overlay(s.lights, s.selected, s.selected_kind, vp, frame.extent);
-        update_and_draw_gizmo(s.gizmo, s.gizmo_state,
-                              s.app_state.pick.pending, s.selected, s.selected_kind,
-                              s.entities, s.lights, s.scene, s.history, log_push_fn,
-                              vp, s.cam, window, frame.extent);
+        if (cd::ui::chroma::state().workspace_mode == 0)
+        {
+            draw_selection_outline_overlay(s.entities, s.selected, s.selected_kind,
+                                           s.outline, s.scene, vp, frame.extent);
+            draw_light_markers_overlay(s.lights, s.selected, s.selected_kind, vp, frame.extent);
+            update_and_draw_gizmo(s.gizmo, s.gizmo_state,
+                                  s.app_state.pick.pending, s.selected, s.selected_kind,
+                                  s.entities, s.lights, s.scene, s.history, log_push_fn,
+                                  vp, s.cam, window, frame.extent);
+        }
         draw_command_palette_popup(s.palette, s.palette_visible, s.palette_query,
                                    frame.extent);
         }  // else (!s.pie_playing)
@@ -5277,27 +5335,36 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
             }
         }
 
-        velocity_gbuffer_pass(cmd, s.frame_idx, s.rts.gbuf_velocity, s.rts.depth,
-                              frame.extent, s.materials.velocity,
-                              s.entities, s.scene, s.prev_vp_unjittered, vp_unj, mesh_for);
+        if (!s.velocity_initialised_on_gpu || s.fx.taa_amount > 0.001F || s.fx.motion_blur > 0.001F)
+        {
+            velocity_gbuffer_pass(cmd, s.frame_idx, s.rts.gbuf_velocity, s.rts.depth,
+                                  frame.extent, s.materials.velocity,
+                                  s.entities, s.scene, s.prev_vp_unjittered, vp_unj, mesh_for,
+                                  !s.velocity_initialised_on_gpu);
+            s.velocity_initialised_on_gpu = true;
+        }
+        else
+        {
+            std::array<cd::rhi::TextureBarrier, 1> db_to_sr {
+                cd::rhi::TextureBarrier { .texture = s.rts.depth.image,
+                                         .from = cd::rhi::ResourceState::kDepthWrite,
+                                         .to = cd::rhi::ResourceState::kShaderResource,
+                                         .range = { 0, 1, 0, 1 } }
+            };
+            cmd.barrier({}, db_to_sr);
+        }
 
-        // Phase 511 — feed scene auto-EV into bloom prefilter so threshold
-        // tracks scene auto-exposure. Setup::tick() (the GPU log-luminance
-        // reduction + EMA) is NOT called yet: the GpuReduction requires a
-        // per-frame descriptor write tying the HDR view + readback SSBO
-        // into its descriptor set, and that hook is not exposed by the
-        // sample-side framegraph yet. current_ev() therefore returns the
-        // default 0.0 and the shader sees exp2(0) = 1 = no EV scaling.
-        // Once the descriptor write API lands, replace this line with
-        // `const float exposure_mul = s.auto_exposure.tick(cmd, s.rts.hdr.view, dt);`
-        // and feed `s.auto_exposure.current_ev()` below.
         const float scene_ev_stops = s.auto_exposure.current_ev();
 
-        run_bloom_chain(cmd, s.frame_idx, s.bloom_chain,
-                        s.materials.bloom_prefilter, s.bloom_prefilter_inst,
-                        s.materials.bloom_downsample, s.bloom_down_insts,
-                        s.materials.bloom_upsample, s.bloom_up_insts,
-                        scene_ev_stops);
+        if (!s.bloom_initialised_on_gpu || s.fx.bloom_post > 0.001F)
+        {
+            run_bloom_chain(cmd, s.frame_idx, s.bloom_chain,
+                            s.materials.bloom_prefilter, s.bloom_prefilter_inst,
+                            s.materials.bloom_downsample, s.bloom_down_insts,
+                            s.materials.bloom_upsample, s.bloom_up_insts,
+                            scene_ev_stops, !s.bloom_initialised_on_gpu);
+            s.bloom_initialised_on_gpu = true;
+        }
 
         begin_composite_pass(cmd, s.frame_idx, frame.swapchain_image_view,
                              frame.extent, s.rts.history, s.history_states,
@@ -5543,6 +5610,11 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
         s.ui_lmb_prev_down = s.ui_lmb_down;
         ++s.frame_idx;
         s.counters.set("frame", s.frame_idx);
+        if (g_studio_max_frames > 0U && s.frame_idx >= g_studio_max_frames)
+        {
+            request_shutdown();
+            break;
+        }
     }  // while(true)
 
     request_shutdown();
@@ -5647,14 +5719,37 @@ int main(int argc, char** argv)
         {
             g_studio_demo_all_phases = true;
         }
-        else if (arg == "--capture-window-png" && i + 1 < argc && argv[i + 1] != nullptr)
+        else if ((arg == "--capture-window-png" || arg == "--studio-capture-png" ||
+                  arg == "--capture-png" || arg == "--screenshot") &&
+                 i + 1 < argc && argv[i + 1] != nullptr)
         {
             g_studio_capture_png = argv[++i];
         }
-        else if (arg == "--frames" && i + 1 < argc && argv[i + 1] != nullptr)
+        else if ((arg == "--frames" || arg == "--max-frames" || arg == "--frame-count" ||
+                  arg == "--studio-capture-frame" || arg == "--capture-frame") &&
+                 i + 1 < argc && argv[i + 1] != nullptr)
         {
             const int f = std::atoi(argv[++i]);
-            if (f > 0) g_studio_capture_frame = static_cast<std::uint32_t>(f);
+            if (f > 0)
+            {
+                g_studio_capture_frame = static_cast<std::uint32_t>(f);
+                g_studio_max_frames    = static_cast<std::uint32_t>(f) + 4U;
+            }
+        }
+        else if (arg == "--ui-mode" && i + 1 < argc && argv[i + 1] != nullptr)
+        {
+            const int m = std::atoi(argv[++i]);
+            cd::ui::chroma::state().workspace_mode = std::clamp(m, 0, 2);
+        }
+        else if (arg == "--theme" && i + 1 < argc && argv[i + 1] != nullptr)
+        {
+            const int t = std::atoi(argv[++i]);
+            ImGui::ApplyTheme(t);
+        }
+        else if ((arg == "--template" || arg == "--studio-template" || arg == "--level") &&
+                 i + 1 < argc && argv[i + 1] != nullptr)
+        {
+            g_studio_initial_template = std::clamp(std::atoi(argv[++i]), 0, 12);
         }
         else if (arg == "--headless" || arg == "--null")
         {

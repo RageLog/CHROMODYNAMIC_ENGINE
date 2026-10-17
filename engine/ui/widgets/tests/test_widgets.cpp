@@ -11,6 +11,7 @@
 // of this suite; pixel-perfect rendering is verified separately by the
 // renderer's own golden-image tests.
 // =============================================================================
+#include <cd/ui/ChromaUi.hpp>
 #include <cd/ui/renderer/DrawBatcher.hpp>
 #include <cd/ui/widgets/Widgets.hpp>
 
@@ -468,4 +469,353 @@ TEST(UiWidgetsDraw, AllWidgetsEmitWithoutFontWithoutAsserts)
     EXPECT_GT(batcher.vertex_count(), 0U);
     EXPECT_GT(batcher.index_count(), 0U);
     EXPECT_GT(batcher.command_count(), 0U);
+}
+
+// =============================================================================
+// ChromaUI Immediate-Mode Catalog 2.0 + In-Game HUD + Standalone Node/Curve Lab
+// =============================================================================
+
+TEST(ChromaUiCatalog2, ThemesCalcTextSizeWidgetsNodeGraphAndHudEmitCleanly)
+{
+    for (int t = 0; t < 5; ++t)
+    {
+        ImGui::ApplyTheme(t);
+        EXPECT_EQ(cd::ui::chroma::state().theme_index, t);
+    }
+    ImGui::ApplyTheme(0);
+
+    const ImVec2 sz = ImGui::CalcTextSize("CHROMODYNAMIC STUDIO##hidden_id");
+    EXPECT_GT(sz.x, 40.0F);
+    EXPECT_GT(sz.y, 8.0F);
+
+    cd::ui::chroma::Context ctx;
+    ctx.new_frame();
+
+    ImGui::DockSpace(1U);
+    if (ImGui::Begin("Studio Workbench"))
+    {
+        bool tog = true;
+        int  rad = 0;
+        float knob_v = 0.5F;
+        float curve_pts[8] = { 0.0F, 0.0F, 0.25F, 0.75F, 0.75F, 0.25F, 1.0F, 1.0F };
+        float time_s = 1.2F;
+        const float kfs[3] = { 0.5F, 1.2F, 2.5F };
+
+        (void)ImGui::ToggleSwitch("Enable Bloom", &tog);
+        (void)ImGui::RadioButton("Mode A", &rad, 0);
+        (void)ImGui::KnobFloat("Roughness", &knob_v, 0.0F, 1.0F, 20.0F);
+        (void)ImGui::CurveEditor("Response", curve_pts, ImVec2(180.0F, 80.0F));
+        (void)ImGui::TimelineScrubber("Track", &time_s, 3.0F, kfs, 3);
+
+        if (ImGui::BeginNodeGraph("TestGraph", ImVec2(320.0F, 140.0F)))
+        {
+            ImGui::BeginNode(1U, "Sampler", ImVec2(10.0F, 10.0F));
+            ImGui::NodePin(11U, "Out", true);
+            ImGui::EndNode();
+
+            ImGui::BeginNode(2U, "Output", ImVec2(180.0F, 10.0F));
+            ImGui::NodePin(21U, "In", false);
+            ImGui::EndNode();
+
+            ImGui::NodeLink(11U, 21U);
+            ImGui::EndNodeGraph();
+        }
+    }
+    ImGui::End();
+
+    ImGui::PushToast("Build Complete", "All shaders compiled", 0, 2.0F);
+    EXPECT_FALSE(cd::ui::chroma::state().toasts.empty());
+
+    const ImVec2 blips[2] = { ImVec2(1.0F, -1.0F), ImVec2(-2.0F, 1.5F) };
+    const char* slots[8]  = { "A", "B", "C", "D", "E", "F", "G", "H" };
+    const float cds[8]    = { 0.0F, 0.5F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F };
+    cd::ui::chroma::hud::DrawHealthShieldBar(ImVec2(20.0F, 500.0F), 240.0F, 85.0F, 100.0F, 50.0F, 100.0F, 0.8F);
+    cd::ui::chroma::hud::DrawDynamicCrosshair(ImVec2(400.0F, 300.0F), 10.0F);
+    cd::ui::chroma::hud::DrawMinimapRadar(ImVec2(700.0F, 100.0F), 64.0F, 0.5F, blips);
+    (void)cd::ui::chroma::hud::DrawInventoryHotbar(ImVec2(400.0F, 580.0F), 0, slots, cds);
+    cd::ui::chroma::hud::DrawWorldSpaceEntityTag(ImVec2(350.0F, 220.0F), "Crate_01", 12.4F, 0.9F, true);
+
+    r::DrawBatcher batcher;
+    batcher.begin_frame();
+    cd::ui::chroma::state().bg_dl.replay_into(batcher);
+    cd::ui::chroma::state().win_dl.replay_into(batcher);
+    cd::ui::chroma::state().fg_dl.replay_into(batcher);
+
+    EXPECT_GT(batcher.vertex_count(), 100U);
+    EXPECT_GT(batcher.index_count(), 150U);
+}
+
+TEST(Widgets, ChromaUiInteractiveSliderInlineEditAndColorPopupOcclusion)
+{
+    auto& st = cd::ui::chroma::state();
+    st = cd::ui::chroma::State {};
+    st.io.DisplaySize = ImVec2(1280.0F, 720.0F);
+    st.main_viewport.Size = st.io.DisplaySize;
+    st.main_viewport.WorkSize = st.io.DisplaySize;
+
+    // 1. SliderFloat inline numeric edit: Ctrl+Click -> type "0.75" -> Enter
+    float slider_val = 0.50F;
+    st.window_stack.clear();
+    ImGui::SetNextWindowPos(ImVec2(100.0F, 100.0F));
+    ImGui::SetNextWindowSize(ImVec2(320.0F, 240.0F));
+    st.io.MousePos = ImVec2(150.0F, 145.0F);
+    st.mouse_clicked[0] = true;
+    st.mouse_down[0] = true;
+    st.mod_ctrl = true;
+    if (ImGui::Begin("InlineEditWin"))
+    {
+        (void)ImGui::SliderFloat("Roughness", &slider_val, 0.0F, 1.0F);
+    }
+    ImGui::End();
+    EXPECT_NE(st.inline_edit_id, 0U);
+    EXPECT_TRUE(st.inline_edit_select_all);
+
+    // Frame 2: type "0.75" and press Enter -> replaces pre-filled "0.500"
+    st.window_stack.clear();
+    st.mouse_clicked[0] = false;
+    st.mouse_down[0] = false;
+    st.mod_ctrl = false;
+    st.input_chars = "0.75";
+    st.keys_pressed[ImGuiKey_Enter] = true;
+    ImGui::SetNextWindowPos(ImVec2(100.0F, 100.0F));
+    ImGui::SetNextWindowSize(ImVec2(320.0F, 240.0F));
+    bool slider_committed = false;
+    if (ImGui::Begin("InlineEditWin"))
+    {
+        slider_committed = ImGui::SliderFloat("Roughness", &slider_val, 0.0F, 1.0F);
+    }
+    ImGui::End();
+    EXPECT_TRUE(slider_committed);
+    EXPECT_NEAR(slider_val, 0.75F, 1e-4F);
+    EXPECT_EQ(st.inline_edit_id, 0U);
+
+    // 2. ColorEdit3 swatch click -> RGB slider drag (even when mp.y drifts vertically) + background occlusion
+    float rgb[3] = { 0.2F, 0.4F, 0.6F };
+    st.window_stack.clear();
+    st.input_chars.clear();
+    st.keys_pressed[ImGuiKey_Enter] = false;
+    ImGui::SetNextWindowPos(ImVec2(100.0F, 100.0F));
+    ImGui::SetNextWindowSize(ImVec2(360.0F, 300.0F));
+    if (ImGui::Begin("ColorWin"))
+    {
+        (void)ImGui::ColorEdit3("Albedo", rgb);
+    }
+    ImGui::End();
+    const ImVec2 swatch_click_pos { st.last_item_max.x - 60.0F, st.last_item_min.y + 8.0F };
+
+    // Click swatch to open popup
+    st.window_stack.clear();
+    st.io.MousePos = swatch_click_pos;
+    st.mouse_clicked[0] = true;
+    st.mouse_down[0] = true;
+    ImGui::SetNextWindowPos(ImVec2(100.0F, 100.0F));
+    ImGui::SetNextWindowSize(ImVec2(360.0F, 300.0F));
+    if (ImGui::Begin("ColorWin"))
+    {
+        (void)ImGui::ColorEdit3("Albedo", rgb);
+    }
+    ImGui::End();
+    EXPECT_NE(st.open_popup_id, 0U);
+
+    // Next frame: click inside R bar and verify background button at same position is occluded
+    const ImVec2 r_bar_pos { st.open_popup_pos.x + 80.0F, st.open_popup_pos.y + 36.0F };
+    st.window_stack.clear();
+    st.io.MousePos = r_bar_pos;
+    st.mouse_clicked[0] = true;
+    st.mouse_down[0] = true;
+    bool bg_button_clicked = false;
+    ImGui::SetNextWindowPos(ImVec2(100.0F, 100.0F));
+    ImGui::SetNextWindowSize(ImVec2(360.0F, 300.0F));
+    if (ImGui::Begin("ColorWin"))
+    {
+        (void)ImGui::ColorEdit3("Albedo", rgb);
+        ImGui::SetCursorScreenPos(ImVec2(r_bar_pos.x - 10.0F, r_bar_pos.y - 5.0F));
+        bg_button_clicked = ImGui::Button("OccludedButton", ImVec2(120.0F, 24.0F));
+    }
+    ImGui::End();
+    EXPECT_FALSE(bg_button_clicked);
+
+    // Drag horizontally while mp.y drifts 40px below the R bar
+    st.window_stack.clear();
+    st.mouse_clicked[0] = false;
+    st.mouse_down[0] = true;
+    st.io.MousePos = ImVec2(st.open_popup_pos.x + 170.0F, st.open_popup_pos.y + 85.0F);
+    bool color_dragged = false;
+    ImGui::SetNextWindowPos(ImVec2(100.0F, 100.0F));
+    ImGui::SetNextWindowSize(ImVec2(360.0F, 300.0F));
+    if (ImGui::Begin("ColorWin"))
+    {
+        color_dragged = ImGui::ColorEdit3("Albedo", rgb);
+    }
+    ImGui::End();
+    EXPECT_TRUE(color_dragged);
+    EXPECT_GT(rgb[0], 0.80F);
+}
+
+TEST(Widgets, ChromaUiInteractiveCurveNodeChildAndDynamicDocking)
+{
+    auto& st = cd::ui::chroma::state();
+    st = cd::ui::chroma::State {};
+    st.io.DisplaySize = ImVec2(1280.0F, 720.0F);
+    st.main_viewport.Size = st.io.DisplaySize;
+    st.main_viewport.WorkSize = st.io.DisplaySize;
+
+    // 1. CurveEditor control point multi-frame drag
+    float curve[8] = { 0.0F, 0.0F, 0.30F, 0.30F, 0.70F, 0.70F, 1.0F, 1.0F };
+    ImGui::SetNextWindowPos(ImVec2(50.0F, 80.0F));
+    ImGui::SetNextWindowSize(ImVec2(320.0F, 260.0F));
+    if (ImGui::Begin("CurveWin"))
+    {
+        (void)ImGui::CurveEditor("TestCurve", curve, ImVec2(200.0F, 100.0F));
+    }
+    ImGui::End();
+    const ImVec2 c_min = st.last_item_min;
+    const ImVec2 c_max = st.last_item_max;
+    const ImVec2 pt1_screen {
+        c_min.x + 6.0F + curve[2] * ((c_max.x - c_min.x) - 12.0F),
+        c_max.y - 6.0F - curve[3] * ((c_max.y - c_min.y) - 12.0F)
+    };
+
+    st.window_stack.clear();
+    st.io.MousePos = pt1_screen;
+    st.mouse_clicked[0] = true;
+    st.mouse_down[0] = true;
+    ImGui::SetNextWindowPos(ImVec2(50.0F, 80.0F));
+    ImGui::SetNextWindowSize(ImVec2(320.0F, 260.0F));
+    if (ImGui::Begin("CurveWin"))
+    {
+        (void)ImGui::CurveEditor("TestCurve", curve, ImVec2(200.0F, 100.0F));
+    }
+    ImGui::End();
+
+    st.window_stack.clear();
+    st.mouse_clicked[0] = false;
+    st.mouse_down[0] = true;
+    st.io.MousePos = ImVec2(pt1_screen.x + 40.0F, pt1_screen.y - 25.0F);
+    bool curve_changed = false;
+    ImGui::SetNextWindowPos(ImVec2(50.0F, 80.0F));
+    ImGui::SetNextWindowSize(ImVec2(320.0F, 260.0F));
+    if (ImGui::Begin("CurveWin"))
+    {
+        curve_changed = ImGui::CurveEditor("TestCurve", curve, ImVec2(200.0F, 100.0F));
+    }
+    ImGui::End();
+    EXPECT_TRUE(curve_changed);
+    EXPECT_GT(curve[2], 0.45F);
+    EXPECT_GT(curve[3], 0.45F);
+
+    // 2. BeginNode header drag updates pin screen position on the same frame
+    st.window_stack.clear();
+    st.active_id = 0U;
+    st.mouse_down[0] = false;
+    ImGui::SetNextWindowPos(ImVec2(50.0F, 80.0F));
+    ImGui::SetNextWindowSize(ImVec2(500.0F, 360.0F));
+    if (ImGui::Begin("NodeWin"))
+    {
+        if (ImGui::BeginNodeGraph("NG", ImVec2(450.0F, 280.0F)))
+        {
+            ImGui::BeginNode(42U, "ShaderNode", ImVec2(30.0F, 30.0F), ImVec2(160.0F, 80.0F));
+            ImGui::NodePin(420U, "Out", true);
+            ImGui::EndNode();
+            ImGui::EndNodeGraph();
+        }
+    }
+    ImGui::End();
+    const ImVec2 initial_pin_pos = st.node_pins[420U].screen_pos;
+    const ImVec2 hdr_click { st.node_graph_origin.x + 50.0F, st.node_graph_origin.y + 40.0F };
+
+    // Frame A: click node header
+    st.window_stack.clear();
+    st.io.MousePos = hdr_click;
+    st.mouse_clicked[0] = true;
+    st.mouse_down[0] = true;
+    st.mouse_delta = ImVec2(0.0F, 0.0F);
+    ImGui::SetNextWindowPos(ImVec2(50.0F, 80.0F));
+    ImGui::SetNextWindowSize(ImVec2(500.0F, 360.0F));
+    if (ImGui::Begin("NodeWin"))
+    {
+        if (ImGui::BeginNodeGraph("NG", ImVec2(450.0F, 280.0F)))
+        {
+            ImGui::BeginNode(42U, "ShaderNode", ImVec2(30.0F, 30.0F), ImVec2(160.0F, 80.0F));
+            ImGui::NodePin(420U, "Out", true);
+            ImGui::EndNode();
+            ImGui::EndNodeGraph();
+        }
+    }
+    ImGui::End();
+    EXPECT_EQ(st.dragging_node_id, 42U);
+
+    // Frame B: drag node by (+35, +20) -> pin screen_pos updates on the SAME frame!
+    st.window_stack.clear();
+    st.mouse_clicked[0] = false;
+    st.mouse_down[0] = true;
+    st.mouse_delta = ImVec2(35.0F, 20.0F);
+    ImGui::SetNextWindowPos(ImVec2(50.0F, 80.0F));
+    ImGui::SetNextWindowSize(ImVec2(500.0F, 360.0F));
+    if (ImGui::Begin("NodeWin"))
+    {
+        if (ImGui::BeginNodeGraph("NG", ImVec2(450.0F, 280.0F)))
+        {
+            ImGui::BeginNode(42U, "ShaderNode", ImVec2(30.0F, 30.0F), ImVec2(160.0F, 80.0F));
+            ImGui::NodePin(420U, "Out", true);
+            ImGui::EndNode();
+            ImGui::EndNodeGraph();
+        }
+    }
+    ImGui::End();
+    EXPECT_NEAR(st.node_pins[420U].screen_pos.x, initial_pin_pos.x + 35.0F, 1e-3F);
+    EXPECT_NEAR(st.node_pins[420U].screen_pos.y, initial_pin_pos.y + 20.0F, 1e-3F);
+
+    // 3. DockBuilder dynamic custom window names + multi-tab slot switching
+    ImGui::DockBuilderRemoveNode(100U);
+    ImGui::DockBuilderAddNode(100U, ImGuiDockNodeFlags_DockSpace);
+    ImGuiID main_node = 100U;
+    const ImGuiID left_slot = ImGui::DockBuilderSplitNode(main_node, ImGuiDir_Left, 0.25F, nullptr, &main_node);
+    ImGui::DockBuilderDockWindow("CustomTabAlpha", left_slot);
+    ImGui::DockBuilderDockWindow("CustomTabBeta", left_slot);
+    ImGui::DockBuilderFinish(100U);
+
+    EXPECT_EQ(st.window_dock_slot["CustomTabAlpha"], 1);
+    EXPECT_EQ(st.window_dock_slot["CustomTabBeta"], 1);
+    EXPECT_EQ(st.active_dock_tab[1], "CustomTabAlpha");
+
+    st.window_stack.clear();
+    st.mouse_down[0] = false;
+    const bool alpha_vis = ImGui::Begin("CustomTabAlpha");
+    ImGui::End();
+    const bool beta_vis = ImGui::Begin("CustomTabBeta");
+    ImGui::End();
+    EXPECT_TRUE(alpha_vis);
+    EXPECT_FALSE(beta_vis);
+
+    // Click the second tab header ("CustomTabBeta") in slot 1 (y = 60..86, x ~ 150)
+    st.window_stack.clear();
+    st.io.MousePos = ImVec2(150.0F, 72.0F);
+    st.mouse_clicked[0] = true;
+    (void)ImGui::Begin("CustomTabAlpha");
+    ImGui::End();
+    EXPECT_EQ(st.active_dock_tab[1], "CustomTabBeta");
+
+    // 4. BeginChild / EndChild clamps unbounded wheel scroll
+    st.window_stack.clear();
+    st.mouse_clicked[0] = false;
+    ImGui::SetNextWindowPos(ImVec2(400.0F, 100.0F));
+    ImGui::SetNextWindowSize(ImVec2(300.0F, 220.0F));
+    st.io.MousePos = ImVec2(450.0F, 160.0F);
+    st.io.MouseWheel = -100.0F; // huge downward scroll
+    if (ImGui::Begin("ScrollChildWin"))
+    {
+        if (ImGui::BeginChild("LogChild", ImVec2(260.0F, 80.0F), true))
+        {
+            for (int i = 0; i < 10; ++i)
+            {
+                ImGui::Text("Line %d", i);
+            }
+            ImGui::EndChild();
+        }
+    }
+    ImGui::End();
+    const ImGuiID child_id = cd::ui::chroma::hash_str("LogChild");
+    EXPECT_GT(st.scroll_map[child_id], 0.0F);
+    EXPECT_LT(st.scroll_map[child_id], 300.0F);
 }

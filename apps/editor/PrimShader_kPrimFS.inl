@@ -408,6 +408,26 @@ float reflection_hit_color(vec3 origin, vec3 dir, float tmax,
 // cd_v_smith_ggx_correlated folds that denominator in (D·V·F form).
 #include <cd/gluon/brdf.glsl>
 
+// Phase 18 SOTA BRDF: Belcour & Barla (SIGGRAPH 2017) Thin-Film Iridescence
+vec3 cd_belcour_barla_iridescence(vec3 f_schlick, float cos_theta_d, float film_nm) {
+  if (film_nm <= 0.5) return f_schlick;
+  float eta = 1.5;
+  float sin2_sq = max(0.0, 1.0 - cos_theta_d * cos_theta_d) / (eta * eta);
+  float cos2 = sqrt(max(0.0, 1.0 - sin2_sq));
+  float opd = 2.0 * eta * film_nm * cos2;
+  vec3 lambdas = vec3(650.0, 530.0, 450.0);
+  vec3 phi = 6.2831853 * (opd / lambdas) + 3.14159265;
+  float depol = exp(-0.0000015 * opd * opd);
+  vec3 cos_phi = cos(phi) * depol;
+  float r12 = 0.04 + 0.96 * pow(clamp(1.0 - cos2, 0.0, 1.0), 5.0);
+  vec3 r23 = clamp(f_schlick * 0.75, vec3(0.04), vec3(0.92));
+  vec3 r12_r23 = vec3(r12) * r23;
+  vec3 two_sqrt_r_cos = 2.0 * sqrt(r12_r23) * cos_phi;
+  vec3 f_airy = (vec3(r12) + r23 + two_sqrt_r_cos)
+              / max(vec3(1.0) + r12_r23 + two_sqrt_r_cos, vec3(1e-4));
+  return mix(f_schlick, clamp(f_airy, vec3(0.0), vec3(1.0)), clamp(film_nm / 20.0, 0.0, 1.0));
+}
+
 void main() {
   bool is_shadow_w   = (pc.tint.w < 0.5);
   bool is_floor_w    = (pc.tint.w > 1.5 && pc.tint.w < 2.5);
@@ -436,10 +456,63 @@ void main() {
   vec3 safe_N = (dot(raw_N, raw_N) > 1e-10) ? normalize(raw_N) : vec3(0.0, 1.0, 0.0);
   out_normal = vec4(safe_N, surface_flag);
 
-  // Compute albedo up-front
+  // Compute albedo up-front (supports bound GPU texture slot 1 + procedural asset textures 2..6)
   vec3 albedo = v_albedo;
   if (pc.fx_params.y > 0.5) {
-    albedo = texture(cd_albedo_tex, v_uv).rgb * pc.tint.rgb;
+    int tex_mode = int(floor(pc.fx_params.y + 0.25));
+    vec2 uv_p = v_uv;
+    if (length(uv_p) < 1e-4) {
+      uv_p = v_world_pos.xz * 0.5 + vec2(v_world_pos.y * 0.35);
+    }
+    if (tex_mode == 1) {
+      albedo = texture(cd_albedo_tex, uv_p).rgb * pc.tint.rgb;
+    } else if (tex_mode == 2) {
+      vec2 cuv = uv_p * 8.0;
+      float chk = mod(floor(cuv.x) + floor(cuv.y), 2.0);
+      vec2 sub = abs(fract(cuv * 2.0) - 0.5);
+      float sline = smoothstep(0.46, 0.49, max(sub.x, sub.y));
+      vec3 c_dark  = vec3(0.16, 0.18, 0.22);
+      vec3 c_light = vec3(0.86, 0.88, 0.92);
+      vec3 pat = mix(c_dark, c_light, chk);
+      pat = mix(pat, vec3(0.32, 0.58, 0.95), sline * 0.35);
+      albedo = pat * pc.tint.rgb;
+    } else if (tex_mode == 3) {
+      vec2 buv = uv_p * vec2(6.0, 12.0);
+      float row_idx = floor(buv.y);
+      buv.x += 0.5 * mod(row_idx, 2.0);
+      vec2 bcell = fract(buv);
+      vec2 bid   = floor(buv);
+      float mortar = (bcell.x < 0.06 || bcell.y < 0.10) ? 1.0 : 0.0;
+      float b_hash = fract(sin(dot(bid, vec2(12.9898, 78.233))) * 43758.5453);
+      vec3 brick_col = mix(vec3(0.62, 0.22, 0.15), vec3(0.78, 0.32, 0.20), b_hash);
+      vec3 mortar_col = vec3(0.76, 0.74, 0.70);
+      albedo = mix(brick_col, mortar_col, mortar) * pc.tint.rgb;
+    } else if (tex_mode == 4) {
+      vec2 wuv = uv_p * 24.0;
+      vec2 wid = floor(wuv);
+      vec2 wfr = fract(wuv);
+      float diag = mod(wid.x + wid.y, 2.0);
+      float ridge = (diag > 0.5) ? (0.55 + 0.45 * sin(wfr.x * 3.14159))
+                                 : (0.35 + 0.35 * sin(wfr.y * 3.14159));
+      vec3 c_weave = mix(vec3(0.08, 0.09, 0.11), vec3(0.26, 0.28, 0.32), ridge);
+      albedo = c_weave * pc.tint.rgb;
+    } else if (tex_mode == 5) {
+      vec2 muv = uv_p * 4.5;
+      float n1 = sin(muv.x * 3.2 + sin(muv.y * 4.1 + sin(muv.x * 2.7)) * 1.6);
+      float n2 = cos(muv.y * 5.3 - sin(muv.x * 3.8) * 1.4);
+      float vein = pow(clamp(1.0 - abs(n1 * 0.65 + n2 * 0.35), 0.0, 1.0), 4.0);
+      vec3 m_base = vec3(0.92, 0.91, 0.89);
+      vec3 m_vein = vec3(0.32, 0.36, 0.42);
+      albedo = mix(m_base, m_vein, vein * 0.75) * pc.tint.rgb;
+    } else {
+      vec2 wuv = uv_p * vec2(4.0, 1.5);
+      float plank_id = floor(wuv.x);
+      float ring = sin((wuv.y * 14.0 + plank_id * 2.3) + sin(wuv.x * 18.0) * 0.6);
+      float grain = 0.5 + 0.5 * ring;
+      float seam = (fract(wuv.x) < 0.03 || fract(wuv.y + 0.5 * mod(plank_id, 2.0)) < 0.02) ? 1.0 : 0.0;
+      vec3 wood_col = mix(vec3(0.46, 0.28, 0.14), vec3(0.72, 0.48, 0.26), grain);
+      albedo = mix(wood_col, vec3(0.18, 0.11, 0.06), seam) * pc.tint.rgb;
+    }
   }
 
   // Compute metallic, roughness, and ao_factor up-front
@@ -454,13 +527,13 @@ void main() {
     float mr_metal_factor = pc.fx_params4.x;
     float mr_rough_factor = pc.fx_params4.y;
     vec4 mr_sample = vec4(0.0, 1.0, 1.0, 1.0);
-    if (pc.fx_params.y > 0.5) {
+    if (pc.fx_params.y > 0.5 && pc.fx_params.y < 1.5) {
       mr_sample = texture(cd_mr_tex, v_uv);
     }
     metallic  = clamp(mr_sample.b * mr_metal_factor, 0.0, 1.0);
     roughness = clamp(mr_sample.g * mr_rough_factor, 0.04, 1.0);
     ao_factor = mr_sample.a;
-  } else if (pc.fx_params.y > 0.5) {
+  } else if (pc.fx_params.y > 0.5 && pc.fx_params.y < 1.5) {
     vec4 mr_sample = texture(cd_mr_tex, v_uv);
     metallic  = clamp(mr_sample.b, 0.0, 0.05);
     roughness = clamp(mr_sample.g, 0.04, 1.0);
@@ -519,10 +592,10 @@ void main() {
     albedo  = mix(vec3(0.55, 0.60, 0.66) * 0.0, albedo, floor_fade);
   }
 
-  // Normal mapping
+  // Normal mapping (only for slot 1 bound normal map on non-PBR-sphere prims)
   vec3 N = safe_N;
-  bool sample_normal_map = (pc.fx_params.y > 0.5) &&
-                           (!is_gltf_prim || pc.fx_params4.z > 0.001);
+  bool sample_normal_map = (pc.fx_params.y > 0.5 && pc.fx_params.y < 1.5) &&
+                           !is_gltf_prim && !is_pbr_w;
   if (sample_normal_map) {
     vec3 nm_sample = texture(cd_normal_tex, v_uv).xyz * 2.0 - 1.0;
     mat3 TBN = cotangent_frame(N, v_world_pos, v_uv);
@@ -533,6 +606,16 @@ void main() {
   vec3 V = normalize(pc.camera_pos.xyz - v_world_pos);
   float NoV = max(dot(N, V), 0.0);
   vec3 F0 = mix(vec3(0.04), albedo, metallic);
+
+  float pbr_iridescence_nm = (is_pbr_w && pc.fx_params4.z > 0.001) ? floor(pc.fx_params4.z) : 0.0;
+  float pbr_ms_weight      = (is_pbr_w && pc.fx_params4.z > 0.001) ? clamp(fract(pc.fx_params4.z) / 0.99, 0.0, 1.0) : 0.0;
+  vec2  brdf_v             = texture(cd_brdf_lut, vec2(clamp(NoV, 0.0, 1.0),
+                                                       clamp(roughness, 0.0, 1.0))).rg;
+  float Ess_p              = brdf_v.x + brdf_v.y;
+  float Ess_safe           = max(Ess_p, 0.08);
+  vec3  turquin_ms_comp    = (pbr_ms_weight > 0.001)
+                           ? min(vec3(1.0) + F0 * (pbr_ms_weight * (1.0 - Ess_safe) / Ess_safe), vec3(1.45))
+                           : vec3(1.0);
 
   // Energy conservation is handled by kD = (1-F)*(1-metallic), NOT by
   // dividing diffuse by PI. PBR spheres use 1/PI for physical correctness
@@ -560,8 +643,8 @@ void main() {
     float HoV = max(dot(H, V), 0.0);
     float D = cd_d_ggx(NoH, roughness);
     float Vis = cd_v_smith_ggx_correlated(NoV, NoL, roughness);
-    vec3  F = cd_f_schlick(F0, HoV);
-    vec3 specular = (D * Vis) * F;
+    vec3  F = cd_belcour_barla_iridescence(cd_f_schlick(F0, HoV), HoV, pbr_iridescence_nm);
+    vec3 specular = (D * Vis) * F * turquin_ms_comp;
     if (diel_no_spec) specular = vec3(0.0);
     vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
     vec3 diffuse = kD * albedo * diff_scale;
@@ -616,6 +699,7 @@ void main() {
       // Shadow ray
       vec3 to_c   = lp_pos - v_world_pos;
       float d_c   = max(length(to_c), 1e-4);
+      if (d_c >= rng || (ff_diff <= 1e-5 && atten_rp <= 1e-5)) continue;
       vec3 Lc     = to_c / d_c;
       float area_tmax = min(d_c, rng);
       rayQueryEXT rq_a;
@@ -637,8 +721,8 @@ void main() {
       float HoVrp = max(dot(Hrp, V), 0.0);
       float D_a = cd_d_ggx(NoHrp, roughness);
       float Vis_a = cd_v_smith_ggx_correlated(NoV, NoLrp, roughness);
-      vec3  F_a = cd_f_schlick(F0, HoVrp);
-      vec3 spec_rect = (D_a * Vis_a) * F_a * NoLrp *
+      vec3  F_a = cd_belcour_barla_iridescence(cd_f_schlick(F0, HoVrp), HoVrp, pbr_iridescence_nm);
+      vec3 spec_rect = (D_a * Vis_a) * F_a * turquin_ms_comp * NoLrp *
                        acol * atten_rp;
       if (diel_no_spec) spec_rect = vec3(0.0);
 
@@ -651,11 +735,12 @@ void main() {
     // Point / spot path
     vec3 to_p = lp_pos - v_world_pos;
     float d   = length(to_p);
-    if (d < 1e-4) continue;
+    if (d < 1e-4 || d >= rng) continue;
     vec3 Lp   = to_p / d;
     float NoL = max(dot(N, Lp), 0.0);
     if (NoL <= 0.0) continue;
     float atten = distance_atten(d, rng);
+    if (atten <= 1e-5) continue;
     float cone  = 1.0;
     if (ltp == 2) {
       vec3  axis    = normalize(cd_lights.slots[li].dir_type.xyz);
@@ -682,8 +767,8 @@ void main() {
     float HoV = max(dot(H, V), 0.0);
     float D = cd_d_ggx(NoH, roughness);
     float Vis = cd_v_smith_ggx_correlated(NoV, NoL, roughness);
-    vec3  F = cd_f_schlick(F0, HoV);
-    vec3 specular = (D * Vis) * F;
+    vec3  F = cd_belcour_barla_iridescence(cd_f_schlick(F0, HoV), HoV, pbr_iridescence_nm);
+    vec3 specular = (D * Vis) * F * turquin_ms_comp;
     if (diel_no_spec) specular = vec3(0.0);
     vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
     vec3 diffuse = kD * albedo * diff_scale;
@@ -706,15 +791,13 @@ void main() {
   float lod_p   = roughness * kIblMaxMipLod;
   vec3  spec_e  = textureLod(cd_ibl_spec, Ri, lod_p).rgb;
   vec3  diff_e  = texture(cd_ibl_diff, N).rgb;
-  vec2  brdf_v  = texture(cd_brdf_lut, vec2(clamp(NoV, 0.0, 1.0),
-                                            clamp(roughness, 0.0, 1.0))).rg;
-  vec3  F_ibl   = cd_f_schlick_roughness(F0, NoV, roughness);
+  vec3  F_ibl   = cd_belcour_barla_iridescence(cd_f_schlick_roughness(F0, NoV, roughness), NoV, pbr_iridescence_nm);
   vec3  ibl_kD  = (vec3(1.0) - F_ibl) * (1.0 - metallic);
-  float Ess_p   = brdf_v.x + brdf_v.y;
   float Ems_p   = 1.0 - Ess_p;
-  vec3  Favg_p  = F0 + (1.0 - F0) * (1.0 / 21.0);
+  vec3  F0_ibl  = (pbr_iridescence_nm > 0.5) ? F_ibl : F0;
+  vec3  Favg_p  = F0_ibl + (1.0 - F0_ibl) * (1.0 / 21.0);
   vec3  Fms_p   = (Favg_p * Ess_p) / (vec3(1.0) - Favg_p * Ems_p);
-  vec3  raw_ibl_spec = spec_e * (F0 * brdf_v.x + vec3(brdf_v.y) + Fms_p * Ems_p);
+  vec3  raw_ibl_spec = spec_e * (F0_ibl * brdf_v.x + vec3(brdf_v.y) + Fms_p * Ems_p);
   // Zero IBL specular for non-metallic non-PBR surfaces to match the
   // zeroed direct-light specular above. Only PBR spheres and metallic
   // surfaces get environment reflections.
@@ -897,31 +980,9 @@ void main() {
     // prim-internal detail (curtain damask pattern, leaf texture)
     // requires ray-side texture sampling (queued strand L-rt-tex,
     // see ADR W8-BD rejected alternative #1).
-    vec3 refl_color = hit_alb * pc.sun_color.rgb * 4.0;
-    // phase830-rt-chrome-sponza-visible-mirror:
-    // For mirror reflections (perfect specular delta function) the BRDF
-    // integral over the cone is unity at the reflection direction — so
-    // we should NOT multiply by `brdf_term` (which is the diffuse-cone
-    // F0*GGX integral, designed for the IBL prefilter path). Multiplying
-    // by it was attenuating the chrome reflection by ~20% AND tinting it
-    // with F0 a second time, which made the curtain reflections fade
-    // into the white-wall background. The Fresnel weighting we DO want
-    // for chrome already lives in `F0` baked into the hit-side surface;
-    // here we just paint the hit colour at the prim's albedo brightness.
-    //
-    // For ROUGH metallic surfaces (roughness > ~0.3) a single RT ray is
-    // an under-sampled estimator of the BRDF lobe; the rough_blend term
-    // still folds in the IBL prefilter as the dim-blur fallback.
-    //
-    //   roughness=0.05 → blend=0.0025 → 99.75% scene (chrome mirror)
-    //   roughness=0.30 → blend=0.09   → 91% scene
-    //   roughness=0.90 → blend=0.81   → 19% scene (mostly IBL blur)
-    //
-    // F0-based fade-in: for low-F0 metals (impossible — metals have high
-    // F0) or non-metals (skipped at line 631) the gate is moot. The
-    // metal_gate at the blend keeps non-metallic dielectrics on the IBL
-    // path untouched.
-    float rough_blend = clamp(roughness * roughness, 0.0, 1.0);
+    vec3 refl_tint = is_pbr_w ? (F_ibl * 1.55) : vec3(4.0);
+    vec3 refl_color = hit_alb * pc.sun_color.rgb * refl_tint;
+    float rough_blend = clamp(is_pbr_w ? (roughness * 2.2) : (roughness * roughness), 0.0, 1.0);
     float metal_gate  = clamp(metallic, 0.0, 1.0);
     float blend_t     = mix(1.0, rough_blend, metal_gate);
     ibl_spec_blended = mix(refl_color, ibl_spec_p, blend_t);

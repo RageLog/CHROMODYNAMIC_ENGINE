@@ -19,6 +19,27 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
     init_clean_studio_workspace(s, log_push);
     auto& w = studio_world();
 
+    // Update EMA-smoothed FPS & frame time ring buffer
+    // (Skip cold-start frames 0..3 where one-time GPU image layout transitions occur)
+    if (dt > 1e-6F && dt < 0.5F)
+    {
+        const float inst_fps = 1.0F / dt;
+        const float inst_ms  = dt * 1000.0F;
+        if (s.frame_idx <= 3u || w.smoothed_frame_ms <= 0.01F)
+        {
+            w.smoothed_frame_ms = inst_ms;
+            w.smoothed_fps      = inst_fps;
+        }
+        else
+        {
+            w.smoothed_frame_ms = w.smoothed_frame_ms * 0.85F + inst_ms * 0.15F;
+            w.smoothed_fps      = 1000.0F / std::max(0.05F, w.smoothed_frame_ms);
+        }
+        if (w.smoothed_fps > w.peak_fps && s.frame_idx > 6u) w.peak_fps = w.smoothed_fps;
+        w.frame_ms_history[w.frame_ms_cursor % w.frame_ms_history.size()] = inst_ms;
+        ++w.frame_ms_cursor;
+    }
+
     // ---- A. Evaluate Environment Modifiers -> Renderer Post-FX State ----
     s.fx.volumetric_fog_on  = false;
     s.fx.fog_density        = 0.0F;
@@ -30,6 +51,8 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
     s.fx.film_grain         = 0.0F;
     s.fx.dof_strength       = 0.0F;
     s.fx.ddgi_on            = false;
+    s.fx.taa_amount         = 0.0F;
+    s.fx.motion_blur        = 0.0F;
 
     if (const auto* fog = w.environment_modifiers.find<FogModifier>(); fog && fog->enabled)
     {
@@ -64,6 +87,8 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
 
     // ---- B. Evaluate Per-Entity Modifiers ----
     const float clamped_dt = std::clamp(dt, 0.001F, 0.033F);
+    bool has_active_dynamic_rb = false;
+
     for (std::size_t idx = 0; idx < s.entities.size(); ++idx)
     {
         auto&          ent = s.entities[idx];
@@ -72,16 +97,29 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
         if (ms.items.empty() && ent.kind != PrimitiveKind::kSponza)
         {
             ms.add_or_replace(std::make_unique<PbrMaterialModifier>(
-                ent.tint, ent.metallic, ent.roughness, ent.use_texture));
+                ent.tint, ent.metallic, ent.roughness, ent.use_texture,
+                ent.multiscatter_comp, ent.iridescence_nm,
+                ent.custom_texture_id, ent.custom_texture_path));
         }
 
         if (const auto* pbr = ms.template find<PbrMaterialModifier>(); pbr && pbr->enabled)
         {
-            ent.tint        = pbr->base_color;
-            ent.metallic    = pbr->metallic;
-            ent.roughness   = pbr->roughness;
-            ent.use_texture = pbr->use_texture;
-            ent.is_pbr      = true;
+            ent.tint              = pbr->base_color;
+            ent.metallic          = pbr->metallic;
+            ent.roughness         = pbr->roughness;
+            ent.use_texture       = pbr->use_texture;
+            ent.custom_texture_id = pbr->use_texture ? std::max(1, pbr->texture_slot) : 0;
+            if (!pbr->texture_asset_path.empty())
+                ent.custom_texture_path = pbr->texture_asset_path;
+            ent.multiscatter_comp = pbr->multiscatter_comp;
+            ent.iridescence_nm    = pbr->iridescence_nm;
+            ent.is_pbr            = true;
+        }
+
+        if (const auto* rb = ms.template find<RigidBodyModifier>();
+            rb && rb->enabled && rb->body_type == cd::physics::BodyType::kDynamic && ent.visible && !ent.locked)
+        {
+            has_active_dynamic_rb = true;
         }
 
         if (const auto* efog = ms.template find<FogModifier>(); efog && efog->enabled)
@@ -92,7 +130,7 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
             s.fx.aerial_perspective = efog->aerial_perspective;
         }
 
-        if (auto* cc = ms.template find<CharacterControllerModifier>(); cc && cc->enabled)
+        if (auto* cc = ms.template find<CharacterControllerModifier>(); cc && cc->enabled && ent.visible && !ent.locked)
         {
             if (auto* lt = s.scene.local(ent.handle))
             {
@@ -112,6 +150,7 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
                     const cd::math::Vec3f cam_rgt { -cam_fwd.z, 0.0F, cam_fwd.x };
                     lt->value.position = lt->value.position +
                         (cam_fwd * fwd + cam_rgt * rgt) * (cc->move_speed * clamped_dt);
+                    s.scene.update_transforms();
                 }
                 if (ImGui::IsKeyPressed(ImGuiKey_PageUp))
                 {
@@ -123,7 +162,7 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
     }
 
     // ---- C. Step 3D RigidBody Physics & Narrowphase Collision Engine ----
-    const bool run_physics = s.pie_playing || w.simulate_physics_in_edit || w.step_single_frame;
+    const bool run_physics = (s.pie_playing || w.simulate_physics_in_edit || w.step_single_frame) && has_active_dynamic_rb;
     if (!run_physics) return;
 
     const float phys_dt = w.step_single_frame ? (1.0F / 60.0F) : clamped_dt;
@@ -537,8 +576,11 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
     // 1. Draw 3D Collider Wireframes (OBB & Sphere) + Contact Manifolds
     if (w.show_all_collider_wires && !s.pie_playing)
     {
-        for (const auto& ent : s.entities)
+        for (std::size_t ei = 0; ei < s.entities.size(); ++ei)
         {
+            const auto& ent = s.entities[ei];
+            if (ent.name.find("Ground_Floor") != std::string::npos && !std::cmp_equal(s.selected, ei))
+                continue;
             const auto* lt  = s.scene.local(ent.handle);
             const auto* col = w.entity_modifiers[ent.handle.id].find_collider();
             if (!lt || !col || !col->show_wireframe) continue;
@@ -575,19 +617,53 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
         }
     }
 
-    // 2. Floating Top-Center 3D Viewport Quick-Action HUD Bar (Godot / Unreal style)
-    if (!s.pie_playing && sw > 900.0F)
+    // 2. Full-Width Studio Ribbon Toolbar (y = 28..60, bridging MainMenuBar and DockSpace)
+    if (sw > 400.0F)
     {
-        ImGui::SetNextWindowPos(ImVec2(sw * 0.5F - 14.0F, 26.0F), ImGuiCond_Always, ImVec2(0.5F, 0.0F));
-        ImGui::SetNextWindowBgAlpha(0.88F);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0F);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0F, 4.0F));
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0F, 4.0F));
+        auto& cst = cd::ui::chroma::state();
+        ImGui::SetNextWindowPos(ImVec2(0.0F, 28.0F), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(sw, 32.0F), ImGuiCond_Always);
+        ImGui::SetNextWindowBgAlpha(0.96F);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0F, 4.0F));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(5.0F, 4.0F));
         if (ImGui::Begin("##studio_viewport_hud", nullptr,
-                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-                ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-                ImGuiWindowFlags_NoNav))
+                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
+                ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav))
         {
+            // Workspace Mode Switcher
+            const int cur_mode = cst.workspace_mode;
+            if (cur_mode == 0) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18F, 0.48F, 0.85F, 1.0F));
+            if (ImGui::SmallButton("3D Studio"))
+            {
+                cst.workspace_mode = 0;
+                s.pie_playing = false;
+                ImGui::PushToast("Workspace Mode", "Switched to 3D Studio Workspace", 0, 2.0F);
+            }
+            if (cur_mode == 0) ImGui::PopStyleColor();
+            ImGui::SameLine();
+
+            if (cur_mode == 1) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16F, 0.62F, 0.34F, 1.0F));
+            if (ImGui::SmallButton("In-Game HUD"))
+            {
+                cst.workspace_mode = 1;
+                ImGui::PushToast("Workspace Mode", "Switched to In-Game HUD & 3D World UI Mode", 0, 2.0F);
+            }
+            if (cur_mode == 1) ImGui::PopStyleColor();
+            ImGui::SameLine();
+
+            if (cur_mode == 2) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.58F, 0.28F, 0.82F, 1.0F));
+            if (ImGui::SmallButton("Node & App Lab"))
+            {
+                cst.workspace_mode = 2;
+                ImGui::PushToast("Workspace Mode", "Switched to Standalone Node & Curve Lab", 0, 2.0F);
+            }
+            if (cur_mode == 2) ImGui::PopStyleColor();
+
+            ImGui::SameLine();
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+
             // Transform Mode
             const bool is_t = (s.gizmo_state.mode == GizmoMode::kTranslate);
             const bool is_r = (s.gizmo_state.mode == GizmoMode::kRotate);
@@ -656,10 +732,58 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
             ImGui::SameLine();
             if (ImGui::SmallButton("Front"))
                 apply_camera_bookmark(s, { 0.0F, 2.2F, 7.8F }, { 0.0F, 1.0F, 0.0F }, "Front View", log_push);
+
+            ImGui::SameLine();
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18F, 0.36F, 0.56F, 1.0F));
+            const std::string lvl_btn = "[World/Level: " + w.active_level_name + "]##ribbon_lvl";
+            if (ImGui::SmallButton(lvl_btn.c_str()))
+                ImGui::OpenPopup("ribbon_world_level_popup");
+            ImGui::PopStyleColor();
+            if (ImGui::BeginPopup("ribbon_world_level_popup"))
+            {
+                ImGui::TextColored(ImVec4(0.45F, 0.90F, 1.0F, 1.0F),
+                                   "Project: %s (5 Worlds, 12 Levels)",
+                                   w.active_project_name.c_str());
+                ImGui::Separator();
+                if (const auto* proj = s.cd_world.project())
+                {
+                    for (const auto& wname : proj->world_names())
+                    {
+                        if (ImGui::BeginMenu(wname.c_str()))
+                        {
+                            for (std::size_t li : proj->levels_in_world(wname))
+                            {
+                                const auto* lvl = proj->level(li);
+                                if (!lvl) continue;
+                                const bool is_cur = (w.active_level_name == lvl->name());
+                                if (ImGui::MenuItem(std::string(lvl->name()).c_str(), nullptr, is_cur))
+                                {
+                                    (void)switch_to_project_level(s, lvl->name(), log_push);
+                                }
+                            }
+                            ImGui::EndMenu();
+                        }
+                    }
+                }
+                ImGui::Separator();
+                if (ImGui::BeginMenu("Load Showcase Project (.cdproj)"))
+                {
+                    for (std::size_t si = 0; si < kShowcaseCatalog.size(); ++si)
+                    {
+                        if (ImGui::MenuItem(kShowcaseCatalog[si].title))
+                            load_showcase_project_by_index(s, si, log_push);
+                    }
+                    ImGui::EndMenu();
+                }
+                ImGui::EndPopup();
+            }
         }
         ImGui::End();
         ImGui::PopStyleVar(3);
     }
+
 
     // 3. Right-Click 3D Viewport Context Menu (Quick Right-Click without camera drag)
     const ImVec2 mouse_px = ImGui::GetMousePos();
@@ -734,6 +858,43 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
                 }
                 ImGui::EndMenu();
             }
+            if (ImGui::BeginMenu("Assign Mesh Asset to Selected"))
+            {
+                const char* meshes[] = {
+                    "assets/meshes/Cube.mesh",
+                    "assets/meshes/Sphere.mesh",
+                    "assets/meshes/Cylinder.mesh",
+                    "assets/meshes/Cone.mesh",
+                    "assets/meshes/Torus.mesh",
+                    "assets/meshes/Ramp_Wedge.mesh",
+                    "assets/samples/Generic/CesiumMan.glb",
+                    "assets/samples/Sponza/Sponza.gltf"
+                };
+                for (const char* mpath : meshes)
+                {
+                    if (ImGui::MenuItem(mpath))
+                        (void)assign_mesh_asset_to_entity(s, s.selected, mpath, log_push);
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Apply Surface Texture to Selected"))
+            {
+                const char* texs[] = {
+                    "assets/textures/UV_Checkerboard_2K.tex",
+                    "assets/samples/Sponza/textures/sponza_brick_a_diff.jpg",
+                    "assets/textures/Carbon_Fiber_Twill.tex",
+                    "assets/textures/Carrara_Marble.tex",
+                    "assets/textures/Oak_Wood_Planks.tex",
+                    "assets/textures/Earth_Albedo.png",
+                    "Clear Texture (Solid Albedo)"
+                };
+                for (const char* tpath : texs)
+                {
+                    if (ImGui::MenuItem(tpath))
+                        (void)assign_texture_asset_to_entity(s, s.selected, tpath, log_push);
+                }
+                ImGui::EndMenu();
+            }
             if (ImGui::MenuItem("Delete Selected (Del)"))
                 delete_selected(s, log_push);
         }
@@ -745,9 +906,10 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
         ImGui::EndPopup();
     }
 
-    // 4. Handle Active Drag-and-Drop of 3D Objects or Modifiers over the 3D Viewport!
+    // 4. Handle Active Drag-and-Drop of 3D Objects, Modifiers, Meshes & Textures over the 3D Viewport!
     const bool mouse_in_central_viewport = !ImGui::GetIO().WantCaptureMouse ||
-        w.is_dragging_spawn || w.is_dragging_modifier;
+        w.is_dragging_spawn || w.is_dragging_modifier ||
+        w.is_dragging_asset_mesh || w.is_dragging_asset_texture;
 
     if (w.is_dragging_spawn)
     {
@@ -833,6 +995,54 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
             w.is_dragging_modifier  = false;
             w.drag_modifier_class.clear();
             w.drag_hover_entity_idx = -1;
+        }
+    }
+
+    if (w.is_dragging_asset_mesh || w.is_dragging_asset_texture)
+    {
+        w.drag_hover_entity_idx = pick_entity_under_mouse(s, vp, mouse_px, sw, sh);
+        const int target_idx = (w.drag_hover_entity_idx >= 0) ? w.drag_hover_entity_idx : s.selected;
+        if (target_idx >= 0 && std::cmp_less(target_idx, s.entities.size()))
+        {
+            const auto& target_ent = s.entities[static_cast<std::size_t>(target_idx)];
+            if (const auto* lt = s.scene.local(target_ent.handle))
+            {
+                const cd::physics::Aabb hl = compute_entity_world_aabb(lt->value, nullptr);
+                const ImU32 col = w.is_dragging_asset_mesh
+                    ? IM_COL32(80, 220, 255, 255)
+                    : IM_COL32(120, 255, 140, 255);
+                draw_wireframe_aabb_3d(dl, hl, vp, sw, sh, col, 3.0F);
+                ImVec2 sp {};
+                if (project_world_to_screen(lt->value.position, vp, sw, sh, sp))
+                {
+                    const std::string txt = w.is_dragging_asset_mesh
+                        ? ("Assign Mesh [" + w.drag_asset_mesh_id + "] -> " + target_ent.name)
+                        : ("Apply Texture [" + w.drag_asset_texture_id + "] -> " + target_ent.name);
+                    dl->AddRectFilled(ImVec2(sp.x - 4.0F, sp.y - 26.0F),
+                                      ImVec2(sp.x + 320.0F, sp.y - 2.0F),
+                                      IM_COL32(15, 42, 28, 235), 4.0F);
+                    dl->AddText(ImVec2(sp.x + 2.0F, sp.y - 22.0F),
+                                IM_COL32(140, 255, 175, 255), txt.c_str());
+                }
+            }
+        }
+
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
+        {
+            if (mouse_px.x > 260.0F && mouse_px.x < sw - 280.0F && target_idx >= 0)
+            {
+                if (w.is_dragging_asset_mesh)
+                    (void)assign_mesh_asset_to_entity(s, target_idx, w.drag_asset_mesh_id, log_push);
+                if (w.is_dragging_asset_texture)
+                    (void)assign_texture_asset_to_entity(s, target_idx, w.drag_asset_texture_id, log_push);
+                s.selected      = target_idx;
+                s.selected_kind = SelKind::kEntity;
+            }
+            w.is_dragging_asset_mesh    = false;
+            w.drag_asset_mesh_id.clear();
+            w.is_dragging_asset_texture = false;
+            w.drag_asset_texture_id.clear();
+            w.drag_hover_entity_idx     = -1;
         }
     }
 }

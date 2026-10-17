@@ -97,6 +97,7 @@ serialize_project(const Project& p)
     Object root;
     root["schema_version"] = Value { static_cast<int>(kProjectJsonVersion) };
     root["name"]           = Value { std::string { p.name() } };
+    root["active_level"]   = Value { static_cast<int>(p.active_level()) };
 
     {
         const auto& s = p.settings();
@@ -120,6 +121,9 @@ serialize_project(const Project& p)
         Object lo;
         lo["name"]         = Value { std::string { lvl->name() } };
         lo["scene_path"]   = Value { std::string { lvl->scene_path() } };
+        lo["world_name"]   = Value { std::string { lvl->world_name() } };
+        lo["description"]  = Value { std::string { lvl->description() } };
+        lo["template_id"]  = Value { lvl->template_id() };
         lo["active_layer"] = Value { static_cast<int>(lvl->active_layer()) };
         {
             Object bo;
@@ -248,6 +252,21 @@ deserialize_project(const cd::asset::json::Value& json)
                 detail::read_str_(lo, "scene_path", sp);
                 lvl->set_scene_path(std::move(sp));
             }
+            {
+                std::string wn { "Default World" };
+                detail::read_str_(lo, "world_name", wn);
+                lvl->set_world_name(std::move(wn));
+            }
+            {
+                std::string desc;
+                detail::read_str_(lo, "description", desc);
+                lvl->set_description(std::move(desc));
+            }
+            {
+                int tid = 0;
+                detail::read_num_(lo, "template_id", tid);
+                lvl->set_template_id(tid);
+            }
             if (const auto bit = lo.find("bounds");
                 bit != lo.end() && bit->second.is_object())
             {
@@ -314,6 +333,11 @@ deserialize_project(const cd::asset::json::Value& json)
                 lvl->set_active_layer(static_cast<std::size_t>(al < 0 ? 0 : al));
             }
         }
+    }
+    {
+        int act_lvl = 0;
+        detail::read_num_(root, "active_level", act_lvl);
+        proj->set_active_level(static_cast<std::size_t>(act_lvl < 0 ? 0 : act_lvl));
     }
     return proj;
 }

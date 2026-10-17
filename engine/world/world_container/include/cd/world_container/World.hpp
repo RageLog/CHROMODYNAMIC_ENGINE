@@ -30,6 +30,15 @@ public:
     [[nodiscard]] std::string_view name() const noexcept { return name_; }
     void set_name(std::string n) { name_ = std::move(n); }
 
+    [[nodiscard]] Level* active_level_ptr() noexcept
+    {
+        return project_ ? project_->level(project_->active_level()) : nullptr;
+    }
+    [[nodiscard]] const Level* active_level_ptr() const noexcept
+    {
+        return project_ ? project_->level(project_->active_level()) : nullptr;
+    }
+
 private:
     std::unique_ptr<Project> project_;
     std::string              name_ { "Untitled World" };

@@ -5,5 +5,6 @@
 #pragma once
 
 #include <cd/brdf/ltc/Ltc.hpp>
+#include <cd/brdf/multiscatter/TurquinMultiScatter.hpp>
 #include <cd/brdf/sheen_clearcoat/SheenClearcoat.hpp>
 #include <cd/brdf/sss/Sss.hpp>

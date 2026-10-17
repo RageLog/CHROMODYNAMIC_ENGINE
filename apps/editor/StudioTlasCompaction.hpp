@@ -88,25 +88,32 @@ compact_tlas_entity_instances(std::span<const EntityT> entities,
     std::vector<cd::studio_rt::InstanceMatGpu> ent_mat_scratch(k_ent_count);
     std::vector<std::uint8_t>                     ent_valid(k_ent_count, 0u);
 
-    cd::concurrency::parallel_for(
-        std::size_t { 0 },
-        k_ent_count,
-        [&](std::size_t i)
-        {
-            const auto& ent = entities[i];
-            auto model_opt = model_for(ent);
-            if (!model_opt.has_value())
-                return;  // ghost-shadow exclusion: hidden / removed entity
-            const auto blas = blas_for_kind(kind_for(ent));
-            if (!blas.is_valid())
-                return;  // unregistered kind: defensive skip
-            ent_inst_scratch[i] = cd::studio_rt::make_accel_instance(
-                blas, *model_opt);
-            cd::studio_rt::InstanceMatGpu im {};
-            cd::studio_rt::fill_inst_mat(im, tint_for(ent));
-            ent_mat_scratch[i] = im;
-            ent_valid[i] = 1u;
-        });
+    auto scatter_one = [&](std::size_t i)
+    {
+        const auto& ent = entities[i];
+        auto model_opt = model_for(ent);
+        if (!model_opt.has_value())
+            return;  // ghost-shadow exclusion: hidden / removed entity
+        const auto blas = blas_for_kind(kind_for(ent));
+        if (!blas.is_valid())
+            return;  // unregistered kind: defensive skip
+        ent_inst_scratch[i] = cd::studio_rt::make_accel_instance(
+            blas, *model_opt);
+        cd::studio_rt::InstanceMatGpu im {};
+        cd::studio_rt::fill_inst_mat(im, tint_for(ent));
+        ent_mat_scratch[i] = im;
+        ent_valid[i] = 1u;
+    };
+
+    if (k_ent_count >= 256u)
+    {
+        cd::concurrency::parallel_for(std::size_t { 0 }, k_ent_count, scatter_one);
+    }
+    else
+    {
+        for (std::size_t i = 0; i < k_ent_count; ++i)
+            scatter_one(i);
+    }
 
     // Serial compaction preserves entity ordering so the GPU
     // instanceCustomIndex lookup into inst_mat_ssbo stays aligned with

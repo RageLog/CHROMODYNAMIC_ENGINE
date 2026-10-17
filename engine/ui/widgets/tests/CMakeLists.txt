@@ -3,7 +3,7 @@ cd_add_test(ui_widgets
     test_widgets.cpp
     test_color_picker.cpp
     test_editor_and_hud_widgets.cpp
-  DEPS    cd::ui_widgets cd::ui_renderer cd::core
+  DEPS    cd::ui_widgets cd::ui_renderer_rhi cd::ui_renderer cd::rhi cd::core
 )
 
 cd_add_test(ui_widgets_animation
