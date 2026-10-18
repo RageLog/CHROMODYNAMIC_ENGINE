@@ -1021,11 +1021,11 @@ struct StudioRuntimeWorld
     char                                                  new_layer_name_buf[32]    { "Gameplay" };
     char                                                  new_level_name_buf[48]    { "Custom_Arena" };
     // Disk Explorer -> Active Context Two-Stage Asset Pipeline state
-    std::string                                           current_content_folder    { "showcases" };
+    std::string                                           current_content_folder    { "assets/meshes" };
     char                                                  content_search_filter[64] {};
     int                                                   content_type_filter       { 0 }; // 0=All, 1=Objects/Meshes, 2=Textures, 3=Materials, 4=Projects
-    std::string                                           selected_content_asset    {};
-    std::string                                           last_asset_status_msg     { "Empty Project Ready — Select a Project (.cdproj) or Load Objects/Textures from Disk to Context" };
+    std::string                                           selected_content_asset    { "assets/meshes/Sphere.mesh" };
+    std::string                                           last_asset_status_msg     { "Empty Project Ready — Click or Drag 3D Objects from Context to Spawn at (0, 0, 0)" };
     std::vector<ContextAssetItem>                         loaded_context_assets     {};
     int                                                   selected_context_idx      { -1 };
     bool                                                  is_dragging_asset_mesh    { false };

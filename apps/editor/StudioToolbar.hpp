@@ -37,20 +37,9 @@ namespace cd::studio
 template <typename StateT>
 [[nodiscard]] inline cd::math::Vec3f camera_spawn_point(const StateT& s, float dist = 3.5F) noexcept
 {
-    const float dx = s.cam.target.x - s.cam.eye.x;
-    const float dy = s.cam.target.y - s.cam.eye.y;
-    const float dz = s.cam.target.z - s.cam.eye.z;
-    const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
-    if (len < 1e-4F)
-    {
-        return { s.cam.eye.x, std::max(0.5F, s.cam.eye.y), s.cam.eye.z - dist };
-    }
-    const float inv = 1.0F / len;
-    return {
-        s.cam.eye.x + dx * inv * dist,
-        std::max(0.4F, s.cam.eye.y + dy * inv * dist),
-        s.cam.eye.z + dz * inv * dist,
-    };
+    (void)s;
+    (void)dist;
+    return { 0.0F, 0.0F, 0.0F };
 }
 
 template <typename StateT, typename PrimKindT, typename LogFn>

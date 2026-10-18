@@ -628,7 +628,8 @@ inline void draw_clean_studio_workspace_panels(
     // =========================================================================
     // PANEL 1 (Left Full-Height Dock): Outliner (Scene) | Toolbox & Prefabs | Worlds & Layers
     // =========================================================================
-    if (ImGui::Begin("Studio Workbench", nullptr, ImGuiWindowFlags_NoTitleBar))
+    if (ImGui::Begin("Studio Workbench", nullptr,
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse))
     {
         if (ImGui::BeginTabBar("StudioLeftDockTabs"))
         {
@@ -1330,7 +1331,8 @@ inline void draw_clean_studio_workspace_panels(
     // =========================================================================
     // PANEL 3 (Right): Full Transform (Pos + Euler Deg + Scale) & Modifier Stack
     // =========================================================================
-    if (ImGui::Begin("Inspector", nullptr, ImGuiWindowFlags_NoTitleBar))
+    if (ImGui::Begin("Inspector", nullptr,
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse))
     {
         if (ImGui::BeginTabBar("StudioInspectorTabs"))
         {
@@ -1702,7 +1704,8 @@ inline void draw_clean_studio_workspace_panels(
     // =========================================================================
     // PANEL 4 (Bottom): Disk & Context Browser (Stage 1: Disk -> Stage 2: Context -> Scene)
     // =========================================================================
-    if (ImGui::Begin("History", nullptr, ImGuiWindowFlags_NoTitleBar))
+    if (ImGui::Begin("History", nullptr,
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse))
     {
         if (w.focus_bottom_node_catalog_tab)
         {
@@ -1732,25 +1735,39 @@ inline void draw_clean_studio_workspace_panels(
 
                     if (folder == "showcases")
                     {
-                        struct ShowcaseDiskItem { const char* name; const char* path; };
+                        struct ShowcaseDiskItem
+                        {
+                            const char*              name;
+                            const char*              path;
+                            cd::ui::chroma::IconKind icon;
+                            ImU32                    color;
+                        };
                         constexpr std::array<ShowcaseDiskItem, 10> kDiskProjects {{
-                            { "01_PBR_Materials",  "showcases/01_pbr_materials_sss_hair/project.cdproj" },
-                            { "02_Realtime_GI",    "showcases/02_realtime_gi_raytracing/project.cdproj" },
-                            { "03_Sky_Ocean",      "showcases/03_atmosphere_clouds_ocean_world/project.cdproj" },
-                            { "04_GPU_Geometry",   "showcases/04_gpu_driven_geometry_textures/project.cdproj" },
-                            { "05_Rockstar_Phys",  "showcases/05_physics_destruction_fluids/project.cdproj" },
-                            { "06_PostFX_Optics",  "showcases/06_postfx_upscaling_camera/project.cdproj" },
-                            { "07_VFX_Particles",  "showcases/07_particles_decals_foliage/project.cdproj" },
-                            { "08_Proc_Synth",     "showcases/08_procedural_asset_synthesis/project.cdproj" },
-                            { "09_Studio_Tools",   "showcases/09_editor_tools_observability/project.cdproj" },
-                            { "10_Gameplay_Net",   "showcases/10_gameplay_animation_networking/project.cdproj" },
+                            { "01_PBR_Materials",  "showcases/01_pbr_materials_sss_hair/project.cdproj",
+                              cd::ui::chroma::IconKind::kSphere,    IM_COL32(255, 208, 88, 255) },
+                            { "02_Realtime_GI",    "showcases/02_realtime_gi_raytracing/project.cdproj",
+                              cd::ui::chroma::IconKind::kWorld,     IM_COL32(255, 178, 95, 255) },
+                            { "03_Sky_Ocean",      "showcases/03_atmosphere_clouds_ocean_world/project.cdproj",
+                              cd::ui::chroma::IconKind::kSparkles,  IM_COL32(105, 215, 255, 255) },
+                            { "04_GPU_Geometry",   "showcases/04_gpu_driven_geometry_textures/project.cdproj",
+                              cd::ui::chroma::IconKind::kMesh3D,    IM_COL32(95, 195, 255, 255) },
+                            { "05_Rockstar_Phys",  "showcases/05_physics_destruction_fluids/project.cdproj",
+                              cd::ui::chroma::IconKind::kPhysics,   IM_COL32(85, 240, 165, 255) },
+                            { "06_PostFX_Optics",  "showcases/06_postfx_upscaling_camera/project.cdproj",
+                              cd::ui::chroma::IconKind::kCamera,    IM_COL32(205, 155, 255, 255) },
+                            { "07_VFX_Particles",  "showcases/07_particles_decals_foliage/project.cdproj",
+                              cd::ui::chroma::IconKind::kLight,     IM_COL32(255, 165, 95, 255) },
+                            { "08_Proc_Synth",     "showcases/08_procedural_asset_synthesis/project.cdproj",
+                              cd::ui::chroma::IconKind::kTorus,     IM_COL32(235, 145, 245, 255) },
+                            { "09_Studio_Tools",   "showcases/09_editor_tools_observability/project.cdproj",
+                              cd::ui::chroma::IconKind::kUiWidget,  IM_COL32(115, 205, 255, 255) },
+                            { "10_Gameplay_Net",   "showcases/10_gameplay_animation_networking/project.cdproj",
+                              cd::ui::chroma::IconKind::kAvatar,    IM_COL32(95, 245, 175, 255) },
                         }};
                         for (const auto& sp : kDiskProjects)
                         {
                             s_cached_entries.push_back({
-                                sp.name, sp.path, 4,
-                                cd::ui::chroma::IconKind::kFileProject,
-                                IM_COL32(255, 198, 88, 255)
+                                sp.name, sp.path, 4, sp.icon, sp.color
                             });
                         }
                         if (std::filesystem::exists("chromodynamic_studio_scene.cdscene.json"))
@@ -1897,7 +1914,7 @@ inline void draw_clean_studio_workspace_panels(
                     log_push("[context] " + w.last_asset_status_msg);
                 }
                 ImGui::SameLine(0.0F, 6.0F);
-                ImGui::SetNextItemWidth(125.0F);
+                ImGui::SetNextItemWidth(120.0F);
                 ImGui::InputTextWithHint("##asset_search", "Search...",
                                          w.content_search_filter, sizeof(w.content_search_filter));
                 ImGui::SameLine(0.0F, 6.0F);
@@ -1906,9 +1923,9 @@ inline void draw_clean_studio_workspace_panels(
                                    w.loaded_context_assets.size(),
                                    w.current_content_folder.c_str());
 
-                static float s_pane1_w = 156.0F;
-                static float s_pane2_w = 266.0F;
-                static float s_pane3_w = 268.0F;
+                static float s_pane1_w = 178.0F;
+                static float s_pane2_w = 272.0F;
+                static float s_pane3_w = 272.0F;
 
                 // ---- PANE 1 (Left): Disk Directory Tree (Visual Folder Icons) ----
                 ImGui::BeginChild("disk_dir_tree_pane", ImVec2(s_pane1_w, 0.0F), false);
@@ -1920,13 +1937,13 @@ inline void draw_clean_studio_workspace_panels(
                     const char* badge;
                 };
                 constexpr std::array<FolderNode, 7> kFolders {{
-                    { "showcases (Projects)", "showcases",                       "10" },
-                    { "assets/meshes",        "assets/meshes",                   "3D" },
-                    { "assets/textures",      "assets/textures",                 "PBR" },
-                    { "assets (All)",         "assets",                          "All" },
-                    { "samples/Generic",      "assets/samples/Generic",          "GLTF" },
-                    { "samples/Sponza",       "assets/samples/Sponza",           "Atrium" },
-                    { "Sponza/textures",      "assets/samples/Sponza/textures",  "69" },
+                    { "showcases",       "showcases",                       "10" },
+                    { "assets/meshes",   "assets/meshes",                   "3D" },
+                    { "assets/textures", "assets/textures",                 "PBR" },
+                    { "assets (All)",    "assets",                          "All" },
+                    { "samples/Generic", "assets/samples/Generic",          "GLTF" },
+                    { "samples/Sponza",  "assets/samples/Sponza",           "Atrium" },
+                    { "Sponza/textures", "assets/samples/Sponza/textures",  "69" },
                 }};
                 for (const auto& fn : kFolders)
                 {
@@ -1945,14 +1962,15 @@ inline void draw_clean_studio_workspace_panels(
                 ImGui::EndChild();
 
                 ImGui::SameLine(0.0F, 1.0F);
-                (void)ImGui::VerticalPaneSplitter("##split_disk_pane1", &s_pane1_w, 110.0F, 260.0F);
+                (void)ImGui::VerticalPaneSplitter("##split_disk_pane1", &s_pane1_w, 130.0F, 260.0F);
                 ImGui::SameLine(0.0F, 1.0F);
 
                 // ---- PANE 2 (Center-Left): Disk Files Grid (3D/Texture Previews — Click to Open/Load) ----
                 ImGui::BeginChild("disk_files_grid_pane", ImVec2(s_pane2_w, 0.0F), false);
                 ImGui::TextColored(ImVec4(0.52F, 0.86F, 1.0F, 1.0F),
                                    "2. Disk Files (Click -> Context)");
-                if (ImGui::BeginTable("disk_tiles_grid_4col", 4, ImGuiTableFlags_SizingStretchSame))
+                const int disk_cols = std::clamp(static_cast<int>(s_pane2_w / 86.0F), 2, 4);
+                if (ImGui::BeginTable("disk_tiles_grid_col", disk_cols, ImGuiTableFlags_SizingStretchSame))
                 {
                     int disk_tile_id = 0;
                     for (const auto& item : s_cached_entries)
@@ -1966,7 +1984,7 @@ inline void draw_clean_studio_workspace_panels(
                         const bool in_ctx = w.is_asset_in_context(item.path);
                         const bool is_sel = (w.selected_content_asset == item.path);
                         const std::string tile_lbl = item.name + "##dsk_" + std::to_string(disk_tile_id);
-                        if (ImGui::IconTile(tile_lbl.c_str(), item.icon, item.color, is_sel, in_ctx, ImVec2(-1.0F, 54.0F)))
+                        if (ImGui::IconTile(tile_lbl.c_str(), item.icon, item.color, is_sel, in_ctx, ImVec2(-1.0F, 52.0F)))
                         {
                             w.selected_content_asset = item.path;
                             if (item.kind == 0)
@@ -2009,7 +2027,7 @@ inline void draw_clean_studio_workspace_panels(
                 ImGui::EndChild();
 
                 ImGui::SameLine(0.0F, 1.0F);
-                (void)ImGui::VerticalPaneSplitter("##split_disk_pane2", &s_pane2_w, 160.0F, 440.0F);
+                (void)ImGui::VerticalPaneSplitter("##split_disk_pane2", &s_pane2_w, 170.0F, 440.0F);
                 ImGui::SameLine(0.0F, 1.0F);
 
                 // ---- PANE 3 (Center-Right): Active Project Context (Visual 3D & Texture Previews) ----
@@ -2017,6 +2035,7 @@ inline void draw_clean_studio_workspace_panels(
                 ImGui::TextColored(ImVec4(0.38F, 0.95F, 0.66F, 1.0F),
                                    "3. Active Context (%zu Loaded)",
                                    w.loaded_context_assets.size());
+                const int ctx_cols = std::clamp(static_cast<int>(s_pane3_w / 86.0F), 2, 4);
                 if (w.loaded_context_assets.empty())
                 {
                     ImGui::TextDisabled("Active Context is empty (0 loaded).");
@@ -2039,7 +2058,7 @@ inline void draw_clean_studio_workspace_panels(
                         log_push("[context] " + w.last_asset_status_msg);
                     }
                 }
-                else if (ImGui::BeginTable("context_tiles_grid_4col", 4, ImGuiTableFlags_SizingStretchSame))
+                else if (ImGui::BeginTable("context_tiles_grid_col", ctx_cols, ImGuiTableFlags_SizingStretchSame))
                 {
                     int ctx_tile_id = 0;
                     for (const auto& ca : w.loaded_context_assets)
@@ -2071,17 +2090,20 @@ inline void draw_clean_studio_workspace_panels(
 
                         const bool is_sel = (w.selected_content_asset == ca.path);
                         const std::string tile_lbl = ca.name + "##ctx_" + std::to_string(ctx_tile_id);
-                        if (ImGui::IconTile(tile_lbl.c_str(), c_icon, c_col, is_sel, true, ImVec2(-1.0F, 54.0F)))
+                        if (ImGui::IconTile(tile_lbl.c_str(), c_icon, c_col, is_sel, true, ImVec2(-1.0F, 52.0F)))
                         {
                             w.selected_content_asset = ca.path;
                             if (ca.kind == 0U)
                             {
-                                const cd::math::Vec3f pt = camera_spawn_point(s, 3.6F);
-                                const int nidx = spawn_entity_with_modifiers(s, "Dynamic_Cube", { pt.x, 0.75F, pt.z }, log_push);
+                                const int nidx = spawn_entity_with_modifiers(s, "Dynamic_Cube", { 0.0F, 0.0F, 0.0F }, log_push);
                                 if (nidx >= 0 && std::cmp_less(nidx, s.entities.size()))
                                 {
                                     s.entities[static_cast<std::size_t>(nidx)].name = ca.name;
                                     (void)assign_mesh_asset_to_entity(s, nidx, ca.path, log_push);
+                                    if (auto* lt = s.scene.local(s.entities[static_cast<std::size_t>(nidx)].handle))
+                                        lt->value.position = { 0.0F, 0.0F, 0.0F };
+                                    record_entity_home_transform(s, s.entities[static_cast<std::size_t>(nidx)].handle);
+                                    s.scene.update_transforms();
                                     s.selected      = nidx;
                                     s.selected_kind = SelKind::kEntity;
                                 }
@@ -2118,7 +2140,7 @@ inline void draw_clean_studio_workspace_panels(
                             ImGui::SetTooltip("Active Context Asset: %s\nDisk Source: %s\n%s",
                                               ca.name.c_str(), ca.path.c_str(),
                                               ca.kind == 0U
-                                                  ? "Click to Spawn in Scene, or Drag onto any Object"
+                                                  ? "Click to Spawn at (0, 0, 0), or Drag onto any Object"
                                                   : "Click or Drag to Apply Texture to Selected Object");
                         }
                         ImGui::PopID();
@@ -2128,7 +2150,7 @@ inline void draw_clean_studio_workspace_panels(
                 ImGui::EndChild();
 
                 ImGui::SameLine(0.0F, 1.0F);
-                (void)ImGui::VerticalPaneSplitter("##split_disk_pane3", &s_pane3_w, 160.0F, 440.0F);
+                (void)ImGui::VerticalPaneSplitter("##split_disk_pane3", &s_pane3_w, 170.0F, 440.0F);
                 ImGui::SameLine(0.0F, 1.0F);
 
                 // ---- PANE 4 (Right): Live 3D / Texture Preview of Selected Context (or Disk) Object ----
@@ -2212,16 +2234,19 @@ inline void draw_clean_studio_workspace_panels(
                 }
                 else if (prev_kind == 0U)
                 {
-                    if (ImGui::IconButton("Spawn to Stage##prev_act", cd::ui::chroma::IconKind::kPlus,
+                    if (ImGui::IconButton("Spawn to Stage (0,0,0)##prev_act", cd::ui::chroma::IconKind::kPlus,
                                           IM_COL32(85, 245, 165, 255), false, ImVec2(-1.0F, 22.0F)))
                     {
                         (void)w.load_asset_into_context(prev_name, prev_path, 0U);
-                        const cd::math::Vec3f pt = camera_spawn_point(s, 3.6F);
-                        const int nidx = spawn_entity_with_modifiers(s, "Dynamic_Cube", { pt.x, 0.75F, pt.z }, log_push);
+                        const int nidx = spawn_entity_with_modifiers(s, "Dynamic_Cube", { 0.0F, 0.0F, 0.0F }, log_push);
                         if (nidx >= 0 && std::cmp_less(nidx, s.entities.size()))
                         {
                             s.entities[static_cast<std::size_t>(nidx)].name = prev_name;
                             (void)assign_mesh_asset_to_entity(s, nidx, prev_path, log_push);
+                            if (auto* lt = s.scene.local(s.entities[static_cast<std::size_t>(nidx)].handle))
+                                lt->value.position = { 0.0F, 0.0F, 0.0F };
+                            record_entity_home_transform(s, s.entities[static_cast<std::size_t>(nidx)].handle);
+                            s.scene.update_transforms();
                             s.selected      = nidx;
                             s.selected_kind = SelKind::kEntity;
                         }

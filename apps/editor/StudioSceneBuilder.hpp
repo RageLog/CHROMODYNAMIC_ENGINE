@@ -234,7 +234,20 @@ inline void init_clean_studio_workspace(StateT& s, LogFn&& log_push)
     s.scene.update_transforms();
     s.selected      = -1;
     s.selected_kind = SelKind::kEntity;
-    log_push("[studio] Opened Clean Empty Project ('Empty_Project / Empty_Stage'). Select sample projects (.cdproj) or load Objects/Textures from Disk into Context.");
+    if (w.loaded_context_assets.empty())
+    {
+        (void)w.load_asset_into_context("Sphere",       "assets/meshes/Sphere.mesh", 0U);
+        (void)w.load_asset_into_context("Cube",         "assets/meshes/Cube.mesh", 0U);
+        (void)w.load_asset_into_context("Cylinder",     "assets/meshes/Cylinder.mesh", 0U);
+        (void)w.load_asset_into_context("Cone",         "assets/meshes/Cone.mesh", 0U);
+        (void)w.load_asset_into_context("Torus",        "assets/meshes/Torus.mesh", 0U);
+        (void)w.load_asset_into_context("Gold_24K",     "assets/textures/Gold_Leaf_24K.tex", 1U);
+        (void)w.load_asset_into_context("Checker_2K",   "assets/textures/UV_Checkerboard_2K.tex", 1U);
+        (void)w.load_asset_into_context("Carbon_Fiber", "assets/textures/Carbon_Fiber_Twill.tex", 1U);
+        if (w.selected_content_asset.empty())
+            w.selected_content_asset = "assets/meshes/Sphere.mesh";
+    }
+    log_push("[studio] Opened Clean Empty Project ('Empty_Project / Empty_Stage'). Click or drag 3D objects to spawn at (0, 0, 0).");
 }
 
 // =============================================================================
@@ -645,6 +658,16 @@ inline int spawn_entity_with_modifiers(
         ms.add_or_replace(std::move(trg));
     }
 
+    if (std::fabs(raw_world_pos.x) < 1e-4F &&
+        std::fabs(raw_world_pos.y) < 1e-4F &&
+        std::fabs(raw_world_pos.z) < 1e-4F)
+    {
+        if (auto* lt = s.scene.local(h))
+        {
+            lt->value.position = { 0.0F, 0.0F, 0.0F };
+        }
+    }
+
     const std::string_view chosen_layer =
         (w.active_layer_name != "Default" && !w.active_layer_name.empty())
             ? std::string_view(w.active_layer_name)
@@ -792,12 +815,27 @@ inline int spawn_or_compose_studio_catalog_node(
     {
         if (ent.kind != PrimitiveKind::kGltf)
         {
-            lt->value.scale    = p.scale;
-            lt->value.position = {
-                raw_world_pos.x,
-                std::max(0.35F, raw_world_pos.y + 0.55F * p.scale.y),
-                raw_world_pos.z
-            };
+            lt->value.scale = p.scale;
+            if (std::fabs(raw_world_pos.x) < 1e-4F &&
+                std::fabs(raw_world_pos.y) < 1e-4F &&
+                std::fabs(raw_world_pos.z) < 1e-4F)
+            {
+                lt->value.position = { 0.0F, 0.0F, 0.0F };
+            }
+            else
+            {
+                lt->value.position = {
+                    raw_world_pos.x,
+                    std::max(0.35F, raw_world_pos.y + 0.55F * p.scale.y),
+                    raw_world_pos.z
+                };
+            }
+        }
+        else if (std::fabs(raw_world_pos.x) < 1e-4F &&
+                 std::fabs(raw_world_pos.y) < 1e-4F &&
+                 std::fabs(raw_world_pos.z) < 1e-4F)
+        {
+            lt->value.position = { 0.0F, 0.0F, 0.0F };
         }
     }
 
@@ -3090,13 +3128,14 @@ void reset_to_clean_empty_project(StateT& s, LogFn&& log_push)
     w.active_project_name    = "Empty_Project";
     w.active_world_name      = "Default_World";
     w.active_level_name      = "Empty_Stage";
-    w.current_content_folder = "showcases";
+    w.current_content_folder = "assets/meshes";
+    w.selected_content_asset = "assets/meshes/Sphere.mesh";
     if (auto* active_lvl = s.cd_world.active_level_ptr(); active_lvl != nullptr)
     {
         active_lvl->set_template_id(0U);
     }
     init_clean_studio_workspace(s, log_push);
-    w.hud_toast_message = "New Empty Project ready — select a Sample Project (.cdproj) or load Disk assets to Context";
+    w.hud_toast_message = "New Empty Project ready — Click or Drag 3D Objects to Spawn at (0, 0, 0)";
     w.hud_toast_timer   = 3.5F;
 }
 

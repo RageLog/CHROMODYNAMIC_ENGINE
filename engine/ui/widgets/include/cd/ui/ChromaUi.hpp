@@ -3128,7 +3128,6 @@ inline bool VerticalPaneSplitter(const char* str_id, float* io_width, float min_
     w.cursor.x      = p0.x;
     w.cursor.y      = p1.y + st.style_item_spacing.y;
     w.content_max_x = std::max(w.content_max_x, p1.x);
-    w.content_max_y = std::max(w.content_max_y, p1.y);
     return changed;
 }
 
@@ -3433,23 +3432,25 @@ inline void End()
 
     const ImGuiID win_id = (wl.id != 0U) ? wl.id : cd::ui::chroma::hash_str(wl.name);
     const float used_w = wl.content_max_x - wl.pos.x + 14.0F;
-    const float used_h = (wl.content_max_y + wl.scroll_y) - wl.pos.y + 10.0F;
+    const float raw_content_h = (wl.content_max_y + wl.scroll_y) - wl.pos.y + 4.0F;
     if ((wl.flags & ImGuiWindowFlags_AlwaysAutoResize) != 0 && !wl.is_docked)
     {
         st.auto_size_map[win_id] = ImVec2 { std::clamp(used_w, 160.0F, 1580.0F),
-                                            std::clamp(used_h, 30.0F, 680.0F) };
+                                            std::clamp(raw_content_h + 6.0F, 30.0F, 680.0F) };
         st.scroll_map[win_id] = 0.0F;
     }
     else
     {
         st.auto_size_map[win_id] = wl.size;
-        if ((wl.flags & ImGuiWindowFlags_NoScrollbar) == 0 && used_h > wl.size.y + 6.0F)
+        const bool can_scroll_win = !wl.is_docked &&
+            (wl.flags & (ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) == 0;
+        if (can_scroll_win && raw_content_h > wl.size.y + 6.0F)
         {
             const float track_y0 = wl.pos.y + ((wl.flags & ImGuiWindowFlags_NoTitleBar) != 0 ? 4.0F : 28.0F);
             const float track_h  = std::max(20.0F, (wl.pos.y + wl.size.y - 4.0F) - track_y0);
-            const float ratio    = std::clamp(wl.size.y / used_h, 0.10F, 1.0F);
+            const float ratio    = std::clamp(wl.size.y / raw_content_h, 0.12F, 1.0F);
             const float thumb_h  = std::max(18.0F, track_h * ratio);
-            const float max_scr  = std::max(1.0F, used_h - wl.size.y);
+            const float max_scr  = std::max(0.0F, raw_content_h - wl.size.y);
             const ImVec2 mp = st.io.MousePos;
             const bool win_hov = !detail::is_occluded_by_popup(wl) &&
                                   (mp.x >= wl.pos.x && mp.x <= wl.pos.x + wl.size.x &&
@@ -3471,7 +3472,7 @@ inline void End()
                 const float t = std::clamp((mp.y - track_y0 - thumb_h * 0.5F) / std::max(1.0F, track_h - thumb_h), 0.0F, 1.0F);
                 st.scroll_map[win_id] = t * max_scr;
             }
-            const float thumb_y = track_y0 + (st.scroll_map[win_id] / max_scr) * (track_h - thumb_h);
+            const float thumb_y = track_y0 + (st.scroll_map[win_id] / std::max(1.0F, max_scr)) * (track_h - thumb_h);
             wl.draw_list->AddRectFilled(ImVec2(wl.pos.x + wl.size.x - 6.5F, track_y0),
                                         ImVec2(wl.pos.x + wl.size.x - 2.0F, track_y0 + track_h),
                                         IM_COL32(10, 14, 22, 120), 2.5F);
@@ -3497,10 +3498,13 @@ inline bool BeginChild(const char* str_id, const ImVec2& size = ImVec2(0, 0), bo
     child.is_child  = true;
     child.draw_list = parent.draw_list;
     child.pos       = parent.cursor;
+
+    // Compute available height from parent's visible bottom edge without feedback from parent.scroll_y
+    const float parent_bottom = parent.pos.y + parent.size.y - 4.0F;
     const float avail_w = std::max(48.0F, (parent.pos.x + parent.size.x - 4.0F) - parent.cursor.x);
-    const float avail_h = std::max(32.0F, (parent.pos.y + parent.size.y - 3.0F) - parent.cursor.y);
+    const float avail_h = std::max(24.0F, parent_bottom - child.pos.y);
     child.size.x = (size.x > 0.0F) ? size.x : avail_w;
-    child.size.y = (size.y > 0.0F) ? size.y : ((size.y < 0.0F) ? std::max(32.0F, avail_h + size.y) : avail_h);
+    child.size.y = (size.y > 0.0F) ? size.y : ((size.y < 0.0F) ? std::max(24.0F, avail_h + size.y) : avail_h);
 
     const ImGuiID cid = GetID(child.name.c_str());
     child.id = cid;
@@ -3521,9 +3525,12 @@ inline bool BeginChild(const char* str_id, const ImVec2& size = ImVec2(0, 0), bo
 
     parent.prev_item_min = child.pos;
     parent.prev_item_max = ImVec2 { child.pos.x + child.size.x, child.pos.y + child.size.y };
-    parent.cursor.y      = child.pos.y + child.size.y + 3.0F;
+    parent.cursor.y      = child.pos.y + child.size.y + 2.0F;
     parent.content_max_x = std::max(parent.content_max_x, parent.prev_item_max.x);
-    parent.content_max_y = std::max(parent.content_max_y, parent.prev_item_max.y);
+    if (size.y > 0.0F)
+    {
+        parent.content_max_y = std::max(parent.content_max_y, parent.prev_item_max.y);
+    }
 
     st.window_stack.push_back(std::move(child));
     return true;
@@ -3537,40 +3544,53 @@ inline void EndChild()
     st.window_stack.pop_back();
 
     const ImGuiID cid = (child.id != 0U) ? child.id : GetID(child.name.c_str());
-    const float used_h  = (child.content_max_y + child.scroll_y) - child.pos.y + 6.0F;
-    const float max_scr = std::max(0.0F, used_h - child.size.y);
+    // Unscrolled content height inside this child pane:
+    const float raw_content_h = (child.content_max_y + child.scroll_y) - child.pos.y + 2.0F;
+    const float max_scr = (raw_content_h > child.size.y + 4.0F)
+                              ? (raw_content_h - child.size.y)
+                              : 0.0F;
     const ImVec2 mp = st.io.MousePos;
-    if (max_scr > 0.0F && !detail::is_occluded_by_popup(child) &&
-        mp.x >= child.pos.x && mp.x <= child.pos.x + child.size.x &&
-        mp.y >= child.pos.y && mp.y <= child.pos.y + child.size.y)
+    const bool child_hov = !detail::is_occluded_by_popup(child) &&
+                           mp.x >= child.pos.x && mp.x <= child.pos.x + child.size.x &&
+                           mp.y >= child.pos.y && mp.y <= child.pos.y + child.size.y;
+    if (max_scr <= 0.0F)
     {
-        if (std::fabs(st.io.MouseWheel) > 0.01F)
+        child.scroll_y     = 0.0F;
+        st.scroll_map[cid] = 0.0F;
+        if (child_hov && std::fabs(st.io.MouseWheel) > 0.01F)
         {
-            child.scroll_y = std::clamp(child.scroll_y - st.io.MouseWheel * 26.0F, 0.0F, max_scr);
             st.io.MouseWheel = 0.0F;
         }
-        else if (st.dnd_active && st.mouse_down[0] && child.size.y > 40.0F)
+    }
+    else
+    {
+        if (child_hov)
         {
-            const float edge_zone = 18.0F;
-            const float dt_step   = std::clamp(st.io.DeltaTime, 1.0F / 240.0F, 0.05F) * 180.0F;
-            if (mp.y < child.pos.y + edge_zone)
+            if (std::fabs(st.io.MouseWheel) > 0.01F)
             {
-                child.scroll_y = std::clamp(child.scroll_y - dt_step, 0.0F, max_scr);
+                child.scroll_y = std::clamp(child.scroll_y - st.io.MouseWheel * 26.0F, 0.0F, max_scr);
+                st.io.MouseWheel = 0.0F;
             }
-            else if (mp.y > child.pos.y + child.size.y - edge_zone)
+            else if (st.dnd_active && st.mouse_down[0] && child.size.y > 40.0F)
             {
-                child.scroll_y = std::clamp(child.scroll_y + dt_step, 0.0F, max_scr);
+                const float edge_zone = 18.0F;
+                const float dt_step   = std::clamp(st.io.DeltaTime, 1.0F / 240.0F, 0.05F) * 180.0F;
+                if (mp.y < child.pos.y + edge_zone)
+                {
+                    child.scroll_y = std::clamp(child.scroll_y - dt_step, 0.0F, max_scr);
+                }
+                else if (mp.y > child.pos.y + child.size.y - edge_zone)
+                {
+                    child.scroll_y = std::clamp(child.scroll_y + dt_step, 0.0F, max_scr);
+                }
             }
         }
-    }
-    st.scroll_map[cid]  = std::clamp(child.scroll_y, 0.0F, max_scr);
+        st.scroll_map[cid] = std::clamp(child.scroll_y, 0.0F, max_scr);
 
-    if (max_scr > 2.0F)
-    {
         const float track_y0 = child.pos.y + 3.0F;
         const float track_h  = std::max(16.0F, child.size.y - 6.0F);
-        const float ratio    = std::clamp(child.size.y / used_h, 0.12F, 1.0F);
-        const float thumb_h  = std::max(14.0F, track_h * ratio);
+        const float ratio    = std::clamp(child.size.y / raw_content_h, 0.14F, 1.0F);
+        const float thumb_h  = std::max(16.0F, track_h * ratio);
 
         const ImGuiID sb_id = cid ^ 0x5C8011BAU;
         const bool sb_hov = !detail::is_occluded_by_popup(child) &&
@@ -3582,7 +3602,7 @@ inline void EndChild()
             const float t = std::clamp((mp.y - track_y0 - thumb_h * 0.5F) / std::max(1.0F, track_h - thumb_h), 0.0F, 1.0F);
             st.scroll_map[cid] = t * max_scr;
         }
-        const float thumb_y = track_y0 + (st.scroll_map[cid] / max_scr) * (track_h - thumb_h);
+        const float thumb_y = track_y0 + (st.scroll_map[cid] / std::max(1.0F, max_scr)) * (track_h - thumb_h);
         child.draw_list->AddRectFilled(ImVec2(child.pos.x + child.size.x - 6.0F, track_y0),
                                        ImVec2(child.pos.x + child.size.x - 2.0F, track_y0 + track_h),
                                        IM_COL32(10, 14, 22, 120), 2.0F);
@@ -6157,6 +6177,197 @@ inline bool title_contains_ci(const char* text, const char* needle) noexcept
     return false;
 }
 
+struct PreviewVec3
+{
+    float x { 0.0F };
+    float y { 0.0F };
+    float z { 0.0F };
+};
+
+[[nodiscard]] inline PreviewVec3 p3_sub(PreviewVec3 a, PreviewVec3 b) noexcept
+{
+    return { a.x - b.x, a.y - b.y, a.z - b.z };
+}
+
+[[nodiscard]] inline PreviewVec3 p3_cross(PreviewVec3 a, PreviewVec3 b) noexcept
+{
+    return {
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x
+    };
+}
+
+[[nodiscard]] inline float p3_dot(PreviewVec3 a, PreviewVec3 b) noexcept
+{
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+[[nodiscard]] inline PreviewVec3 p3_normalize(PreviewVec3 v) noexcept
+{
+    const float len2 = v.x * v.x + v.y * v.y + v.z * v.z;
+    if (len2 <= 1e-10F) return { 0.0F, 0.0F, 1.0F };
+    const float inv = 1.0F / std::sqrt(len2);
+    return { v.x * inv, v.y * inv, v.z * inv };
+}
+
+[[nodiscard]] inline PreviewVec3 p3_rotate_yxz(PreviewVec3 v, float yaw, float pitch, float roll = 0.0F) noexcept
+{
+    const float cy = std::cos(yaw),   sy = std::sin(yaw);
+    const float cp = std::cos(pitch), sp = std::sin(pitch);
+    // Yaw around Y
+    const float x1 =  v.x * cy + v.z * sy;
+    const float y1 =  v.y;
+    const float z1 = -v.x * sy + v.z * cy;
+    // Pitch around X
+    const float x2 = x1;
+    const float y2 = y1 * cp - z1 * sp;
+    const float z2 = y1 * sp + z1 * cp;
+    if (std::fabs(roll) < 1e-4F) return { x2, y2, z2 };
+    const float cr = std::cos(roll), sr = std::sin(roll);
+    return { x2 * cr - y2 * sr, x2 * sr + y2 * cr, z2 };
+}
+
+struct PreviewTri3D
+{
+    PreviewVec3 v0 {};
+    PreviewVec3 v1 {};
+    PreviewVec3 v2 {};
+    ImU32       col { 0xFFFFFFFFU };
+    float       spec_str { 0.45F };
+    bool        edge_hint { false };
+};
+
+inline void p3_push_quad(std::vector<PreviewTri3D>& tris,
+                         PreviewVec3 a, PreviewVec3 b, PreviewVec3 c, PreviewVec3 d,
+                         ImU32 col, float spec_str = 0.45F, bool edge_hint = false)
+{
+    tris.push_back({ a, b, c, col, spec_str, edge_hint });
+    tris.push_back({ a, c, d, col, spec_str, edge_hint });
+}
+
+inline void p3_push_box(std::vector<PreviewTri3D>& tris,
+                        PreviewVec3 center, PreviewVec3 half_ext,
+                        ImU32 col, float yaw_local = 0.0F, float pitch_local = 0.0F,
+                        float spec_str = 0.42F, bool edge_hint = true)
+{
+    auto xform = [&](float lx, float ly, float lz) noexcept -> PreviewVec3 {
+        PreviewVec3 p { lx * half_ext.x, ly * half_ext.y, lz * half_ext.z };
+        if (std::fabs(yaw_local) > 1e-4F || std::fabs(pitch_local) > 1e-4F)
+        {
+            p = p3_rotate_yxz(p, yaw_local, pitch_local);
+        }
+        return { center.x + p.x, center.y + p.y, center.z + p.z };
+    };
+    const PreviewVec3 p000 = xform(-1.0F, -1.0F, -1.0F);
+    const PreviewVec3 p100 = xform( 1.0F, -1.0F, -1.0F);
+    const PreviewVec3 p110 = xform( 1.0F,  1.0F, -1.0F);
+    const PreviewVec3 p010 = xform(-1.0F,  1.0F, -1.0F);
+    const PreviewVec3 p001 = xform(-1.0F, -1.0F,  1.0F);
+    const PreviewVec3 p101 = xform( 1.0F, -1.0F,  1.0F);
+    const PreviewVec3 p111 = xform( 1.0F,  1.0F,  1.0F);
+    const PreviewVec3 p011 = xform(-1.0F,  1.0F,  1.0F);
+
+    // +Z front, -Z back, +X right, -X left, +Y top, -Y bottom (CCW outward)
+    p3_push_quad(tris, p001, p101, p111, p011, col, spec_str, edge_hint);
+    p3_push_quad(tris, p100, p000, p010, p110, col, spec_str, edge_hint);
+    p3_push_quad(tris, p101, p100, p110, p111, col, spec_str, edge_hint);
+    p3_push_quad(tris, p000, p001, p011, p010, col, spec_str, edge_hint);
+    p3_push_quad(tris, p011, p111, p110, p010, col, spec_str, edge_hint);
+    p3_push_quad(tris, p000, p100, p101, p001, col, spec_str, edge_hint);
+}
+
+inline void p3_render_mesh(ImDrawList* dl, ImVec2 center, float scale_px,
+                           const std::vector<PreviewTri3D>& tris,
+                           float yaw, float pitch, float roll = 0.0F,
+                           bool draw_wire_overlay = false) noexcept
+{
+    struct ProjectedTri
+    {
+        ImVec2 p0 {};
+        ImVec2 p1 {};
+        ImVec2 p2 {};
+        float  z_sort { 0.0F };
+        ImU32  lit_col { 0U };
+        ImU32  wire_col { 0U };
+        bool   draw_wire { false };
+    };
+    std::vector<ProjectedTri> draw_tris;
+    draw_tris.reserve(tris.size());
+
+    const PreviewVec3 L_key  = p3_normalize({ -0.46F,  0.68F, 0.57F });
+    const PreviewVec3 L_fill = p3_normalize({  0.66F, -0.22F, 0.72F });
+    const PreviewVec3 V_dir  = { 0.0F, 0.0F, 1.0F };
+    const PreviewVec3 H_vec  = p3_normalize({ L_key.x, L_key.y, L_key.z + 1.0F });
+    const float cam_dist     = 3.45F;
+
+    auto project_pt = [&](PreviewVec3 cp) noexcept -> ImVec2 {
+        const float z_denom = std::max(1.2F, cam_dist - cp.z);
+        const float persp   = (scale_px * 2.55F) / z_denom;
+        return ImVec2(center.x + cp.x * persp, center.y - cp.y * persp);
+    };
+
+    for (const auto& t : tris)
+    {
+        const PreviewVec3 rv0 = p3_rotate_yxz(t.v0, yaw, pitch, roll);
+        const PreviewVec3 rv1 = p3_rotate_yxz(t.v1, yaw, pitch, roll);
+        const PreviewVec3 rv2 = p3_rotate_yxz(t.v2, yaw, pitch, roll);
+
+        PreviewVec3 N = p3_normalize(p3_cross(p3_sub(rv1, rv0), p3_sub(rv2, rv0)));
+        if (N.z < -0.15F) continue; // Back-face cull in 3D camera space
+        if (N.z < 0.0F)
+        {
+            N.x = -N.x; N.y = -N.y; N.z = -N.z;
+        }
+
+        const float ndl_key  = std::max(0.0F, p3_dot(N, L_key));
+        const float ndl_fill = std::max(0.0F, p3_dot(N, L_fill));
+        const float ndh      = std::max(0.0F, p3_dot(N, H_vec));
+        const float ndv      = std::clamp(p3_dot(N, V_dir), 0.0F, 1.0F);
+        const float rim      = (1.0F - ndv) * (1.0F - ndv) * 0.34F;
+
+        // Fast pow16 for crisp Blinn-Phong specular highlight
+        const float s2   = ndh * ndh;
+        const float s4   = s2 * s2;
+        const float s8   = s4 * s4;
+        const float spec = (s8 * s4) * t.spec_str;
+
+        const float diff = 0.24F + 0.72F * ndl_key + 0.24F * ndl_fill + rim;
+        const auto bc    = cd::ui::chroma::unpack_u32(t.col);
+        const int r_out  = std::clamp(static_cast<int>(static_cast<float>(bc.r) * diff + spec * 245.0F), 0, 255);
+        const int g_out  = std::clamp(static_cast<int>(static_cast<float>(bc.g) * diff + spec * 248.0F), 0, 255);
+        const int b_out  = std::clamp(static_cast<int>(static_cast<float>(bc.b) * diff + spec * 255.0F), 0, 255);
+
+        const ImVec2 sp0 = project_pt(rv0);
+        const ImVec2 sp1 = project_pt(rv1);
+        const ImVec2 sp2 = project_pt(rv2);
+        const float z_avg = (rv0.z + rv1.z + rv2.z) * (1.0F / 3.0F);
+
+        draw_tris.push_back({
+            sp0, sp1, sp2, z_avg,
+            IM_COL32(r_out, g_out, b_out, 255),
+            IM_COL32(std::min(255, r_out + 42), std::min(255, g_out + 46), std::min(255, b_out + 52),
+                     draw_wire_overlay ? 92 : 68),
+            (draw_wire_overlay || t.edge_hint)
+        });
+    }
+
+    std::sort(draw_tris.begin(), draw_tris.end(),
+              [](const ProjectedTri& a, const ProjectedTri& b) noexcept {
+                  return a.z_sort < b.z_sort;
+              });
+
+    for (const auto& pt : draw_tris)
+    {
+        dl->AddTriangleFilled(pt.p0, pt.p1, pt.p2, pt.lit_col);
+        if (pt.draw_wire)
+        {
+            dl->AddLine(pt.p0, pt.p1, pt.wire_col, 0.85F);
+            dl->AddLine(pt.p1, pt.p2, pt.wire_col, 0.85F);
+        }
+    }
+}
+
 inline void DrawAssetPreview(ImDrawList* dl, ImVec2 w0, ImVec2 w1,
                              cd::ui::chroma::IconKind icon,
                              const char* title, ImU32 ic, float anim_phase = 0.0F,
@@ -6170,249 +6381,377 @@ inline void DrawAssetPreview(ImDrawList* dl, ImVec2 w0, ImVec2 w1,
 
     dl->PushClipRect(w0, w1);
 
+    // 1. Studio 3D Stage Background + Perspective Ground Grid + Contact Shadow
+    dl->AddGradient(w0, w1, IM_COL32(17, 23, 35, 255), IM_COL32(9, 13, 20, 255), true);
+    const float hy = w0.y + wh * 0.56F;
+    dl->AddRectFilled(ImVec2(w0.x, hy), w1, IM_COL32(12, 16, 25, 235));
+    dl->AddLine(ImVec2(w0.x, hy), ImVec2(w1.x, hy), IM_COL32(48, 66, 94, 175), 1.0F);
+    for (int i = -2; i <= 2; ++i)
+    {
+        const float tx = c.x + static_cast<float>(i) * (ww * 0.12F);
+        const float bx = c.x + static_cast<float>(i) * (ww * 0.34F);
+        dl->AddLine(ImVec2(tx, hy), ImVec2(bx, w1.y), IM_COL32(38, 52, 76, 135), 1.0F);
+    }
+    const float gz_mid = hy + (w1.y - hy) * 0.46F;
+    dl->AddLine(ImVec2(w0.x, gz_mid), ImVec2(w1.x, gz_mid), IM_COL32(38, 52, 76, 125), 1.0F);
+    dl->AddLine(ImVec2(c.x - ww * 0.30F, gz_mid), ImVec2(c.x + ww * 0.30F, gz_mid), IM_COL32(195, 62, 62, 135), 1.0F);
+    dl->AddLine(ImVec2(c.x, hy), ImVec2(c.x, w1.y), IM_COL32(62, 132, 220, 135), 1.0F);
+
+    if (icon == IconKind::kFolder)
+    {
+        const float r = std::clamp(std::min(ww, wh) * 0.36F, 7.0F, 36.0F);
+        cd::ui::chroma::DrawIcon(dl, icon, c, r, ic);
+        dl->PopClipRect();
+        return;
+    }
+
+    const float r = std::clamp(std::min(ww, wh) * (is_large ? 0.39F : 0.40F), 8.0F, 52.0F);
+    // Soft contact shadow on the 3D studio floor
+    dl->AddRectFilled(ImVec2(c.x - r * 0.72F, c.y + r * 0.58F),
+                      ImVec2(c.x + r * 0.72F, c.y + r * 0.84F),
+                      IM_COL32(3, 5, 9, 175), r * 0.25F);
+
+    const float yaw   = 0.62F + anim_phase * 0.85F;
+    const float pitch = 0.42F;
+
     const bool is_tex = (icon == IconKind::kTexture2D || icon == IconKind::kMaterial) ||
                         title_contains_ci(title, "gold") ||
                         title_contains_ci(title, "checker") ||
                         title_contains_ci(title, "brick") ||
                         title_contains_ci(title, "carbon") ||
+                        title_contains_ci(title, "marble") ||
                         title_contains_ci(title, "wood") ||
-                        title_contains_ci(title, "plasma") ||
+                        title_contains_ci(title, "plank") ||
+                        title_contains_ci(title, "earth") ||
                         title_contains_ci(title, "lion") ||
+                        title_contains_ci(title, "irid") ||
+                        title_contains_ci(title, ".tex") ||
+                        title_contains_ci(title, ".pbr") ||
                         title_contains_ci(title, ".png") ||
                         title_contains_ci(title, ".jpg");
 
+    std::vector<PreviewTri3D> tris;
+    tris.reserve(256);
+
+    // -------------------------------------------------------------------------
+    // A. 3D UV-Mapped Material Ball for Textures & PBR Materials
+    // -------------------------------------------------------------------------
     if (is_tex && icon != IconKind::kFileProject && icon != IconKind::kFileScene &&
         icon != IconKind::kWorld && icon != IconKind::kAvatar)
     {
-        if (title_contains_ci(title, "gold") || title_contains_ci(title, "24k"))
+        const int lat_n = is_large ? 9 : 7;
+        const int lon_n = is_large ? 14 : 12;
+        const bool is_gold   = title_contains_ci(title, "gold") || title_contains_ci(title, "24k");
+        const bool is_check  = title_contains_ci(title, "checker") || title_contains_ci(title, "uv");
+        const bool is_brick  = title_contains_ci(title, "brick") || title_contains_ci(title, "sponza");
+        const bool is_carbon = title_contains_ci(title, "carbon") || title_contains_ci(title, "fiber");
+        const bool is_marble = title_contains_ci(title, "marble") || title_contains_ci(title, "carrara");
+        const bool is_wood   = title_contains_ci(title, "wood") || title_contains_ci(title, "plank") || title_contains_ci(title, "oak");
+        const bool is_earth  = title_contains_ci(title, "earth");
+        const bool is_irid   = title_contains_ci(title, "irid") || title_contains_ci(title, "440");
+
+        auto sph_pt = [](int ilat, int ilon, int nlat, int nlon) noexcept -> PreviewVec3 {
+            const float v = static_cast<float>(ilat) / static_cast<float>(nlat);
+            const float u = static_cast<float>(ilon) / static_cast<float>(nlon);
+            const float theta = (v - 0.5F) * 3.14159265F;
+            const float phi   = u * 6.28318530F;
+            const float ct    = std::cos(theta);
+            return { ct * std::sin(phi), std::sin(theta), ct * std::cos(phi) };
+        };
+
+        for (int ilat = 0; ilat < lat_n; ++ilat)
         {
-            dl->AddGradient(w0, w1, IM_COL32(24, 20, 12, 255), IM_COL32(12, 10, 8, 255), true);
-            const float r = std::min(ww, wh) * 0.39F;
-            dl->AddCircleFilled(ImVec2(c.x + 1.0F, c.y + r * 0.72F), r * 0.65F, IM_COL32(0, 0, 0, 140), 14);
-            dl->AddCircleFilled(c, r, IM_COL32(138, 92, 14, 255), 20);
-            dl->AddCircleFilled(ImVec2(c.x - r * 0.14F, c.y - r * 0.14F), r * 0.80F, IM_COL32(204, 148, 26, 255), 18);
-            dl->AddCircleFilled(ImVec2(c.x - r * 0.26F, c.y - r * 0.26F), r * 0.54F, IM_COL32(246, 198, 62, 255), 16);
-            dl->AddCircleFilled(ImVec2(c.x - r * 0.36F, c.y - r * 0.36F), r * 0.24F, IM_COL32(255, 245, 190, 255), 12);
-            dl->AddCircle(c, r, IM_COL32(255, 215, 95, 220), 20, 1.1F);
-        }
-        else if (title_contains_ci(title, "checker") || title_contains_ci(title, "grid"))
-        {
-            const int cols = is_large ? 6 : 4;
-            const int rows = is_large ? 4 : 3;
-            const float cw = ww / static_cast<float>(cols);
-            const float ch = wh / static_cast<float>(rows);
-            for (int ry = 0; ry < rows; ++ry)
+            for (int ilon = 0; ilon < lon_n; ++ilon)
             {
-                for (int cx = 0; cx < cols; ++cx)
+                const PreviewVec3 p00 = sph_pt(ilat,     ilon,     lat_n, lon_n);
+                const PreviewVec3 p10 = sph_pt(ilat,     ilon + 1, lat_n, lon_n);
+                const PreviewVec3 p11 = sph_pt(ilat + 1, ilon + 1, lat_n, lon_n);
+                const PreviewVec3 p01 = sph_pt(ilat + 1, ilon,     lat_n, lon_n);
+
+                ImU32 fcol = ic;
+                float spec = 0.55F;
+                const bool parity = ((ilat + ilon) % 2 == 0);
+                if (is_gold)
                 {
-                    const bool even = ((cx + ry) % 2 == 0);
-                    const ImU32 col = even ? IM_COL32(28, 38, 54, 255) : IM_COL32(68, 178, 242, 215);
-                    dl->AddRectFilled(ImVec2(w0.x + static_cast<float>(cx) * cw, w0.y + static_cast<float>(ry) * ch),
-                                      ImVec2(w0.x + static_cast<float>(cx + 1) * cw, w0.y + static_cast<float>(ry + 1) * ch),
-                                      col);
+                    fcol = parity ? IM_COL32(242, 188, 48, 255) : IM_COL32(218, 162, 34, 255);
+                    spec = 0.92F;
                 }
-            }
-            if (is_large)
-            {
-                const float r = std::min(ww, wh) * 0.32F;
-                dl->AddCircleFilled(c, r, IM_COL32(24, 95, 155, 235), 20);
-                dl->AddCircleFilled(ImVec2(c.x - r * 0.25F, c.y - r * 0.25F), r * 0.52F, IM_COL32(95, 205, 255, 240), 16);
-                dl->AddCircle(c, r, IM_COL32(220, 245, 255, 235), 20, 1.2F);
-            }
-        }
-        else if (title_contains_ci(title, "brick") || title_contains_ci(title, "sponza"))
-        {
-            dl->AddRectFilled(w0, w1, IM_COL32(78, 74, 70, 255));
-            const int rows = is_large ? 5 : 3;
-            const float rh = wh / static_cast<float>(rows);
-            const float bw = ww / (is_large ? 3.5F : 2.5F);
-            for (int r = 0; r < rows; ++r)
-            {
-                const float y0 = w0.y + static_cast<float>(r) * rh + 1.0F;
-                const float y1 = w0.y + static_cast<float>(r + 1) * rh - 1.0F;
-                const float x_off = (r % 2 == 1) ? (-bw * 0.5F) : 0.0F;
-                for (int b = 0; b < 5; ++b)
+                else if (is_check)
                 {
-                    const float x0 = std::max(w0.x, w0.x + x_off + static_cast<float>(b) * bw + 1.0F);
-                    const float x1 = std::min(w1.x, w0.x + x_off + static_cast<float>(b + 1) * bw - 1.0F);
-                    if (x1 > x0)
-                    {
-                        const ImU32 bcol = ((r + b) % 2 == 0) ? IM_COL32(176, 74, 48, 255) : IM_COL32(152, 58, 38, 255);
-                        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), bcol, 1.0F);
-                        dl->AddLine(ImVec2(x0, y0), ImVec2(x1, y0), IM_COL32(215, 112, 82, 160), 1.0F);
-                    }
+                    fcol = parity ? IM_COL32(62, 188, 248, 255) : IM_COL32(28, 38, 56, 255);
+                    spec = 0.45F;
                 }
-            }
-        }
-        else if (title_contains_ci(title, "carbon") || title_contains_ci(title, "fiber"))
-        {
-            dl->AddRectFilled(w0, w1, IM_COL32(18, 22, 29, 255));
-            const float step = is_large ? 8.0F : 6.0F;
-            for (float y = w0.y; y < w1.y; y += step)
-            {
-                for (float x = w0.x; x < w1.x; x += step)
+                else if (is_brick)
                 {
-                    const int ix = static_cast<int>((x - w0.x) / step);
-                    const int iy = static_cast<int>((y - w0.y) / step);
-                    const ImU32 ccell = ((ix + iy) % 2 == 0) ? IM_COL32(34, 42, 56, 255) : IM_COL32(58, 70, 92, 255);
-                    dl->AddRectFilled(ImVec2(x, y), ImVec2(std::min(w1.x, x + step - 1.0F), std::min(w1.y, y + step - 1.0F)), ccell);
+                    const bool mortar = (ilat % 2 == 0 && (ilon + ilat) % 3 == 0);
+                    fcol = mortar ? IM_COL32(165, 158, 148, 255)
+                                  : (parity ? IM_COL32(192, 78, 48, 255) : IM_COL32(162, 58, 36, 255));
+                    spec = 0.22F;
                 }
+                else if (is_carbon)
+                {
+                    fcol = parity ? IM_COL32(38, 46, 62, 255) : IM_COL32(72, 86, 112, 255);
+                    spec = 0.78F;
+                }
+                else if (is_marble)
+                {
+                    const bool vein = ((ilat * 3 + ilon) % 5 == 0);
+                    fcol = vein ? IM_COL32(142, 154, 174, 255) : IM_COL32(232, 238, 248, 255);
+                    spec = 0.72F;
+                }
+                else if (is_wood)
+                {
+                    fcol = (ilon % 2 == 0) ? IM_COL32(182, 114, 54, 255) : IM_COL32(146, 86, 38, 255);
+                    spec = 0.35F;
+                }
+                else if (is_earth)
+                {
+                    const bool land = ((ilat >= 2 && ilat <= lat_n - 2) && ((ilon + ilat) % 3 == 0));
+                    fcol = land ? IM_COL32(64, 185, 98, 255) : IM_COL32(38, 118, 225, 255);
+                    spec = land ? 0.25F : 0.75F;
+                }
+                else if (is_irid)
+                {
+                    fcol = (ilat % 2 == 0) ? IM_COL32(195, 95, 255, 255) : IM_COL32(65, 215, 255, 255);
+                    spec = 0.90F;
+                }
+                else
+                {
+                    const auto b = cd::ui::chroma::unpack_u32(ic);
+                    const float m = parity ? 1.04F : 0.88F;
+                    fcol = IM_COL32(std::clamp(int(b.r * m), 0, 255),
+                                    std::clamp(int(b.g * m), 0, 255),
+                                    std::clamp(int(b.b * m), 0, 255), 255);
+                }
+                p3_push_quad(tris, p00, p10, p11, p01, fcol, spec, false);
             }
-            dl->AddLine(ImVec2(w0.x + ww * 0.15F, w1.y), ImVec2(w0.x + ww * 0.85F, w0.y), IM_COL32(140, 195, 255, 110), 3.0F);
         }
-        else if (title_contains_ci(title, "wood") || title_contains_ci(title, "plank"))
-        {
-            dl->AddGradient(w0, w1, IM_COL32(158, 98, 46, 255), IM_COL32(122, 72, 30, 255), true);
-            const int planks = is_large ? 4 : 3;
-            for (int p = 1; p < planks; ++p)
-            {
-                const float py = w0.y + (wh * static_cast<float>(p)) / static_cast<float>(planks);
-                dl->AddLine(ImVec2(w0.x, py), ImVec2(w1.x, py), IM_COL32(68, 38, 14, 220), 1.2F);
-            }
-            for (int g = 0; g < 5; ++g)
-            {
-                const float gy = w0.y + wh * (0.14F + 0.17F * static_cast<float>(g));
-                dl->AddLine(ImVec2(w0.x + 2.0F, gy), ImVec2(w1.x - 2.0F, gy + ((g % 2 == 0) ? 1.5F : -1.5F)),
-                            IM_COL32(196, 136, 74, 135), 1.0F);
-            }
-        }
-        else if (title_contains_ci(title, "plasma") || title_contains_ci(title, "emissive"))
-        {
-            dl->AddRectFilled(w0, w1, IM_COL32(12, 8, 24, 255));
-            const float r = std::min(ww, wh) * 0.42F;
-            dl->AddCircleFilled(c, r * 1.15F, IM_COL32(138, 32, 225, 110), 18);
-            dl->AddCircleFilled(c, r * 0.85F, IM_COL32(0, 178, 255, 185), 18);
-            dl->AddCircleFilled(c, r * 0.48F, IM_COL32(185, 248, 255, 255), 14);
-            dl->AddCircle(c, r * 0.98F, IM_COL32(215, 120, 255, 220), 18, 1.2F);
-        }
-        else
-        {
-            dl->AddGradient(w0, w1, IM_COL32(48, 40, 32, 255), IM_COL32(26, 22, 18, 255), true);
-            const float r = std::min(ww, wh) * 0.36F;
-            dl->AddCircleFilled(c, r, IM_COL32(172, 138, 96, 245), 18);
-            dl->AddCircleFilled(ImVec2(c.x - r * 0.22F, c.y - r * 0.22F), r * 0.56F, IM_COL32(224, 192, 145, 245), 14);
-            dl->AddCircle(c, r, ic, 18, 1.2F);
-        }
+        p3_render_mesh(dl, c, r, tris, yaw, 0.36F, 0.0F, false);
         dl->PopClipRect();
         return;
     }
 
-    dl->AddGradient(w0, w1, IM_COL32(18, 25, 38, 255), IM_COL32(10, 14, 22, 255), true);
-    const float hy = w0.y + wh * 0.56F;
-    dl->AddRectFilled(ImVec2(w0.x, hy), w1, IM_COL32(14, 19, 29, 230));
-    dl->AddLine(ImVec2(w0.x, hy), ImVec2(w1.x, hy), IM_COL32(52, 72, 104, 180), 1.0F);
-    for (int i = -2; i <= 2; ++i)
-    {
-        const float tx = c.x + static_cast<float>(i) * (ww * 0.12F);
-        const float bx = c.x + static_cast<float>(i) * (ww * 0.34F);
-        dl->AddLine(ImVec2(tx, hy), ImVec2(bx, w1.y), IM_COL32(42, 58, 84, 145), 1.0F);
-    }
-    dl->AddLine(ImVec2(w0.x, hy + (w1.y - hy) * 0.45F), ImVec2(w1.x, hy + (w1.y - hy) * 0.45F),
-                IM_COL32(42, 58, 84, 135), 1.0F);
-    dl->AddLine(ImVec2(c.x - ww * 0.32F, hy + (w1.y - hy) * 0.45F),
-                ImVec2(c.x + ww * 0.32F, hy + (w1.y - hy) * 0.45F),
-                IM_COL32(215, 68, 68, 140), 1.0F);
-    dl->AddLine(ImVec2(c.x, hy), ImVec2(c.x, w1.y), IM_COL32(68, 142, 235, 140), 1.0F);
+    // -------------------------------------------------------------------------
+    // B. True 3D Triangle Meshes for Primitives, Characters, & Worlds
+    // -------------------------------------------------------------------------
+    const auto base = cd::ui::chroma::unpack_u32(ic);
+    auto tone = [&](float m) noexcept -> ImU32 {
+        return IM_COL32(std::clamp(static_cast<int>(static_cast<float>(base.r) * m), 0, 255),
+                        std::clamp(static_cast<int>(static_cast<float>(base.g) * m), 0, 255),
+                        std::clamp(static_cast<int>(static_cast<float>(base.b) * m), 0, 255), 255);
+    };
 
-    const float r = std::clamp(std::min(ww, wh) * (is_large ? 0.35F : 0.37F), 7.0F, 46.0F);
-    dl->AddRectFilled(ImVec2(c.x - r * 0.75F, c.y + r * 0.62F),
-                      ImVec2(c.x + r * 0.75F, c.y + r * 0.86F),
-                      IM_COL32(4, 6, 10, 165), r * 0.25F);
-
-    if (icon == IconKind::kCube || icon == IconKind::kMesh3D)
+    if (icon == IconKind::kSphere || title_contains_ci(title, "sphere") || title_contains_ci(title, "01_pbr"))
     {
-        const float yaw = 0.68F + anim_phase * 0.9F;
-        const float cs = std::cos(yaw);
-        const float sn = std::sin(yaw);
-        const float hr = r * 0.72F;
-        auto proj = [&](float x, float y, float z) -> ImVec2 {
-            const float rx = x * cs - z * sn;
-            const float rz = x * sn + z * cs;
-            return ImVec2(c.x + rx * hr, c.y - y * hr * 0.78F + rz * hr * 0.38F);
+        const int lat_n = is_large ? 9 : 7;
+        const int lon_n = is_large ? 14 : 12;
+        auto sph_pt = [](int ilat, int ilon, int nlat, int nlon) noexcept -> PreviewVec3 {
+            const float v = static_cast<float>(ilat) / static_cast<float>(nlat);
+            const float u = static_cast<float>(ilon) / static_cast<float>(nlon);
+            const float theta = (v - 0.5F) * 3.14159265F;
+            const float phi   = u * 6.28318530F;
+            const float ct    = std::cos(theta);
+            return { ct * std::sin(phi), std::sin(theta), ct * std::cos(phi) };
         };
-        const ImVec2 t0 = proj(-1,  1, -1), t1 = proj( 1,  1, -1), t2 = proj( 1,  1,  1), t3 = proj(-1,  1,  1);
-        const ImVec2 b1 = proj( 1, -1, -1), b2 = proj( 1, -1,  1), b3 = proj(-1, -1,  1);
-        const auto base = cd::ui::chroma::unpack_u32(ic);
-        const ImU32 c_top  = IM_COL32(std::min(255, int(base.r) + 35), std::min(255, int(base.g) + 35), std::min(255, int(base.b) + 35), 240);
-        const ImU32 c_side = IM_COL32(int(base.r * 0.78F), int(base.g * 0.78F), int(base.b * 0.78F), 235);
-        const ImU32 c_dark = IM_COL32(int(base.r * 0.52F), int(base.g * 0.52F), int(base.b * 0.52F), 235);
-        dl->AddTriangleFilled(t3, t2, b2, c_side);
-        dl->AddTriangleFilled(t3, b2, b3, c_side);
-        dl->AddTriangleFilled(t2, t1, b1, c_dark);
-        dl->AddTriangleFilled(t2, b1, b2, c_dark);
-        dl->AddTriangleFilled(t0, t1, t2, c_top);
-        dl->AddTriangleFilled(t0, t2, t3, c_top);
-        const ImU32 wire = IM_COL32(235, 245, 255, 210);
-        dl->AddLine(t0, t1, wire, 1.1F); dl->AddLine(t1, t2, wire, 1.1F);
-        dl->AddLine(t2, t3, wire, 1.1F); dl->AddLine(t3, t0, wire, 1.1F);
-        dl->AddLine(t3, b3, wire, 1.1F); dl->AddLine(t2, b2, wire, 1.1F); dl->AddLine(t1, b1, wire, 1.1F);
-        dl->AddLine(b3, b2, wire, 1.1F); dl->AddLine(b2, b1, wire, 1.1F);
+        for (int ilat = 0; ilat < lat_n; ++ilat)
+        {
+            for (int ilon = 0; ilon < lon_n; ++ilon)
+            {
+                const bool parity = ((ilat + ilon) % 2 == 0);
+                p3_push_quad(tris,
+                             sph_pt(ilat, ilon, lat_n, lon_n),
+                             sph_pt(ilat, ilon + 1, lat_n, lon_n),
+                             sph_pt(ilat + 1, ilon + 1, lat_n, lon_n),
+                             sph_pt(ilat + 1, ilon, lat_n, lon_n),
+                             tone(parity ? 1.05F : 0.88F), 0.72F, is_large);
+            }
+        }
+        p3_render_mesh(dl, c, r, tris, yaw, 0.38F, 0.14F, is_large);
     }
-    else if (icon == IconKind::kSphere)
+    else if (icon == IconKind::kCylinder || title_contains_ci(title, "cylinder"))
     {
-        const auto base = cd::ui::chroma::unpack_u32(ic);
-        dl->AddCircleFilled(c, r, IM_COL32(int(base.r * 0.45F), int(base.g * 0.45F), int(base.b * 0.45F), 245), 20);
-        dl->AddCircleFilled(ImVec2(c.x - r * 0.14F, c.y - r * 0.14F), r * 0.78F,
-                            IM_COL32(int(base.r * 0.82F), int(base.g * 0.82F), int(base.b * 0.82F), 245), 18);
-        dl->AddCircleFilled(ImVec2(c.x - r * 0.28F, c.y - r * 0.28F), r * 0.46F, ic, 14);
-        dl->AddCircleFilled(ImVec2(c.x - r * 0.36F, c.y - r * 0.36F), r * 0.20F, IM_COL32(255, 255, 255, 235), 10);
-        dl->AddCircle(c, r, IM_COL32(220, 240, 255, 210), 20, 1.1F);
-        const float mx = std::cos(anim_phase * 1.1F) * r * 0.55F;
-        dl->AddLine(ImVec2(c.x - r * 0.92F, c.y), ImVec2(c.x + r * 0.92F, c.y), IM_COL32(255, 255, 255, 95), 1.0F);
-        dl->AddLine(ImVec2(c.x + mx, c.y - r * 0.90F), ImVec2(c.x - mx, c.y + r * 0.90F), IM_COL32(255, 255, 255, 95), 1.0F);
+        const int segs = is_large ? 16 : 12;
+        const float rad = 0.68F;
+        const float hy_c = 0.78F;
+        for (int i = 0; i < segs; ++i)
+        {
+            const float a0 = (static_cast<float>(i) / static_cast<float>(segs)) * 6.28318530F;
+            const float a1 = (static_cast<float>(i + 1) / static_cast<float>(segs)) * 6.28318530F;
+            const float x0 = std::sin(a0) * rad, z0 = std::cos(a0) * rad;
+            const float x1 = std::sin(a1) * rad, z1 = std::cos(a1) * rad;
+            const ImU32 scol = tone((i % 2 == 0) ? 1.04F : 0.90F);
+            // Barrel quad
+            p3_push_quad(tris,
+                         { x0, -hy_c, z0 }, { x1, -hy_c, z1 },
+                         { x1,  hy_c, z1 }, { x0,  hy_c, z0 },
+                         scol, 0.58F, i % 2 == 0);
+            // Top cap triangle (CCW looking from +Y)
+            tris.push_back({ { 0.0F, hy_c, 0.0F }, { x0, hy_c, z0 }, { x1, hy_c, z1 }, tone(1.12F), 0.65F, true });
+            // Bottom cap triangle
+            tris.push_back({ { 0.0F, -hy_c, 0.0F }, { x1, -hy_c, z1 }, { x0, -hy_c, z0 }, tone(0.75F), 0.35F, false });
+        }
+        p3_render_mesh(dl, c, r, tris, yaw, 0.50F, 0.18F, false);
     }
-    else if (icon == IconKind::kCylinder)
+    else if (icon == IconKind::kCone || title_contains_ci(title, "cone"))
     {
-        const auto base = cd::ui::chroma::unpack_u32(ic);
-        const float rx = r * 0.68F;
-        const float ry = r * 0.72F;
-        dl->AddRectFilled(ImVec2(c.x - rx, c.y - ry * 0.75F), ImVec2(c.x + rx, c.y + ry * 0.75F),
-                          IM_COL32(int(base.r * 0.52F), int(base.g * 0.52F), int(base.b * 0.52F), 245));
-        dl->AddRectFilled(ImVec2(c.x - rx * 0.65F, c.y - ry * 0.75F), ImVec2(c.x + rx * 0.15F, c.y + ry * 0.75F),
-                          IM_COL32(int(base.r * 0.88F), int(base.g * 0.88F), int(base.b * 0.88F), 245));
-        dl->AddRectFilled(ImVec2(c.x - rx, c.y - ry * 0.98F), ImVec2(c.x + rx, c.y - ry * 0.48F), ic, rx * 0.35F);
-        dl->AddRect(ImVec2(c.x - rx, c.y - ry * 0.92F), ImVec2(c.x + rx, c.y + ry * 0.78F),
-                    IM_COL32(225, 242, 255, 215), rx * 0.28F, 0, 1.1F);
+        const int segs = is_large ? 16 : 12;
+        const float rad = 0.82F;
+        const float y_bot = -0.74F;
+        const float y_top =  0.92F;
+        const PreviewVec3 apex { 0.0F, y_top, 0.0F };
+        for (int i = 0; i < segs; ++i)
+        {
+            const float a0 = (static_cast<float>(i) / static_cast<float>(segs)) * 6.28318530F;
+            const float a1 = (static_cast<float>(i + 1) / static_cast<float>(segs)) * 6.28318530F;
+            const PreviewVec3 b0 { std::sin(a0) * rad, y_bot, std::cos(a0) * rad };
+            const PreviewVec3 b1 { std::sin(a1) * rad, y_bot, std::cos(a1) * rad };
+            tris.push_back({ b0, b1, apex, tone((i % 2 == 0) ? 1.06F : 0.88F), 0.65F, true });
+            tris.push_back({ { 0.0F, y_bot, 0.0F }, b1, b0, tone(0.72F), 0.25F, false });
+        }
+        p3_render_mesh(dl, c, r, tris, yaw, 0.44F, 0.15F, false);
     }
-    else if (icon == IconKind::kCone)
+    else if (icon == IconKind::kTorus || title_contains_ci(title, "torus"))
     {
-        const auto base = cd::ui::chroma::unpack_u32(ic);
-        const ImVec2 apex { c.x, c.y - r * 0.92F };
-        const ImVec2 bl   { c.x - r * 0.86F, c.y + r * 0.78F };
-        const ImVec2 bm   { c.x + r * 0.12F, c.y + r * 0.86F };
-        const ImVec2 br   { c.x + r * 0.86F, c.y + r * 0.78F };
-        dl->AddTriangleFilled(apex, bl, bm, ic);
-        dl->AddTriangleFilled(apex, bm, br,
-                              IM_COL32(int(base.r * 0.55F), int(base.g * 0.55F), int(base.b * 0.55F), 245));
-        dl->AddLine(apex, bl, IM_COL32(240, 248, 255, 215), 1.1F);
-        dl->AddLine(apex, br, IM_COL32(240, 248, 255, 215), 1.1F);
-        dl->AddLine(bl, br, IM_COL32(240, 248, 255, 215), 1.1F);
+        if (title_contains_ci(title, "knot"))
+        {
+            // Real 3D (2,3) Trefoil Torus-Knot Tube Mesh
+            const int steps = is_large ? 28 : 22;
+            const int sides = 6;
+            const float r_tube = 0.20F;
+            auto knot_center = [](float t) noexcept -> PreviewVec3 {
+                const float r_k = 0.58F + 0.22F * std::cos(3.0F * t);
+                return {
+                    r_k * std::cos(2.0F * t),
+                    0.28F * std::sin(3.0F * t),
+                    r_k * std::sin(2.0F * t)
+                };
+            };
+            for (int i = 0; i < steps; ++i)
+            {
+                const float t0 = (static_cast<float>(i) / static_cast<float>(steps)) * 6.28318530F;
+                const float t1 = (static_cast<float>(i + 1) / static_cast<float>(steps)) * 6.28318530F;
+                const PreviewVec3 c0 = knot_center(t0);
+                const PreviewVec3 c1 = knot_center(t1);
+                const PreviewVec3 T0 = p3_normalize(p3_sub(c1, c0));
+                const PreviewVec3 B0 = p3_normalize(p3_cross(T0, { 0.0F, 0.0F, 1.0F }));
+                const PreviewVec3 N0 = p3_normalize(p3_cross(B0, T0));
+                for (int s = 0; s < sides; ++s)
+                {
+                    const float a0 = (static_cast<float>(s) / static_cast<float>(sides)) * 6.28318530F;
+                    const float a1 = (static_cast<float>(s + 1) / static_cast<float>(sides)) * 6.28318530F;
+                    auto ring_pt = [&](PreviewVec3 cp, float ang) noexcept -> PreviewVec3 {
+                        const float ca = std::cos(ang) * r_tube;
+                        const float sa = std::sin(ang) * r_tube;
+                        return {
+                            cp.x + N0.x * ca + B0.x * sa,
+                            cp.y + N0.y * ca + B0.y * sa,
+                            cp.z + N0.z * ca + B0.z * sa
+                        };
+                    };
+                    p3_push_quad(tris,
+                                 ring_pt(c0, a0), ring_pt(c1, a0),
+                                 ring_pt(c1, a1), ring_pt(c0, a1),
+                                 tone(((i + s) % 2 == 0) ? 1.06F : 0.88F), 0.78F, false);
+                }
+            }
+            p3_render_mesh(dl, c, r, tris, yaw, 0.45F, 0.15F, false);
+        }
+        else
+        {
+            // Real 3D Torus Ring Mesh
+            const int maj_n = is_large ? 16 : 12;
+            const int min_n = is_large ? 8 : 6;
+            const float R_maj = 0.66F;
+            const float r_min = 0.28F;
+            auto tor_pt = [&](int imaj, int imin) noexcept -> PreviewVec3 {
+                const float u = (static_cast<float>(imaj) / static_cast<float>(maj_n)) * 6.28318530F;
+                const float v = (static_cast<float>(imin) / static_cast<float>(min_n)) * 6.28318530F;
+                const float rc = R_maj + r_min * std::cos(v);
+                return { rc * std::sin(u), r_min * std::sin(v), rc * std::cos(u) };
+            };
+            for (int i = 0; i < maj_n; ++i)
+            {
+                for (int j = 0; j < min_n; ++j)
+                {
+                    p3_push_quad(tris,
+                                 tor_pt(i, j), tor_pt(i + 1, j),
+                                 tor_pt(i + 1, j + 1), tor_pt(i, j + 1),
+                                 tone(((i + j) % 2 == 0) ? 1.06F : 0.88F), 0.72F, is_large);
+                }
+            }
+            p3_render_mesh(dl, c, r, tris, yaw, 0.64F, 0.20F, false);
+        }
     }
-    else if (icon == IconKind::kTorus)
+    else if (icon == IconKind::kAvatar || title_contains_ci(title, "cesium") || title_contains_ci(title, "gameplay"))
     {
-        const auto base = cd::ui::chroma::unpack_u32(ic);
-        dl->AddCircleFilled(c, r * 0.95F, IM_COL32(int(base.r * 0.52F), int(base.g * 0.52F), int(base.b * 0.52F), 245), 20);
-        dl->AddCircleFilled(ImVec2(c.x - r * 0.08F, c.y - r * 0.08F), r * 0.82F, ic, 18);
-        dl->AddCircleFilled(c, r * 0.38F, IM_COL32(14, 19, 29, 255), 14);
-        dl->AddCircle(c, r * 0.95F, IM_COL32(235, 245, 255, 215), 20, 1.1F);
-        dl->AddCircle(c, r * 0.38F, IM_COL32(205, 225, 250, 195), 14, 1.0F);
+        // Real 3D Articulated Humanoid Character Mesh (Head, Visor, Torso, Pelvis, Arms, Striding Legs)
+        const ImU32 suit_col  = tone(1.00F);
+        const ImU32 armor_col = tone(1.14F);
+        const ImU32 joint_col = IM_COL32(62, 78, 102, 255);
+        const ImU32 visor_col = IM_COL32(255, 210, 85, 255);
+        p3_push_box(tris, {  0.00F,  0.74F,  0.00F }, { 0.20F, 0.20F, 0.20F }, armor_col);
+        p3_push_box(tris, {  0.00F,  0.76F,  0.16F }, { 0.16F, 0.07F, 0.07F }, visor_col, 0.0F, 0.0F, 0.90F);
+        p3_push_box(tris, {  0.00F,  0.24F,  0.00F }, { 0.28F, 0.30F, 0.16F }, suit_col);
+        p3_push_box(tris, {  0.00F, -0.14F,  0.00F }, { 0.24F, 0.12F, 0.15F }, joint_col);
+        p3_push_box(tris, { -0.40F,  0.22F,  0.10F }, { 0.10F, 0.28F, 0.10F }, armor_col, 0.0F, -0.38F);
+        p3_push_box(tris, {  0.40F,  0.22F, -0.10F }, { 0.10F, 0.28F, 0.10F }, armor_col, 0.0F,  0.38F);
+        p3_push_box(tris, { -0.14F, -0.54F, -0.12F }, { 0.11F, 0.32F, 0.11F }, suit_col,  0.0F,  0.32F);
+        p3_push_box(tris, {  0.14F, -0.54F,  0.12F }, { 0.11F, 0.32F, 0.11F }, suit_col,  0.0F, -0.32F);
+        p3_render_mesh(dl, c, r, tris, yaw, 0.34F, 0.0F, false);
     }
-    else if (icon == IconKind::kFileProject || icon == IconKind::kFileScene || icon == IconKind::kWorld)
+    else if (icon == IconKind::kWorld || icon == IconKind::kFileProject || icon == IconKind::kFileScene ||
+             title_contains_ci(title, "sponza") || title_contains_ci(title, "gi"))
     {
-        // Mini 3D Showcase Stage (Architectural Columns + Lit Hero Sphere + Sun Glow)
-        dl->AddCircleFilled(ImVec2(c.x + r * 0.52F, c.y - r * 0.48F), r * 0.26F, IM_COL32(255, 215, 95, 210), 12);
-        dl->AddRectFilled(ImVec2(c.x - r * 0.82F, c.y - r * 0.55F), ImVec2(c.x - r * 0.52F, c.y + r * 0.65F),
-                          IM_COL32(82, 118, 168, 235), 1.5F);
-        dl->AddRectFilled(ImVec2(c.x + r * 0.52F, c.y - r * 0.55F), ImVec2(c.x + r * 0.82F, c.y + r * 0.65F),
-                          IM_COL32(64, 94, 138, 235), 1.5F);
-        dl->AddRectFilled(ImVec2(c.x - r * 0.88F, c.y - r * 0.72F), ImVec2(c.x + r * 0.88F, c.y - r * 0.52F),
-                          IM_COL32(115, 165, 225, 240), 1.5F);
-        dl->AddCircleFilled(ImVec2(c.x, c.y + r * 0.12F), r * 0.42F, ic, 16);
-        dl->AddCircleFilled(ImVec2(c.x - r * 0.12F, c.y), r * 0.18F, IM_COL32(255, 255, 255, 230), 10);
+        // Real 3D Architectural Atrium Colonnade + Central Probe Sphere
+        const ImU32 stone_base = IM_COL32(182, 168, 146, 255);
+        const ImU32 pillar_col = IM_COL32(214, 198, 174, 255);
+        const ImU32 roof_col   = IM_COL32(218, 118, 72, 255);
+        p3_push_box(tris, {  0.00F, -0.72F,  0.00F }, { 0.92F, 0.10F, 0.68F }, stone_base);
+        p3_push_box(tris, { -0.68F, -0.05F,  0.42F }, { 0.13F, 0.58F, 0.13F }, pillar_col);
+        p3_push_box(tris, {  0.68F, -0.05F,  0.42F }, { 0.13F, 0.58F, 0.13F }, pillar_col);
+        p3_push_box(tris, { -0.68F, -0.05F, -0.42F }, { 0.13F, 0.58F, 0.13F }, pillar_col);
+        p3_push_box(tris, {  0.68F, -0.05F, -0.42F }, { 0.13F, 0.58F, 0.13F }, pillar_col);
+        p3_push_box(tris, {  0.00F,  0.62F,  0.42F }, { 0.88F, 0.11F, 0.16F }, roof_col);
+        p3_push_box(tris, {  0.00F,  0.62F, -0.42F }, { 0.88F, 0.11F, 0.16F }, roof_col);
+        p3_push_box(tris, {  0.00F, -0.18F,  0.00F }, { 0.28F, 0.28F, 0.28F }, ic, 0.65F, 0.35F, 0.88F);
+        p3_render_mesh(dl, c, r, tris, yaw, 0.40F, 0.0F, false);
+    }
+    else if (title_contains_ci(title, "crystal") || title_contains_ci(title, "star") ||
+             icon == IconKind::kSparkles || icon == IconKind::kLight)
+    {
+        // Real 3D Faceted Octahedron Star Crystal Mesh
+        const int segs = 6;
+        const PreviewVec3 top_p { 0.0F,  0.96F, 0.0F };
+        const PreviewVec3 bot_p { 0.0F, -0.96F, 0.0F };
+        for (int i = 0; i < segs; ++i)
+        {
+            const float a0 = (static_cast<float>(i) / static_cast<float>(segs)) * 6.28318530F;
+            const float a1 = (static_cast<float>(i + 1) / static_cast<float>(segs)) * 6.28318530F;
+            const float r0 = (i % 2 == 0) ? 0.82F : 0.52F;
+            const float r1 = ((i + 1) % 2 == 0) ? 0.82F : 0.52F;
+            const PreviewVec3 m0 { std::sin(a0) * r0, 0.0F, std::cos(a0) * r0 };
+            const PreviewVec3 m1 { std::sin(a1) * r1, 0.0F, std::cos(a1) * r1 };
+            tris.push_back({ m0, m1, top_p, tone((i % 2 == 0) ? 1.12F : 0.92F), 0.92F, true });
+            tris.push_back({ m1, m0, bot_p, tone((i % 2 == 0) ? 0.85F : 0.70F), 0.78F, true });
+        }
+        p3_render_mesh(dl, c, r, tris, yaw, 0.42F, 0.18F, true);
+    }
+    else if (icon == IconKind::kPhysics || title_contains_ci(title, "phys"))
+    {
+        // Real 3D Physics Ramp + Tumbling Dynamic Boxes
+        p3_push_box(tris, {  0.00F, -0.48F, 0.00F }, { 0.85F, 0.10F, 0.55F }, IM_COL32(95, 145, 195, 255), 0.0F, 0.28F);
+        p3_push_box(tris, { -0.22F,  0.22F, 0.05F }, { 0.34F, 0.34F, 0.34F }, ic, 0.55F, 0.42F, 0.75F);
+        p3_push_box(tris, {  0.38F,  0.48F, -0.10F }, { 0.24F, 0.24F, 0.24F }, IM_COL32(255, 195, 85, 255), -0.45F, 0.35F, 0.75F);
+        p3_render_mesh(dl, c, r, tris, yaw, 0.42F, 0.0F, false);
     }
     else
     {
-        cd::ui::chroma::DrawIcon(dl, icon, c, r, ic);
+        // Default: Beveled 3D Perspective Cube Mesh (with inner & outer beveled quads on all 6 faces)
+        p3_push_box(tris, { 0.0F, 0.0F, 0.0F }, { 0.68F, 0.68F, 0.68F }, tone(1.00F), 0.0F, 0.0F, 0.65F, true);
+        p3_push_box(tris, { 0.0F, 0.0F, 0.0F }, { 0.46F, 0.46F, 0.71F }, tone(1.12F), 0.0F, 0.0F, 0.78F, false);
+        p3_push_box(tris, { 0.0F, 0.0F, 0.0F }, { 0.71F, 0.46F, 0.46F }, tone(1.08F), 0.0F, 0.0F, 0.78F, false);
+        p3_push_box(tris, { 0.0F, 0.0F, 0.0F }, { 0.46F, 0.71F, 0.46F }, tone(1.15F), 0.0F, 0.0F, 0.82F, false);
+        p3_render_mesh(dl, c, r, tris, yaw, pitch, 0.12F, true);
     }
 
     dl->PopClipRect();
@@ -6518,16 +6857,17 @@ inline void ContextAssetPreview3D(const char* str_id, cd::ui::chroma::IconKind i
     detail::advance_item(w, p0, p1);
 
     const ImVec2 w0 { p0.x + 1.0F, p0.y + 1.0F };
-    const ImVec2 w1 { p1.x - 1.0F, p1.y - 22.0F };
+    const ImVec2 w1 { p1.x - 1.0F, p1.y - 26.0F };
     const ImU32 ic = (icon_col != 0U) ? icon_col : st.theme.accent_bright;
 
     detail::DrawAssetPreview(w.draw_list, w0, w1, icon, title, ic, st.anim_time * 1.15F, true);
 
-    // Top-left "LIVE 3D PREVIEW" badge + Top-right mini X/Y/Z axis triad
-    w.draw_list->AddRectFilled(ImVec2(w0.x + 3.0F, w0.y + 3.0F), ImVec2(w0.x + 56.0F, w0.y + 15.0F),
-                               IM_COL32(10, 14, 22, 200), 2.0F);
+    // Top-left category badge + Top-right mini X/Y/Z axis triad
     const char* badge = (category_tag != nullptr && category_tag[0] != '\0') ? category_tag : "3D PREVIEW";
-    w.draw_list->AddText(ImVec2(w0.x + 6.0F, w0.y + 4.5F), IM_COL32(130, 215, 255, 245), badge, nullptr, 0.96F);
+    const float badge_w = std::clamp(cd::ui::chroma::measure_text_px(badge, 0.94F).x + 10.0F, 48.0F, pw - 28.0F);
+    w.draw_list->AddRectFilled(ImVec2(w0.x + 3.0F, w0.y + 3.0F), ImVec2(w0.x + 3.0F + badge_w, w0.y + 15.0F),
+                               IM_COL32(10, 14, 22, 215), 2.0F);
+    w.draw_list->AddText(ImVec2(w0.x + 6.0F, w0.y + 4.5F), IM_COL32(130, 215, 255, 245), badge, nullptr, 0.94F);
 
     const ImVec2 tc { w1.x - 12.0F, w0.y + 12.0F };
     w.draw_list->AddLine(tc, ImVec2(tc.x + 8.0F, tc.y + 2.0F), IM_COL32(245, 78, 78, 235), 1.3F);
@@ -6536,14 +6876,14 @@ inline void ContextAssetPreview3D(const char* str_id, cd::ui::chroma::IconKind i
 
     // Bottom info strip inside the preview widget
     w.draw_list->AddRectFilled(ImVec2(p0.x, w1.y), p1, IM_COL32(14, 18, 26, 250));
-    w.draw_list->PushClipRect(ImVec2(p0.x + 3.0F, w1.y), ImVec2(p1.x - 3.0F, p1.y));
+    w.draw_list->PushClipRect(ImVec2(p0.x + 4.0F, w1.y + 1.0F), ImVec2(p1.x - 4.0F, p1.y - 2.0F));
     if (title != nullptr && title[0] != '\0')
     {
-        w.draw_list->AddText(ImVec2(p0.x + 5.0F, w1.y + 2.0F), IM_COL32(242, 247, 255, 255), title, nullptr, 1.12F);
+        w.draw_list->AddText(ImVec2(p0.x + 5.0F, w1.y + 2.5F), IM_COL32(242, 247, 255, 255), title, nullptr, 1.08F);
     }
     if (subtitle != nullptr && subtitle[0] != '\0')
     {
-        w.draw_list->AddText(ImVec2(p0.x + 5.0F, w1.y + 12.0F), IM_COL32(142, 182, 228, 235), subtitle, nullptr, 0.98F);
+        w.draw_list->AddText(ImVec2(p0.x + 5.0F, w1.y + 14.0F), IM_COL32(142, 182, 228, 235), subtitle, nullptr, 0.92F);
     }
     w.draw_list->PopClipRect();
     w.draw_list->AddRect(p0, p1, IM_COL32(52, 68, 92, 225), 2.0F, 0, 1.0F);
