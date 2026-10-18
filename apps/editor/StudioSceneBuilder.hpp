@@ -209,37 +209,10 @@ inline void init_clean_studio_workspace(StateT& s, LogFn&& log_push)
     w.home_transforms.clear();
     w.euler_cache_deg.clear();
     w.live_contacts.clear();
+    w.simulate_physics_in_edit = false;
     s.show_editor_floor = true;
 
-    // 1. Spawn ONLY the physical Ground Floor Collider (`Ground_Floor`) — 0 demo objects on initial open!
-    {
-        const cd::ecs::Entity floor_h = s.scene.create_node();
-        if (auto* lt = s.scene.local(floor_h))
-        {
-            lt->value.position = { 0.0F, -0.25F, 0.0F };
-            lt->value.rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
-            lt->value.scale    = { 20.0F, 0.50F, 20.0F };
-        }
-        SceneEntity floor_ent {};
-        floor_ent.handle    = floor_h;
-        floor_ent.name      = "Ground_Floor (Static Collider)";
-        floor_ent.kind      = PrimitiveKind::kCube;
-        floor_ent.tint      = { 0.24F, 0.27F, 0.31F };
-        floor_ent.is_pbr    = true;
-        floor_ent.metallic  = 0.08F;
-        floor_ent.roughness = 0.72F;
-        s.entities.push_back(floor_ent);
-        cd::world_container::assign_layer(s.ecs_world, floor_h, "Geometry");
-
-        auto& ms = w.entity_modifiers[floor_h.id];
-        ms.add_or_replace(std::make_unique<PbrMaterialModifier>(
-            cd::math::Vec3f { 0.24F, 0.27F, 0.31F }, 0.08F, 0.72F, false));
-        ms.add_or_replace(std::make_unique<RigidBodyModifier>(
-            cd::physics::BodyType::kStatic, 0.0F, 0.50F));
-        ms.add_or_replace(std::make_unique<BoxColliderModifier>(
-            cd::math::Vec3f { 0.50F, 0.50F, 0.50F }));
-        record_entity_home_transform(s, floor_h);
-    }
+    // 1. Clean Empty Stage — 0 scene objects on initial open (reference grid is purely a transparent viewport overlay)
 
     // 2. Ergonomic Studio Camera angle
     s.cam.eye    = { -5.8F, 3.8F, 6.2F };
@@ -1453,6 +1426,7 @@ inline void load_studio_interactive_template(StateT& s, int template_id, LogFn&&
     auto& w = studio_world();
     w.initialized = false;
     init_clean_studio_workspace(s, log_push);
+    w.simulate_physics_in_edit = (template_id > 0);
     // Show collider wireframes only on physics-focused templates (1, 2, 3, 7) so rendering levels look pristine
     w.show_all_collider_wires = (template_id == 1 || template_id == 2 || template_id == 3 || template_id == 7);
 
@@ -1498,6 +1472,36 @@ inline void load_studio_interactive_template(StateT& s, int template_id, LogFn&&
         }
         record_entity_home_transform(s, ent.handle);
     };
+
+    if (template_id > 0)
+    {
+        const cd::ecs::Entity floor_h = s.scene.create_node();
+        if (auto* lt = s.scene.local(floor_h))
+        {
+            lt->value.position = { 0.0F, -0.25F, 0.0F };
+            lt->value.rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
+            lt->value.scale    = { 20.0F, 0.50F, 20.0F };
+        }
+        SceneEntity floor_ent {};
+        floor_ent.handle    = floor_h;
+        floor_ent.name      = "Ground_Floor (Static Collider)";
+        floor_ent.kind      = PrimitiveKind::kCube;
+        floor_ent.tint      = { 0.24F, 0.27F, 0.31F };
+        floor_ent.is_pbr    = true;
+        floor_ent.metallic  = 0.08F;
+        floor_ent.roughness = 0.72F;
+        s.entities.push_back(floor_ent);
+        cd::world_container::assign_layer(s.ecs_world, floor_h, "Geometry");
+
+        auto& ms = w.entity_modifiers[floor_h.id];
+        ms.add_or_replace(std::make_unique<PbrMaterialModifier>(
+            cd::math::Vec3f { 0.24F, 0.27F, 0.31F }, 0.08F, 0.72F, false));
+        ms.add_or_replace(std::make_unique<RigidBodyModifier>(
+            cd::physics::BodyType::kStatic, 0.0F, 0.50F));
+        ms.add_or_replace(std::make_unique<BoxColliderModifier>(
+            cd::math::Vec3f { 0.50F, 0.50F, 0.50F }));
+        record_entity_home_transform(s, floor_h);
+    }
 
     if (template_id == 0)
     {
@@ -3222,10 +3226,14 @@ void seed_demo_context_and_scene(StateT& s, LogFn&& log_push)
     (void)w.load_asset_into_context("Sponza_Brick", "assets/samples/Sponza/textures/sponza_brick_a_diff.jpg", 1U);
 
     // Stage 2: Spawn Objects from Active Context into the 3D Scene & Assign Context Textures
-    const int sph_idx = spawn_entity_with_modifiers(s, "Sphere", { -1.95F, 0.55F, 0.0F }, log_push);
+    const int sph_idx = spawn_entity_with_modifiers(s, "Sphere", { -1.95F, 0.0F, 0.0F }, log_push);
     if (sph_idx >= 0 && std::cmp_less(sph_idx, s.entities.size()))
     {
         s.entities[static_cast<std::size_t>(sph_idx)].name = "Ctx_Gold_Sphere";
+        if (auto* lt = s.scene.local(s.entities[static_cast<std::size_t>(sph_idx)].handle))
+        {
+            lt->value.position = { -1.95F, 0.0F, 0.0F };
+        }
         (void)assign_mesh_asset_to_entity(s, sph_idx, "assets/meshes/Sphere.mesh", log_push);
         (void)assign_texture_asset_to_entity(s, sph_idx, "assets/textures/Gold_Leaf_24K.tex", log_push);
     }

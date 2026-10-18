@@ -282,6 +282,21 @@ prim_recreate(cd::rhi::IDevice&                       device,
         md.extra_set_layouts =
             std::span<const cd::rhi::DescriptorSetLayoutHandle>(extras);
     }
+    constexpr std::array<cd::rhi::BlendAttachmentState, 4> kPrimBlend {
+        cd::rhi::BlendAttachmentState {
+            .blend_enable     = true,
+            .src_color        = cd::rhi::BlendFactor::kSrcAlpha,
+            .dst_color        = cd::rhi::BlendFactor::kOneMinusSrcAlpha,
+            .color_op         = cd::rhi::BlendOp::kAdd,
+            .src_alpha        = cd::rhi::BlendFactor::kOne,
+            .dst_alpha        = cd::rhi::BlendFactor::kOneMinusSrcAlpha,
+            .alpha_op         = cd::rhi::BlendOp::kAdd,
+            .color_write_mask = 0xF },
+        cd::rhi::BlendAttachmentState {},
+        cd::rhi::BlendAttachmentState {},
+        cd::rhi::BlendAttachmentState {}
+    };
+    md.blend_attachments = kPrimBlend;
     md.raster.cull = cd::rhi::CullMode::kNone;
     md.depth_stencil.depth_test = true;
     md.depth_stencil.depth_write = true;

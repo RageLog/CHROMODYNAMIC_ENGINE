@@ -3314,8 +3314,8 @@ inline void draw_floor_and_entities(cd::rhi::IDrawRecorder& cmd,
     // front-row primitives (which extend ??0.5 m around y=0) just
     // touch it.
     // phase435-vis8: skip entirely when a scene with its own floor is active.
-    if (show_editor_floor)
-            {
+    auto emit_floor_draw = [&](float sentinel_w)
+    {
         cmd.bind_vertex_buffer(0, floor_mesh.vb, 0);
         cmd.bind_index_buffer(floor_mesh.ib, 0, floor_mesh.index_type);
         cd::math::Mat4f floor_model = cd::math::Mat4f::identity();
@@ -3324,25 +3324,11 @@ inline void draw_floor_and_entities(cd::rhi::IDrawRecorder& cmd,
         PrimPush fp {};
         fp.mvp = floor_mvp;
         fp.model = floor_model;
-        // Slightly cool neutral floor - receives lighting + hemisphere AO.
-        // tint[3] = 2.0 is the FS sentinel that enables the analytic
-        // grid overlay (depth-tested via the floor geometry, so the
-        // grid no longer shows through other objects).
-        // Shadow-catcher + grid-helper combo (gaps #20 + #21).
-        // Floor body colour kept subtle so the plane reads more
-        // like an editor helper than a scene mesh - shadows
-        // (much darker, see planar-shadow tint below) and grid
-        // lines (much brighter) both stand out against it. FS
-        // also fades the floor with camera distance for a
-        // pseudo-infinite-grid feel pending the real procedural-
-        // grid helper in v1.6 editor.
         fp.tint[0] = 0.15F;
         fp.tint[1] = 0.16F;
         fp.tint[2] = 0.18F;
-        fp.tint[3] = 2.0F;  // FS sentinel: enables analytic XZ grid overlay
+        fp.tint[3] = sentinel_w;
         fill_prim_push_shared(fp, fx, sun, cam);
-        // Floor overrides: opt out of texture path + GTAO crease darkening
-        // (flat normal -> dFdx/dFdy=0); keep bloom on bright grid lines.
         fp.fx_params[1] = 0.0F;
         fp.fx_params[2] = 0.0F;
         fp.fx_params4[0] = fp.fx_params4[1] = fp.fx_params4[2] = 0.0F;
@@ -3356,6 +3342,11 @@ inline void draw_floor_and_entities(cd::rhi::IDrawRecorder& cmd,
         );
         cmd.draw_indexed(floor_mesh.index_count, 1, 0, 0, 0);
         counters.increment("draws_prim");
+    };
+
+    if (show_editor_floor && cd::studio_rt::golden::enabled())
+    {
+        emit_floor_draw(2.0F);
     }
 
     // X1D (phase 286): parallel ECS PrimPush prep. The push-
@@ -3555,6 +3546,11 @@ inline void draw_floor_and_entities(cd::rhi::IDrawRecorder& cmd,
             cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
             counters.increment("draws_prim");
         }
+    }
+
+    if (show_editor_floor && !cd::studio_rt::golden::enabled())
+    {
+        emit_floor_draw(2.25F);
     }
 }
 
@@ -5049,7 +5045,7 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                     return { s.pbr_sphere_textured_meta };
                 return {};
             },
-            s.show_editor_floor ? s.meshes.blas_floor : cd::rhi::AccelStructureHandle {}, s.meshes.blas_cesium,
+            (cd::studio_rt::golden::enabled() && s.show_editor_floor) ? s.meshes.blas_floor : cd::rhi::AccelStructureHandle {}, s.meshes.blas_cesium,
             has_gltf_entity && s.meshes.cesium_skinned.valid, s.inst_mat_ssbo,
             s.rts.depth.image, s.depth_initialised_on_gpu,
             [](const SceneEntity& e) -> bool {

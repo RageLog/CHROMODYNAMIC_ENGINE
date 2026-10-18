@@ -652,6 +652,7 @@ void main() {
   bool is_floor = (pc.tint.w > 1.5 && pc.tint.w < 2.5);
   float floor_fade = 1.0;
   if (is_floor) {
+    bool is_transparent_grid = (pc.tint.w > 2.15 && pc.tint.w < 2.45);
     float d_xz = length(v_world_pos.xz);
     floor_fade = clamp(1.0 - (d_xz - 60.0) / 140.0, 0.0, 1.0);
     vec2 p   = v_world_pos.xz;
@@ -678,6 +679,19 @@ void main() {
     line_col = mix(line_col, ax_z_col, on_axis_x * 0.85);
     line_a   = max(line_a, max(on_axis_x, on_axis_z));
     line_a *= floor_fade;
+    if (is_transparent_grid) {
+      vec3 dark_base = vec3(0.038, 0.044, 0.056);
+      vec3 dark_line = mix(vec3(0.16, 0.19, 0.24), vec3(0.32, 0.36, 0.44), smoothstep(0.0, 0.8, a_major));
+      dark_line = mix(dark_line, ax_x_col * 0.82, on_axis_z * 0.85);
+      dark_line = mix(dark_line, ax_z_col * 0.82, on_axis_x * 0.85);
+      vec3 grid_rgb = mix(dark_base, dark_line, clamp(line_a, 0.0, 1.0));
+      float grid_alpha = clamp(0.42 + line_a * 0.44, 0.0, 0.86) * floor_fade;
+      out_normal = vec4(0.0);
+      out_albedo = vec4(grid_rgb, 1.0);
+      out_mr     = vec2(0.0, 1.0);
+      out_color  = vec4(grid_rgb, grid_alpha);
+      return;
+    }
     albedo  = mix(albedo, line_col, clamp(line_a, 0.0, 1.0));
     albedo  = mix(vec3(0.55, 0.60, 0.66) * 0.0, albedo, floor_fade);
   }
