@@ -1718,3 +1718,263 @@ TEST(Polyline3DEdge, ZeroLengthSegmentDoesNotDivideByZero)
     const auto mid = p.point_at(0.5F);  // guarded by `seg > 0.0F`
     EXPECT_NEAR(mid.x, 1.5F, 1e-5F);
 }
+
+// =============================================================================
+// ElementCapsuleTree — Nested Element & TraitCapsule Hierarchy
+// =============================================================================
+#include <cd/scene/ElementCapsuleTree.hpp>
+
+TEST(ElementCapsuleTree, CreateElementAndVesselWithInlineCapsules)
+{
+    cd::scene::ElementCapsuleTree tree;
+    const auto stage = tree.create_element("ArenaStage", cd::scene::ElementDomain::kCoreStage);
+    const auto mech  = tree.create_vessel("ValkyrieVessel", cd::scene::PilotMode::kHumanPilot);
+
+    ASSERT_NE(tree.find(stage), nullptr);
+    ASSERT_NE(tree.find(mech), nullptr);
+    EXPECT_EQ(tree.find(stage)->domain, cd::scene::ElementDomain::kCoreStage);
+    EXPECT_FALSE(tree.find(stage)->is_vessel);
+    EXPECT_EQ(tree.find(mech)->domain, cd::scene::ElementDomain::kVessel);
+    EXPECT_TRUE(tree.find(mech)->is_vessel);
+    EXPECT_EQ(tree.find(mech)->pilot_mode, cd::scene::PilotMode::kHumanPilot);
+    EXPECT_EQ(tree.piloted_vessel_count(), 1u);
+
+    EXPECT_TRUE(tree.add_inline_capsule(
+        mech,
+        cd::scene::TraitCapsule {
+            "ThrusterCollider3D",
+            "CollisionShape3D",
+            true,
+            { 0.0F, 1.5F, -2.0F },
+        }));
+    EXPECT_TRUE(tree.add_inline_capsule(
+        mech,
+        cd::scene::TraitCapsule {
+            "CockpitCameraRig",
+            "Camera3D",
+            true,
+            { 0.0F, 2.2F, 0.5F },
+        }));
+    EXPECT_EQ(tree.total_inline_capsule_count(), 2u);
+}
+
+TEST(ElementCapsuleTree, NestChildRejectsSelfAndCycles)
+{
+    cd::scene::ElementCapsuleTree tree;
+    const auto a = tree.create_element("RootA", cd::scene::ElementDomain::kSpatial3D);
+    const auto b = tree.create_element("MidB", cd::scene::ElementDomain::kSpatial3D);
+    const auto c = tree.create_element("LeafC", cd::scene::ElementDomain::kSpatial3D);
+
+    EXPECT_FALSE(tree.nest_child(a, a));
+    EXPECT_TRUE(tree.nest_child(a, b));
+    EXPECT_TRUE(tree.nest_child(b, c));
+
+    // Attempting to make `a` a child of `c` or `b` would introduce a cycle.
+    EXPECT_FALSE(tree.nest_child(c, a));
+    EXPECT_FALSE(tree.nest_child(b, a));
+
+    EXPECT_EQ(tree.find(b)->parent_id, a);
+    EXPECT_EQ(tree.find(c)->parent_id, b);
+    EXPECT_EQ(tree.root_elements().size(), 1u);
+}
+
+TEST(ElementCapsuleTree, UnfoldCapsuleToNestedChildAndFoldBack)
+{
+    cd::scene::ElementCapsuleTree tree;
+    const auto vessel = tree.create_vessel("Starfighter", cd::scene::PilotMode::kHumanPilot);
+    ASSERT_TRUE(tree.add_inline_capsule(
+        vessel,
+        cd::scene::TraitCapsule {
+            "PlasmaTurretMount",
+            "Node3D",
+            true,
+            { 2.5F, 0.5F, -1.0F },
+        }));
+    EXPECT_EQ(tree.element_count(), 1u);
+    EXPECT_EQ(tree.total_inline_capsule_count(), 1u);
+
+    // Unfold the inline capsule into a real nested child Element.
+    const auto turret_id = tree.unfold_capsule_to_nested_child(vessel, 0u);
+    ASSERT_NE(turret_id, cd::scene::kInvalidElementId);
+    EXPECT_EQ(tree.element_count(), 2u);
+    EXPECT_EQ(tree.total_inline_capsule_count(), 0u);
+
+    const auto* turret = tree.find(turret_id);
+    ASSERT_NE(turret, nullptr);
+    EXPECT_EQ(turret->parent_id, vessel);
+    EXPECT_EQ(turret->name, "PlasmaTurretMount");
+    EXPECT_EQ(turret->archetype_type, "Node3D");
+    EXPECT_FLOAT_EQ(turret->local_pos[0], 2.5F);
+    EXPECT_FLOAT_EQ(turret->local_pos[1], 0.5F);
+    EXPECT_FLOAT_EQ(turret->local_pos[2], -1.0F);
+
+    // Fold the nested child Element back into the parent's inline capsule list.
+    EXPECT_TRUE(tree.fold_nested_child_into_capsule(turret_id));
+    EXPECT_EQ(tree.element_count(), 1u);
+    EXPECT_EQ(tree.find(turret_id), nullptr);
+    EXPECT_EQ(tree.total_inline_capsule_count(), 1u);
+
+    const auto* v_ptr = tree.find(vessel);
+    ASSERT_NE(v_ptr, nullptr);
+    EXPECT_TRUE(v_ptr->children.empty());
+    ASSERT_EQ(v_ptr->inline_capsules.size(), 1u);
+    EXPECT_EQ(v_ptr->inline_capsules[0].capsule_type, "PlasmaTurretMount");
+    EXPECT_FLOAT_EQ(v_ptr->inline_capsules[0].local_offset[0], 2.5F);
+}
+
+TEST(ElementCapsuleTree, SelectivePropagationMaskComputesWorldTransformTimeScaleAndVisibility)
+{
+    cd::scene::ElementCapsuleTree tree;
+    const auto parent = tree.create_vessel("Carrier", cd::scene::PilotMode::kSynthPilot);
+    const auto child_full = tree.create_element("DockedDrone", cd::scene::ElementDomain::kSpatial3D);
+    const auto child_independent_time = tree.create_element("ChronoShield", cd::scene::ElementDomain::kNextGenSota);
+
+    auto* p = tree.find(parent);
+    p->local_pos[0]      = 10.0F;
+    p->local_pos[1]      = 0.0F;
+    p->local_pos[2]      = 5.0F;
+    p->local_scale[0]    = 2.0F;
+    p->local_scale[1]    = 2.0F;
+    p->local_scale[2]    = 2.0F;
+    p->local_time_scale  = 0.25F;
+    p->visible           = false;
+
+    auto* cf = tree.find(child_full);
+    cf->local_pos[0]     = 3.0F;
+    cf->local_scale[0]   = 1.5F;
+    cf->local_time_scale = 2.0F;
+    cf->visible          = true;
+
+    auto* ci = tree.find(child_independent_time);
+    ci->local_pos[0]     = 4.0F;
+    ci->local_time_scale = 1.0F;
+    ci->visible          = true;
+
+    ASSERT_TRUE(tree.nest_child(parent, child_full, cd::scene::PropagationMask::kAll));
+    // ChronoShield inherits transform only — decoupled from parent time dilation and visibility!
+    ASSERT_TRUE(tree.nest_child(parent, child_independent_time, cd::scene::PropagationMask::kTransform));
+
+    tree.propagate_hierarchy();
+
+    // child_full: world_pos.x = 10 + 3 * 2 = 16, world_scale.x = 2 * 1.5 = 3,
+    // world_time_scale = 0.25 * 2.0 = 0.5, effective_visible = false && true = false.
+    EXPECT_FLOAT_EQ(tree.find(child_full)->world_pos[0], 16.0F);
+    EXPECT_FLOAT_EQ(tree.find(child_full)->world_scale[0], 3.0F);
+    EXPECT_FLOAT_EQ(tree.find(child_full)->world_time_scale, 0.5F);
+    EXPECT_FALSE(tree.find(child_full)->effective_visible);
+
+    // child_independent_time: world_pos.x = 10 + 4 * 2 = 18, but time scale (1.0)
+    // and visibility (true) are preserved independently of parent!
+    EXPECT_FLOAT_EQ(tree.find(child_independent_time)->world_pos[0], 18.0F);
+    EXPECT_FLOAT_EQ(tree.find(child_independent_time)->world_time_scale, 1.0F);
+    EXPECT_TRUE(tree.find(child_independent_time)->effective_visible);
+}
+
+TEST(ElementCapsuleTree, VesselEmbarkAndDisembarkPilot)
+{
+    cd::scene::ElementCapsuleTree tree;
+    const auto rover = tree.create_vessel("LunarRover", cd::scene::PilotMode::kNone);
+    EXPECT_EQ(tree.piloted_vessel_count(), 0u);
+
+    EXPECT_TRUE(tree.embark_pilot(rover, cd::scene::PilotMode::kRemoteNetPilot));
+    EXPECT_EQ(tree.find(rover)->pilot_mode, cd::scene::PilotMode::kRemoteNetPilot);
+    EXPECT_EQ(tree.piloted_vessel_count(), 1u);
+
+    EXPECT_TRUE(tree.disembark_pilot(rover));
+    EXPECT_EQ(tree.find(rover)->pilot_mode, cd::scene::PilotMode::kNone);
+    EXPECT_EQ(tree.piloted_vessel_count(), 0u);
+}
+
+#include <cd/scene/constructs/ChromaConstructRegistry.hpp>
+
+TEST(ChromaConstructClasses250, InstantiatesMountsAndTicksAll250ConcreteClasses)
+{
+    cd::scene::ElementCapsuleTree tree;
+    const auto root_stage = cd::scene::spawn_chroma_construct_in_tree(tree, 0u); // ChromaElement
+    ASSERT_NE(root_stage, cd::scene::kInvalidElementId);
+
+    for (std::uint16_t id = 0u; id < cd::scene::kTotalChromaConstructClasses; ++id)
+    {
+        auto inst = cd::scene::instantiate_chroma_construct(id);
+        ASSERT_NE(inst, nullptr) << "Missing concrete C++23 class for ID " << id;
+        EXPECT_EQ(inst->catalog_id(), id);
+        EXPECT_FALSE(inst->chroma_class_name().empty());
+        EXPECT_FALSE(inst->godot_equivalent_name().empty());
+        EXPECT_FALSE(inst->video_timestamp().empty());
+        EXPECT_FALSE(inst->bundled_traits_summary().empty());
+
+        auto cloned = inst->clone();
+        ASSERT_NE(cloned, nullptr);
+        EXPECT_EQ(cloned->catalog_id(), id);
+        EXPECT_EQ(cloned->chroma_class_name(), inst->chroma_class_name());
+
+        const auto elem_id = cd::scene::spawn_chroma_construct_in_tree(tree, id, root_stage);
+        ASSERT_NE(elem_id, cd::scene::kInvalidElementId);
+        auto* elem = tree.find(elem_id);
+        ASSERT_NE(elem, nullptr);
+        EXPECT_EQ(elem->archetype_type, inst->chroma_class_name());
+        ASSERT_FALSE(elem->inline_capsules.empty());
+
+        inst->on_tick(*elem, 0.016F);
+        EXPECT_EQ(inst->tick_count(), 1u);
+        EXPECT_GT(inst->elapsed_time(), 0.0F);
+    }
+
+    tree.propagate_hierarchy();
+    EXPECT_EQ(tree.size(), 251u); // root_stage + 250 concrete construct instances
+}
+
+TEST(ChromaConstructClasses250, ConcreteCpp23ClassesSupportDirectInstantiationAndDynamicCast)
+{
+    // Verify concrete C++23 classes across all 5 categories can be directly constructed
+    // and resolved polymorphically via `dynamic_cast`.
+    cd::scene::ChromaElement               base_elem;
+    cd::scene::DeterministicPulseTimer     pulse_timer;
+    cd::scene::PlanarAvatarVessel2D        avatar_2d;
+    cd::scene::TileCanvas2DElement         tile_canvas_2d;
+    cd::scene::SurfaceMesh3D               surface_mesh_3d;
+    cd::scene::RadialLight3D               radial_light_3d;
+    cd::scene::ClothSurface3D              cloth_surface_3d;
+    cd::scene::AvatarVessel3D              avatar_vessel_3d;
+    cd::scene::RoverVessel3D               rover_vessel_3d;
+    cd::scene::SpringArmCapsule3D          spring_arm_3d;
+    cd::scene::IrradianceField3D           irradiance_3d;
+    cd::scene::UiFrame                     ui_frame;
+    cd::scene::UiNodeCanvas                ui_node_canvas;
+    cd::scene::HardwareRayTracingProbe3D   hw_rt_probe;
+    cd::scene::DDGIIrradianceVolume3D      ddgi_volume;
+    cd::scene::TurquinMultiScatterPBR3D    turquin_pbr;
+    cd::scene::ECSArchetypeQueryBus        ecs_query_bus;
+
+    EXPECT_EQ(base_elem.catalog_id(), 0u);
+    EXPECT_EQ(pulse_timer.catalog_id(), 20u);
+    EXPECT_EQ(avatar_2d.catalog_id(), 32u);
+    EXPECT_EQ(tile_canvas_2d.catalog_id(), 42u);
+    EXPECT_EQ(surface_mesh_3d.catalog_id(), 75u);
+    EXPECT_EQ(radial_light_3d.catalog_id(), 97u);
+    EXPECT_EQ(cloth_surface_3d.catalog_id(), 109u);
+    EXPECT_EQ(avatar_vessel_3d.catalog_id(), 117u);
+    EXPECT_EQ(rover_vessel_3d.catalog_id(), 121u);
+    EXPECT_EQ(spring_arm_3d.catalog_id(), 120u);
+    EXPECT_EQ(irradiance_3d.catalog_id(), 134u);
+    EXPECT_EQ(ui_frame.catalog_id(), 159u);
+    EXPECT_EQ(ui_node_canvas.catalog_id(), 217u);
+    EXPECT_EQ(hw_rt_probe.catalog_id(), 219u);
+    EXPECT_EQ(ddgi_volume.catalog_id(), 220u);
+    EXPECT_EQ(turquin_pbr.catalog_id(), 221u);
+    EXPECT_EQ(ecs_query_bus.catalog_id(), 249u);
+
+    auto by_godot = cd::scene::instantiate_chroma_construct_by_name("CharacterBody3D");
+    ASSERT_NE(by_godot, nullptr);
+    EXPECT_NE(dynamic_cast<cd::scene::AvatarVessel3D*>(by_godot.get()), nullptr);
+
+    auto by_chroma = cd::scene::instantiate_chroma_construct_by_name("RoverVessel3D");
+    ASSERT_NE(by_chroma, nullptr);
+    EXPECT_NE(dynamic_cast<cd::scene::RoverVessel3D*>(by_chroma.get()), nullptr);
+
+    auto by_sota = cd::scene::instantiate_chroma_construct_by_name("TurquinMultiScatterPBR3D");
+    ASSERT_NE(by_sota, nullptr);
+    EXPECT_NE(dynamic_cast<cd::scene::TurquinMultiScatterPBR3D*>(by_sota.get()), nullptr);
+}
+
+
