@@ -720,8 +720,8 @@ inline void draw_clean_studio_workspace_panels(
                     ImGui::EndDragDropTarget();
                 }
 
-                // Full-Height Scrollable Icon-Driven Scene Tree
-                ImGui::BeginChild("scene_hierarchy_scroll", ImVec2(0.0F, 0.0F), true);
+                // Full-Height Scrollable Icon-Driven Scene Tree (Frameless)
+                ImGui::BeginChild("scene_hierarchy_scroll", ImVec2(0.0F, 0.0F), false);
                 int deferred_dup_idx = -1;
                 int deferred_del_idx = -1;
                 for (std::size_t i = 0; i < s.entities.size(); ++i)
@@ -1907,7 +1907,7 @@ inline void draw_clean_studio_workspace_panels(
                                    w.current_content_folder.c_str());
 
                 // ---- PANE 1 (Left): Disk Directory Tree (Visual Folder Icons) ----
-                ImGui::BeginChild("disk_dir_tree_pane", ImVec2(180.0F, 0.0F), true);
+                ImGui::BeginChild("disk_dir_tree_pane", ImVec2(158.0F, 0.0F), true);
                 ImGui::TextColored(ImVec4(0.95F, 0.80F, 0.42F, 1.0F), "1. Disk Directory");
                 struct FolderNode
                 {
@@ -1942,10 +1942,10 @@ inline void draw_clean_studio_workspace_panels(
 
                 ImGui::SameLine();
 
-                // ---- PANE 2 (Center): Disk Files Grid (Click Project to Open, Click Asset to Load to Context) ----
-                ImGui::BeginChild("disk_files_grid_pane", ImVec2(325.0F, 0.0F), true);
+                // ---- PANE 2 (Center-Left): Disk Files Grid (3D/Texture Previews — Click to Open/Load) ----
+                ImGui::BeginChild("disk_files_grid_pane", ImVec2(272.0F, 0.0F), true);
                 ImGui::TextColored(ImVec4(0.52F, 0.86F, 1.0F, 1.0F),
-                                   "2. Disk Files (Click to Open / Load)");
+                                   "2. Disk Files (Click -> Context)");
                 if (ImGui::BeginTable("disk_tiles_grid_4col", 4, ImGuiTableFlags_SizingStretchSame))
                 {
                     int disk_tile_id = 0;
@@ -1960,7 +1960,7 @@ inline void draw_clean_studio_workspace_panels(
                         const bool in_ctx = w.is_asset_in_context(item.path);
                         const bool is_sel = (w.selected_content_asset == item.path);
                         const std::string tile_lbl = item.name + "##dsk_" + std::to_string(disk_tile_id);
-                        if (ImGui::IconTile(tile_lbl.c_str(), item.icon, item.color, is_sel, in_ctx, ImVec2(-1.0F, 52.0F)))
+                        if (ImGui::IconTile(tile_lbl.c_str(), item.icon, item.color, is_sel, in_ctx, ImVec2(-1.0F, 54.0F)))
                         {
                             w.selected_content_asset = item.path;
                             if (item.kind == 0)
@@ -2004,17 +2004,17 @@ inline void draw_clean_studio_workspace_panels(
 
                 ImGui::SameLine();
 
-                // ---- PANE 3 (Right): Active Project Context (Loaded Assets Ready for Scene Spawning & Assignment) ----
-                ImGui::BeginChild("active_context_tiles_pane", ImVec2(0.0F, 0.0F), true);
+                // ---- PANE 3 (Center-Right): Active Project Context (Visual 3D & Texture Previews) ----
+                ImGui::BeginChild("active_context_tiles_pane", ImVec2(276.0F, 0.0F), true);
                 ImGui::TextColored(ImVec4(0.38F, 0.95F, 0.66F, 1.0F),
-                                   "3. Active Context (%zu Loaded — Click to Use)",
+                                   "3. Active Context (%zu Loaded)",
                                    w.loaded_context_assets.size());
                 if (w.loaded_context_assets.empty())
                 {
-                    ImGui::TextDisabled("Active Context is empty (0 assets loaded).");
-                    ImGui::TextDisabled("Click any Mesh/Texture in Disk Files (Pane 2)");
-                    ImGui::TextDisabled("to load into Context, or load Starter Pack:");
-                    if (ImGui::IconButton("Load Starter Assets from Disk##ctx_seed_btn",
+                    ImGui::TextDisabled("Active Context is empty (0 loaded).");
+                    ImGui::TextDisabled("Click Disk Files (Pane 2) to load");
+                    ImGui::TextDisabled("assets into Context, or load pack:");
+                    if (ImGui::IconButton("Load Starter Pack##ctx_seed_btn",
                                           cd::ui::chroma::IconKind::kImport,
                                           IM_COL32(85, 245, 165, 255), false, ImVec2(-1.0F, 22.0F)))
                     {
@@ -2026,6 +2026,7 @@ inline void draw_clean_studio_workspace_panels(
                         (void)w.load_asset_into_context("Gold_24K",     "assets/textures/Gold_Leaf_24K.tex", 1U);
                         (void)w.load_asset_into_context("Checker_2K",   "assets/textures/UV_Checkerboard_2K.tex", 1U);
                         (void)w.load_asset_into_context("Sponza_Brick", "assets/samples/Sponza/textures/sponza_brick_a_diff.jpg", 1U);
+                        w.selected_content_asset = "assets/meshes/Sphere.mesh";
                         w.last_asset_status_msg = "Loaded 8 Disk Assets into Active Context";
                         log_push("[context] " + w.last_asset_status_msg);
                     }
@@ -2062,12 +2063,11 @@ inline void draw_clean_studio_workspace_panels(
 
                         const bool is_sel = (w.selected_content_asset == ca.path);
                         const std::string tile_lbl = ca.name + "##ctx_" + std::to_string(ctx_tile_id);
-                        if (ImGui::IconTile(tile_lbl.c_str(), c_icon, c_col, is_sel, true, ImVec2(-1.0F, 52.0F)))
+                        if (ImGui::IconTile(tile_lbl.c_str(), c_icon, c_col, is_sel, true, ImVec2(-1.0F, 54.0F)))
                         {
                             w.selected_content_asset = ca.path;
                             if (ca.kind == 0U)
                             {
-                                // Spawn Object from Active Context into the 3D Scene!
                                 const cd::math::Vec3f pt = camera_spawn_point(s, 3.6F);
                                 const int nidx = spawn_entity_with_modifiers(s, "Dynamic_Cube", { pt.x, 0.75F, pt.z }, log_push);
                                 if (nidx >= 0 && std::cmp_less(nidx, s.entities.size()))
@@ -2080,7 +2080,6 @@ inline void draw_clean_studio_workspace_panels(
                             }
                             else
                             {
-                                // Apply Texture/Material from Active Context to Selected Scene Entity!
                                 const int tidx = (s.selected >= 0 && std::cmp_less(s.selected, s.entities.size()))
                                     ? s.selected
                                     : (!s.entities.empty() ? static_cast<int>(s.entities.size() - 1U) : -1);
@@ -2089,7 +2088,6 @@ inline void draw_clean_studio_workspace_panels(
                             }
                         }
 
-                        // Drag-and-Drop Source from Active Project Context -> 3D Scene / Outliner / Inspector
                         if (ca.kind == 0U && ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
                         {
                             ImGui::SetDragDropPayload("CD_ASSET_MESH", ca.path.c_str(), ca.path.size() + 1);
@@ -2118,6 +2116,119 @@ inline void draw_clean_studio_workspace_panels(
                         ImGui::PopID();
                     }
                     ImGui::EndTable();
+                }
+                ImGui::EndChild();
+
+                ImGui::SameLine();
+
+                // ---- PANE 4 (Right): Live 3D / Texture Preview of Selected Context (or Disk) Object ----
+                ImGui::BeginChild("context_live_preview_pane", ImVec2(0.0F, 0.0F), false);
+                ImGui::TextColored(ImVec4(0.62F, 0.88F, 1.0F, 1.0F), "4. Context Preview");
+
+                std::string              prev_name  = "Sphere";
+                std::string              prev_path  = "assets/meshes/Sphere.mesh";
+                const char*              prev_badge = "CTX 3D MESH";
+                cd::ui::chroma::IconKind prev_icon  = cd::ui::chroma::IconKind::kSphere;
+                ImU32                    prev_col   = IM_COL32(110, 220, 255, 255);
+                std::uint8_t             prev_kind  = 0U; // 0=Mesh, 1=Tex/Mat, 4=Proj
+                bool                     found_prev = false;
+
+                if (w.selected_content_asset.empty() && !w.loaded_context_assets.empty())
+                {
+                    w.selected_content_asset = w.loaded_context_assets.front().path;
+                }
+
+                for (const auto& ca : w.loaded_context_assets)
+                {
+                    if (ca.path == w.selected_content_asset)
+                    {
+                        prev_name  = ca.name;
+                        prev_path  = ca.path;
+                        prev_kind  = (ca.kind == 0U) ? 0U : 1U;
+                        prev_badge = (ca.kind == 0U) ? "CTX 3D MESH" : "CTX TEXTURE";
+                        if (ca.kind == 0U)
+                        {
+                            if (ca.name.find("Sphere") != std::string::npos)        prev_icon = cd::ui::chroma::IconKind::kSphere;
+                            else if (ca.name.find("Cube") != std::string::npos)     prev_icon = cd::ui::chroma::IconKind::kCube;
+                            else if (ca.name.find("Cylinder") != std::string::npos) prev_icon = cd::ui::chroma::IconKind::kCylinder;
+                            else if (ca.name.find("Cone") != std::string::npos)     prev_icon = cd::ui::chroma::IconKind::kCone;
+                            else if (ca.name.find("Torus") != std::string::npos)    prev_icon = cd::ui::chroma::IconKind::kTorus;
+                            else if (ca.name.find("Cesium") != std::string::npos)   { prev_icon = cd::ui::chroma::IconKind::kAvatar; prev_col = IM_COL32(85, 245, 165, 255); }
+                            else if (ca.name.find("Sponza") != std::string::npos)   { prev_icon = cd::ui::chroma::IconKind::kWorld;  prev_col = IM_COL32(255, 210, 110, 255); }
+                            else prev_icon = cd::ui::chroma::IconKind::kMesh3D;
+                        }
+                        else
+                        {
+                            prev_icon = cd::ui::chroma::IconKind::kTexture2D;
+                            prev_col  = IM_COL32(85, 235, 165, 255);
+                        }
+                        found_prev = true;
+                        break;
+                    }
+                }
+                if (!found_prev)
+                {
+                    for (const auto& de : s_cached_entries)
+                    {
+                        if (de.path == w.selected_content_asset || w.selected_content_asset.empty())
+                        {
+                            prev_name  = de.name;
+                            prev_path  = de.path;
+                            prev_icon  = de.icon;
+                            prev_col   = de.color;
+                            prev_kind  = (de.kind == 1) ? 0U : ((de.kind == 4) ? 4U : 1U);
+                            prev_badge = (de.kind == 4) ? "DISK PROJECT" : ((de.kind == 1) ? "DISK 3D MESH" : "DISK TEXTURE");
+                            found_prev = true;
+                            break;
+                        }
+                    }
+                }
+
+                ImGui::ContextAssetPreview3D("##ctx_live_preview_3d",
+                                             prev_icon,
+                                             prev_name.c_str(),
+                                             prev_path.c_str(),
+                                             prev_badge,
+                                             ImVec2(-1.0F, 82.0F),
+                                             prev_col);
+
+                if (prev_kind == 4U)
+                {
+                    if (ImGui::IconButton("Open Project##prev_act", cd::ui::chroma::IconKind::kFileProject,
+                                          IM_COL32(255, 200, 85, 255), false, ImVec2(-1.0F, 22.0F)))
+                    {
+                        (void)load_project_or_scene_from_disk_path(s, prev_path, log_push);
+                    }
+                }
+                else if (prev_kind == 0U)
+                {
+                    if (ImGui::IconButton("Spawn to Stage##prev_act", cd::ui::chroma::IconKind::kPlus,
+                                          IM_COL32(85, 245, 165, 255), false, ImVec2(-1.0F, 22.0F)))
+                    {
+                        (void)w.load_asset_into_context(prev_name, prev_path, 0U);
+                        const cd::math::Vec3f pt = camera_spawn_point(s, 3.6F);
+                        const int nidx = spawn_entity_with_modifiers(s, "Dynamic_Cube", { pt.x, 0.75F, pt.z }, log_push);
+                        if (nidx >= 0 && std::cmp_less(nidx, s.entities.size()))
+                        {
+                            s.entities[static_cast<std::size_t>(nidx)].name = prev_name;
+                            (void)assign_mesh_asset_to_entity(s, nidx, prev_path, log_push);
+                            s.selected      = nidx;
+                            s.selected_kind = SelKind::kEntity;
+                        }
+                    }
+                }
+                else
+                {
+                    if (ImGui::IconButton("Apply Texture##prev_act", cd::ui::chroma::IconKind::kTexture2D,
+                                          IM_COL32(85, 235, 165, 255), false, ImVec2(-1.0F, 22.0F)))
+                    {
+                        (void)w.load_asset_into_context(prev_name, prev_path, 1U);
+                        const int tidx = (s.selected >= 0 && std::cmp_less(s.selected, s.entities.size()))
+                            ? s.selected
+                            : (!s.entities.empty() ? static_cast<int>(s.entities.size() - 1U) : -1);
+                        if (tidx >= 0)
+                            (void)assign_texture_asset_to_entity(s, tidx, prev_path, log_push);
+                    }
                 }
                 ImGui::EndChild();
                 ImGui::EndTabItem();

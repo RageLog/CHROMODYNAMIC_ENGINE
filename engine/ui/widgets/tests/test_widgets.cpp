@@ -1180,11 +1180,11 @@ TEST(Widgets, ChromaUiTextScrollResetFullLeftDockAndLongLabelFit)
     st.main_viewport.Size = st.io.DisplaySize;
     st.main_viewport.WorkSize = st.io.DisplaySize;
 
-    // 1. Single-slot Left Dock ("Studio Workbench" in slot 1 with slot 2 empty) spans full height (839px)
+    // 1. Single-slot Left Dock ("Studio Workbench" in slot 1 with slot 2 empty) spans full frameless height (846px)
     ImGui::DockSpace(ImGui::GetID("MainDockSpace"));
     if (ImGui::Begin("Studio Workbench", nullptr, ImGuiWindowFlags_NoTitleBar))
     {
-        EXPECT_NEAR(ImGui::GetWindowHeight(), 900.0F - 60.0F - 1.0F, 1.5F);
+        EXPECT_NEAR(ImGui::GetWindowHeight(), 900.0F - 54.0F, 1.5F);
     }
     ImGui::End();
 

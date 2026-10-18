@@ -194,13 +194,30 @@ public:
         ++class_refcount();
         owns_class_ref_ = true;
 
-        const DWORD style =
-            desc.resizable ? (WS_OVERLAPPEDWINDOW) : (WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX);
+        frameless_ = desc.frameless;
+        const DWORD style = desc.frameless
+            ? (WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX)
+            : (desc.resizable ? (WS_OVERLAPPEDWINDOW) : (WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX));
 
         // Adjust client size to the requested width/height (the OS frame
         // would otherwise eat into our render area).
         RECT r { 0, 0, static_cast<LONG>(desc.width), static_cast<LONG>(desc.height) };
-        AdjustWindowRect(&r, style, FALSE);
+        if (!desc.frameless)
+        {
+            AdjustWindowRect(&r, style, FALSE);
+        }
+
+        const int win_w = r.right - r.left;
+        const int win_h = r.bottom - r.top;
+        int win_x = CW_USEDEFAULT;
+        int win_y = CW_USEDEFAULT;
+        if (desc.frameless)
+        {
+            const int scr_w = GetSystemMetrics(SM_CXSCREEN);
+            const int scr_h = GetSystemMetrics(SM_CYSCREEN);
+            win_x = std::max(0, (scr_w - win_w) / 2);
+            win_y = std::max(0, (scr_h - win_h) / 2);
+        }
 
         const std::wstring title = widen(desc.title);
         hwnd_ = CreateWindowExW(
@@ -208,10 +225,10 @@ public:
             kClassName,
             title.c_str(),
             style,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            r.right - r.left,
-            r.bottom - r.top,
+            win_x,
+            win_y,
+            win_w,
+            win_h,
             nullptr,
             nullptr,
             instance_,
@@ -258,6 +275,19 @@ public:
     void request_close() noexcept override
     {
         should_close_ = true;
+    }
+
+    void minimize() noexcept override
+    {
+        if (hwnd_ != nullptr) ShowWindow(hwnd_, SW_MINIMIZE);
+    }
+
+    void toggle_maximize() noexcept override
+    {
+        if (hwnd_ != nullptr)
+        {
+            ShowWindow(hwnd_, IsZoomed(hwnd_) ? SW_RESTORE : SW_MAXIMIZE);
+        }
     }
 
     [[nodiscard]] void* native_window_handle() const noexcept override
@@ -445,6 +475,38 @@ private:
                 pending_.push_back(e);
                 return 0;
             }
+            case WM_NCHITTEST:
+            {
+                if (frameless_)
+                {
+                    POINT pt { GET_X_LPARAM(l), GET_Y_LPARAM(l) };
+                    ScreenToClient(h, &pt);
+                    const int cw = static_cast<int>(width_);
+                    const int ch = static_cast<int>(height_);
+                    const int b  = 4;
+                    if (!IsZoomed(h))
+                    {
+                        const bool left   = (pt.x >= 0 && pt.x < b);
+                        const bool right  = (pt.x >= cw - b && pt.x < cw);
+                        const bool top    = (pt.y >= 0 && pt.y < b);
+                        const bool bottom = (pt.y >= ch - b && pt.y < ch);
+                        if (top && left)     return HTTOPLEFT;
+                        if (top && right)    return HTTOPRIGHT;
+                        if (bottom && left)  return HTBOTTOMLEFT;
+                        if (bottom && right) return HTBOTTOMRIGHT;
+                        if (left)            return HTLEFT;
+                        if (right)           return HTRIGHT;
+                        if (top)             return HTTOP;
+                        if (bottom)          return HTBOTTOM;
+                    }
+                    // Empty center stretch of top bar (between menus and right telemetry/buttons) drags the window
+                    if (pt.y >= 0 && pt.y < 24 && pt.x >= 720 && pt.x < cw - 280)
+                    {
+                        return HTCAPTION;
+                    }
+                }
+                return DefWindowProcW(h, msg, w, l);
+            }
             default:
                 return DefWindowProcW(h, msg, w, l);
         }
@@ -456,6 +518,7 @@ private:
     HWND hwnd_ { nullptr };
     bool owns_class_ref_ { false };
     bool should_close_ { false };
+    bool frameless_ { false };
     std::uint32_t width_ { 0 };
     std::uint32_t height_ { 0 };
     std::vector<OSEvent> pending_ {};

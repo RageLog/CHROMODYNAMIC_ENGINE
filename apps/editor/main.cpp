@@ -3901,9 +3901,10 @@ cd::core::Result<void> StudioApp::on_boot()
 
     // Window + Vulkan device + Renderer + ImGui
     cd::platform::WindowDesc wd {};
-    wd.title  = "CHROMODYNAMIC 3D ENGINE STUDIO";
-    wd.width  = 1600;
-    wd.height = 900;
+    wd.title     = "CHROMODYNAMIC 3D ENGINE STUDIO";
+    wd.width     = 1600;
+    wd.height    = 900;
+    wd.frameless = true;
     auto window_r = cd::platform::create_window(wd);
     if (!window_r.has_value()) return std::unexpected(window_r.error());
     s.window = std::move(*window_r);

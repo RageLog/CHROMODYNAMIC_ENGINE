@@ -1130,6 +1130,7 @@ struct State
     int            theme_index { 0 };
     int            workspace_mode { 0 }; // 0 = 3D Engine Studio, 1 = In-Game HUD & World UI, 2 = Standalone App & Node Studio
     float          anim_time { 0.0F };
+    cd::platform::IWindow* os_window { nullptr };
 
     // TrueType GPU Font Atlas state + O(1) fast glyph/kerning cache (ASCII + Latin-1 + Extended-A)
     cd::ui::font::Font                       font {};
@@ -1156,10 +1157,10 @@ struct State
     bool   mod_alt { false };
     std::string input_chars {};
 
-    // Dock ratios & dynamic window docking
-    float dock_left_w_ratio { 0.22F };
-    float dock_right_w_ratio { 0.25F };
-    float dock_bottom_h_ratio { 0.21F };
+    // Dock ratios & dynamic window docking (frameless edge-to-edge layout)
+    float dock_left_w_ratio { 0.195F };
+    float dock_right_w_ratio { 0.220F };
+    float dock_bottom_h_ratio { 0.270F };
     float dock_left_split_ratio { 0.70F };
     int   dragging_splitter { 0 }; // 1=left, 2=right, 3=bottom, 4=left_mid
     bool  dock_node_created { false };
@@ -1192,10 +1193,10 @@ struct State
     std::vector<std::pair<ImGuiCol, ImU32>> color_stack {};
     std::vector<std::pair<ImGuiStyleVar, ImVec2>> style_var_stack {};
     float  style_alpha { 1.0F };
-    ImVec2 style_window_padding { 10.0F, 8.0F };
-    float  style_window_rounding { 6.0F };
-    float  style_frame_rounding { 4.0F };
-    ImVec2 style_item_spacing { 5.0F, 4.0F };
+    ImVec2 style_window_padding { 6.0F, 5.0F };
+    float  style_window_rounding { 5.0F };
+    float  style_frame_rounding { 3.5F };
+    ImVec2 style_item_spacing { 4.0F, 3.5F };
     std::vector<float> item_width_stack {};
     float next_item_width { 0.0F };
 
@@ -2239,6 +2240,7 @@ public:
     void new_frame() noexcept
     {
         auto& st = state();
+        st.os_window = window_;
         st.anim_time += st.io.DeltaTime;
         const float w = (window_ != nullptr && window_->width() > 0)
                             ? static_cast<float>(window_->width())
@@ -2249,8 +2251,8 @@ public:
         st.io.DisplaySize      = ImVec2 { w, h };
         st.main_viewport.Pos   = ImVec2 { 0.0F, 0.0F };
         st.main_viewport.Size  = ImVec2 { w, h };
-        st.main_viewport.WorkPos  = ImVec2 { 0.0F, 60.0F };
-        st.main_viewport.WorkSize = ImVec2 { w, std::max(100.0F, h - 60.0F) };
+        st.main_viewport.WorkPos  = ImVec2 { 0.0F, 54.0F };
+        st.main_viewport.WorkSize = ImVec2 { w, std::max(100.0F, h - 54.0F) };
 
         if (st.has_prev_mouse)
         {
@@ -2875,7 +2877,7 @@ inline ImGuiID DockSpace(ImGuiID id, const ImVec2& /*size*/ = ImVec2(0, 0),
     auto& st = cd::ui::chroma::state();
     const float W = st.io.DisplaySize.x;
     const float H = st.io.DisplaySize.y;
-    const float top_y = 60.0F;
+    const float top_y = 54.0F;
     const float work_h = std::max(100.0F, H - top_y);
 
     const float lx = std::round(W * st.dock_left_w_ratio);
@@ -2904,32 +2906,32 @@ inline ImGuiID DockSpace(ImGuiID id, const ImVec2& /*size*/ = ImVec2(0, 0),
     if (st.mouse_down[0] && st.dragging_splitter != 0)
     {
         if (st.dragging_splitter == 1)
-            st.dock_left_w_ratio = std::clamp(mp.x / W, 0.15F, 0.36F);
+            st.dock_left_w_ratio = std::clamp(mp.x / W, 0.14F, 0.34F);
         else if (st.dragging_splitter == 2)
-            st.dock_right_w_ratio = std::clamp((W - mp.x) / W, 0.17F, 0.38F);
+            st.dock_right_w_ratio = std::clamp((W - mp.x) / W, 0.15F, 0.36F);
         else if (st.dragging_splitter == 3)
-            st.dock_bottom_h_ratio = std::clamp((H - mp.y) / work_h, 0.12F, 0.42F);
+            st.dock_bottom_h_ratio = std::clamp((H - mp.y) / work_h, 0.14F, 0.44F);
         else if (st.dragging_splitter == 4 && has_left_split)
             st.dock_left_split_ratio = std::clamp((mp.y - top_y) / work_h, 0.25F, 0.80F);
     }
 
-    const ImU32 grip_col = st.theme.window_border;
+    const ImU32 grip_col = IM_COL32(36, 44, 58, 255);
     const ImU32 grip_hi  = st.theme.accent_bright;
-    st.win_dl.AddRectFilled(ImVec2(lx - 1.5F, top_y), ImVec2(lx + 1.5F, H),
-                            (hover_l || st.dragging_splitter == 1) ? grip_hi : grip_col);
-    st.win_dl.AddRectFilled(ImVec2(rx - 1.5F, top_y), ImVec2(rx + 1.5F, H),
-                            (hover_r || st.dragging_splitter == 2) ? grip_hi : grip_col);
-    st.win_dl.AddRectFilled(ImVec2(lx, by - 1.5F), ImVec2(rx, by + 1.5F),
-                            (hover_b || st.dragging_splitter == 3) ? grip_hi : grip_col);
+    st.fg_dl.AddRectFilled(ImVec2(lx - 0.5F, top_y), ImVec2(lx + 0.5F, H),
+                           (hover_l || st.dragging_splitter == 1) ? grip_hi : grip_col);
+    st.fg_dl.AddRectFilled(ImVec2(rx - 0.5F, top_y), ImVec2(rx + 0.5F, H),
+                           (hover_r || st.dragging_splitter == 2) ? grip_hi : grip_col);
+    st.fg_dl.AddRectFilled(ImVec2(lx, by - 0.5F), ImVec2(rx, by + 0.5F),
+                           (hover_b || st.dragging_splitter == 3) ? grip_hi : grip_col);
     if (has_left_split)
     {
-        st.win_dl.AddRectFilled(ImVec2(0.0F, lmy - 1.5F), ImVec2(lx, lmy + 1.5F),
-                                (hover_lm || st.dragging_splitter == 4) ? grip_hi : grip_col);
+        st.fg_dl.AddRectFilled(ImVec2(0.0F, lmy - 0.5F), ImVec2(lx, lmy + 0.5F),
+                               (hover_lm || st.dragging_splitter == 4) ? grip_hi : grip_col);
     }
     if (st.workspace_mode == 0)
     {
         st.bg_dl.clear();
-        st.bg_dl.PushClipRect(ImVec2(lx + 2.0F, top_y + 2.0F), ImVec2(rx - 2.0F, by - 2.0F));
+        st.bg_dl.PushClipRect(ImVec2(lx + 1.0F, top_y + 1.0F), ImVec2(rx - 1.0F, by - 1.0F));
     }
     return id;
 }
@@ -2957,7 +2959,7 @@ inline bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags fla
 
     const float W = st.io.DisplaySize.x;
     const float H = st.io.DisplaySize.y;
-    const float top_y = 60.0F;
+    const float top_y = 54.0F;
     const float work_h = std::max(100.0F, H - top_y);
     const float lx = std::round(W * st.dock_left_w_ratio);
     const float rx = std::round(W * (1.0F - st.dock_right_w_ratio));
@@ -2972,10 +2974,10 @@ inline bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags fla
     }
     else
     {
-        if (wl.name == "Studio Workbench") slot = 1;
+        if (wl.name == "Studio Workbench" || wl.name == "Left_Dock_Scene_Hierarchy") slot = 1;
         else if (wl.name == "Scene")       slot = 2;
-        else if (wl.name == "Inspector")   slot = 3;
-        else if (wl.name == "History")     slot = 4;
+        else if (wl.name == "Inspector" || wl.name == "Right_Dock_Inspector_ModifierStack") slot = 3;
+        else if (wl.name == "History" || wl.name == "Bottom_Dock_Workspace") slot = 4;
         if (slot != 0) st.window_dock_slot[wl.name] = slot;
     }
 
@@ -2998,22 +3000,22 @@ inline bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags fla
     {
         const bool has_left_split = !st.dock_slot_tabs[2].empty();
         wl.pos  = ImVec2 { 0.0F, top_y };
-        wl.size = ImVec2 { lx - 1.0F, (has_left_split ? lmy : H) - top_y - 1.0F };
+        wl.size = ImVec2 { lx, (has_left_split ? lmy : H) - top_y };
     }
     else if (slot == 2)
     {
-        wl.pos  = ImVec2 { 0.0F, lmy + 1.0F };
-        wl.size = ImVec2 { lx - 1.0F, H - lmy - 1.0F };
+        wl.pos  = ImVec2 { 0.0F, lmy };
+        wl.size = ImVec2 { lx, H - lmy };
     }
     else if (slot == 3)
     {
-        wl.pos  = ImVec2 { rx + 1.0F, top_y };
-        wl.size = ImVec2 { W - rx - 1.0F, H - top_y };
+        wl.pos  = ImVec2 { rx, top_y };
+        wl.size = ImVec2 { W - rx, H - top_y };
     }
     else if (slot == 4)
     {
-        wl.pos  = ImVec2 { lx + 1.0F, by + 1.0F };
-        wl.size = ImVec2 { rx - lx - 2.0F, H - by - 1.0F };
+        wl.pos  = ImVec2 { lx, by };
+        wl.size = ImVec2 { rx - lx, H - by };
     }
     else
     {
@@ -3083,7 +3085,7 @@ inline bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags fla
         if (st.dragging_window_id == win_id && st.mouse_down[0])
         {
             wl.pos = ImVec2(std::clamp(mp.x - st.drag_window_offset.x, 0.0F, std::max(0.0F, W - 80.0F)),
-                            std::clamp(mp.y - st.drag_window_offset.y, 28.0F, std::max(28.0F, H - 40.0F)));
+                            std::clamp(mp.y - st.drag_window_offset.y, 25.0F, std::max(25.0F, H - 40.0F)));
             st.floating_pos_map[win_id] = wl.pos;
         }
     }
@@ -3112,20 +3114,30 @@ inline bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags fla
     }
     wl.scroll_y = st.scroll_map[win_id];
 
+    const bool is_full_width_bar = (!is_docked && wl.pos.x <= 1.0F && wl.size.x >= W - 2.0F);
     auto bg_c = cd::ui::chroma::unpack_u32(st.theme.window_bg);
-    bg_c.a = static_cast<std::uint8_t>(static_cast<float>(bg_c.a) * wl.bg_alpha);
+    bg_c.a = static_cast<std::uint8_t>(static_cast<float>(bg_c.a) * (is_docked || is_full_width_bar ? 1.0F : wl.bg_alpha));
     const ImU32 bg_u32 = IM_COL32(bg_c.r, bg_c.g, bg_c.b, bg_c.a);
-    const float w_round = is_docked ? 0.0F : st.style_window_rounding;
+    const float w_round = (is_docked || is_full_width_bar) ? 0.0F : st.style_window_rounding;
 
-    if (!is_docked)
+    if (!is_docked && !is_full_width_bar)
     {
         wl.draw_list->AddShadow(wl.pos, ImVec2(wl.pos.x + wl.size.x, wl.pos.y + wl.size.y),
                                 12.0F, 2.0F, IM_COL32(0, 0, 0, 155));
     }
     wl.draw_list->AddRectFilled(wl.pos, ImVec2(wl.pos.x + wl.size.x, wl.pos.y + wl.size.y),
                                 bg_u32, w_round);
-    wl.draw_list->AddRect(wl.pos, ImVec2(wl.pos.x + wl.size.x, wl.pos.y + wl.size.y),
-                          st.theme.window_border, w_round, 0, 1.0F);
+    if (is_full_width_bar)
+    {
+        wl.draw_list->AddLine(ImVec2(wl.pos.x, wl.pos.y + wl.size.y - 0.5F),
+                              ImVec2(wl.pos.x + wl.size.x, wl.pos.y + wl.size.y - 0.5F),
+                              IM_COL32(36, 44, 58, 255), 1.0F);
+    }
+    else if (!is_docked)
+    {
+        wl.draw_list->AddRect(wl.pos, ImVec2(wl.pos.x + wl.size.x, wl.pos.y + wl.size.y),
+                              st.theme.window_border, w_round, 0, 1.0F);
+    }
 
     float content_top = wl.pos.y + st.style_window_padding.y;
     if ((flags & ImGuiWindowFlags_NoTitleBar) == 0)
@@ -3289,10 +3301,10 @@ inline bool BeginChild(const char* str_id, const ImVec2& size = ImVec2(0, 0), bo
     child.is_child  = true;
     child.draw_list = parent.draw_list;
     child.pos       = parent.cursor;
-    const float avail_w = std::max(60.0F, (parent.pos.x + parent.size.x - 10.0F) - parent.cursor.x);
-    const float avail_h = std::max(36.0F, (parent.pos.y + parent.size.y - 8.0F) - parent.cursor.y);
+    const float avail_w = std::max(48.0F, (parent.pos.x + parent.size.x - 4.0F) - parent.cursor.x);
+    const float avail_h = std::max(32.0F, (parent.pos.y + parent.size.y - 3.0F) - parent.cursor.y);
     child.size.x = (size.x > 0.0F) ? size.x : avail_w;
-    child.size.y = (size.y > 0.0F) ? size.y : ((size.y < 0.0F) ? std::max(36.0F, avail_h + size.y) : avail_h);
+    child.size.y = (size.y > 0.0F) ? size.y : ((size.y < 0.0F) ? std::max(32.0F, avail_h + size.y) : avail_h);
 
     const ImGuiID cid = GetID(child.name.c_str());
     child.id = cid;
@@ -3301,18 +3313,19 @@ inline bool BeginChild(const char* str_id, const ImVec2& size = ImVec2(0, 0), bo
     if (border)
     {
         child.draw_list->AddRectFilled(child.pos, ImVec2(child.pos.x + child.size.x, child.pos.y + child.size.y),
-                                       st.theme.child_bg, 4.0F);
-        child.draw_list->AddRect(child.pos, ImVec2(child.pos.x + child.size.x, child.pos.y + child.size.y),
-                                 st.theme.window_border, 4.0F, 0, 1.0F);
+                                       st.theme.child_bg, 0.0F);
+        child.draw_list->AddLine(ImVec2(child.pos.x + child.size.x - 0.5F, child.pos.y),
+                                 ImVec2(child.pos.x + child.size.x - 0.5F, child.pos.y + child.size.y),
+                                 IM_COL32(34, 42, 56, 255), 1.0F);
     }
     child.draw_list->PushClipRect(child.pos, ImVec2(child.pos.x + child.size.x, child.pos.y + child.size.y));
-    child.cursor = ImVec2 { child.pos.x + st.style_window_padding.x, child.pos.y + 6.0F - child.scroll_y };
+    child.cursor = ImVec2 { child.pos.x + 4.0F, child.pos.y + 4.0F - child.scroll_y };
     child.content_max_x = child.cursor.x;
     child.content_max_y = child.cursor.y;
 
     parent.prev_item_min = child.pos;
     parent.prev_item_max = ImVec2 { child.pos.x + child.size.x, child.pos.y + child.size.y };
-    parent.cursor.y      = child.pos.y + child.size.y + 5.0F;
+    parent.cursor.y      = child.pos.y + child.size.y + 3.0F;
     parent.content_max_x = std::max(parent.content_max_x, parent.prev_item_max.x);
     parent.content_max_y = std::max(parent.content_max_y, parent.prev_item_max.y);
 
@@ -4926,27 +4939,66 @@ inline bool BeginMainMenuBar() noexcept
 {
     auto& st = cd::ui::chroma::state();
     const float W = st.io.DisplaySize.x;
-    st.win_dl.AddGradient(ImVec2(0.0F, 0.0F), ImVec2(W, 28.0F),
+    st.win_dl.AddGradient(ImVec2(0.0F, 0.0F), ImVec2(W, 25.0F),
                           st.theme.window_header0, st.theme.window_header1, false);
-    st.win_dl.AddRectFilled(ImVec2(0.0F, 27.0F), ImVec2(W, 28.0F), st.theme.window_border);
+    st.win_dl.AddRectFilled(ImVec2(0.0F, 24.0F), ImVec2(W, 25.0F), IM_COL32(34, 42, 56, 255));
 
     cd::ui::chroma::WindowLayout wl {};
     wl.name      = "##MainMenuBar";
     wl.pos       = ImVec2 { 0.0F, 0.0F };
-    wl.size      = ImVec2 { W, 28.0F };
-    wl.cursor    = ImVec2 { 10.0F, 4.0F };
+    wl.size      = ImVec2 { W, 25.0F };
+    wl.cursor    = ImVec2 { 6.0F, 2.5F };
     wl.draw_list = &st.win_dl;
     st.window_stack.push_back(std::move(wl));
     st.in_menu_bar = true;
-    st.menu_bar_cursor_x = 10.0F;
+    st.menu_bar_cursor_x = 6.0F;
 
-    if (st.io.MousePos.y <= 28.0F) st.mouse_in_any_window = true;
+    if (st.io.MousePos.y <= 25.0F) st.mouse_in_any_window = true;
     return true;
 }
 
 inline void EndMainMenuBar() noexcept
 {
     auto& st = cd::ui::chroma::state();
+    const float W = st.io.DisplaySize.x;
+    const ImVec2 mp = st.io.MousePos;
+
+    // Native ChromaUi Frameless Window Controls (Minimize / Maximize / Close) at top-right
+    const float btn_w = 26.0F;
+    const float btn_h = 24.0F;
+    const float x_min = W - btn_w * 3.0F;
+    const float x_max = W - btn_w * 2.0F;
+    const float x_cls = W - btn_w * 1.0F;
+
+    const bool hov_min = (mp.y >= 0.0F && mp.y <= btn_h && mp.x >= x_min && mp.x < x_max);
+    const bool hov_max = (mp.y >= 0.0F && mp.y <= btn_h && mp.x >= x_max && mp.x < x_cls);
+    const bool hov_cls = (mp.y >= 0.0F && mp.y <= btn_h && mp.x >= x_cls && mp.x <= W);
+
+    st.win_dl.AddLine(ImVec2(x_min - 1.0F, 4.0F), ImVec2(x_min - 1.0F, 20.0F), IM_COL32(52, 66, 88, 200), 1.0F);
+
+    if (hov_min) st.win_dl.AddRectFilled(ImVec2(x_min, 0.0F), ImVec2(x_max, btn_h), IM_COL32(45, 58, 78, 240));
+    if (hov_max) st.win_dl.AddRectFilled(ImVec2(x_max, 0.0F), ImVec2(x_cls, btn_h), IM_COL32(45, 58, 78, 240));
+    if (hov_cls) st.win_dl.AddRectFilled(ImVec2(x_cls, 0.0F), ImVec2(W, btn_h), IM_COL32(212, 42, 52, 255));
+
+    // Minimize glyph (horizontal bar)
+    const float cy = 12.0F;
+    st.win_dl.AddLine(ImVec2(x_min + 8.0F, cy + 2.0F), ImVec2(x_max - 8.0F, cy + 2.0F),
+                      hov_min ? IM_COL32(255, 255, 255, 255) : IM_COL32(190, 204, 224, 235), 1.4F);
+    // Maximize glyph (clean window box)
+    st.win_dl.AddRect(ImVec2(x_max + 8.5F, cy - 4.0F), ImVec2(x_cls - 8.5F, cy + 4.5F),
+                      hov_max ? IM_COL32(255, 255, 255, 255) : IM_COL32(190, 204, 224, 235), 0.0F, 0, 1.3F);
+    // Close glyph (X)
+    const ImU32 cls_col = hov_cls ? IM_COL32(255, 255, 255, 255) : IM_COL32(215, 224, 238, 235);
+    st.win_dl.AddLine(ImVec2(x_cls + 8.5F, cy - 4.0F), ImVec2(W - 8.5F, cy + 4.5F), cls_col, 1.4F);
+    st.win_dl.AddLine(ImVec2(W - 8.5F, cy - 4.0F), ImVec2(x_cls + 8.5F, cy + 4.5F), cls_col, 1.4F);
+
+    if (st.mouse_clicked[0] && st.os_window != nullptr)
+    {
+        if (hov_min) st.os_window->minimize();
+        else if (hov_max) st.os_window->toggle_maximize();
+        else if (hov_cls) st.os_window->request_close();
+    }
+
     st.in_menu_bar = false;
     if (!st.window_stack.empty()) st.window_stack.pop_back();
 }
@@ -5199,7 +5251,7 @@ inline bool BeginPopup(const char* str_id) noexcept
     pw.pos             = ImVec2(std::clamp(st.open_popup_pos.x, 6.0F, std::max(6.0F, st.io.DisplaySize.x - pop_sz.x - 6.0F)),
                                 std::clamp(st.open_popup_pos.y, 6.0F, std::max(6.0F, st.io.DisplaySize.y - pop_sz.y - 6.0F)));
     pw.size            = pop_sz;
-    pw.cursor          = ImVec2 { pw.pos.x + 10.0F, pw.pos.y + 8.0F };
+    pw.cursor          = ImVec2 { pw.pos.x + st.style_window_padding.x, pw.pos.y + 8.0F };
     pw.content_max_x   = pw.cursor.x;
     pw.content_max_y   = pw.cursor.y;
     pw.popup_cmd_start = st.popup_dl.cmd_count();
@@ -5887,23 +5939,307 @@ inline bool IconSelectable(const char* label, cd::ui::chroma::IconKind icon,
     return false;
 }
 
+namespace detail
+{
+inline bool title_contains_ci(const char* text, const char* needle) noexcept
+{
+    if (text == nullptr || needle == nullptr || needle[0] == '\0') return false;
+    for (std::size_t i = 0; text[i] != '\0'; ++i)
+    {
+        std::size_t j = 0;
+        while (needle[j] != '\0' && text[i + j] != '\0')
+        {
+            char c1 = text[i + j];
+            char c2 = needle[j];
+            if (c1 >= 'A' && c1 <= 'Z') c1 = static_cast<char>(c1 - 'A' + 'a');
+            if (c2 >= 'A' && c2 <= 'Z') c2 = static_cast<char>(c2 - 'A' + 'a');
+            if (c1 != c2) break;
+            ++j;
+        }
+        if (needle[j] == '\0') return true;
+    }
+    return false;
+}
+
+inline void DrawAssetPreview(ImDrawList* dl, ImVec2 w0, ImVec2 w1,
+                             cd::ui::chroma::IconKind icon,
+                             const char* title, ImU32 ic, float anim_phase = 0.0F,
+                             bool is_large = false) noexcept
+{
+    using cd::ui::chroma::IconKind;
+    if (dl == nullptr) return;
+    const float ww = std::max(16.0F, w1.x - w0.x);
+    const float wh = std::max(14.0F, w1.y - w0.y);
+    const ImVec2 c { (w0.x + w1.x) * 0.5F, (w0.y + w1.y) * 0.5F };
+
+    dl->PushClipRect(w0, w1);
+
+    const bool is_tex = (icon == IconKind::kTexture2D || icon == IconKind::kMaterial) ||
+                        title_contains_ci(title, "gold") ||
+                        title_contains_ci(title, "checker") ||
+                        title_contains_ci(title, "brick") ||
+                        title_contains_ci(title, "carbon") ||
+                        title_contains_ci(title, "wood") ||
+                        title_contains_ci(title, "plasma") ||
+                        title_contains_ci(title, "lion") ||
+                        title_contains_ci(title, ".png") ||
+                        title_contains_ci(title, ".jpg");
+
+    if (is_tex && icon != IconKind::kFileProject && icon != IconKind::kFileScene &&
+        icon != IconKind::kWorld && icon != IconKind::kAvatar)
+    {
+        if (title_contains_ci(title, "gold") || title_contains_ci(title, "24k"))
+        {
+            dl->AddGradient(w0, w1, IM_COL32(24, 20, 12, 255), IM_COL32(12, 10, 8, 255), true);
+            const float r = std::min(ww, wh) * 0.39F;
+            dl->AddCircleFilled(ImVec2(c.x + 1.0F, c.y + r * 0.72F), r * 0.65F, IM_COL32(0, 0, 0, 140), 14);
+            dl->AddCircleFilled(c, r, IM_COL32(138, 92, 14, 255), 20);
+            dl->AddCircleFilled(ImVec2(c.x - r * 0.14F, c.y - r * 0.14F), r * 0.80F, IM_COL32(204, 148, 26, 255), 18);
+            dl->AddCircleFilled(ImVec2(c.x - r * 0.26F, c.y - r * 0.26F), r * 0.54F, IM_COL32(246, 198, 62, 255), 16);
+            dl->AddCircleFilled(ImVec2(c.x - r * 0.36F, c.y - r * 0.36F), r * 0.24F, IM_COL32(255, 245, 190, 255), 12);
+            dl->AddCircle(c, r, IM_COL32(255, 215, 95, 220), 20, 1.1F);
+        }
+        else if (title_contains_ci(title, "checker") || title_contains_ci(title, "grid"))
+        {
+            const int cols = is_large ? 6 : 4;
+            const int rows = is_large ? 4 : 3;
+            const float cw = ww / static_cast<float>(cols);
+            const float ch = wh / static_cast<float>(rows);
+            for (int ry = 0; ry < rows; ++ry)
+            {
+                for (int cx = 0; cx < cols; ++cx)
+                {
+                    const bool even = ((cx + ry) % 2 == 0);
+                    const ImU32 col = even ? IM_COL32(28, 38, 54, 255) : IM_COL32(68, 178, 242, 215);
+                    dl->AddRectFilled(ImVec2(w0.x + static_cast<float>(cx) * cw, w0.y + static_cast<float>(ry) * ch),
+                                      ImVec2(w0.x + static_cast<float>(cx + 1) * cw, w0.y + static_cast<float>(ry + 1) * ch),
+                                      col);
+                }
+            }
+            if (is_large)
+            {
+                const float r = std::min(ww, wh) * 0.32F;
+                dl->AddCircleFilled(c, r, IM_COL32(24, 95, 155, 235), 20);
+                dl->AddCircleFilled(ImVec2(c.x - r * 0.25F, c.y - r * 0.25F), r * 0.52F, IM_COL32(95, 205, 255, 240), 16);
+                dl->AddCircle(c, r, IM_COL32(220, 245, 255, 235), 20, 1.2F);
+            }
+        }
+        else if (title_contains_ci(title, "brick") || title_contains_ci(title, "sponza"))
+        {
+            dl->AddRectFilled(w0, w1, IM_COL32(78, 74, 70, 255));
+            const int rows = is_large ? 5 : 3;
+            const float rh = wh / static_cast<float>(rows);
+            const float bw = ww / (is_large ? 3.5F : 2.5F);
+            for (int r = 0; r < rows; ++r)
+            {
+                const float y0 = w0.y + static_cast<float>(r) * rh + 1.0F;
+                const float y1 = w0.y + static_cast<float>(r + 1) * rh - 1.0F;
+                const float x_off = (r % 2 == 1) ? (-bw * 0.5F) : 0.0F;
+                for (int b = 0; b < 5; ++b)
+                {
+                    const float x0 = std::max(w0.x, w0.x + x_off + static_cast<float>(b) * bw + 1.0F);
+                    const float x1 = std::min(w1.x, w0.x + x_off + static_cast<float>(b + 1) * bw - 1.0F);
+                    if (x1 > x0)
+                    {
+                        const ImU32 bcol = ((r + b) % 2 == 0) ? IM_COL32(176, 74, 48, 255) : IM_COL32(152, 58, 38, 255);
+                        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), bcol, 1.0F);
+                        dl->AddLine(ImVec2(x0, y0), ImVec2(x1, y0), IM_COL32(215, 112, 82, 160), 1.0F);
+                    }
+                }
+            }
+        }
+        else if (title_contains_ci(title, "carbon") || title_contains_ci(title, "fiber"))
+        {
+            dl->AddRectFilled(w0, w1, IM_COL32(18, 22, 29, 255));
+            const float step = is_large ? 8.0F : 6.0F;
+            for (float y = w0.y; y < w1.y; y += step)
+            {
+                for (float x = w0.x; x < w1.x; x += step)
+                {
+                    const int ix = static_cast<int>((x - w0.x) / step);
+                    const int iy = static_cast<int>((y - w0.y) / step);
+                    const ImU32 ccell = ((ix + iy) % 2 == 0) ? IM_COL32(34, 42, 56, 255) : IM_COL32(58, 70, 92, 255);
+                    dl->AddRectFilled(ImVec2(x, y), ImVec2(std::min(w1.x, x + step - 1.0F), std::min(w1.y, y + step - 1.0F)), ccell);
+                }
+            }
+            dl->AddLine(ImVec2(w0.x + ww * 0.15F, w1.y), ImVec2(w0.x + ww * 0.85F, w0.y), IM_COL32(140, 195, 255, 110), 3.0F);
+        }
+        else if (title_contains_ci(title, "wood") || title_contains_ci(title, "plank"))
+        {
+            dl->AddGradient(w0, w1, IM_COL32(158, 98, 46, 255), IM_COL32(122, 72, 30, 255), true);
+            const int planks = is_large ? 4 : 3;
+            for (int p = 1; p < planks; ++p)
+            {
+                const float py = w0.y + (wh * static_cast<float>(p)) / static_cast<float>(planks);
+                dl->AddLine(ImVec2(w0.x, py), ImVec2(w1.x, py), IM_COL32(68, 38, 14, 220), 1.2F);
+            }
+            for (int g = 0; g < 5; ++g)
+            {
+                const float gy = w0.y + wh * (0.14F + 0.17F * static_cast<float>(g));
+                dl->AddLine(ImVec2(w0.x + 2.0F, gy), ImVec2(w1.x - 2.0F, gy + ((g % 2 == 0) ? 1.5F : -1.5F)),
+                            IM_COL32(196, 136, 74, 135), 1.0F);
+            }
+        }
+        else if (title_contains_ci(title, "plasma") || title_contains_ci(title, "emissive"))
+        {
+            dl->AddRectFilled(w0, w1, IM_COL32(12, 8, 24, 255));
+            const float r = std::min(ww, wh) * 0.42F;
+            dl->AddCircleFilled(c, r * 1.15F, IM_COL32(138, 32, 225, 110), 18);
+            dl->AddCircleFilled(c, r * 0.85F, IM_COL32(0, 178, 255, 185), 18);
+            dl->AddCircleFilled(c, r * 0.48F, IM_COL32(185, 248, 255, 255), 14);
+            dl->AddCircle(c, r * 0.98F, IM_COL32(215, 120, 255, 220), 18, 1.2F);
+        }
+        else
+        {
+            dl->AddGradient(w0, w1, IM_COL32(48, 40, 32, 255), IM_COL32(26, 22, 18, 255), true);
+            const float r = std::min(ww, wh) * 0.36F;
+            dl->AddCircleFilled(c, r, IM_COL32(172, 138, 96, 245), 18);
+            dl->AddCircleFilled(ImVec2(c.x - r * 0.22F, c.y - r * 0.22F), r * 0.56F, IM_COL32(224, 192, 145, 245), 14);
+            dl->AddCircle(c, r, ic, 18, 1.2F);
+        }
+        dl->PopClipRect();
+        return;
+    }
+
+    dl->AddGradient(w0, w1, IM_COL32(18, 25, 38, 255), IM_COL32(10, 14, 22, 255), true);
+    const float hy = w0.y + wh * 0.56F;
+    dl->AddRectFilled(ImVec2(w0.x, hy), w1, IM_COL32(14, 19, 29, 230));
+    dl->AddLine(ImVec2(w0.x, hy), ImVec2(w1.x, hy), IM_COL32(52, 72, 104, 180), 1.0F);
+    for (int i = -2; i <= 2; ++i)
+    {
+        const float tx = c.x + static_cast<float>(i) * (ww * 0.12F);
+        const float bx = c.x + static_cast<float>(i) * (ww * 0.34F);
+        dl->AddLine(ImVec2(tx, hy), ImVec2(bx, w1.y), IM_COL32(42, 58, 84, 145), 1.0F);
+    }
+    dl->AddLine(ImVec2(w0.x, hy + (w1.y - hy) * 0.45F), ImVec2(w1.x, hy + (w1.y - hy) * 0.45F),
+                IM_COL32(42, 58, 84, 135), 1.0F);
+    dl->AddLine(ImVec2(c.x - ww * 0.32F, hy + (w1.y - hy) * 0.45F),
+                ImVec2(c.x + ww * 0.32F, hy + (w1.y - hy) * 0.45F),
+                IM_COL32(215, 68, 68, 140), 1.0F);
+    dl->AddLine(ImVec2(c.x, hy), ImVec2(c.x, w1.y), IM_COL32(68, 142, 235, 140), 1.0F);
+
+    const float r = std::clamp(std::min(ww, wh) * (is_large ? 0.35F : 0.37F), 7.0F, 46.0F);
+    dl->AddRectFilled(ImVec2(c.x - r * 0.75F, c.y + r * 0.62F),
+                      ImVec2(c.x + r * 0.75F, c.y + r * 0.86F),
+                      IM_COL32(4, 6, 10, 165), r * 0.25F);
+
+    if (icon == IconKind::kCube || icon == IconKind::kMesh3D)
+    {
+        const float yaw = 0.68F + anim_phase * 0.9F;
+        const float cs = std::cos(yaw);
+        const float sn = std::sin(yaw);
+        const float hr = r * 0.72F;
+        auto proj = [&](float x, float y, float z) -> ImVec2 {
+            const float rx = x * cs - z * sn;
+            const float rz = x * sn + z * cs;
+            return ImVec2(c.x + rx * hr, c.y - y * hr * 0.78F + rz * hr * 0.38F);
+        };
+        const ImVec2 t0 = proj(-1,  1, -1), t1 = proj( 1,  1, -1), t2 = proj( 1,  1,  1), t3 = proj(-1,  1,  1);
+        const ImVec2 b1 = proj( 1, -1, -1), b2 = proj( 1, -1,  1), b3 = proj(-1, -1,  1);
+        const auto base = cd::ui::chroma::unpack_u32(ic);
+        const ImU32 c_top  = IM_COL32(std::min(255, int(base.r) + 35), std::min(255, int(base.g) + 35), std::min(255, int(base.b) + 35), 240);
+        const ImU32 c_side = IM_COL32(int(base.r * 0.78F), int(base.g * 0.78F), int(base.b * 0.78F), 235);
+        const ImU32 c_dark = IM_COL32(int(base.r * 0.52F), int(base.g * 0.52F), int(base.b * 0.52F), 235);
+        dl->AddTriangleFilled(t3, t2, b2, c_side);
+        dl->AddTriangleFilled(t3, b2, b3, c_side);
+        dl->AddTriangleFilled(t2, t1, b1, c_dark);
+        dl->AddTriangleFilled(t2, b1, b2, c_dark);
+        dl->AddTriangleFilled(t0, t1, t2, c_top);
+        dl->AddTriangleFilled(t0, t2, t3, c_top);
+        const ImU32 wire = IM_COL32(235, 245, 255, 210);
+        dl->AddLine(t0, t1, wire, 1.1F); dl->AddLine(t1, t2, wire, 1.1F);
+        dl->AddLine(t2, t3, wire, 1.1F); dl->AddLine(t3, t0, wire, 1.1F);
+        dl->AddLine(t3, b3, wire, 1.1F); dl->AddLine(t2, b2, wire, 1.1F); dl->AddLine(t1, b1, wire, 1.1F);
+        dl->AddLine(b3, b2, wire, 1.1F); dl->AddLine(b2, b1, wire, 1.1F);
+    }
+    else if (icon == IconKind::kSphere)
+    {
+        const auto base = cd::ui::chroma::unpack_u32(ic);
+        dl->AddCircleFilled(c, r, IM_COL32(int(base.r * 0.45F), int(base.g * 0.45F), int(base.b * 0.45F), 245), 20);
+        dl->AddCircleFilled(ImVec2(c.x - r * 0.14F, c.y - r * 0.14F), r * 0.78F,
+                            IM_COL32(int(base.r * 0.82F), int(base.g * 0.82F), int(base.b * 0.82F), 245), 18);
+        dl->AddCircleFilled(ImVec2(c.x - r * 0.28F, c.y - r * 0.28F), r * 0.46F, ic, 14);
+        dl->AddCircleFilled(ImVec2(c.x - r * 0.36F, c.y - r * 0.36F), r * 0.20F, IM_COL32(255, 255, 255, 235), 10);
+        dl->AddCircle(c, r, IM_COL32(220, 240, 255, 210), 20, 1.1F);
+        const float mx = std::cos(anim_phase * 1.1F) * r * 0.55F;
+        dl->AddLine(ImVec2(c.x - r * 0.92F, c.y), ImVec2(c.x + r * 0.92F, c.y), IM_COL32(255, 255, 255, 95), 1.0F);
+        dl->AddLine(ImVec2(c.x + mx, c.y - r * 0.90F), ImVec2(c.x - mx, c.y + r * 0.90F), IM_COL32(255, 255, 255, 95), 1.0F);
+    }
+    else if (icon == IconKind::kCylinder)
+    {
+        const auto base = cd::ui::chroma::unpack_u32(ic);
+        const float rx = r * 0.68F;
+        const float ry = r * 0.72F;
+        dl->AddRectFilled(ImVec2(c.x - rx, c.y - ry * 0.75F), ImVec2(c.x + rx, c.y + ry * 0.75F),
+                          IM_COL32(int(base.r * 0.52F), int(base.g * 0.52F), int(base.b * 0.52F), 245));
+        dl->AddRectFilled(ImVec2(c.x - rx * 0.65F, c.y - ry * 0.75F), ImVec2(c.x + rx * 0.15F, c.y + ry * 0.75F),
+                          IM_COL32(int(base.r * 0.88F), int(base.g * 0.88F), int(base.b * 0.88F), 245));
+        dl->AddRectFilled(ImVec2(c.x - rx, c.y - ry * 0.98F), ImVec2(c.x + rx, c.y - ry * 0.48F), ic, rx * 0.35F);
+        dl->AddRect(ImVec2(c.x - rx, c.y - ry * 0.92F), ImVec2(c.x + rx, c.y + ry * 0.78F),
+                    IM_COL32(225, 242, 255, 215), rx * 0.28F, 0, 1.1F);
+    }
+    else if (icon == IconKind::kCone)
+    {
+        const auto base = cd::ui::chroma::unpack_u32(ic);
+        const ImVec2 apex { c.x, c.y - r * 0.92F };
+        const ImVec2 bl   { c.x - r * 0.86F, c.y + r * 0.78F };
+        const ImVec2 bm   { c.x + r * 0.12F, c.y + r * 0.86F };
+        const ImVec2 br   { c.x + r * 0.86F, c.y + r * 0.78F };
+        dl->AddTriangleFilled(apex, bl, bm, ic);
+        dl->AddTriangleFilled(apex, bm, br,
+                              IM_COL32(int(base.r * 0.55F), int(base.g * 0.55F), int(base.b * 0.55F), 245));
+        dl->AddLine(apex, bl, IM_COL32(240, 248, 255, 215), 1.1F);
+        dl->AddLine(apex, br, IM_COL32(240, 248, 255, 215), 1.1F);
+        dl->AddLine(bl, br, IM_COL32(240, 248, 255, 215), 1.1F);
+    }
+    else if (icon == IconKind::kTorus)
+    {
+        const auto base = cd::ui::chroma::unpack_u32(ic);
+        dl->AddCircleFilled(c, r * 0.95F, IM_COL32(int(base.r * 0.52F), int(base.g * 0.52F), int(base.b * 0.52F), 245), 20);
+        dl->AddCircleFilled(ImVec2(c.x - r * 0.08F, c.y - r * 0.08F), r * 0.82F, ic, 18);
+        dl->AddCircleFilled(c, r * 0.38F, IM_COL32(14, 19, 29, 255), 14);
+        dl->AddCircle(c, r * 0.95F, IM_COL32(235, 245, 255, 215), 20, 1.1F);
+        dl->AddCircle(c, r * 0.38F, IM_COL32(205, 225, 250, 195), 14, 1.0F);
+    }
+    else if (icon == IconKind::kFileProject || icon == IconKind::kFileScene || icon == IconKind::kWorld)
+    {
+        // Mini 3D Showcase Stage (Architectural Columns + Lit Hero Sphere + Sun Glow)
+        dl->AddCircleFilled(ImVec2(c.x + r * 0.52F, c.y - r * 0.48F), r * 0.26F, IM_COL32(255, 215, 95, 210), 12);
+        dl->AddRectFilled(ImVec2(c.x - r * 0.82F, c.y - r * 0.55F), ImVec2(c.x - r * 0.52F, c.y + r * 0.65F),
+                          IM_COL32(82, 118, 168, 235), 1.5F);
+        dl->AddRectFilled(ImVec2(c.x + r * 0.52F, c.y - r * 0.55F), ImVec2(c.x + r * 0.82F, c.y + r * 0.65F),
+                          IM_COL32(64, 94, 138, 235), 1.5F);
+        dl->AddRectFilled(ImVec2(c.x - r * 0.88F, c.y - r * 0.72F), ImVec2(c.x + r * 0.88F, c.y - r * 0.52F),
+                          IM_COL32(115, 165, 225, 240), 1.5F);
+        dl->AddCircleFilled(ImVec2(c.x, c.y + r * 0.12F), r * 0.42F, ic, 16);
+        dl->AddCircleFilled(ImVec2(c.x - r * 0.12F, c.y), r * 0.18F, IM_COL32(255, 255, 255, 230), 10);
+    }
+    else
+    {
+        cd::ui::chroma::DrawIcon(dl, icon, c, r, ic);
+    }
+
+    dl->PopClipRect();
+}
+} // namespace detail
+
 inline bool IconTile(const char* str_id, cd::ui::chroma::IconKind icon,
                      const char* title, const char* subtitle = nullptr,
-                     ImVec2 size_arg = ImVec2(-1.0F, 48.0F),
+                     ImVec2 size_arg = ImVec2(-1.0F, 52.0F),
                      ImU32 icon_col = 0U, bool selected = false,
                      bool loaded_badge = false) noexcept
 {
     auto& st = cd::ui::chroma::state();
     if (st.window_stack.empty() || str_id == nullptr) return false;
     auto& w = st.window_stack.back();
-    float avail_w = std::max(54.0F, (w.pos.x + w.size.x - 8.0F) - w.cursor.x);
+    float avail_w = std::max(54.0F, (w.pos.x + w.size.x - 6.0F) - w.cursor.x);
     if (!st.table_stack.empty())
     {
         const auto& ts = st.table_stack.back();
-        avail_w = std::max(44.0F, (ts.width / static_cast<float>(ts.cols)) - 6.0F);
+        avail_w = std::max(44.0F, (ts.width / static_cast<float>(ts.cols)) - 5.0F);
     }
     const float tw = (size_arg.x > 0.0F) ? size_arg.x : avail_w;
-    const float th = std::max(38.0F, size_arg.y);
+    const float th = std::max(40.0F, size_arg.y);
 
     const ImVec2 p0 = w.cursor;
     const ImVec2 p1 { p0.x + tw, p0.y + th };
@@ -5915,49 +6251,47 @@ inline bool IconTile(const char* str_id, cd::ui::chroma::IconKind icon,
     const bool held = hov && st.mouse_down[0];
 
     const ImU32 card_bg = selected
-        ? IM_COL32(28, 56, 96, 245)
-        : (hov ? IM_COL32(30, 40, 56, 245) : IM_COL32(19, 24, 34, 240));
+        ? IM_COL32(28, 56, 96, 248)
+        : (hov ? IM_COL32(30, 40, 56, 248) : IM_COL32(18, 23, 33, 245));
     const ImU32 border_col = selected
         ? st.theme.accent_bright
-        : (hov ? IM_COL32(95, 165, 245, 235) : IM_COL32(46, 58, 78, 210));
+        : (hov ? IM_COL32(95, 165, 245, 235) : IM_COL32(42, 52, 70, 210));
 
-    w.draw_list->AddRectFilled(p0, p1, card_bg, 5.0F);
+    w.draw_list->AddRectFilled(p0, p1, card_bg, 3.0F);
 
-    // Top Icon Well
-    const float well_h = th - ((subtitle != nullptr && subtitle[0] != '\0') ? 24.0F : 16.0F);
-    const ImVec2 w0 { p0.x + 3.0F, p0.y + 3.0F };
-    const ImVec2 w1 { p1.x - 3.0F, p0.y + std::max(18.0F, well_h) };
-    w.draw_list->AddRectFilled(w0, w1, held ? IM_COL32(18, 26, 40, 250) : IM_COL32(13, 17, 25, 235), 4.0F);
+    // Top Rich Preview Well (3D Mesh / Material / Texture Thumbnail)
+    const float well_h = th - ((subtitle != nullptr && subtitle[0] != '\0') ? 23.0F : 15.0F);
+    const ImVec2 w0 { p0.x + 2.0F, p0.y + 2.0F };
+    const ImVec2 w1 { p1.x - 2.0F, p0.y + std::max(18.0F, well_h) };
+    w.draw_list->AddRectFilled(w0, w1, held ? IM_COL32(18, 26, 40, 250) : IM_COL32(12, 16, 24, 245), 2.0F);
 
     const ImU32 ic = (icon_col != 0U) ? icon_col : st.theme.accent_bright;
-    const float ir = std::clamp((w1.y - w0.y) * 0.36F, 6.5F, 12.5F);
-    cd::ui::chroma::DrawIcon(w.draw_list, icon,
-                             ImVec2((w0.x + w1.x) * 0.5F, (w0.y + w1.y) * 0.5F),
-                             ir, ic);
+    detail::DrawAssetPreview(w.draw_list, w0, w1, icon, title, ic,
+                             (selected || hov) ? st.anim_time : 0.0F, false);
 
     // Optional top-right checkmark badge (indicates asset is loaded in Active Context)
     if (loaded_badge)
     {
-        const ImVec2 bc { w1.x - 7.5F, w0.y + 7.5F };
-        w.draw_list->AddCircleFilled(bc, 5.8F, IM_COL32(28, 178, 96, 255), 12);
-        cd::ui::chroma::DrawIcon(w.draw_list, cd::ui::chroma::IconKind::kCheck, bc, 3.8F, IM_COL32(255, 255, 255, 255));
+        const ImVec2 bc { w1.x - 7.0F, w0.y + 7.0F };
+        w.draw_list->AddCircleFilled(bc, 5.5F, IM_COL32(28, 178, 96, 255), 12);
+        cd::ui::chroma::DrawIcon(w.draw_list, cd::ui::chroma::IconKind::kCheck, bc, 3.6F, IM_COL32(255, 255, 255, 255));
     }
 
-    w.draw_list->AddRect(p0, p1, border_col, 5.0F, 0, selected ? 1.6F : 1.0F);
+    w.draw_list->AddRect(p0, p1, border_col, 3.0F, 0, selected ? 1.5F : 1.0F);
 
     // Clean Centered Title (+ optional Subtitle)
-    w.draw_list->PushClipRect(ImVec2(p0.x + 3.0F, w1.y), ImVec2(p1.x - 3.0F, p1.y - 1.0F));
+    w.draw_list->PushClipRect(ImVec2(p0.x + 2.0F, w1.y), ImVec2(p1.x - 2.0F, p1.y - 1.0F));
     if (title != nullptr && title[0] != '\0')
     {
-        const ImVec2 tsz = cd::ui::chroma::measure_text_px(title, 1.14F);
-        const float tx = (tsz.x < (tw - 6.0F)) ? (p0.x + (tw - tsz.x) * 0.5F) : (p0.x + 4.0F);
-        w.draw_list->AddText(ImVec2(tx, w1.y + 2.0F), IM_COL32(238, 243, 252, 255), title, nullptr, 1.14F);
+        const ImVec2 tsz = cd::ui::chroma::measure_text_px(title, 1.12F);
+        const float tx = (tsz.x < (tw - 4.0F)) ? (p0.x + (tw - tsz.x) * 0.5F) : (p0.x + 3.0F);
+        w.draw_list->AddText(ImVec2(tx, w1.y + 1.5F), IM_COL32(238, 243, 252, 255), title, nullptr, 1.12F);
     }
     if (subtitle != nullptr && subtitle[0] != '\0')
     {
-        const ImVec2 ssz = cd::ui::chroma::measure_text_px(subtitle, 1.02F);
-        const float sx = (ssz.x < (tw - 6.0F)) ? (p0.x + (tw - ssz.x) * 0.5F) : (p0.x + 4.0F);
-        w.draw_list->AddText(ImVec2(sx, w1.y + 12.5F), IM_COL32(142, 178, 220, 235), subtitle, nullptr, 1.02F);
+        const ImVec2 ssz = cd::ui::chroma::measure_text_px(subtitle, 1.00F);
+        const float sx = (ssz.x < (tw - 4.0F)) ? (p0.x + (tw - ssz.x) * 0.5F) : (p0.x + 3.0F);
+        w.draw_list->AddText(ImVec2(sx, w1.y + 12.0F), IM_COL32(142, 178, 220, 235), subtitle, nullptr, 1.00F);
     }
     w.draw_list->PopClipRect();
 
@@ -5967,6 +6301,56 @@ inline bool IconTile(const char* str_id, cd::ui::chroma::IconKind icon,
         return true;
     }
     return false;
+}
+
+inline void ContextAssetPreview3D(const char* str_id, cd::ui::chroma::IconKind icon,
+                                  const char* title, const char* subtitle,
+                                  const char* category_tag,
+                                  ImVec2 size_arg = ImVec2(-1.0F, 92.0F),
+                                  ImU32 icon_col = 0U) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || str_id == nullptr) return;
+    auto& w = st.window_stack.back();
+    const float avail_w = std::max(64.0F, (w.pos.x + w.size.x - 6.0F) - w.cursor.x);
+    const float pw = (size_arg.x > 0.0F) ? size_arg.x : avail_w;
+    const float ph = std::max(58.0F, size_arg.y);
+
+    const ImVec2 p0 = w.cursor;
+    const ImVec2 p1 { p0.x + pw, p0.y + ph };
+    st.last_item_id = GetID(str_id);
+    detail::advance_item(w, p0, p1);
+
+    const ImVec2 w0 { p0.x + 1.0F, p0.y + 1.0F };
+    const ImVec2 w1 { p1.x - 1.0F, p1.y - 22.0F };
+    const ImU32 ic = (icon_col != 0U) ? icon_col : st.theme.accent_bright;
+
+    detail::DrawAssetPreview(w.draw_list, w0, w1, icon, title, ic, st.anim_time * 1.15F, true);
+
+    // Top-left "LIVE 3D PREVIEW" badge + Top-right mini X/Y/Z axis triad
+    w.draw_list->AddRectFilled(ImVec2(w0.x + 3.0F, w0.y + 3.0F), ImVec2(w0.x + 56.0F, w0.y + 15.0F),
+                               IM_COL32(10, 14, 22, 200), 2.0F);
+    const char* badge = (category_tag != nullptr && category_tag[0] != '\0') ? category_tag : "3D PREVIEW";
+    w.draw_list->AddText(ImVec2(w0.x + 6.0F, w0.y + 4.5F), IM_COL32(130, 215, 255, 245), badge, nullptr, 0.96F);
+
+    const ImVec2 tc { w1.x - 12.0F, w0.y + 12.0F };
+    w.draw_list->AddLine(tc, ImVec2(tc.x + 8.0F, tc.y + 2.0F), IM_COL32(245, 78, 78, 235), 1.3F);
+    w.draw_list->AddLine(tc, ImVec2(tc.x, tc.y - 8.0F), IM_COL32(78, 235, 115, 235), 1.3F);
+    w.draw_list->AddLine(tc, ImVec2(tc.x - 6.0F, tc.y + 5.0F), IM_COL32(78, 155, 255, 235), 1.3F);
+
+    // Bottom info strip inside the preview widget
+    w.draw_list->AddRectFilled(ImVec2(p0.x, w1.y), p1, IM_COL32(14, 18, 26, 250));
+    w.draw_list->PushClipRect(ImVec2(p0.x + 3.0F, w1.y), ImVec2(p1.x - 3.0F, p1.y));
+    if (title != nullptr && title[0] != '\0')
+    {
+        w.draw_list->AddText(ImVec2(p0.x + 5.0F, w1.y + 2.0F), IM_COL32(242, 247, 255, 255), title, nullptr, 1.12F);
+    }
+    if (subtitle != nullptr && subtitle[0] != '\0')
+    {
+        w.draw_list->AddText(ImVec2(p0.x + 5.0F, w1.y + 12.0F), IM_COL32(142, 182, 228, 235), subtitle, nullptr, 0.98F);
+    }
+    w.draw_list->PopClipRect();
+    w.draw_list->AddRect(p0, p1, IM_COL32(52, 68, 92, 225), 2.0F, 0, 1.0F);
 }
 
 inline bool IconButton(const char* label, cd::ui::chroma::IconKind icon,

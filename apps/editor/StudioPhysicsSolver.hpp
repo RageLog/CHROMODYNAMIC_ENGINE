@@ -1114,16 +1114,16 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
         }
     }
 
-    // 2. Full-Width Studio Ribbon Toolbar (y = 28..60, bridging MainMenuBar and DockSpace)
+    // 2. Full-Width Frameless Studio Ribbon Toolbar (y = 25..54, bridging MainMenuBar and DockSpace)
     if (sw > 400.0F)
     {
         auto& cst = cd::ui::chroma::state();
-        ImGui::SetNextWindowPos(ImVec2(0.0F, 28.0F), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(sw, 32.0F), ImGuiCond_Always);
-        ImGui::SetNextWindowBgAlpha(0.98F);
+        ImGui::SetNextWindowPos(ImVec2(0.0F, 25.0F), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(sw, 29.0F), ImGuiCond_Always);
+        ImGui::SetNextWindowBgAlpha(1.0F);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0F, 5.0F));
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(5.0F, 4.0F));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0F, 4.0F));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0F, 3.0F));
         if (ImGui::Begin("##studio_viewport_hud", nullptr,
                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
                 ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav))
@@ -1353,8 +1353,8 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
         auto& cst = cd::ui::chroma::state();
         const float vp_x0 = std::round(sw * cst.dock_left_w_ratio);
         const float vp_x1 = std::round(sw * (1.0F - cst.dock_right_w_ratio));
-        const float vp_y0 = 60.0F;
-        const float vp_y1 = std::round(60.0F + std::max(100.0F, sh - 60.0F) * (1.0F - cst.dock_bottom_h_ratio));
+        const float vp_y0 = 54.0F;
+        const float vp_y1 = std::round(54.0F + std::max(100.0F, sh - 54.0F) * (1.0F - cst.dock_bottom_h_ratio));
         const float vp_w  = vp_x1 - vp_x0;
         const float vp_h  = vp_y1 - vp_y0;
 
@@ -1607,8 +1607,8 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
     const auto& ui_st = cd::ui::chroma::state();
     const float vp_min_x = sw * ui_st.dock_left_w_ratio;
     const float vp_max_x = sw * (1.0F - ui_st.dock_right_w_ratio);
-    const float vp_min_y = 60.0F;
-    const float vp_max_y = 60.0F + std::max(100.0F, sh - 60.0F) * (1.0F - ui_st.dock_bottom_h_ratio);
+    const float vp_min_y = 54.0F;
+    const float vp_max_y = 54.0F + std::max(100.0F, sh - 54.0F) * (1.0F - ui_st.dock_bottom_h_ratio);
     const bool mouse_in_central_viewport =
         (mouse_px.x > vp_min_x && mouse_px.x < vp_max_x &&
          mouse_px.y > vp_min_y && mouse_px.y < vp_max_y);

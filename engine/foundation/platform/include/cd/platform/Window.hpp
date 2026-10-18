@@ -209,6 +209,8 @@ struct WindowDesc
     /// Show the window immediately on creation. Tests may want false so a
     /// hidden window can be hit by Vulkan surface tests without flicker.
     bool visible { true };
+    /// When true, create a frameless custom-chrome window (WS_POPUP) with zero OS titlebar/border waste.
+    bool frameless { false };
 };
 
 // ---- Interface ------------------------------------------------------------
@@ -231,6 +233,10 @@ public:
     [[nodiscard]] virtual bool should_close() const noexcept = 0;
     /// Programmatic close request. Subsequent `pump_events` returns false.
     virtual void request_close() noexcept = 0;
+
+    /// Minimize or toggle maximize for custom frameless titlebars.
+    virtual void minimize() noexcept {}
+    virtual void toggle_maximize() noexcept {}
 
     /// Native handles for swapchain integration. The pair feeds straight
     /// into `cd::rhi::SwapchainDesc::window_handle` / `display_handle`.

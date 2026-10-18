@@ -580,8 +580,8 @@ inline void draw_studio_main_menu_bar(StateT& s, float dt, LogFn&& log_push)
     std::snprintf(telem_buf, sizeof(telem_buf),
                   "Entities: %zu | Lights: %zu | %5.0f FPS (%.2f ms)",
                   s.entities.size(), s.lights.size(), fps, frame_ms);
-    const float telem_w = ImGui::CalcTextSize(telem_buf).x + 18.0F;
-    ImGui::SameLine( std::max(560.0F, ImGui::GetWindowWidth() - telem_w) );
+    const float telem_w = ImGui::CalcTextSize(telem_buf).x + 88.0F;
+    ImGui::SameLine( std::max(540.0F, ImGui::GetWindowWidth() - telem_w) );
     ImGui::TextColored(ImVec4(0.45F, 0.95F, 0.65F, 1.0F), "%s", telem_buf);
 
     ImGui::EndMainMenuBar();
