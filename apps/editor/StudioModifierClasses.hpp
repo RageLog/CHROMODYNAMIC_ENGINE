@@ -968,6 +968,15 @@ struct ActiveContactDebug
     float           penetration {};
 };
 
+struct ContextAssetItem
+{
+    std::string              name       {};
+    std::string              path       {};
+    int                      kind       { 1 }; // 1 = 3D Object/Mesh, 2 = Texture, 3 = Material, 4 = Project/Scene
+    cd::ui::chroma::IconKind icon       { cd::ui::chroma::IconKind::kMesh3D };
+    std::uint32_t            accent_col { 0xFFFFB446U };
+};
+
 struct StudioRuntimeWorld
 {
     bool                                                  initialized               { false };
@@ -1004,19 +1013,21 @@ struct StudioRuntimeWorld
     float                                                 peak_fps                  { 0.0F };
     std::array<float, 64>                                 frame_ms_history          {};
     std::size_t                                           frame_ms_cursor           { 0 };
-    // Multi-Project, Multi-World, Multi-Level & Layer Ecosystem state
-    std::string                                           active_project_name       { "ChromodynamicMasterShowcase" };
-    std::string                                           active_world_name         { "World 1: Ultra-FPS & Physics" };
-    std::string                                           active_level_name         { "1.1 Clean Empty Sandbox (Ultra-FPS)" };
+    // Multi-Project, Multi-World, Multi-Level & Layer Ecosystem state (Starts as Clean Empty Project!)
+    std::string                                           active_project_name       { "Empty_Project" };
+    std::string                                           active_world_name         { "Default_World" };
+    std::string                                           active_level_name         { "Empty_Stage" };
     std::string                                           active_layer_name         { "Default" };
     char                                                  new_layer_name_buf[32]    { "Gameplay" };
     char                                                  new_level_name_buf[48]    { "Custom_Arena" };
-    // Folder Tree & Content/Asset Browser (Context Window) state
-    std::string                                           current_content_folder    { "assets" };
+    // Disk Explorer -> Active Context Two-Stage Asset Pipeline state
+    std::string                                           current_content_folder    { "showcases" };
     char                                                  content_search_filter[64] {};
-    int                                                   content_type_filter       { 0 }; // 0=All, 1=Meshes, 2=Textures, 3=Materials, 4=Scenes/Shaders
-    std::string                                           selected_content_asset    { "assets/samples/Sponza/Sponza.gltf" };
-    std::string                                           last_asset_status_msg     { "Ready — Select or Drag Mesh/Texture onto any 3D Object" };
+    int                                                   content_type_filter       { 0 }; // 0=All, 1=Objects/Meshes, 2=Textures, 3=Materials, 4=Projects
+    std::string                                           selected_content_asset    {};
+    std::string                                           last_asset_status_msg     { "Empty Project Ready — Select a Project (.cdproj) or Load Objects/Textures from Disk to Context" };
+    std::vector<ContextAssetItem>                         loaded_context_assets     {};
+    int                                                   selected_context_idx      { -1 };
     bool                                                  is_dragging_asset_mesh    { false };
     std::string                                           drag_asset_mesh_id        {};
     bool                                                  is_dragging_asset_texture { false };
@@ -1045,6 +1056,39 @@ struct StudioRuntimeWorld
     float                                                 hud_toast_timer           { 0.0F };
     std::string                                           pre_pie_scene_snapshot    {};
     std::uint32_t                                         pre_pie_selected_id       { 0 };
+
+    [[nodiscard]] bool is_asset_in_context(std::string_view path) const noexcept
+    {
+        for (const auto& item : loaded_context_assets)
+        {
+            if (item.path == path) return true;
+        }
+        return false;
+    }
+
+    bool load_asset_into_context(const ContextAssetItem& item)
+    {
+        for (std::size_t i = 0; i < loaded_context_assets.size(); ++i)
+        {
+            if (loaded_context_assets[i].path == item.path)
+            {
+                selected_context_idx = static_cast<int>(i);
+                return false;
+            }
+        }
+        loaded_context_assets.push_back(item);
+        selected_context_idx = static_cast<int>(loaded_context_assets.size()) - 1;
+        return true;
+    }
+
+    bool load_asset_into_context(std::string_view name, std::string_view path, std::uint8_t kind)
+    {
+        ContextAssetItem item {};
+        item.name = std::string(name);
+        item.path = std::string(path);
+        item.kind = kind;
+        return load_asset_into_context(item);
+    }
 };
 
 inline StudioRuntimeWorld& studio_world() noexcept

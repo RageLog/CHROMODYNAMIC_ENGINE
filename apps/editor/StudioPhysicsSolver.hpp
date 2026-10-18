@@ -1128,40 +1128,63 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
                 ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav))
         {
-            // Group 1 (Left): [+ Create] + Stage / Level Selector
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12F, 0.56F, 0.34F, 1.0F));
-            if (ImGui::SmallButton("+ Create"))
+            // Group 1 (Left): [+ Create] + [New Empty] + Stage / Project Selector
+            if (ImGui::IconButton("Create##rib_create", cd::ui::chroma::IconKind::kPlus,
+                                  IM_COL32(95, 245, 175, 255), false, ImVec2(64.0F, 20.0F)))
             {
                 cst.workspace_mode = 0;
                 w.focus_bottom_node_catalog_tab = true;
                 ImGui::OpenPopup("studio_viewport_context_menu");
             }
-            ImGui::PopStyleColor();
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Spawn 3D Object / Open 250-Construct Catalog (Tab 2)");
+                ImGui::SetTooltip("Spawn 3D Object / Open 250-Construct Catalog");
 
             ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16F, 0.21F, 0.29F, 1.0F));
+            if (ImGui::IconButton("New Empty##rib_empty", cd::ui::chroma::IconKind::kFileScene,
+                                  IM_COL32(130, 210, 255, 255),
+                                  w.active_project_name == "Empty_Project", ImVec2(82.0F, 20.0F)))
+            {
+                reset_to_clean_empty_project(s, log_push);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Reset to Clean Empty Project (Ground + Studio Lighting, 0 Demo Objects)");
+
+            ImGui::SameLine();
             std::string short_lvl = w.active_level_name;
             if (const auto paren = short_lvl.find(" ("); paren != std::string::npos)
                 short_lvl = short_lvl.substr(0, paren);
-            if (short_lvl.size() > 34U)
-                short_lvl = short_lvl.substr(0, 32U) + "..";
-            const std::string lvl_btn = "Stage: " + short_lvl + " v##ribbon_lvl";
-            if (ImGui::SmallButton(lvl_btn.c_str()))
+            if (short_lvl.size() > 22U)
+                short_lvl = short_lvl.substr(0, 20U) + "..";
+            const std::string lvl_btn = short_lvl + "##ribbon_lvl";
+            if (ImGui::IconButton(lvl_btn.c_str(), cd::ui::chroma::IconKind::kWorld,
+                                  IM_COL32(105, 205, 255, 255), false, ImVec2(148.0F, 20.0F)))
+            {
                 ImGui::OpenPopup("ribbon_world_level_popup");
-            ImGui::PopStyleColor();
+            }
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Active Stage: %s (Click to switch World / Level)", w.active_level_name.c_str());
+                ImGui::SetTooltip("Active Project: %s | Stage: %s\n(Click to open Sample Projects from Disk or switch Stage)",
+                                  w.active_project_name.c_str(), w.active_level_name.c_str());
             if (ImGui::BeginPopup("ribbon_world_level_popup"))
             {
-                const auto* proj = s.cd_world.project();
-                const int num_worlds = proj ? static_cast<int>(proj->world_names().size()) : 6;
-                const int num_levels = proj ? static_cast<int>(proj->level_count()) : 15;
                 ImGui::TextColored(ImVec4(0.45F, 0.86F, 1.0F, 1.0F),
-                                   "Project: %s (%d Worlds, %d Levels)",
-                                   w.active_project_name.c_str(), num_worlds, num_levels);
+                                   "Active Project: %s (%s)",
+                                   w.active_project_name.c_str(), w.active_level_name.c_str());
                 ImGui::Separator();
+                if (ImGui::MenuItem("New Empty Project (Clean Stage)"))
+                {
+                    reset_to_clean_empty_project(s, log_push);
+                }
+                if (ImGui::BeginMenu("Open Sample Project from Disk (showcases/*.cdproj)"))
+                {
+                    for (std::size_t si = 0; si < kShowcaseCatalog.size(); ++si)
+                    {
+                        if (ImGui::MenuItem(kShowcaseCatalog[si].title))
+                            load_showcase_project_by_index(s, si, log_push);
+                    }
+                    ImGui::EndMenu();
+                }
+                ImGui::Separator();
+                const auto* proj = s.cd_world.project();
                 std::string deferred_popup_level {};
                 if (proj)
                 {
@@ -1188,16 +1211,6 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
                 {
                     (void)switch_to_project_level(s, deferred_popup_level, log_push);
                 }
-                ImGui::Separator();
-                if (ImGui::BeginMenu("Load Showcase Project (.cdproj)"))
-                {
-                    for (std::size_t si = 0; si < kShowcaseCatalog.size(); ++si)
-                    {
-                        if (ImGui::MenuItem(kShowcaseCatalog[si].title))
-                            load_showcase_project_by_index(s, si, log_push);
-                    }
-                    ImGui::EndMenu();
-                }
                 ImGui::EndPopup();
             }
 
@@ -1205,21 +1218,27 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
             ImGui::TextDisabled("|");
             ImGui::SameLine();
 
-            // Group 2 (Transform Gizmo & Snap): Move / Rot / Scale | Snap / Floor
+            // Group 2 (Transform Gizmo & Snap): Icon-driven Move / Rot / Scale | Snap / Floor
             const bool is_t = (s.gizmo_state.mode == GizmoMode::kTranslate);
             const bool is_r = (s.gizmo_state.mode == GizmoMode::kRotate);
             const bool is_s = (s.gizmo_state.mode == GizmoMode::kScale);
-            ImGui::PushStyleColor(ImGuiCol_Button, is_t ? ImVec4(0.15F, 0.52F, 0.91F, 1.0F) : ImVec4(0.15F, 0.18F, 0.24F, 1.0F));
-            if (ImGui::SmallButton("Move(1)")) s.gizmo_state.mode = GizmoMode::kTranslate;
-            ImGui::PopStyleColor();
+            if (ImGui::IconButton("Move##rib_t", cd::ui::chroma::IconKind::kTranslate,
+                                  IM_COL32(255, 115, 115, 255), is_t, ImVec2(56.0F, 20.0F)))
+            {
+                s.gizmo_state.mode = GizmoMode::kTranslate;
+            }
             ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Button, is_r ? ImVec4(0.15F, 0.52F, 0.91F, 1.0F) : ImVec4(0.15F, 0.18F, 0.24F, 1.0F));
-            if (ImGui::SmallButton("Rot(2)")) s.gizmo_state.mode = GizmoMode::kRotate;
-            ImGui::PopStyleColor();
+            if (ImGui::IconButton("Rot##rib_r", cd::ui::chroma::IconKind::kRotate,
+                                  IM_COL32(115, 235, 145, 255), is_r, ImVec2(50.0F, 20.0F)))
+            {
+                s.gizmo_state.mode = GizmoMode::kRotate;
+            }
             ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Button, is_s ? ImVec4(0.15F, 0.52F, 0.91F, 1.0F) : ImVec4(0.15F, 0.18F, 0.24F, 1.0F));
-            if (ImGui::SmallButton("Scale(3)")) s.gizmo_state.mode = GizmoMode::kScale;
-            ImGui::PopStyleColor();
+            if (ImGui::IconButton("Scale##rib_s", cd::ui::chroma::IconKind::kScale,
+                                  IM_COL32(115, 185, 255, 255), is_s, ImVec2(58.0F, 20.0F)))
+            {
+                s.gizmo_state.mode = GizmoMode::kScale;
+            }
 
             ImGui::SameLine();
             ImGui::Checkbox("Snap", &w.grid_snap_enabled);
@@ -1229,41 +1248,37 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
 
             // Group 3 (Center Transport Deck — centered over the 3D Viewport)
             ImGui::SameLine();
-            if (ImGui::GetCursorScreenPos().x < sw * 0.43F)
+            if (ImGui::GetCursorScreenPos().x < sw * 0.44F)
             {
-                ImGui::SetCursorScreenPos(ImVec2(sw * 0.43F, ImGui::GetCursorScreenPos().y));
+                ImGui::SetCursorScreenPos(ImVec2(sw * 0.44F, ImGui::GetCursorScreenPos().y));
             }
             if (!s.pie_playing)
             {
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12F, 0.62F, 0.35F, 1.0F));
-                if (ImGui::SmallButton("> PLAY (F5)"))
+                if (ImGui::IconButton("Play (F5)##rib_play", cd::ui::chroma::IconKind::kPlay,
+                                      IM_COL32(85, 245, 155, 255), false, ImVec2(78.0F, 20.0F)))
+                {
                     enter_pie_play_mode(s, log_push);
-                ImGui::PopStyleColor();
+                }
             }
             else
             {
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.78F, 0.22F, 0.22F, 1.0F));
-                if (ImGui::SmallButton("STOP (Esc)"))
+                if (ImGui::IconButton("Stop (Esc)##rib_stop", cd::ui::chroma::IconKind::kStop,
+                                      IM_COL32(255, 105, 105, 255), true, ImVec2(82.0F, 20.0F)))
+                {
                     exit_pie_play_mode(s, log_push);
-                ImGui::PopStyleColor();
+                }
             }
             ImGui::SameLine();
-            if (w.simulate_physics_in_edit)
+            if (ImGui::IconButton(w.simulate_physics_in_edit ? "Sim ON##rib_sim" : "Sim OFF##rib_sim",
+                                  cd::ui::chroma::IconKind::kPhysics,
+                                  w.simulate_physics_in_edit ? IM_COL32(95, 235, 215, 255) : IM_COL32(245, 185, 95, 255),
+                                  w.simulate_physics_in_edit, ImVec2(72.0F, 20.0F)))
             {
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14F, 0.45F, 0.52F, 1.0F));
-                if (ImGui::SmallButton("|| Sim ON"))
-                    w.simulate_physics_in_edit = false;
-                ImGui::PopStyleColor();
-            }
-            else
-            {
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.45F, 0.34F, 0.16F, 1.0F));
-                if (ImGui::SmallButton("> Sim PAUSED"))
-                    w.simulate_physics_in_edit = true;
-                ImGui::PopStyleColor();
+                w.simulate_physics_in_edit = !w.simulate_physics_in_edit;
             }
             ImGui::SameLine();
-            if (ImGui::SmallButton("Step"))
+            if (ImGui::IconButton("Step##rib_step", cd::ui::chroma::IconKind::kStep,
+                                  IM_COL32(180, 210, 250, 255), false, ImVec2(52.0F, 20.0F)))
             {
                 w.simulate_physics_in_edit = false;
                 w.step_single_frame        = true;
@@ -1272,20 +1287,19 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
             if (ImGui::SmallButton("Reset(R)"))
                 reset_physics_to_home_positions(s, log_push);
             ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.46F, 0.26F, 0.18F, 1.0F));
-            if (ImGui::SmallButton("Shoot(B)"))
+            if (ImGui::IconButton("Shoot(B)##rib_shoot", cd::ui::chroma::IconKind::kSphere,
+                                  IM_COL32(255, 165, 95, 255), false, ImVec2(72.0F, 20.0F)))
+            {
                 shoot_physics_ball_from_camera(s, log_push);
-            ImGui::PopStyleColor();
+            }
             ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Button, w.autopilot_play_active
-                ? ImVec4(0.14F, 0.62F, 0.38F, 1.0F)
-                : ImVec4(0.18F, 0.26F, 0.38F, 1.0F));
-            if (ImGui::SmallButton(w.autopilot_play_active ? "Auto-Bot: ON" : "Auto-Bot(P)"))
+            if (ImGui::IconButton(w.autopilot_play_active ? "Bot ON##rib_bot" : "Bot(P)##rib_bot",
+                                  cd::ui::chroma::IconKind::kAvatar,
+                                  IM_COL32(115, 240, 175, 255), w.autopilot_play_active, ImVec2(66.0F, 20.0F)))
             {
                 if (!s.pie_playing) enter_pie_play_mode(s, log_push);
                 w.autopilot_play_active = !w.autopilot_play_active;
             }
-            ImGui::PopStyleColor();
 
             // Group 4 (Right): Workspace Mode Switcher + Theme Cycle
             ImGui::SameLine();

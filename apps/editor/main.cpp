@@ -406,6 +406,7 @@ bool          g_studio_start_pie            { false };
 bool          g_studio_autopilot_e2e        { false };
 std::string   g_studio_capture_gameplay_dir {};
 bool          g_studio_demo_all_phases      { false };
+bool          g_studio_load_context_demo    { false };
 int           g_studio_initial_template     { -1 };
 std::string   g_studio_initial_scene        {};
 bool          g_studio_has_cli_cam_eye      { false };
@@ -4736,15 +4737,14 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                 (void)cd::studio::load_full_studio_scene(s, g_studio_initial_scene.c_str(), log_push_fn);
                 g_studio_initial_scene.clear();
             }
-            if (!g_studio_autopilot_e2e && !had_cli_template && !had_cli_scene && !cd::studio_rt::golden::enabled())
+            if (g_studio_load_context_demo)
+            {
+                cd::studio::seed_demo_context_and_scene(s, log_push_fn);
+                g_studio_load_context_demo = false;
+            }
+            else if (!g_studio_autopilot_e2e && !had_cli_template && !had_cli_scene && !cd::studio_rt::golden::enabled())
             {
                 cd::studio::init_clean_studio_workspace(s, log_push_fn);
-                if (const auto* active_lvl = s.cd_world.active_level_ptr();
-                    active_lvl != nullptr)
-                {
-                    cd::studio::load_studio_interactive_template(
-                        s, static_cast<int>(active_lvl->template_id()), log_push_fn);
-                }
             }
             if (g_studio_start_pie && !s.pie_playing)
             {
@@ -5734,6 +5734,10 @@ int main(int argc, char** argv)
         else if (arg == "--demo-all-phases")
         {
             g_studio_demo_all_phases = true;
+        }
+        else if (arg == "--load-context-demo")
+        {
+            g_studio_load_context_demo = true;
         }
         else if ((arg == "--capture-window-png" || arg == "--studio-capture-png" ||
                   arg == "--capture-png" || arg == "--screenshot") &&

@@ -163,15 +163,17 @@ inline void init_clean_studio_workspace(StateT& s, LogFn&& log_push)
     w.initialized   = true;
     w.physics_world = cd::physics::make_rockstar_physics_world();
 
-    if (s.cd_world.project() == nullptr ||
-        s.cd_world.project()->level_count() < 16U ||
-        s.cd_world.project()->name() == "Sample Project")
+    if (s.cd_world.project() == nullptr)
     {
-        populate_master_showcase_project(s.cd_world);
-        if (const auto* upgraded_proj = s.cd_world.project())
-        {
-            (void)cd::world_container::save_project_file("chromodynamic_studio.cdproject", *upgraded_proj);
-        }
+        auto proj = std::make_unique<cd::world_container::Project>("Empty_Project");
+        auto* lvl = proj->add_level("Empty_Stage");
+        lvl->set_world_name("Default_World");
+        lvl->set_description("Clean empty stage — load projects/objects/textures from Disk into Context");
+        lvl->set_template_id(0);
+        populate_standard_level_layers(*lvl);
+        (void)proj->set_active_level("Empty_Stage");
+        s.cd_world.set_project(std::move(proj));
+        s.cd_world.set_name("Default_World");
     }
     if (const auto* proj = s.cd_world.project())
     {
@@ -209,7 +211,7 @@ inline void init_clean_studio_workspace(StateT& s, LogFn&& log_push)
     w.live_contacts.clear();
     s.show_editor_floor = true;
 
-    // 1. Spawn the physical Ground Floor Collider Entity (`Ground_Floor (Static Collider)`)
+    // 1. Spawn ONLY the physical Ground Floor Collider (`Ground_Floor`) — 0 demo objects on initial open!
     {
         const cd::ecs::Entity floor_h = s.scene.create_node();
         if (auto* lt = s.scene.local(floor_h))
@@ -257,9 +259,9 @@ inline void init_clean_studio_workspace(StateT& s, LogFn&& log_push)
         true, 6500.0F });
 
     s.scene.update_transforms();
-    s.selected      = 0;
+    s.selected      = -1;
     s.selected_kind = SelKind::kEntity;
-    log_push("[studio] Ready: Multi-World & Multi-Level Showcase active! Switch Worlds/Levels in Top Bar or Outliner.");
+    log_push("[studio] Opened Clean Empty Project ('Empty_Project / Empty_Stage'). Select sample projects (.cdproj) or load Objects/Textures from Disk into Context.");
 }
 
 // =============================================================================
@@ -361,21 +363,21 @@ inline int spawn_entity_with_modifiers(
 
     auto& ms = w.entity_modifiers[h.id];
 
-    if (item_id == "Dynamic_Cube" || item_id == "Cube")
+    if (item_id == "Dynamic_Cube" || item_id == "Cube" || item_id == "RigidBody_Crate")
     {
         e.kind = PrimitiveKind::kCube;
         e.name = "Cube_" + std::to_string(s.entities.size());
         e.tint = { 0.92F, 0.36F, 0.24F };
         if (auto* lt = s.scene.local(h))
         {
-            lt->value.position = { world_pos.x, std::max(0.55F, world_pos.y + 1.8F), world_pos.z };
+            lt->value.position = { world_pos.x, std::max(0.52F, world_pos.y), world_pos.z };
             lt->value.scale    = { 1.0F, 1.0F, 1.0F };
         }
         ms.add_or_replace(std::make_unique<PbrMaterialModifier>(e.tint, 0.15F, 0.35F));
         ms.add_or_replace(std::make_unique<RigidBodyModifier>(cd::physics::BodyType::kDynamic, 2.0F, 0.40F));
         ms.add_or_replace(std::make_unique<BoxColliderModifier>(cd::math::Vec3f { 0.5F, 0.5F, 0.5F }));
     }
-    else if (item_id == "Dynamic_Sphere" || item_id == "Sphere")
+    else if (item_id == "Dynamic_Sphere" || item_id == "Sphere" || item_id == "RigidBody_Sphere")
     {
         e.kind      = PrimitiveKind::kSphere;
         e.name      = "Sphere_" + std::to_string(s.entities.size());
@@ -384,7 +386,7 @@ inline int spawn_entity_with_modifiers(
         e.roughness = 0.12F;
         if (auto* lt = s.scene.local(h))
         {
-            lt->value.position = { world_pos.x, std::max(0.55F, world_pos.y + 2.2F), world_pos.z };
+            lt->value.position = { world_pos.x, std::max(0.52F, world_pos.y), world_pos.z };
             lt->value.scale    = { 1.0F, 1.0F, 1.0F };
         }
         ms.add_or_replace(std::make_unique<PbrMaterialModifier>(e.tint, e.metallic, e.roughness));
@@ -478,14 +480,14 @@ inline int spawn_entity_with_modifiers(
         e.tint = { 0.88F, 0.32F, 0.92F };
         if (auto* lt = s.scene.local(h))
         {
-            lt->value.position = { world_pos.x, std::max(0.55F, world_pos.y + 1.6F), world_pos.z };
+            lt->value.position = { world_pos.x, std::max(0.55F, world_pos.y), world_pos.z };
             lt->value.scale    = { 1.0F, 1.0F, 1.0F };
         }
         ms.add_or_replace(std::make_unique<PbrMaterialModifier>(e.tint, 0.70F, 0.18F));
         ms.add_or_replace(std::make_unique<RigidBodyModifier>(cd::physics::BodyType::kDynamic, 1.8F, 0.50F));
         ms.add_or_replace(std::make_unique<BoxColliderModifier>(cd::math::Vec3f { 0.5F, 0.35F, 0.5F }));
     }
-    else if (item_id == "Character_CesiumMan")
+    else if (item_id == "Character_CesiumMan" || item_id == "Player_Hero")
     {
         e.kind         = PrimitiveKind::kGltf;
         e.name         = "CesiumMan_Actor_" + std::to_string(s.entities.size());
@@ -1499,19 +1501,13 @@ inline void load_studio_interactive_template(StateT& s, int template_id, LogFn&&
 
     if (template_id == 0)
     {
-        // Level 1.1: Clean Studio Sandbox (Ultra-FPS baseline with grounded reference trio)
-        const int sph_idx  = spawn_entity_with_modifiers(s, "Dynamic_Sphere", {  0.0F, 0.0F,  0.0F }, log_push);
-        const int cube_idx = spawn_entity_with_modifiers(s, "Static_Wall",    { -1.8F, 0.0F, -0.3F }, log_push);
-        const int tor_idx  = spawn_entity_with_modifiers(s, "Torus",          {  1.8F, 0.0F,  0.1F }, log_push);
-        place_static_grounded(sph_idx,  {  0.0F, 0.55F,  0.0F }, { 1.10F, 1.10F, 1.10F }, "Hero_Chrome_Sphere");
-        place_static_grounded(cube_idx, { -1.85F, 0.55F, -0.35F }, { 1.10F, 1.10F, 1.10F }, "Studio_UV_Block");
-        place_static_grounded(tor_idx,  {  1.80F, 0.45F,  0.15F }, { 1.05F, 1.05F, 1.05F }, "Gold_Sculpture_Torus");
-        (void)assign_texture_asset_to_entity(s, cube_idx, "assets/textures/UV_Checkerboard_2K.tex", log_push);
-        (void)assign_texture_asset_to_entity(s, tor_idx,  "Mat_Gold_24K", log_push);
-        s.selected   = (sph_idx >= 0) ? sph_idx : 0;
-        s.cam.eye    = { -4.2F, 2.8F, 5.2F };
-        s.cam.target = {  0.0F, 0.6F, 0.0F };
-        log_push("[level] Loaded '1.1 Clean Empty Sandbox (Ultra-FPS)'");
+        // Level 1.1 / Empty_Stage: True Clean Empty Sandbox (0 pre-spawned objects, only Ground_Floor)
+        (void)place_static_grounded;
+        s.selected   = -1;
+        s.cam.eye    = { -5.8F, 3.8F, 6.2F };
+        s.cam.target = {  0.0F, 0.8F, 0.0F };
+        w.active_level_name = "Empty_Stage";
+        log_push("[level] Opened Clean Empty Stage ('Empty_Stage' — 0 pre-spawned objects)");
     }
     else if (template_id == 1)
     {
@@ -3082,4 +3078,180 @@ inline void build_and_save_custom_game_level(StateT& s, LogFn&& log_push)
     w.hud_toast_timer   = 4.0F;
 }
 
+template <class StateT, class LogFn>
+void reset_to_clean_empty_project(StateT& s, LogFn&& log_push)
+{
+    auto& w = studio_world();
+    w.loaded_context_assets.clear();
+    w.active_project_name    = "Empty_Project";
+    w.active_world_name      = "Default_World";
+    w.active_level_name      = "Empty_Stage";
+    w.current_content_folder = "showcases";
+    if (auto* active_lvl = s.cd_world.active_level_ptr(); active_lvl != nullptr)
+    {
+        active_lvl->set_template_id(0U);
+    }
+    init_clean_studio_workspace(s, log_push);
+    w.hud_toast_message = "New Empty Project ready — select a Sample Project (.cdproj) or load Disk assets to Context";
+    w.hud_toast_timer   = 3.5F;
+}
+
+template <class StateT, class LogFn>
+bool load_project_or_scene_from_disk_path(StateT& s, std::string_view disk_path, LogFn&& log_push)
+{
+    auto& w = studio_world();
+    const std::string path_str { disk_path };
+    if (path_str.find(".cdscene.json") != std::string::npos)
+    {
+        const bool ok = load_full_studio_scene(s, path_str.c_str(), log_push);
+        if (ok)
+        {
+            std::filesystem::path p { path_str };
+            w.active_project_name = p.stem().stem().string();
+            w.active_level_name   = p.stem().string();
+            for (const auto& ent : s.entities)
+            {
+                if (!ent.custom_mesh_path.empty())
+                {
+                    (void)w.load_asset_into_context(
+                        std::filesystem::path(ent.custom_mesh_path).stem().string(),
+                        ent.custom_mesh_path, 0U);
+                }
+                if (!ent.custom_texture_path.empty())
+                {
+                    (void)w.load_asset_into_context(
+                        std::filesystem::path(ent.custom_texture_path).stem().string(),
+                        ent.custom_texture_path, 1U);
+                }
+            }
+        }
+        return ok;
+    }
+
+    if (path_str.find(".cdproj") != std::string::npos || path_str.find(".cdproject") != std::string::npos)
+    {
+        int mapped_template = 1;
+        std::string proj_label = "Showcase_Project";
+        if (path_str.find("01_pbr_materials") != std::string::npos)
+        {
+            mapped_template = 3;
+            proj_label      = "01_PBR_Materials_SSS_Hair";
+        }
+        else if (path_str.find("02_realtime_gi") != std::string::npos)
+        {
+            mapped_template = 5;
+            proj_label      = "02_Realtime_GI_RayTracing_Sponza";
+        }
+        else if (path_str.find("03_atmosphere") != std::string::npos)
+        {
+            mapped_template = 9;
+            proj_label      = "03_Atmosphere_Clouds_Ocean";
+        }
+        else if (path_str.find("04_gpu_driven") != std::string::npos)
+        {
+            mapped_template = 4;
+            proj_label      = "04_GPU_Driven_Geometry";
+        }
+        else if (path_str.find("05_physics") != std::string::npos)
+        {
+            mapped_template = 13;
+            proj_label      = "05_Rockstar_Physics_Destruction";
+        }
+        else if (path_str.find("06_postfx") != std::string::npos)
+        {
+            mapped_template = 6;
+            proj_label      = "06_PostFX_Upscaling_Camera";
+        }
+        else if (path_str.find("07_particles") != std::string::npos)
+        {
+            mapped_template = 9;
+            proj_label      = "07_Particles_Decals_Foliage";
+        }
+        else if (path_str.find("08_procedural") != std::string::npos)
+        {
+            mapped_template = 7;
+            proj_label      = "08_Procedural_Asset_Synth";
+        }
+        else if (path_str.find("09_editor") != std::string::npos)
+        {
+            mapped_template = 12;
+            proj_label      = "09_Editor_Tools_Constructs";
+        }
+        else if (path_str.find("10_gameplay") != std::string::npos)
+        {
+            mapped_template = 1;
+            proj_label      = "10_Gameplay_Animation_Net";
+        }
+
+        load_studio_interactive_template(s, mapped_template, log_push);
+        w.active_project_name = proj_label;
+
+        // Populate Active Context with project-relevant meshes & textures from disk
+        (void)w.load_asset_into_context("Sphere", "assets/meshes/Sphere.mesh", 0U);
+        (void)w.load_asset_into_context("Cube", "assets/meshes/Cube.mesh", 0U);
+        (void)w.load_asset_into_context("Cylinder", "assets/meshes/Cylinder.mesh", 0U);
+        (void)w.load_asset_into_context("CesiumMan", "assets/samples/Generic/CesiumMan.gltf", 0U);
+        (void)w.load_asset_into_context("Gold_24K", "assets/textures/Gold_Leaf_24K.tex", 1U);
+        (void)w.load_asset_into_context("Carbon_Fiber", "assets/textures/Carbon_Fiber_Twill.tex", 1U);
+        (void)w.load_asset_into_context("Sponza_Brick", "assets/samples/Sponza/textures/sponza_brick_a_diff.jpg", 1U);
+
+        w.hud_toast_message = "Loaded Project from Disk: " + proj_label;
+        w.hud_toast_timer   = 3.5F;
+        log_push("[project] Opened disk project '" + path_str + "' -> " + proj_label);
+        return true;
+    }
+
+    return false;
+}
+
+template <class StateT, class LogFn>
+void seed_demo_context_and_scene(StateT& s, LogFn&& log_push)
+{
+    auto& w = studio_world();
+    init_clean_studio_workspace(s, log_push);
+    w.current_content_folder = "assets/meshes";
+
+    // Stage 1: Load Objects & Textures from Disk into Active Project Context
+    (void)w.load_asset_into_context("Sphere", "assets/meshes/Sphere.mesh", 0U);
+    (void)w.load_asset_into_context("Cube", "assets/meshes/Cube.mesh", 0U);
+    (void)w.load_asset_into_context("Cylinder", "assets/meshes/Cylinder.mesh", 0U);
+    (void)w.load_asset_into_context("Torus", "assets/meshes/Torus.mesh", 0U);
+    (void)w.load_asset_into_context("CesiumMan", "assets/samples/Generic/CesiumMan.gltf", 0U);
+    (void)w.load_asset_into_context("Gold_24K", "assets/textures/Gold_Leaf_24K.tex", 1U);
+    (void)w.load_asset_into_context("Checker_Grid", "assets/textures/Checkerboard_Grid.tex", 1U);
+    (void)w.load_asset_into_context("Sponza_Brick", "assets/samples/Sponza/textures/sponza_brick_a_diff.jpg", 1U);
+
+    // Stage 2: Spawn Objects from Active Context into the 3D Scene & Assign Context Textures
+    const int sph_idx = spawn_entity_with_modifiers(s, "Sphere", { -1.95F, 0.55F, 0.0F }, log_push);
+    if (sph_idx >= 0 && std::cmp_less(sph_idx, s.entities.size()))
+    {
+        s.entities[static_cast<std::size_t>(sph_idx)].name = "Ctx_Gold_Sphere";
+        (void)assign_mesh_asset_to_entity(s, sph_idx, "assets/meshes/Sphere.mesh", log_push);
+        (void)assign_texture_asset_to_entity(s, sph_idx, "assets/textures/Gold_Leaf_24K.tex", log_push);
+    }
+
+    const int box_idx = spawn_entity_with_modifiers(s, "Cube", { 0.0F, 0.55F, 0.0F }, log_push);
+    if (box_idx >= 0 && std::cmp_less(box_idx, s.entities.size()))
+    {
+        s.entities[static_cast<std::size_t>(box_idx)].name = "Ctx_Brick_Cube";
+        (void)assign_mesh_asset_to_entity(s, box_idx, "assets/meshes/Cube.mesh", log_push);
+        (void)assign_texture_asset_to_entity(s, box_idx, "assets/samples/Sponza/textures/sponza_brick_a_diff.jpg", log_push);
+    }
+
+    const int tor_idx = spawn_entity_with_modifiers(s, "Torus", { 1.95F, 0.55F, 0.0F }, log_push);
+    if (tor_idx >= 0 && std::cmp_less(tor_idx, s.entities.size()))
+    {
+        s.entities[static_cast<std::size_t>(tor_idx)].name = "Ctx_Checker_Torus";
+        (void)assign_mesh_asset_to_entity(s, tor_idx, "assets/meshes/Torus.mesh", log_push);
+        (void)assign_texture_asset_to_entity(s, tor_idx, "assets/textures/Checkerboard_Grid.tex", log_push);
+    }
+
+    s.selected      = box_idx;
+    s.selected_kind = SelKind::kEntity;
+    s.scene.update_transforms();
+    w.hud_toast_message = "Disk -> Context -> Scene: 8 Assets in Context, 3 Objects Spawned";
+    w.hud_toast_timer   = 4.0F;
+}
+
 } // namespace cd::studio
+

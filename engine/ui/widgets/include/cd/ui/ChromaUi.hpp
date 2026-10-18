@@ -331,6 +331,31 @@ enum class IconKind : std::uint8_t
     kCamera,
     kSave,
     kFolder,
+    kFolderOpen,
+    kFileProject,
+    kFileScene,
+    kMesh3D,
+    kTexture2D,
+    kMaterial,
+    kAvatar,
+    kVehicle,
+    kPhysics,
+    kCollider,
+    kCylinder,
+    kCone,
+    kTorus,
+    kImport,
+    kEyeOpen,
+    kEyeClosed,
+    kLockClosed,
+    kLockOpen,
+    kSparkles,
+    kAudio,
+    kUiWidget,
+    kPlus,
+    kDuplicate,
+    kLayers,
+    kWorld,
     kGear,
     kTrash,
     kSearch,
@@ -819,6 +844,25 @@ public:
         rc.x0 = a.x; rc.y0 = a.y;
         rc.x1 = b.x; rc.y1 = b.y;
         rc.x2 = c.x; rc.y2 = c.y;
+        rc.col0 = col;
+        cmds_.push_back(std::move(rc));
+    }
+
+    void AddTriangle(ImVec2 a, ImVec2 b, ImVec2 c, ImU32 col, float thickness = 1.0F)
+    {
+        AddLine(a, b, col, thickness);
+        AddLine(b, c, col, thickness);
+        AddLine(c, a, col, thickness);
+    }
+
+    void AddQuadFilled(ImVec2 a, ImVec2 b, ImVec2 c, ImVec2 d, ImU32 col)
+    {
+        RecordedCmd rc {};
+        rc.kind = CmdKind::kPolyQuad;
+        rc.x0 = a.x; rc.y0 = a.y;
+        rc.x1 = b.x; rc.y1 = b.y;
+        rc.x2 = c.x; rc.y2 = c.y;
+        rc.x3 = d.x; rc.y3 = d.y;
         rc.col0 = col;
         cmds_.push_back(std::move(rc));
     }
@@ -1352,12 +1396,14 @@ inline void rebuild_fast_font_cache(State& st) noexcept
 inline void DrawIcon(ImDrawList* dl, IconKind kind, ImVec2 c, float r, ImU32 col)
 {
     if (dl == nullptr || r <= 1.0F) return;
+    const ImU32 hi_col  = IM_COL32(255, 255, 255, 210);
+    const ImU32 dim_col = IM_COL32(22, 28, 38, 225);
     switch (kind)
     {
         case IconKind::kPlay:
             dl->AddTriangleFilled(ImVec2(c.x - r * 0.55F, c.y - r * 0.75F),
                                   ImVec2(c.x - r * 0.55F, c.y + r * 0.75F),
-                                  ImVec2(c.x + r * 0.75F, c.y), col);
+                                  ImVec2(c.x + r * 0.78F, c.y), col);
             break;
         case IconKind::kStop:
             dl->AddRectFilled(ImVec2(c.x - r * 0.65F, c.y - r * 0.65F),
@@ -1387,35 +1433,269 @@ inline void DrawIcon(ImDrawList* dl, IconKind kind, ImVec2 c, float r, ImU32 col
                                   ImVec2(c.x, c.y + r * 0.45F), col);
             break;
         case IconKind::kTranslate:
-            dl->AddLine(ImVec2(c.x - r, c.y), ImVec2(c.x + r, c.y), col, 1.6F);
-            dl->AddLine(ImVec2(c.x, c.y - r), ImVec2(c.x, c.y + r), col, 1.6F);
+            dl->AddLine(ImVec2(c.x - r * 0.90F, c.y), ImVec2(c.x + r * 0.90F, c.y), col, 1.6F);
+            dl->AddLine(ImVec2(c.x, c.y - r * 0.90F), ImVec2(c.x, c.y + r * 0.90F), col, 1.6F);
+            dl->AddTriangleFilled(ImVec2(c.x, c.y - r), ImVec2(c.x - r * 0.28F, c.y - r * 0.55F), ImVec2(c.x + r * 0.28F, c.y - r * 0.55F), col);
+            dl->AddTriangleFilled(ImVec2(c.x + r, c.y), ImVec2(c.x + r * 0.55F, c.y - r * 0.28F), ImVec2(c.x + r * 0.55F, c.y + r * 0.28F), col);
             break;
         case IconKind::kRotate:
-            dl->AddCircle(c, r * 0.75F, col, 14, 1.6F);
+            dl->AddCircle(c, r * 0.72F, col, 16, 1.8F);
+            dl->AddTriangleFilled(ImVec2(c.x + r * 0.72F, c.y - r * 0.30F),
+                                  ImVec2(c.x + r * 0.40F, c.y + r * 0.05F),
+                                  ImVec2(c.x + r * 0.98F, c.y + r * 0.12F), col);
             break;
         case IconKind::kScale:
-            dl->AddRect(ImVec2(c.x - r * 0.70F, c.y - r * 0.70F),
-                        ImVec2(c.x + r * 0.70F, c.y + r * 0.70F), col, 1.5F, 0, 1.5F);
+            dl->AddRect(ImVec2(c.x - r * 0.72F, c.y - r * 0.72F),
+                        ImVec2(c.x + r * 0.72F, c.y + r * 0.72F), col, 1.5F, 0, 1.5F);
+            dl->AddRectFilled(ImVec2(c.x - r * 0.72F, c.y - r * 0.10F),
+                              ImVec2(c.x + r * 0.10F, c.y + r * 0.72F), col, 1.0F);
+            break;
+        case IconKind::kSnap:
+            dl->AddRect(ImVec2(c.x - r * 0.75F, c.y - r * 0.75F),
+                        ImVec2(c.x + r * 0.75F, c.y + r * 0.75F), col, 1.0F, 0, 1.3F);
+            dl->AddLine(ImVec2(c.x - r * 0.75F, c.y), ImVec2(c.x + r * 0.75F, c.y), col, 1.1F);
+            dl->AddLine(ImVec2(c.x, c.y - r * 0.75F), ImVec2(c.x, c.y + r * 0.75F), col, 1.1F);
             break;
         case IconKind::kSphere:
-        case IconKind::kNode:
-            dl->AddCircleFilled(c, r * 0.72F, col);
-            break;
-        case IconKind::kCube:
-            dl->AddRectFilled(ImVec2(c.x - r * 0.68F, c.y - r * 0.68F),
-                              ImVec2(c.x + r * 0.68F, c.y + r * 0.68F), col, 2.0F);
-            break;
-        case IconKind::kLight:
-            dl->AddCircleFilled(c, r * 0.48F, col);
-            for (int i = 0; i < 4; ++i)
+        case IconKind::kMaterial:
+            dl->AddCircleFilled(c, r * 0.78F, col, 20);
+            dl->AddCircle(c, r * 0.78F, hi_col, 20, 1.1F);
+            dl->AddCircleFilled(ImVec2(c.x - r * 0.26F, c.y - r * 0.28F), std::max(1.5F, r * 0.24F), hi_col, 10);
+            if (kind == IconKind::kMaterial)
             {
-                const float a = static_cast<float>(i) * (std::numbers::pi_v<float> * 0.5F);
-                dl->AddLine(ImVec2(c.x + std::cos(a) * r * 0.62F, c.y + std::sin(a) * r * 0.62F),
-                            ImVec2(c.x + std::cos(a) * r * 0.95F, c.y + std::sin(a) * r * 0.95F), col, 1.5F);
+                dl->AddCircle(c, r * 0.48F, IM_COL32(255, 255, 255, 110), 16, 1.0F);
             }
             break;
+        case IconKind::kCube:
+        case IconKind::kMesh3D:
+        {
+            // Isometric 3D Cube / Mesh icon
+            const ImVec2 top[4] = {
+                ImVec2(c.x,            c.y - r * 0.88F),
+                ImVec2(c.x + r * 0.82F, c.y - r * 0.42F),
+                ImVec2(c.x,            c.y + r * 0.04F),
+                ImVec2(c.x - r * 0.82F, c.y - r * 0.42F)
+            };
+            dl->AddQuadFilled(top[0], top[1], top[2], top[3], col);
+            dl->AddQuadFilled(top[3], top[2], ImVec2(c.x, c.y + r * 0.88F), ImVec2(c.x - r * 0.82F, c.y + r * 0.42F), col);
+            dl->AddQuadFilled(top[2], top[1], ImVec2(c.x + r * 0.82F, c.y + r * 0.42F), ImVec2(c.x, c.y + r * 0.88F), col);
+            dl->AddLine(top[0], top[1], hi_col, 1.2F);
+            dl->AddLine(top[1], top[2], hi_col, 1.2F);
+            dl->AddLine(top[2], top[3], hi_col, 1.2F);
+            dl->AddLine(top[3], top[0], hi_col, 1.2F);
+            dl->AddLine(top[2], ImVec2(c.x, c.y + r * 0.88F), hi_col, 1.2F);
+            dl->AddLine(top[3], ImVec2(c.x - r * 0.82F, c.y + r * 0.42F), hi_col, 1.1F);
+            dl->AddLine(top[1], ImVec2(c.x + r * 0.82F, c.y + r * 0.42F), hi_col, 1.1F);
+            break;
+        }
+        case IconKind::kCylinder:
+            dl->AddRectFilled(ImVec2(c.x - r * 0.62F, c.y - r * 0.62F),
+                              ImVec2(c.x + r * 0.62F, c.y + r * 0.68F), col, 3.0F);
+            dl->AddRect(ImVec2(c.x - r * 0.62F, c.y - r * 0.62F),
+                        ImVec2(c.x + r * 0.62F, c.y + r * 0.68F), hi_col, 3.0F, 0, 1.1F);
+            dl->AddLine(ImVec2(c.x - r * 0.58F, c.y - r * 0.35F),
+                        ImVec2(c.x + r * 0.58F, c.y - r * 0.35F), hi_col, 1.2F);
+            break;
+        case IconKind::kCone:
+            dl->AddTriangleFilled(ImVec2(c.x, c.y - r * 0.85F),
+                                  ImVec2(c.x - r * 0.78F, c.y + r * 0.75F),
+                                  ImVec2(c.x + r * 0.78F, c.y + r * 0.75F), col);
+            dl->AddTriangle(ImVec2(c.x, c.y - r * 0.85F),
+                            ImVec2(c.x - r * 0.78F, c.y + r * 0.75F),
+                            ImVec2(c.x + r * 0.78F, c.y + r * 0.75F), hi_col, 1.1F);
+            break;
+        case IconKind::kTorus:
+            dl->AddCircleFilled(c, r * 0.80F, col, 20);
+            dl->AddCircleFilled(c, r * 0.34F, dim_col, 16);
+            dl->AddCircle(c, r * 0.80F, hi_col, 20, 1.1F);
+            dl->AddCircle(c, r * 0.34F, hi_col, 16, 1.0F);
+            break;
+        case IconKind::kFolder:
+        case IconKind::kFolderOpen:
+            // Folder tab + body
+            dl->AddRectFilled(ImVec2(c.x - r * 0.85F, c.y - r * 0.68F),
+                              ImVec2(c.x - r * 0.08F, c.y - r * 0.32F), col, 2.0F);
+            dl->AddRectFilled(ImVec2(c.x - r * 0.85F, c.y - r * 0.42F),
+                              ImVec2(c.x + r * 0.85F, c.y + r * 0.72F), col, 2.5F);
+            dl->AddRect(ImVec2(c.x - r * 0.85F, c.y - r * 0.42F),
+                        ImVec2(c.x + r * 0.85F, c.y + r * 0.72F), hi_col, 2.5F, 0, 1.0F);
+            if (kind == IconKind::kFolderOpen)
+            {
+                dl->AddLine(ImVec2(c.x - r * 0.65F, c.y - r * 0.05F),
+                            ImVec2(c.x + r * 0.65F, c.y - r * 0.05F), hi_col, 1.4F);
+            }
+            break;
+        case IconKind::kFileProject:
+        case IconKind::kWorld:
+            // Project / World badge (rounded card + inner globe/star)
+            dl->AddRectFilled(ImVec2(c.x - r * 0.78F, c.y - r * 0.78F),
+                              ImVec2(c.x + r * 0.78F, c.y + r * 0.78F), col, 3.5F);
+            dl->AddRect(ImVec2(c.x - r * 0.78F, c.y - r * 0.78F),
+                        ImVec2(c.x + r * 0.78F, c.y + r * 0.78F), hi_col, 3.5F, 0, 1.2F);
+            dl->AddCircle(c, r * 0.44F, hi_col, 16, 1.3F);
+            dl->AddLine(ImVec2(c.x - r * 0.44F, c.y), ImVec2(c.x + r * 0.44F, c.y), hi_col, 1.1F);
+            dl->AddLine(ImVec2(c.x, c.y - r * 0.44F), ImVec2(c.x, c.y + r * 0.44F), hi_col, 1.1F);
+            break;
+        case IconKind::kFileScene:
+            // 3D Stage / Scene clapper & grid icon
+            dl->AddRectFilled(ImVec2(c.x - r * 0.80F, c.y - r * 0.72F),
+                              ImVec2(c.x + r * 0.80F, c.y + r * 0.72F), col, 2.5F);
+            dl->AddRect(ImVec2(c.x - r * 0.80F, c.y - r * 0.72F),
+                        ImVec2(c.x + r * 0.80F, c.y + r * 0.72F), hi_col, 2.5F, 0, 1.1F);
+            dl->AddTriangleFilled(ImVec2(c.x - r * 0.25F, c.y - r * 0.35F),
+                                  ImVec2(c.x - r * 0.25F, c.y + r * 0.38F),
+                                  ImVec2(c.x + r * 0.42F, c.y + r * 0.02F), hi_col);
+            break;
+        case IconKind::kTexture2D:
+        {
+            // 2x2 Checkerboard Texture Swatch with crisp border
+            const float hr = r * 0.78F;
+            dl->AddRectFilled(ImVec2(c.x - hr, c.y - hr), ImVec2(c.x + hr, c.y + hr), dim_col, 2.0F);
+            dl->AddRectFilled(ImVec2(c.x - hr, c.y - hr), ImVec2(c.x, c.y), col, 1.0F);
+            dl->AddRectFilled(ImVec2(c.x, c.y), ImVec2(c.x + hr, c.y + hr), col, 1.0F);
+            dl->AddRect(ImVec2(c.x - hr, c.y - hr), ImVec2(c.x + hr, c.y + hr), hi_col, 2.0F, 0, 1.2F);
+            break;
+        }
+        case IconKind::kAvatar:
+            // Humanoid Avatar Head + Shoulders Silhouette
+            dl->AddCircleFilled(ImVec2(c.x, c.y - r * 0.38F), r * 0.36F, col, 16);
+            dl->AddCircle(ImVec2(c.x, c.y - r * 0.38F), r * 0.36F, hi_col, 16, 1.0F);
+            dl->AddRectFilled(ImVec2(c.x - r * 0.68F, c.y + r * 0.06F),
+                              ImVec2(c.x + r * 0.68F, c.y + r * 0.78F), col, 4.0F);
+            dl->AddRect(ImVec2(c.x - r * 0.68F, c.y + r * 0.06F),
+                        ImVec2(c.x + r * 0.68F, c.y + r * 0.78F), hi_col, 4.0F, 0, 1.0F);
+            break;
+        case IconKind::kVehicle:
+            // Vehicle Chassis + 2 Wheels
+            dl->AddRectFilled(ImVec2(c.x - r * 0.85F, c.y - r * 0.12F),
+                              ImVec2(c.x + r * 0.85F, c.y + r * 0.42F), col, 2.5F);
+            dl->AddRectFilled(ImVec2(c.x - r * 0.48F, c.y - r * 0.55F),
+                              ImVec2(c.x + r * 0.38F, c.y - r * 0.05F), col, 2.0F);
+            dl->AddCircleFilled(ImVec2(c.x - r * 0.48F, c.y + r * 0.52F), r * 0.28F, hi_col, 12);
+            dl->AddCircleFilled(ImVec2(c.x + r * 0.48F, c.y + r * 0.52F), r * 0.28F, hi_col, 12);
+            break;
+        case IconKind::kPhysics:
+            // Falling sphere + motion trajectory lines
+            dl->AddCircleFilled(ImVec2(c.x + r * 0.18F, c.y + r * 0.22F), r * 0.52F, col, 16);
+            dl->AddCircle(ImVec2(c.x + r * 0.18F, c.y + r * 0.22F), r * 0.52F, hi_col, 16, 1.0F);
+            dl->AddLine(ImVec2(c.x - r * 0.78F, c.y - r * 0.68F), ImVec2(c.x - r * 0.22F, c.y - r * 0.18F), hi_col, 1.5F);
+            dl->AddLine(ImVec2(c.x - r * 0.82F, c.y - r * 0.25F), ImVec2(c.x - r * 0.35F, c.y + r * 0.15F), col, 1.4F);
+            break;
+        case IconKind::kCollider:
+            // Green wireframe collision box with corner vertices
+            dl->AddRect(ImVec2(c.x - r * 0.72F, c.y - r * 0.72F),
+                        ImVec2(c.x + r * 0.72F, c.y + r * 0.72F), col, 1.5F, 0, 1.6F);
+            dl->AddCircleFilled(ImVec2(c.x - r * 0.72F, c.y - r * 0.72F), 2.2F, hi_col, 8);
+            dl->AddCircleFilled(ImVec2(c.x + r * 0.72F, c.y - r * 0.72F), 2.2F, hi_col, 8);
+            dl->AddCircleFilled(ImVec2(c.x - r * 0.72F, c.y + r * 0.72F), 2.2F, hi_col, 8);
+            dl->AddCircleFilled(ImVec2(c.x + r * 0.72F, c.y + r * 0.72F), 2.2F, hi_col, 8);
+            break;
+        case IconKind::kImport:
+            // Downward import arrow into Context tray
+            dl->AddLine(ImVec2(c.x, c.y - r * 0.82F), ImVec2(c.x, c.y + r * 0.25F), col, 2.0F);
+            dl->AddTriangleFilled(ImVec2(c.x - r * 0.45F, c.y - r * 0.05F),
+                                  ImVec2(c.x + r * 0.45F, c.y - r * 0.05F),
+                                  ImVec2(c.x, c.y + r * 0.48F), col);
+            dl->AddLine(ImVec2(c.x - r * 0.75F, c.y + r * 0.72F), ImVec2(c.x + r * 0.75F, c.y + r * 0.72F), hi_col, 1.8F);
+            dl->AddLine(ImVec2(c.x - r * 0.75F, c.y + r * 0.35F), ImVec2(c.x - r * 0.75F, c.y + r * 0.72F), hi_col, 1.6F);
+            dl->AddLine(ImVec2(c.x + r * 0.75F, c.y + r * 0.35F), ImVec2(c.x + r * 0.75F, c.y + r * 0.72F), hi_col, 1.6F);
+            break;
+        case IconKind::kEyeOpen:
+            dl->AddCircle(c, r * 0.65F, col, 14, 1.4F);
+            dl->AddCircleFilled(c, r * 0.30F, hi_col, 10);
+            break;
+        case IconKind::kEyeClosed:
+            dl->AddCircle(c, r * 0.60F, col, 14, 1.2F);
+            dl->AddLine(ImVec2(c.x - r * 0.75F, c.y - r * 0.65F), ImVec2(c.x + r * 0.75F, c.y + r * 0.65F), col, 1.8F);
+            break;
+        case IconKind::kLockClosed:
+            dl->AddRectFilled(ImVec2(c.x - r * 0.62F, c.y - r * 0.08F),
+                              ImVec2(c.x + r * 0.62F, c.y + r * 0.75F), col, 2.0F);
+            dl->AddCircle(ImVec2(c.x, c.y - r * 0.25F), r * 0.38F, col, 12, 1.6F);
+            break;
+        case IconKind::kLockOpen:
+            dl->AddRect(ImVec2(c.x - r * 0.60F, c.y - r * 0.05F),
+                        ImVec2(c.x + r * 0.60F, c.y + r * 0.72F), col, 2.0F, 0, 1.3F);
+            dl->AddLine(ImVec2(c.x - r * 0.35F, c.y - r * 0.05F), ImVec2(c.x - r * 0.35F, c.y - r * 0.58F), col, 1.4F);
+            break;
+        case IconKind::kLight:
+            dl->AddCircleFilled(c, r * 0.46F, col, 14);
+            for (int i = 0; i < 8; ++i)
+            {
+                const float a = static_cast<float>(i) * (std::numbers::pi_v<float> * 0.25F);
+                dl->AddLine(ImVec2(c.x + std::cos(a) * r * 0.58F, c.y + std::sin(a) * r * 0.58F),
+                            ImVec2(c.x + std::cos(a) * r * 0.92F, c.y + std::sin(a) * r * 0.92F), col, 1.5F);
+            }
+            break;
+        case IconKind::kCamera:
+            dl->AddRectFilled(ImVec2(c.x - r * 0.78F, c.y - r * 0.52F),
+                              ImVec2(c.x + r * 0.38F, c.y + r * 0.52F), col, 2.0F);
+            dl->AddTriangleFilled(ImVec2(c.x + r * 0.32F, c.y),
+                                  ImVec2(c.x + r * 0.85F, c.y - r * 0.48F),
+                                  ImVec2(c.x + r * 0.85F, c.y + r * 0.48F), col);
+            break;
+        case IconKind::kSparkles:
+            dl->AddTriangleFilled(ImVec2(c.x, c.y - r * 0.88F), ImVec2(c.x - r * 0.28F, c.y), ImVec2(c.x + r * 0.28F, c.y), col);
+            dl->AddTriangleFilled(ImVec2(c.x, c.y + r * 0.88F), ImVec2(c.x - r * 0.28F, c.y), ImVec2(c.x + r * 0.28F, c.y), col);
+            dl->AddTriangleFilled(ImVec2(c.x - r * 0.88F, c.y), ImVec2(c.x, c.y - r * 0.28F), ImVec2(c.x, c.y + r * 0.28F), col);
+            dl->AddTriangleFilled(ImVec2(c.x + r * 0.88F, c.y), ImVec2(c.x, c.y - r * 0.28F), ImVec2(c.x, c.y + r * 0.28F), col);
+            dl->AddCircleFilled(c, r * 0.22F, hi_col, 10);
+            break;
+        case IconKind::kUiWidget:
+            dl->AddRectFilled(ImVec2(c.x - r * 0.80F, c.y - r * 0.68F),
+                              ImVec2(c.x + r * 0.80F, c.y + r * 0.68F), col, 2.5F);
+            dl->AddRectFilled(ImVec2(c.x - r * 0.60F, c.y - r * 0.45F),
+                              ImVec2(c.x + r * 0.60F, c.y - r * 0.15F), hi_col, 1.5F);
+            dl->AddRectFilled(ImVec2(c.x - r * 0.60F, c.y + r * 0.08F),
+                              ImVec2(c.x + r * 0.15F, c.y + r * 0.42F), hi_col, 1.5F);
+            break;
+        case IconKind::kPlus:
+            dl->AddLine(ImVec2(c.x - r * 0.72F, c.y), ImVec2(c.x + r * 0.72F, c.y), col, 2.2F);
+            dl->AddLine(ImVec2(c.x, c.y - r * 0.72F), ImVec2(c.x, c.y + r * 0.72F), col, 2.2F);
+            break;
+        case IconKind::kDuplicate:
+            dl->AddRect(ImVec2(c.x - r * 0.72F, c.y - r * 0.72F),
+                        ImVec2(c.x + r * 0.35F, c.y + r * 0.35F), col, 1.5F, 0, 1.4F);
+            dl->AddRectFilled(ImVec2(c.x - r * 0.25F, c.y - r * 0.25F),
+                              ImVec2(c.x + r * 0.75F, c.y + r * 0.75F), col, 1.5F);
+            break;
+        case IconKind::kLayers:
+            dl->AddQuadFilled(ImVec2(c.x, c.y - r * 0.78F), ImVec2(c.x + r * 0.82F, c.y - r * 0.28F),
+                              ImVec2(c.x, c.y + r * 0.22F), ImVec2(c.x - r * 0.82F, c.y - r * 0.28F), col);
+            dl->AddLine(ImVec2(c.x - r * 0.82F, c.y + r * 0.15F), ImVec2(c.x, c.y + r * 0.62F), hi_col, 1.6F);
+            dl->AddLine(ImVec2(c.x, c.y + r * 0.62F), ImVec2(c.x + r * 0.82F, c.y + r * 0.15F), hi_col, 1.6F);
+            break;
+        case IconKind::kSave:
+            dl->AddRectFilled(ImVec2(c.x - r * 0.72F, c.y - r * 0.72F),
+                              ImVec2(c.x + r * 0.72F, c.y + r * 0.72F), col, 2.0F);
+            dl->AddRectFilled(ImVec2(c.x - r * 0.42F, c.y - r * 0.72F),
+                              ImVec2(c.x + r * 0.42F, c.y - r * 0.15F), hi_col, 1.0F);
+            break;
+        case IconKind::kTrash:
+            dl->AddRectFilled(ImVec2(c.x - r * 0.52F, c.y - r * 0.35F),
+                              ImVec2(c.x + r * 0.52F, c.y + r * 0.75F), col, 1.5F);
+            dl->AddLine(ImVec2(c.x - r * 0.72F, c.y - r * 0.52F),
+                        ImVec2(c.x + r * 0.72F, c.y - r * 0.52F), hi_col, 1.8F);
+            break;
+        case IconKind::kGear:
+            dl->AddCircleFilled(c, r * 0.68F, col, 12);
+            dl->AddCircleFilled(c, r * 0.30F, dim_col, 10);
+            break;
+        case IconKind::kSearch:
+            dl->AddCircle(ImVec2(c.x - r * 0.15F, c.y - r * 0.15F), r * 0.52F, col, 14, 1.6F);
+            dl->AddLine(ImVec2(c.x + r * 0.22F, c.y + r * 0.22F),
+                        ImVec2(c.x + r * 0.78F, c.y + r * 0.78F), col, 2.0F);
+            break;
+        case IconKind::kCheck:
+            dl->AddLine(ImVec2(c.x - r * 0.62F, c.y + r * 0.05F),
+                        ImVec2(c.x - r * 0.12F, c.y + r * 0.55F), col, 2.2F);
+            dl->AddLine(ImVec2(c.x - r * 0.12F, c.y + r * 0.55F),
+                        ImVec2(c.x + r * 0.68F, c.y - r * 0.48F), col, 2.2F);
+            break;
+        case IconKind::kNode:
         default:
-            dl->AddCircleFilled(c, r * 0.55F, col);
+            dl->AddCircleFilled(c, r * 0.62F, col, 16);
+            dl->AddCircle(c, r * 0.62F, hi_col, 16, 1.0F);
             break;
     }
 }
@@ -5481,6 +5761,228 @@ inline void NodeLink(ImGuiID out_pin_id, ImGuiID in_pin_id,
     const ImVec2 p4 = it_b->second.screen_pos;
     const float dx  = std::max(45.0F, std::fabs(p4.x - p1.x) * 0.5F);
     w.draw_list->AddBezierCubic(p1, ImVec2(p1.x + dx, p1.y), ImVec2(p4.x - dx, p4.y), p4, col, thickness, 24);
+}
+
+inline bool IconButton(const char* label, cd::ui::chroma::IconKind icon,
+                       ImVec2 size_arg = ImVec2(0.0F, 20.0F),
+                       ImU32 icon_col = 0U, bool active = false) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || label == nullptr) return false;
+    auto& w = st.window_stack.back();
+    const auto vis = cd::ui::chroma::visible_label(label);
+    const ImVec2 tsz = cd::ui::chroma::measure_text_px(vis, 1.22F);
+    float avail_w = std::max(20.0F, (w.pos.x + w.size.x - 8.0F) - w.cursor.x);
+    if (!st.table_stack.empty())
+    {
+        const auto& ts = st.table_stack.back();
+        avail_w = std::max(20.0F, (ts.width / static_cast<float>(ts.cols)) - 6.0F);
+    }
+    float bw = size_arg.x;
+    if (bw < 0.0F) bw = avail_w;
+    else if (bw == 0.0F) bw = vis.empty() ? 20.0F : (tsz.x + 26.0F);
+    const float bh = (size_arg.y > 0.0F) ? size_arg.y : 20.0F;
+
+    const ImVec2 p0 = w.cursor;
+    const ImVec2 p1 { p0.x + bw, p0.y + bh };
+    const ImGuiID id = GetID(label);
+    st.last_item_id = id;
+    detail::advance_item(w, p0, p1);
+
+    const bool hov = st.last_item_hovered;
+    const bool held = hov && st.mouse_down[0];
+    ImU32 bg = active ? st.theme.button_active : st.theme.button;
+    if (held) bg = st.theme.button_active;
+    else if (hov) bg = st.theme.button_hover;
+
+    w.draw_list->AddRectFilled(p0, p1, bg, 4.0F);
+    w.draw_list->AddRect(p0, p1, (active || hov) ? st.theme.accent_bright : st.theme.window_border, 4.0F, 0, 1.0F);
+
+    const ImU32 ic = (icon_col != 0U) ? icon_col : st.theme.accent_bright;
+    const float ir = std::clamp(bh * 0.32F, 4.5F, 8.0F);
+    if (vis.empty())
+    {
+        cd::ui::chroma::DrawIcon(w.draw_list, icon, ImVec2(p0.x + bw * 0.5F, p0.y + bh * 0.5F), ir, ic);
+    }
+    else
+    {
+        w.draw_list->PushClipRect(ImVec2(p0.x + 2.0F, p0.y), ImVec2(p1.x - 2.0F, p1.y));
+        cd::ui::chroma::DrawIcon(w.draw_list, icon, ImVec2(p0.x + 11.0F, p0.y + bh * 0.5F), ir, ic);
+        w.draw_list->AddText(ImVec2(p0.x + 21.0F, p0.y + std::max(2.0F, (bh - 13.0F) * 0.5F)),
+                             st.theme.text, vis.data(), vis.data() + vis.size(), 1.22F);
+        w.draw_list->PopClipRect();
+    }
+    if (hov && st.mouse_clicked[0])
+    {
+        st.active_id = id;
+        return true;
+    }
+    return false;
+}
+
+inline bool IconSelectable(const char* label, cd::ui::chroma::IconKind icon,
+                           ImU32 icon_col, bool selected,
+                           std::string_view right_badge = {}, float indent_px = 0.0F) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || label == nullptr) return false;
+    auto& w = st.window_stack.back();
+    const auto vis = cd::ui::chroma::visible_label(label);
+    const float avail_w = std::max(60.0F, (w.pos.x + w.size.x - 8.0F) - w.cursor.x);
+    const float sh = 20.0F;
+    const ImVec2 p0 = w.cursor;
+    const ImVec2 p1 { p0.x + avail_w, p0.y + sh };
+    const ImGuiID id = GetID(label);
+    st.last_item_id = id;
+    detail::advance_item(w, p0, p1);
+
+    const bool hov = st.last_item_hovered;
+    if (selected || hov)
+    {
+        const ImU32 bg = selected ? st.theme.button_active : st.theme.frame_hover;
+        w.draw_list->AddRectFilled(p0, p1, bg, 3.5F);
+        if (selected)
+        {
+            w.draw_list->AddRectFilled(p0, ImVec2(p0.x + 3.0F, p1.y), st.theme.accent_bright, 1.5F);
+        }
+    }
+
+    float badge_w = 0.0F;
+    if (!right_badge.empty())
+    {
+        const ImVec2 bsz = cd::ui::chroma::measure_text_px(right_badge, 1.10F);
+        badge_w = bsz.x + 8.0F;
+        const ImVec2 bp0 { p1.x - badge_w - 2.0F, p0.y + 2.0F };
+        const ImVec2 bp1 { p1.x - 2.0F,           p1.y - 2.0F };
+        w.draw_list->AddRectFilled(bp0, bp1, selected ? IM_COL32(18, 42, 74, 235) : IM_COL32(20, 26, 36, 225), 3.0F);
+        w.draw_list->AddRect(bp0, bp1, IM_COL32(54, 72, 98, 185), 3.0F, 0, 1.0F);
+        w.draw_list->AddText(ImVec2(bp0.x + 4.0F, bp0.y + 2.0F),
+                             IM_COL32(162, 202, 242, 245),
+                             right_badge.data(), right_badge.data() + right_badge.size(), 1.10F);
+    }
+
+    const float clip_right = p1.x - (badge_w > 0.0F ? (badge_w + 5.0F) : 3.0F);
+    w.draw_list->PushClipRect(ImVec2(p0.x + 2.0F, p0.y), ImVec2(std::max(p0.x + 16.0F, clip_right), p1.y));
+    const float ix = p0.x + 11.0F + indent_px;
+    if (indent_px > 2.0F)
+    {
+        w.draw_list->AddLine(ImVec2(p0.x + indent_px - 4.0F, p0.y + 3.0F),
+                             ImVec2(p0.x + indent_px - 4.0F, p0.y + sh * 0.5F),
+                             IM_COL32(95, 125, 165, 180), 1.2F);
+        w.draw_list->AddLine(ImVec2(p0.x + indent_px - 4.0F, p0.y + sh * 0.5F),
+                             ImVec2(p0.x + indent_px + 2.0F, p0.y + sh * 0.5F),
+                             IM_COL32(95, 125, 165, 180), 1.2F);
+    }
+    const ImU32 ic = (icon_col != 0U) ? icon_col : st.theme.accent_bright;
+    cd::ui::chroma::DrawIcon(w.draw_list, icon, ImVec2(ix, p0.y + sh * 0.5F), 6.2F, ic);
+    w.draw_list->AddText(ImVec2(ix + 11.0F, p0.y + 3.5F), st.theme.text,
+                         vis.data(), vis.data() + vis.size(), 1.22F);
+    w.draw_list->PopClipRect();
+
+    if (hov && st.mouse_clicked[0])
+    {
+        st.active_id = id;
+        return true;
+    }
+    return false;
+}
+
+inline bool IconTile(const char* str_id, cd::ui::chroma::IconKind icon,
+                     const char* title, const char* subtitle = nullptr,
+                     ImVec2 size_arg = ImVec2(-1.0F, 48.0F),
+                     ImU32 icon_col = 0U, bool selected = false,
+                     bool loaded_badge = false) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || str_id == nullptr) return false;
+    auto& w = st.window_stack.back();
+    float avail_w = std::max(54.0F, (w.pos.x + w.size.x - 8.0F) - w.cursor.x);
+    if (!st.table_stack.empty())
+    {
+        const auto& ts = st.table_stack.back();
+        avail_w = std::max(44.0F, (ts.width / static_cast<float>(ts.cols)) - 6.0F);
+    }
+    const float tw = (size_arg.x > 0.0F) ? size_arg.x : avail_w;
+    const float th = std::max(38.0F, size_arg.y);
+
+    const ImVec2 p0 = w.cursor;
+    const ImVec2 p1 { p0.x + tw, p0.y + th };
+    const ImGuiID id = GetID(str_id);
+    st.last_item_id = id;
+    detail::advance_item(w, p0, p1);
+
+    const bool hov = st.last_item_hovered;
+    const bool held = hov && st.mouse_down[0];
+
+    const ImU32 card_bg = selected
+        ? IM_COL32(28, 56, 96, 245)
+        : (hov ? IM_COL32(30, 40, 56, 245) : IM_COL32(19, 24, 34, 240));
+    const ImU32 border_col = selected
+        ? st.theme.accent_bright
+        : (hov ? IM_COL32(95, 165, 245, 235) : IM_COL32(46, 58, 78, 210));
+
+    w.draw_list->AddRectFilled(p0, p1, card_bg, 5.0F);
+
+    // Top Icon Well
+    const float well_h = th - ((subtitle != nullptr && subtitle[0] != '\0') ? 24.0F : 16.0F);
+    const ImVec2 w0 { p0.x + 3.0F, p0.y + 3.0F };
+    const ImVec2 w1 { p1.x - 3.0F, p0.y + std::max(18.0F, well_h) };
+    w.draw_list->AddRectFilled(w0, w1, held ? IM_COL32(18, 26, 40, 250) : IM_COL32(13, 17, 25, 235), 4.0F);
+
+    const ImU32 ic = (icon_col != 0U) ? icon_col : st.theme.accent_bright;
+    const float ir = std::clamp((w1.y - w0.y) * 0.36F, 6.5F, 12.5F);
+    cd::ui::chroma::DrawIcon(w.draw_list, icon,
+                             ImVec2((w0.x + w1.x) * 0.5F, (w0.y + w1.y) * 0.5F),
+                             ir, ic);
+
+    // Optional top-right checkmark badge (indicates asset is loaded in Active Context)
+    if (loaded_badge)
+    {
+        const ImVec2 bc { w1.x - 7.5F, w0.y + 7.5F };
+        w.draw_list->AddCircleFilled(bc, 5.8F, IM_COL32(28, 178, 96, 255), 12);
+        cd::ui::chroma::DrawIcon(w.draw_list, cd::ui::chroma::IconKind::kCheck, bc, 3.8F, IM_COL32(255, 255, 255, 255));
+    }
+
+    w.draw_list->AddRect(p0, p1, border_col, 5.0F, 0, selected ? 1.6F : 1.0F);
+
+    // Clean Centered Title (+ optional Subtitle)
+    w.draw_list->PushClipRect(ImVec2(p0.x + 3.0F, w1.y), ImVec2(p1.x - 3.0F, p1.y - 1.0F));
+    if (title != nullptr && title[0] != '\0')
+    {
+        const ImVec2 tsz = cd::ui::chroma::measure_text_px(title, 1.14F);
+        const float tx = (tsz.x < (tw - 6.0F)) ? (p0.x + (tw - tsz.x) * 0.5F) : (p0.x + 4.0F);
+        w.draw_list->AddText(ImVec2(tx, w1.y + 2.0F), IM_COL32(238, 243, 252, 255), title, nullptr, 1.14F);
+    }
+    if (subtitle != nullptr && subtitle[0] != '\0')
+    {
+        const ImVec2 ssz = cd::ui::chroma::measure_text_px(subtitle, 1.02F);
+        const float sx = (ssz.x < (tw - 6.0F)) ? (p0.x + (tw - ssz.x) * 0.5F) : (p0.x + 4.0F);
+        w.draw_list->AddText(ImVec2(sx, w1.y + 12.5F), IM_COL32(142, 178, 220, 235), subtitle, nullptr, 1.02F);
+    }
+    w.draw_list->PopClipRect();
+
+    if (hov && st.mouse_clicked[0])
+    {
+        st.active_id = id;
+        return true;
+    }
+    return false;
+}
+
+inline bool IconButton(const char* label, cd::ui::chroma::IconKind icon,
+                       ImU32 icon_col, bool active = false,
+                       ImVec2 size_arg = ImVec2(0.0F, 20.0F)) noexcept
+{
+    return IconButton(label, icon, size_arg, icon_col, active);
+}
+
+inline bool IconTile(const char* label, cd::ui::chroma::IconKind icon,
+                     ImU32 icon_col, bool selected = false,
+                     bool loaded_badge = false,
+                     ImVec2 size_arg = ImVec2(-1.0F, 52.0F)) noexcept
+{
+    const std::string vis { cd::ui::chroma::visible_label(label) };
+    return IconTile(label, icon, vis.c_str(), nullptr, size_arg, icon_col, selected, loaded_badge);
 }
 
 inline void PushToast(const char* title, const char* body, int severity = 0, float duration_sec = 3.5F) noexcept

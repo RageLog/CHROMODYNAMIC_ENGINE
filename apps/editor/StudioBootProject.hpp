@@ -53,56 +53,33 @@ namespace cd_studio
 // main.cpp.
 inline void setup_world_container(cd::world_container::World& w)
 {
-    w.set_name("Sample World");
-    auto proj = std::make_unique<cd::world_container::Project>("Sample Project");
-    auto* lvl = proj->add_level("Main");
+    w.set_name("Default_World");
+    auto proj = std::make_unique<cd::world_container::Project>("Empty_Project");
+    auto* lvl = proj->add_level("Empty_Stage");
+    lvl->set_world_name("Default_World");
+    lvl->set_description("Clean empty stage — load projects/objects/textures from Disk into Context");
+    lvl->set_template_id(0);
     lvl->bounds().min = { -40.0F, -2.0F, -40.0F };
     lvl->bounds().max = { 40.0F, 10.0F, 40.0F };
+    lvl->add_layer("Default");
+    lvl->add_layer("Geometry");
+    lvl->add_layer("Physics");
+    lvl->add_layer("Characters");
     lvl->add_layer("Lights");
     lvl->add_layer("UI");
+    (void)proj->set_active_level("Empty_Stage");
     w.set_project(std::move(proj));
 }
 
 // ---- setup_boot_world_and_project ------------------------------------------
-// World container + .cdproject adoption + CD_HDR_LANES env read. The
-// entity spawns (spawn_primitive_seeds & friends) stay in on_boot because
-// they operate on the main.cpp-local SceneEntity type.
+// World container + CD_HDR_LANES env read. Starts with a clean Empty_Project
+// so sample projects are explicitly selected and loaded from disk directory.
 template <typename StateT>
 inline void setup_boot_world_and_project(StateT& s)
 {
-    // World / scene / ECS
     setup_world_container(s.cd_world);
-    // phase1112: if the editor saved a .cdproject next to us, ADOPT it —
-    // the runtime now reads the same product artefact the editor writes.
-    // ProjectSettings drive the composite fx knobs (phase1113 mapping:
-    // enable_* toggles gate the corresponding strength at its default;
-    // tonemap_op passes through). Absent file = keep the synthetic
-    // sample project + the cinematic first-boot fx defaults.
-    // phase1121 (X1-FU-F step 3): CD_HDR_LANES=1 forces parallel-lane HDR
-    // recording from boot — the golden parity capture renders the same
-    // fixture lanes-off vs lanes-on and diffs the PNGs.
     if (cd::core::compat::read_env_var("CD_HDR_LANES") == "1")
         s.fx.hdr_parallel_lanes = true;
-
-    if (auto proj = cd::world_container::load_project_file(
-            "chromodynamic_studio.cdproject");
-        proj.has_value())
-    {
-        const auto& ps = (*proj)->settings();
-        s.fx.tonemap_op   = static_cast<int>(ps.tonemap_op);
-        s.fx.bloom_post   = ps.enable_bloom ? 0.035F : 0.0F;
-        s.fx.ao_strength  = ps.enable_gtao  ? 0.55F  : 0.0F;
-        s.fx.ssr_strength = ps.enable_ssr   ? 0.5F   : 0.0F;
-        s.log.emplace_back(
-            "[project] adopted chromodynamic_studio.cdproject (" +
-            std::to_string((*proj)->level_count()) + " levels; tonemap=" +
-            std::to_string(s.fx.tonemap_op) + " bloom=" +
-            (ps.enable_bloom ? std::string { "on" } : std::string { "off" }) +
-            " gtao=" + (ps.enable_gtao ? "on" : "off") +
-            " ssr=" + (ps.enable_ssr ? "on" : "off") + ")");
-        s.cd_world.set_project(std::move(*proj));
-        s.cd_world.set_name("Editor Project World");
-    }
 }
 
 // ---- start_boot_streamer_and_random_viz -------------------------------------
