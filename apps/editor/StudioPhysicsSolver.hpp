@@ -91,9 +91,39 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
                                      ? std::max(raw_clamped_dt, 1.0F / 50.0F)
                                      : raw_clamped_dt;
     const bool sim_active = (s.pie_playing || w.simulate_physics_in_edit || w.step_single_frame);
+    if (!w.rockstar_engine_seeded)
+    {
+        w.rockstar_engine_seeded = true;
+        auto& rpe = w.rockstar_physics_engine;
+        (void)rpe.world_2d().create_body(
+            cd::physics::core::BodyMotionType::kStatic,
+            cd::physics::core::Transform2D { { 0.0F, -1.0F }, 0.0F },
+            cd::physics::v2d::BoxShape2D { { 12.0F, 0.5F } });
+        (void)rpe.world_2d().create_body(
+            cd::physics::core::BodyMotionType::kDynamic,
+            cd::physics::core::Transform2D { { 0.0F, 1.5F }, 0.0F },
+            cd::physics::v2d::BoxShape2D { { 0.5F, 0.5F } });
+        cd::physics::v3d::RigidBody3D rb_floor {};
+        rb_floor.motion_type = cd::physics::core::BodyMotionType::kStatic;
+        rb_floor.transform.position = { 0.0F, -0.55F, 0.0F };
+        rb_floor.shape = cd::physics::v3d::BoxShape3D { { 24.0F, 0.5F, 24.0F } };
+        (void)rpe.world_3d().create_body(rb_floor);
+        cd::physics::v3d::RigidBody3D rb_crate {};
+        rb_crate.motion_type = cd::physics::core::BodyMotionType::kDynamic;
+        rb_crate.transform.position = { 0.0F, 1.4F, 0.0F };
+        rb_crate.shape = cd::physics::v3d::BoxShape3D { { 0.5F, 0.5F, 0.5F } };
+        (void)rpe.world_3d().create_body(rb_crate);
+        (void)rpe.create_euphoria_ragdoll({ 0.0F, 1.0F, 0.0F }, 78.0F);
+        (void)rpe.create_pacejka_vehicle();
+        const auto f_id = rpe.create_fracture_system();
+        rpe.get_fracture_system(f_id)->generate_grid_fracture_object(2u, 3u, 2u);
+        const auto x_id = rpe.create_xpbd_solver();
+        rpe.get_xpbd_solver(x_id)->create_cloth_grid(5u, 5u, 0.12F);
+    }
     if (sim_active)
     {
         w.sim_time_accum += clamped_dt;
+        w.rockstar_physics_engine.step_all(clamped_dt, 4u, 4u, -0.55F);
     }
     if (w.hud_toast_timer > 0.0F)
     {

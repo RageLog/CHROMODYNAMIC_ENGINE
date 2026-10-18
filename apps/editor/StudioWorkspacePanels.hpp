@@ -1969,6 +1969,37 @@ inline void draw_clean_studio_workspace_panels(
                                    (s.pie_playing || w.simulate_physics_in_edit) ? "RUNNING" : "PAUSED",
                                    dyn_rb_count, col_count, w.live_contacts.size());
 
+                const auto rtel = w.rockstar_physics_engine.telemetry();
+                float rag_err = 0.0F;
+                if (const auto* rag = w.rockstar_physics_engine.get_euphoria_ragdoll(0u))
+                    rag_err = rag->balance_state().balance_error_m;
+                ImGui::TextColored(ImVec4(0.56F, 0.86F, 1.0F, 1.0F),
+                                   "Rockstar 2D+3D Engine (32 Modules): 2D Bodies=%u | 3D Bodies=%u | Euphoria Ragdolls=%u (ZMP Err=%.2fm) | Pacejka Vehicles=%u | Fracture=%u | XPBD=%u",
+                                   rtel.bodies_2d, rtel.bodies_3d, rtel.active_ragdolls,
+                                   static_cast<double>(rag_err),
+                                   rtel.active_vehicles, rtel.fracture_systems, rtel.xpbd_soft_bodies);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Impulse Euphoria"))
+                {
+                    if (auto* rag = w.rockstar_physics_engine.get_euphoria_ragdoll(0u))
+                    {
+                        rag->apply_ballistic_hit_impulse(
+                            cd::physics::rockstar::RagdollBoneId::kChest,
+                            { 120.0F, 18.0F, 0.0F },
+                            { 0.0F, 1.3F, 0.0F });
+                        log_push("[physics] Applied ballistic impulse to Euphoria Active Ragdoll (Capture Point step active)");
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Shatter Voronoi"))
+                {
+                    if (auto* fr = w.rockstar_physics_engine.get_fracture_system(0u))
+                    {
+                        const auto brk = fr->apply_impact_impulse({ 0.0F, 0.7F, 0.0F }, 1.2F, 320.0F);
+                        log_push("[physics] Shattered " + std::to_string(brk) + " structural bonds in Voronoi Destruction Graph");
+                    }
+                }
+
                 ImGui::Separator();
                 ImGui::BeginChild("studio_log_scroll", ImVec2(0, 0), false);
                 for (const auto& line : s.log)

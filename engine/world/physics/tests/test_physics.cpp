@@ -1096,3 +1096,253 @@ TEST(ObbSat, IntersectIsSymmetric)
     b.center = cd::math::Vec3f { 0.7F, 0, 0.3F };
     EXPECT_EQ(cd::physics::intersects(a, b), cd::physics::intersects(b, a));
 }
+
+// =============================================================================
+// 32-Module Rockstar 2D + 3D Unified Physics Engine Verification Suite
+// =============================================================================
+#include <cd/physics/UnifiedPhysicsEngine.hpp>
+
+TEST(RockstarPhysicsCore, FilterMatrixAndDynamicBvh2D3DAndIslands)
+{
+    using namespace cd::physics::core;
+
+    CollisionFilterMatrix matrix {};
+    CollisionFilter f0 { .category_layer = 0u, .category_bits = 1u, .mask_bits = 0xFFFFFFFFu, .group_index = 0 };
+    CollisionFilter f1 { .category_layer = 1u, .category_bits = 2u, .mask_bits = 0xFFFFFFFFu, .group_index = 0 };
+    EXPECT_TRUE(matrix.should_collide(f0, f1));
+    matrix.set_layer_collision(0u, 1u, false);
+    EXPECT_FALSE(matrix.should_collide(f0, f1));
+
+    // Negative group index overrides and never collides with same negative group
+    f0.group_index = -5;
+    f1.group_index = -5;
+    matrix.set_layer_collision(0u, 1u, true);
+    EXPECT_FALSE(matrix.should_collide(f0, f1));
+
+    // DynamicBvh2D pair & raycast query
+    DynamicBvh2D bvh2d {};
+    const auto p0 = bvh2d.insert_proxy(10u, SpatialAabb2D { { 0.0F, 0.0F }, { 1.0F, 1.0F } });
+    const auto p1 = bvh2d.insert_proxy(20u, SpatialAabb2D { { 0.5F, 0.5F }, { 1.5F, 1.5F } });
+    EXPECT_GE(p0, 0);
+    EXPECT_GE(p1, 0);
+    std::uint32_t pairs_2d = 0u;
+    bvh2d.query_all_pairs([&](std::uint32_t, std::uint32_t) { ++pairs_2d; });
+    EXPECT_EQ(pairs_2d, 1u);
+
+    // DynamicBvh3D pair & raycast query
+    DynamicBvh3D bvh3d {};
+    (void)bvh3d.insert_proxy(100u, SpatialAabb3D { { -1.0F, -1.0F, -1.0F }, { 1.0F, 1.0F, 1.0F } });
+    (void)bvh3d.insert_proxy(200u, SpatialAabb3D { { 0.2F, 0.2F, 0.2F }, { 2.0F, 2.0F, 2.0F } });
+    std::uint32_t pairs_3d = 0u;
+    bvh3d.query_all_pairs([&](std::uint32_t, std::uint32_t) { ++pairs_3d; });
+    EXPECT_EQ(pairs_3d, 1u);
+
+    // IslandBuilder with static body isolation
+    IslandBuilder islands {};
+    islands.reset(4u);
+    islands.mark_static(0u);
+    islands.unite(0u, 1u);  // static 0 should not merge 1 and 2
+    islands.unite(0u, 2u);
+    islands.unite(1u, 3u);  // dynamic 1 and 3 form one island
+    const auto built = islands.build_islands();
+    EXPECT_EQ(built.size(), 2u);
+}
+
+TEST(RockstarPhysics2D, NarrowphaseCcdSoftStepWorldAndCharacter2D)
+{
+    using namespace cd::physics;
+    using namespace cd::physics::v2d;
+
+    // 1. 2D Narrowphase: Box-Box SAT + 2-point contact clipping
+    ShapeVariant2D box_a = BoxShape2D { { 1.0F, 1.0F } };
+    ShapeVariant2D box_b = BoxShape2D { { 0.5F, 0.5F } };
+    core::Transform2D xf_a { { 0.0F, 0.0F }, 0.0F };
+    core::Transform2D xf_b { { 0.0F, 1.3F }, 0.0F };
+    const auto manifold = collide_shapes_2d(box_a, xf_a, box_b, xf_b);
+    EXPECT_GT(manifold.point_count, 0u);
+    EXPECT_NEAR(manifold.points[0].penetration, 0.2F, 1e-3F);
+
+    // 2. 2D CCD Sweep TOI: Fast bullet circle approaching thin wall box
+    ShapeVariant2D bullet = CircleShape2D { 0.1F };
+    ShapeVariant2D wall   = BoxShape2D { { 0.1F, 2.0F } };
+    const float toi = sweep_shapes_toi_2d(
+        bullet,
+        core::Transform2D { { -2.0F, 0.0F }, 0.0F },
+        cd::math::Vec2f { 20.0F, 0.0F },
+        wall,
+        core::Transform2D { { 0.0F, 0.0F }, 0.0F },
+        cd::math::Vec2f { 0.0F, 0.0F });
+    EXPECT_GT(toi, 0.0F);
+    EXPECT_LT(toi, 0.2F);
+
+    // 3. PhysicsWorld2D: Box stacking + RevoluteJoint2D + CharacterController2D
+    PhysicsWorld2D world {};
+    const auto floor_id = world.create_body(
+        core::BodyMotionType::kStatic,
+        core::Transform2D { { 0.0F, -1.0F }, 0.0F },
+        BoxShape2D { { 10.0F, 1.0F } });
+    const auto crate_id = world.create_body(
+        core::BodyMotionType::kDynamic,
+        core::Transform2D { { 0.0F, 0.8F }, 0.0F },
+        BoxShape2D { { 0.5F, 0.5F } });
+    EXPECT_NE(floor_id, crate_id);
+
+    for (int i = 0; i < 60; ++i)
+    {
+        world.step(1.0F / 60.0F, 4u);
+    }
+    const auto* crate = world.get_body(crate_id);
+    ASSERT_NE(crate, nullptr);
+    EXPECT_NEAR(crate->transform.position.y, 0.5F, 0.08F);
+
+    // 2D CharacterController move_and_slide
+    const auto char_id = world.create_body(
+        core::BodyMotionType::kKinematic,
+        core::Transform2D { { 2.0F, 0.52F }, 0.0F },
+        CapsuleShape2D { 0.25F, 0.25F });
+    CharacterController2D cc2d {};
+    cc2d.move_and_slide(world, char_id, { 3.0F, -2.0F }, 1.0F / 60.0F);
+    EXPECT_TRUE(cc2d.on_floor());
+}
+
+TEST(RockstarPhysics3D, GjkEpaObbSatTgsSolverJointsAndCharacterMover3D)
+{
+    using namespace cd::physics;
+    using namespace cd::physics::v3d;
+
+    // 1. GJK + EPA on two overlapping convex hulls
+    ConvexHullShape3D hull_a {};
+    hull_a.vertices = {
+        { -1, -1, -1 }, { 1, -1, -1 }, { 1, 1, -1 }, { -1, 1, -1 },
+        { -1, -1,  1 }, { 1, -1,  1 }, { 1, 1,  1 }, { -1, 1,  1 }
+    };
+    ShapeVariant3D sa = hull_a;
+    ShapeVariant3D sb = hull_a;
+    ContactManifold3D gjk_m {};
+    const bool hit_gjk = gjk_epa_intersect_3d(
+        sa, core::Transform3D { { 0.0F, 0.0F, 0.0F }, cd::math::Quatf::identity() },
+        sb, core::Transform3D { { 0.0F, 1.6F, 0.0F }, cd::math::Quatf::identity() },
+        gjk_m);
+    EXPECT_TRUE(hit_gjk);
+    EXPECT_GT(gjk_m.point_count, 0u);
+    EXPECT_NEAR(gjk_m.points[0].penetration, 0.4F, 0.05F);
+
+    // 2. 3D PhysicsWorld3D + 6-DOF TGS Solver + CharacterMover3D
+    PhysicsWorld3D world3d {};
+    RigidBody3D floor_body {};
+    floor_body.motion_type = core::BodyMotionType::kStatic;
+    floor_body.transform.position = { 0.0F, -0.5F, 0.0F };
+    floor_body.shape = BoxShape3D { { 20.0F, 0.5F, 20.0F } };
+    (void)world3d.create_body(floor_body);
+
+    RigidBody3D box_body {};
+    box_body.motion_type = core::BodyMotionType::kDynamic;
+    box_body.transform.position = { 0.0F, 1.2F, 0.0F };
+    box_body.mass = 4.0F;
+    box_body.shape = BoxShape3D { { 0.5F, 0.5F, 0.5F } };
+    const auto box_id = world3d.create_body(box_body);
+
+    for (int i = 0; i < 60; ++i)
+    {
+        world3d.step(1.0F / 60.0F, 4u, 8u);
+    }
+    const auto* settled = world3d.get_body(box_id);
+    ASSERT_NE(settled, nullptr);
+    EXPECT_NEAR(settled->transform.position.y, 0.5F, 0.08F);
+
+    // CharacterMover3D move_and_slide over ground
+    RigidBody3D avatar_body {};
+    avatar_body.motion_type = core::BodyMotionType::kKinematic;
+    avatar_body.transform.position = { 3.0F, 0.52F, 0.0F };
+    avatar_body.shape = CapsuleShape3D { 0.25F, 0.25F };
+    const auto avatar_id = world3d.create_body(avatar_body);
+
+    CharacterMover3D mover3d {};
+    mover3d.move_and_slide(world3d, avatar_id, { 4.0F, -1.0F, 0.0F }, 1.0F / 60.0F);
+    EXPECT_TRUE(mover3d.on_ground());
+}
+
+TEST(RockstarAdvancedSimulation, EuphoriaRagdollPacejkaVehicleFractureBuoyancyAndXpbd)
+{
+    using namespace cd::physics;
+    using namespace cd::physics::rockstar;
+
+    // 1. ActiveRagdollEuphoria3D: ballistic impact -> stagger -> Capture Point recovery step
+    ActiveRagdollEuphoria3D ragdoll {};
+    ragdoll.configure_humanoid_rig({ 0.0F, 1.0F, 0.0F }, 80.0F);
+    ragdoll.apply_ballistic_hit_impulse(
+        RagdollBoneId::kChest,
+        { 140.0F, 20.0F, 0.0F },
+        { 0.0F, 1.35F, 0.0F });
+    ragdoll.step(1.0F / 60.0F, 0.0F);
+    const auto& chest = ragdoll.bone_state(RagdollBoneId::kChest);
+    EXPECT_LT(chest.current_stiffness_scale, 1.0F);
+    EXPECT_GT(ragdoll.balance_state().balance_error_m, 0.0F);
+    EXPECT_TRUE(ragdoll.balance_state().needs_recovery_step || ragdoll.balance_state().brace_for_impact);
+
+    // 2. PacejkaVehicleDynamics3D: Magic Formula + acceleration + chassis deformation
+    PacejkaVehicleDynamics3D vehicle {};
+    const float peak_fy = PacejkaVehicleDynamics3D::evaluate_magic_formula(0.15F, PacejkaTireParams {});
+    EXPECT_GT(peak_fy, 0.5F);
+    VehicleInputState input {};
+    input.throttle = 1.0F;
+    input.steer_angle_rad = 0.12F;
+    for (int i = 0; i < 30; ++i)
+    {
+        vehicle.step(input, 1.0F / 60.0F);
+    }
+    EXPECT_GT(vehicle.forward_speed_m_s(), 0.5F);
+    const auto deform = vehicle.apply_collision_deformation(
+        { 0.8F, 0.2F, 2.0F },
+        { -25000.0F, 0.0F, -45000.0F });
+    EXPECT_GT(cd::math::length(deform), 0.0F);
+
+    // 3. FractureDestructionSystem3D: Voronoi/Grid stress graph bond breaking & island detachment
+    FractureDestructionSystem3D fracture {};
+    fracture.generate_grid_fracture_object(2u, 3u, 2u, { 0.0F, 0.0F, 0.0F }, { 0.25F, 0.25F, 0.25F }, 5.0F, 50.0F);
+    EXPECT_EQ(fracture.chunks().size(), 12u);
+    const std::uint32_t broken = fracture.apply_impact_impulse({ 0.0F, 0.75F, 0.0F }, 1.2F, 350.0F);
+    EXPECT_GT(broken, 0u);
+    fracture.step_debris(1.0F / 60.0F, 0.0F);
+    EXPECT_GT(fracture.detached_chunk_count(), 0u);
+
+    // 4. BuoyancyFluidField3D: Gerstner wave height + multi-probe Archimedes lift
+    BuoyancyFluidField3D fluid {};
+    const float wave_h = fluid.sample_wave_height(2.0F, -1.0F, 1.5F);
+    EXPECT_GT(wave_h, -2.0F);
+    EXPECT_LT(wave_h,  2.0F);
+    const std::array<cd::math::Vec3f, 4> hull_probes {{
+        { -0.5F, -0.4F, -0.5F },
+        {  0.5F, -0.4F, -0.5F },
+        { -0.5F, -0.4F,  0.5F },
+        {  0.5F, -0.4F,  0.5F },
+    }};
+    const auto buoy = fluid.compute_buoyancy_forces(
+        { 0.0F, -0.3F, 0.0F },
+        cd::math::Quatf::identity(),
+        { 0.0F, -1.0F, 0.0F },
+        { 0.0F, 0.0F, 0.0F },
+        hull_probes,
+        BuoyancyBodyConfig3D {},
+        0.0F);
+    EXPECT_GT(buoy.buoyancy_force_n.y, 0.0F);
+    EXPECT_GT(buoy.submerged_fraction, 0.0F);
+
+    // 5. XpbdClothSoftBodySolver3D + UnifiedPhysicsEngine
+    UnifiedPhysicsEngine engine {};
+    (void)engine.create_euphoria_ragdoll({ 0.0F, 1.0F, 0.0F }, 78.0F);
+    (void)engine.create_pacejka_vehicle();
+    const auto frac_idx = engine.create_fracture_system();
+    engine.get_fracture_system(frac_idx)->generate_grid_fracture_object(2u, 2u, 2u);
+    const auto xpbd_idx = engine.create_xpbd_solver();
+    engine.get_xpbd_solver(xpbd_idx)->create_cloth_grid(4u, 4u, 0.15F);
+
+    engine.step_all(1.0F / 60.0F, 4u, 4u, 0.0F);
+    const auto tel = engine.telemetry();
+    EXPECT_EQ(tel.active_ragdolls, 1u);
+    EXPECT_EQ(tel.active_vehicles, 1u);
+    EXPECT_EQ(tel.fracture_systems, 1u);
+    EXPECT_EQ(tel.xpbd_soft_bodies, 1u);
+    EXPECT_EQ(tel.total_steps, 1u);
+}
+

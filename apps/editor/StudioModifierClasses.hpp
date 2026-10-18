@@ -53,6 +53,7 @@
 #include <cd/physics/ContactPoint.hpp>
 #include <cd/physics/IPhysicsWorld.hpp>
 #include <cd/physics/Sphere.hpp>
+#include <cd/physics/UnifiedPhysicsEngine.hpp>
 #include <cd/scene/Scene.hpp>
 #include <cd/scene/Serializer.hpp>
 #include <cd/scene/constructs/ChromaConstructRegistry.hpp>
@@ -978,6 +979,8 @@ struct StudioRuntimeWorld
     bool                                                  uniform_scale_lock        { false };
     float                                                 world_gravity_y           { -9.81F };
     std::unique_ptr<cd::physics::IPhysicsWorld>           physics_world             {};
+    cd::physics::UnifiedPhysicsEngine                     rockstar_physics_engine   {};
+    bool                                                  rockstar_engine_seeded    { false };
     ModifierStack                                         environment_modifiers     {};
     std::unordered_map<std::uint32_t, ModifierStack>      entity_modifiers          {};
     std::unordered_map<std::uint32_t, cd::math::Transformf> home_transforms         {};
