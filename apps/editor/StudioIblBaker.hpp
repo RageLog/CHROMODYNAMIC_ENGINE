@@ -49,6 +49,9 @@ struct IblBakeCpu
     std::vector<std::uint8_t>        earth_albedo;
     std::vector<std::uint8_t>        earth_normal;
     std::vector<std::uint8_t>        earth_mr;
+    std::uint32_t                    earth_albedo_size { 64 };
+    std::uint32_t                    earth_normal_size { 64 };
+    std::uint32_t                    earth_mr_size     { 64 };
     bool                             ok { false };
 };
 
@@ -66,31 +69,34 @@ inline constexpr std::uint32_t kStudioIblBakerEarthMrSize     = 256;
 
 // ---- bake_ibl_cpu ----------------------------------------------------------
 // Runs the X1C boot JobGraph: env-cube -> {diff, spec} + brdf-lut +
-// earth albedo / normal / mr in parallel on a WorkStealingThreadPool.
+// default albedo / normal / mr in parallel on a WorkStealingThreadPool.
 // Returns ok=false if the JobGraph reports any failed nodes.
 [[nodiscard]] inline IblBakeCpu
-bake_ibl_cpu(cd::math::Vec3f sun_dir_unit)
+bake_ibl_cpu(cd::math::Vec3f sun_dir_unit, bool eager_showcase_bake = false)
 {
     IblBakeCpu out;
+    out.earth_albedo_size = eager_showcase_bake ? kStudioIblBakerEarthAlbedoSize : 64u;
+    out.earth_normal_size = eager_showcase_bake ? kStudioIblBakerEarthNormalSize : 64u;
+    out.earth_mr_size     = eager_showcase_bake ? kStudioIblBakerEarthMrSize     : 64u;
+    const std::uint32_t env_res      = eager_showcase_bake ? 128u : 64u;
+    const std::uint32_t spec_mips    = eager_showcase_bake ? 6u   : 5u;
+    const std::uint32_t spec_samples = eager_showcase_bake ? 32u  : 16u;
+    const std::uint32_t brdf_samples = eager_showcase_bake ? 256u : 64u;
+
     auto bake_sky_with_sun = [sun_dir_unit](cd::math::Vec3f dir) noexcept
     {
         return cd::material::sky_with_sun_cpu(dir, sun_dir_unit);
     };
-    std::fprintf(stderr, "[boot] dispatching parallel asset bake graph...\n");
     cd::concurrency::WorkStealingThreadPool boot_pool { 0 };
     cd::concurrency::JobGraph boot_graph;
     const auto a = boot_graph.add(
         [&]
         {
-            std::fprintf(stderr,
-                "[ibl] baking environment cubemap (128, sun-disk)...\n");
-            out.env_cube = cd::ibl::bake_sky_cube(128, bake_sky_with_sun);
+            out.env_cube = cd::ibl::bake_sky_cube(env_res, bake_sky_with_sun);
         });
     const auto b = boot_graph.add(
         [&]
         {
-            std::fprintf(stderr,
-                "[ibl] convolving diffuse irradiance (16, 16 samples)...\n");
             out.diff_cube =
                 cd::ibl::convolve_irradiance(out.env_cube, 16, 16.0F);
         },
@@ -98,36 +104,32 @@ bake_ibl_cpu(cd::math::Vec3f sun_dir_unit)
     const auto c = boot_graph.add(
         [&]
         {
-            std::fprintf(stderr,
-                "[ibl] prefiltering specular mip chain "
-                "(128 base, 6 mips, 32 samples)...\n");
             out.spec_cube =
-                cd::ibl::prefilter_specular(out.env_cube, 128, 6, 32);
+                cd::ibl::prefilter_specular(out.env_cube, env_res, spec_mips, spec_samples);
         },
         { a });
     const auto d = boot_graph.add(
         [&]
         {
-            std::fprintf(stderr, "[ibl] baking BRDF LUT...\n");
-            out.brdf_lut = cd::ibl::bake_brdf_lut(64, 64, 256);
+            out.brdf_lut = cd::ibl::bake_brdf_lut(64, 64, brdf_samples);
         });
     const auto e = boot_graph.add(
         [&]
         {
             out.earth_albedo = cd::texture_synth::bake_earth_albedo_rgba8(
-                kStudioIblBakerEarthAlbedoSize);
+                out.earth_albedo_size);
         });
     const auto fnode = boot_graph.add(
         [&]
         {
             out.earth_normal = cd::texture_synth::bake_earth_normal_rgba8(
-                kStudioIblBakerEarthNormalSize);
+                out.earth_normal_size);
         });
     const auto g = boot_graph.add(
         [&]
         {
             out.earth_mr = cd::texture_synth::bake_earth_mr_rgba8(
-                kStudioIblBakerEarthMrSize);
+                out.earth_mr_size);
         });
     (void)a; (void)b; (void)c; (void)d; (void)e; (void)fnode; (void)g;
     const bool ok = boot_graph.run(boot_pool);

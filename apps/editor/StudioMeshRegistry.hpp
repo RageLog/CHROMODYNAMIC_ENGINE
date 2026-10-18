@@ -177,13 +177,202 @@ build_multi_geom_blas(cd::rhi::IDevice&              device,
 /// for prims that don't have their own normal/MR textures. (Vulkan requires
 /// every binding in the layout to be written before bind.) Per-prim views
 /// override the fallback when available.
+inline bool
+ensure_sponza_loaded_in_registry(StudioMeshRegistry&             out,
+                                 cd::rhi::IDevice&               device,
+                                 AlbedoSlot                      albedo,
+                                 cd::material::MaterialInstance& prim_inst,
+                                 cd::material::Material&         prim_material,
+                                 cd::rhi::TextureViewHandle      fallback_normal_view = {},
+                                 cd::rhi::TextureViewHandle      fallback_mr_view     = {})
+{
+    if (out.gltf.vb.is_valid())
+        return false;
+
+    auto loaded = cd_studio::try_auto_load_gltf(device, albedo, prim_inst);
+    out.gltf             = loaded.mesh;
+    out.gltf_loaded_name = std::move(loaded.loaded_name);
+    out.skinned          = std::move(loaded.skinned);
+    out.gltf_prim_ranges = std::move(loaded.prim_ranges);
+    if (loaded.has_texture)
+        out.has_gltf_texture = true;
+
+    for (auto& pr : out.gltf_prim_ranges)
+    {
+        if (!pr.has_texture || !pr.albedo_view.is_valid())
+            continue;
+        auto inst_r = cd::material::MaterialInstance::create(device, prim_material);
+        if (!inst_r.has_value())
+            continue;
+        const cd::rhi::TextureViewHandle norm_v =
+            pr.has_normal_map ? pr.normal_view : fallback_normal_view;
+        const cd::rhi::TextureViewHandle mr_v =
+            pr.has_mr_map ? pr.mr_view : fallback_mr_view;
+        std::vector<cd::rhi::DescriptorWrite> tw;
+        tw.reserve(3);
+        tw.push_back(cd::rhi::DescriptorWrite {
+            .binding       = 4,
+            .array_element = 0,
+            .type          = cd::rhi::DescriptorType::kCombinedImageSampler,
+            .view          = pr.albedo_view,
+            .sampler       = albedo.sampler });
+        if (norm_v.is_valid())
+        {
+            tw.push_back(cd::rhi::DescriptorWrite {
+                .binding       = 8,
+                .array_element = 0,
+                .type          = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view          = norm_v,
+                .sampler       = albedo.sampler });
+        }
+        if (mr_v.is_valid())
+        {
+            tw.push_back(cd::rhi::DescriptorWrite {
+                .binding       = 9,
+                .array_element = 0,
+                .type          = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view          = mr_v,
+                .sampler       = albedo.sampler });
+        }
+        (void)inst_r->update(tw);
+        pr.prim_inst = std::move(*inst_r);
+    }
+
+    out.blas_gltf = cd::rhi::AccelStructureHandle {};
+    if (out.gltf.vb.is_valid())
+    {
+        if (!out.gltf_prim_ranges.empty())
+        {
+            out.blas_gltf = build_multi_geom_blas(
+                device, out.gltf,
+                std::span<const cd_studio::GltfPrimRange>(out.gltf_prim_ranges),
+                "blas_gltf_multigeom");
+        }
+        if (!out.blas_gltf.is_valid())
+        {
+            out.blas_gltf = build_mesh_blas(device, out.gltf, "blas_gltf");
+        }
+        if (out.blas_gltf.is_valid())
+        {
+            if (auto bcmd_ptr = device.create_command_buffer())
+            {
+                auto& bcmd = *bcmd_ptr;
+                bcmd.begin();
+                bcmd.build_acceleration_structure(out.blas_gltf);
+                bcmd.end();
+                cd::rhi::SubmitDesc bsd {};
+                std::array<cd::rhi::ICommandBuffer*, 1> bcbs { &bcmd };
+                bsd.command_buffers = bcbs;
+                (void)device.submit(bsd);
+                device.wait_idle();
+            }
+        }
+    }
+    return out.gltf.vb.is_valid();
+}
+
+inline bool
+ensure_cesium_loaded_in_registry(StudioMeshRegistry&             out,
+                                 cd::rhi::IDevice&               device,
+                                 AlbedoSlot                      albedo,
+                                 cd::material::MaterialInstance& prim_inst,
+                                 cd::material::Material&         prim_material,
+                                 cd::rhi::TextureViewHandle      fallback_normal_view = {},
+                                 cd::rhi::TextureViewHandle      fallback_mr_view     = {})
+{
+    if (out.gltf_cesium.vb.is_valid())
+        return false;
+
+    auto loaded = cd_studio::try_load_cesiumman_gltf(device, albedo, prim_inst);
+    out.gltf_cesium             = loaded.mesh;
+    out.gltf_cesium_loaded_name = std::move(loaded.loaded_name);
+    out.cesium_skinned          = std::move(loaded.skinned);
+    out.gltf_cesium_prim_ranges = std::move(loaded.prim_ranges);
+    if (loaded.has_texture)
+        out.has_cesium_texture = true;
+
+    for (auto& pr : out.gltf_cesium_prim_ranges)
+    {
+        if (!pr.has_texture || !pr.albedo_view.is_valid())
+            continue;
+        auto inst_r = cd::material::MaterialInstance::create(device, prim_material);
+        if (!inst_r.has_value())
+            continue;
+        const cd::rhi::TextureViewHandle norm_v =
+            pr.has_normal_map ? pr.normal_view : fallback_normal_view;
+        const cd::rhi::TextureViewHandle mr_v =
+            pr.has_mr_map ? pr.mr_view : fallback_mr_view;
+        std::vector<cd::rhi::DescriptorWrite> tw;
+        tw.reserve(3);
+        tw.push_back(cd::rhi::DescriptorWrite {
+            .binding       = 4,
+            .array_element = 0,
+            .type          = cd::rhi::DescriptorType::kCombinedImageSampler,
+            .view          = pr.albedo_view,
+            .sampler       = albedo.sampler });
+        if (norm_v.is_valid())
+        {
+            tw.push_back(cd::rhi::DescriptorWrite {
+                .binding       = 8,
+                .array_element = 0,
+                .type          = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view          = norm_v,
+                .sampler       = albedo.sampler });
+        }
+        if (mr_v.is_valid())
+        {
+            tw.push_back(cd::rhi::DescriptorWrite {
+                .binding       = 9,
+                .array_element = 0,
+                .type          = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view          = mr_v,
+                .sampler       = albedo.sampler });
+        }
+        (void)inst_r->update(tw);
+        pr.prim_inst = std::move(*inst_r);
+    }
+
+    out.blas_cesium = cd::rhi::AccelStructureHandle {};
+    if (out.gltf_cesium.vb.is_valid())
+    {
+        if (!out.gltf_cesium_prim_ranges.empty())
+        {
+            out.blas_cesium = build_multi_geom_blas(
+                device, out.gltf_cesium,
+                std::span<const cd_studio::GltfPrimRange>(out.gltf_cesium_prim_ranges),
+                "blas_cesium_multigeom");
+        }
+        if (!out.blas_cesium.is_valid())
+        {
+            out.blas_cesium = build_mesh_blas(device, out.gltf_cesium, "blas_cesium");
+        }
+        if (out.blas_cesium.is_valid())
+        {
+            if (auto bcmd_ptr = device.create_command_buffer())
+            {
+                auto& bcmd = *bcmd_ptr;
+                bcmd.begin();
+                bcmd.build_acceleration_structure(out.blas_cesium);
+                bcmd.end();
+                cd::rhi::SubmitDesc bsd {};
+                std::array<cd::rhi::ICommandBuffer*, 1> bcbs { &bcmd };
+                bsd.command_buffers = bcbs;
+                (void)device.submit(bsd);
+                device.wait_idle();
+            }
+        }
+    }
+    return out.gltf_cesium.vb.is_valid();
+}
+
 [[nodiscard]] inline StudioMeshRegistry
 boot_meshes(cd::rhi::IDevice&                device,
             AlbedoSlot                       albedo,
             cd::material::MaterialInstance&  prim_inst,
             cd::material::Material&          prim_material,
-            cd::rhi::TextureViewHandle       fallback_normal_view = {},
-            cd::rhi::TextureViewHandle       fallback_mr_view     = {})
+            cd::rhi::TextureViewHandle       fallback_normal_view      = {},
+            cd::rhi::TextureViewHandle       fallback_mr_view          = {},
+            bool                             eager_load_gltf_showcases = false)
 {
     StudioMeshRegistry out {};
 
@@ -219,132 +408,6 @@ boot_meshes(cd::rhi::IDevice&                device,
     const auto knot_cpu = cd::asset::make_torus_knot(0.7F, 0.20F, 2, 3, 256, 24);
     out.knot = cd::render::upload_mesh(device, knot_cpu);
 
-    // Load Sponza Atrium (static scene, kSponza entity).
-    {
-        auto loaded = cd_studio::try_auto_load_gltf(device, albedo, prim_inst);
-        out.gltf             = loaded.mesh;
-        out.gltf_loaded_name = std::move(loaded.loaded_name);
-        out.skinned          = std::move(loaded.skinned);  // always invalid for Sponza
-        out.gltf_prim_ranges = std::move(loaded.prim_ranges);
-        if (loaded.has_texture)
-            out.has_gltf_texture = true;
-
-        // Per-prim descriptor sets: allocate one MaterialInstance per textured
-        // prim so each draw binds its OWN descriptor set rather than sharing the
-        // global prim_inst.  Sharing one VkDescriptorSet and calling
-        // vkUpdateDescriptorSets between recorded draw calls is technically
-        // undefined behaviour in Vulkan — the GPU sees only the last update for
-        // ALL draws, defeating per-prim texture switching (vegetation/curtains
-        // show wrong texture / no alpha discard).
-        for (auto& pr : out.gltf_prim_ranges)
-        {
-            if (!pr.has_texture || !pr.albedo_view.is_valid())
-                continue;
-            auto inst_r = cd::material::MaterialInstance::create(device, prim_material);
-            if (!inst_r.has_value())
-            {
-                std::fprintf(stderr,
-                    "[gltf] per-prim MaterialInstance create failed — "
-                    "falling back to shared descriptor (vegetation may be wrong)\n");
-                continue;
-            }
-            // phase456: write bindings 4 (albedo), 8 (normal), 9 (MR) into
-            // this prim's OWN descriptor set. Per-prim views override; the
-            // global procedural fallbacks fill bindings the prim doesn't
-            // author so Vulkan sees a complete descriptor at bind time.
-            const cd::rhi::TextureViewHandle norm_v =
-                pr.has_normal_map ? pr.normal_view : fallback_normal_view;
-            const cd::rhi::TextureViewHandle mr_v =
-                pr.has_mr_map ? pr.mr_view : fallback_mr_view;
-            std::vector<cd::rhi::DescriptorWrite> tw;
-            tw.reserve(3);
-            tw.push_back(cd::rhi::DescriptorWrite {
-                .binding       = 4,
-                .array_element = 0,
-                .type          = cd::rhi::DescriptorType::kCombinedImageSampler,
-                .view          = pr.albedo_view,
-                .sampler       = albedo.sampler });
-            if (norm_v.is_valid())
-            {
-                tw.push_back(cd::rhi::DescriptorWrite {
-                    .binding       = 8,
-                    .array_element = 0,
-                    .type          = cd::rhi::DescriptorType::kCombinedImageSampler,
-                    .view          = norm_v,
-                    .sampler       = albedo.sampler });
-            }
-            if (mr_v.is_valid())
-            {
-                tw.push_back(cd::rhi::DescriptorWrite {
-                    .binding       = 9,
-                    .array_element = 0,
-                    .type          = cd::rhi::DescriptorType::kCombinedImageSampler,
-                    .view          = mr_v,
-                    .sampler       = albedo.sampler });
-            }
-            (void)inst_r->update(tw);
-            pr.prim_inst = std::move(*inst_r);
-        }
-    }
-
-    // Load CesiumMan animated character (kGltf entity).
-    // Runs AFTER Sponza so both coexist independently.
-    {
-        auto loaded = cd_studio::try_load_cesiumman_gltf(device, albedo, prim_inst);
-        out.gltf_cesium             = loaded.mesh;
-        out.gltf_cesium_loaded_name = std::move(loaded.loaded_name);
-        out.cesium_skinned          = std::move(loaded.skinned);
-        out.gltf_cesium_prim_ranges = std::move(loaded.prim_ranges);
-        if (loaded.has_texture)
-            out.has_cesium_texture = true;
-
-        // Per-prim descriptor sets for CesiumMan / character (same as Sponza).
-        for (auto& pr : out.gltf_cesium_prim_ranges)
-        {
-            if (!pr.has_texture || !pr.albedo_view.is_valid())
-                continue;
-            auto inst_r = cd::material::MaterialInstance::create(device, prim_material);
-            if (!inst_r.has_value())
-            {
-                std::fprintf(stderr,
-                    "[gltf] cesium/character per-prim MaterialInstance create failed\n");
-                continue;
-            }
-            const cd::rhi::TextureViewHandle norm_v =
-                pr.has_normal_map ? pr.normal_view : fallback_normal_view;
-            const cd::rhi::TextureViewHandle mr_v =
-                pr.has_mr_map ? pr.mr_view : fallback_mr_view;
-            std::vector<cd::rhi::DescriptorWrite> tw;
-            tw.reserve(3);
-            tw.push_back(cd::rhi::DescriptorWrite {
-                .binding       = 4,
-                .array_element = 0,
-                .type          = cd::rhi::DescriptorType::kCombinedImageSampler,
-                .view          = pr.albedo_view,
-                .sampler       = albedo.sampler });
-            if (norm_v.is_valid())
-            {
-                tw.push_back(cd::rhi::DescriptorWrite {
-                    .binding       = 8,
-                    .array_element = 0,
-                    .type          = cd::rhi::DescriptorType::kCombinedImageSampler,
-                    .view          = norm_v,
-                    .sampler       = albedo.sampler });
-            }
-            if (mr_v.is_valid())
-            {
-                tw.push_back(cd::rhi::DescriptorWrite {
-                    .binding       = 9,
-                    .array_element = 0,
-                    .type          = cd::rhi::DescriptorType::kCombinedImageSampler,
-                    .view          = mr_v,
-                    .sampler       = albedo.sampler });
-            }
-            (void)inst_r->update(tw);
-            pr.prim_inst = std::move(*inst_r);
-        }
-    }
-
     out.blas_cube   = build_mesh_blas(device, out.cube,   "blas_cube");
     out.blas_sphere = build_mesh_blas(device, out.sphere, "blas_sphere");
     out.blas_cone   = build_mesh_blas(device, out.cone,   "blas_cone");
@@ -352,58 +415,6 @@ boot_meshes(cd::rhi::IDevice&                device,
     out.blas_torus  = build_mesh_blas(device, out.torus,  "blas_torus");
     out.blas_knot   = build_mesh_blas(device, out.knot,   "blas_knot");
     out.blas_floor  = build_mesh_blas(device, out.floor,  "blas_floor");
-    // phase465-perprim: Sponza gets a MULTI-GEOMETRY BLAS where each
-    // glTF prim range becomes its own geometry. Closest-hit rays then
-    // return (instance_id, geometry_index) and the reflection shader
-    // indexes a per-(instance, geom) SSBO so vegetation reflects green,
-    // fabric reflects red, stone reflects grey — instead of every
-    // Sponza hit returning the same single sandstone tint.
-    //
-    // CesiumMan and procedural primitives stay single-geom: their
-    // glTF prim_ranges list is empty (CesiumMan) or N/A.
-    //
-    // phase833-rt-chrome-sponza-blas-geo-cap-128:
-    // VulkanCommandBuffer's kMaxBuildGeos was raised from 32 to 128 to
-    // fit Khronos Sponza's **103 primitives**. The original "Sponza
-    // ships with ~28 prim ranges, well under the cap" comment was
-    // wrong — the glTF revision actually has 103 prims; the previous
-    // 32-cap silently truncated the BLAS, dropping 71/103 prims out
-    // of the ray-query AS and breaking chrome reflections of the
-    // curtain panels / lion / vegetation. See the cap site for the
-    // full reasoning.
-    out.blas_gltf = cd::rhi::AccelStructureHandle {};
-    if (out.gltf.vb.is_valid())
-    {
-        if (!out.gltf_prim_ranges.empty())
-        {
-            out.blas_gltf = build_multi_geom_blas(
-                device, out.gltf,
-                std::span<const cd_studio::GltfPrimRange>(out.gltf_prim_ranges),
-                "blas_gltf_multigeom");
-        }
-        if (!out.blas_gltf.is_valid())
-        {
-            // Fallback: single-geom build (covers CesiumMan-like glTFs
-            // that arrive without prim_ranges and the unlikely multi-geom
-            // create-failure path).
-            out.blas_gltf = build_mesh_blas(device, out.gltf, "blas_gltf");
-        }
-    }
-    out.blas_cesium = cd::rhi::AccelStructureHandle {};
-    if (out.gltf_cesium.vb.is_valid())
-    {
-        if (!out.gltf_cesium_prim_ranges.empty())
-        {
-            out.blas_cesium = build_multi_geom_blas(
-                device, out.gltf_cesium,
-                std::span<const cd_studio::GltfPrimRange>(out.gltf_cesium_prim_ranges),
-                "blas_cesium_multigeom");
-        }
-        if (!out.blas_cesium.is_valid())
-        {
-            out.blas_cesium = build_mesh_blas(device, out.gltf_cesium, "blas_cesium");
-        }
-    }
 
     {
         auto bcmd_ptr = device.create_command_buffer();
@@ -420,9 +431,7 @@ boot_meshes(cd::rhi::IDevice&                device,
                         out.blas_cyl,
                         out.blas_torus,
                         out.blas_knot,
-                        out.blas_floor,
-                        out.blas_gltf,
-                        out.blas_cesium })
+                        out.blas_floor })
         {
             if (h.is_valid())
                 bcmd.build_acceleration_structure(h);
@@ -433,6 +442,16 @@ boot_meshes(cd::rhi::IDevice&                device,
         bsd.command_buffers = bcbs;
         (void)device.submit(bsd);
         device.wait_idle();
+    }
+
+    if (eager_load_gltf_showcases)
+    {
+        (void)ensure_sponza_loaded_in_registry(
+            out, device, albedo, prim_inst, prim_material,
+            fallback_normal_view, fallback_mr_view);
+        (void)ensure_cesium_loaded_in_registry(
+            out, device, albedo, prim_inst, prim_material,
+            fallback_normal_view, fallback_mr_view);
     }
 
     return out;

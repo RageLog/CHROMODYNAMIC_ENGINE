@@ -4159,8 +4159,10 @@ cd::core::Result<void> StudioApp::on_boot()
         .sampler  = s.albedo_sampler,
         .upload   = upload_alb_fn,
     };
+    const bool eager_golden_boot = cd::studio_rt::golden::enabled();
     s.meshes = cd_studio::boot_meshes(device, alb_slot, s.prim_inst, s.materials.prim,
-                                      s.normal_tex.view, s.mr_tex.view);  // phase456: per-prim normal/MR fallback
+                                      s.normal_tex.view, s.mr_tex.view,
+                                      eager_golden_boot);
     if (s.meshes.build_exit_code != 0)
         return std::unexpected(
             cd::core::ErrorCode { 0, static_cast<std::uint32_t>(s.meshes.build_exit_code), "meshes" });
@@ -4173,46 +4175,26 @@ cd::core::Result<void> StudioApp::on_boot()
     cd_studio::wire_w8be_bindless_and_meta(
         s, device, kLightUboBytes, cd::studio_rt::kInstMatBytes);
 
-
     // phase1146 (on_boot extraction batch 7): world container + .cdproject
     // adoption + CD_HDR_LANES env read live in StudioBootProject.hpp
-    // (phase1112/1113/1121 behaviours preserved verbatim). The entity
-    // spawns stay here — they use the file-local SceneEntity type.
     cd_studio::setup_boot_world_and_project(s);
-    spawn_primitive_seeds(s.scene, s.entities);
-    // phase798-rt-chrome-sponza-probe: in fixture-#5 mode skip CesiumMan
-    // (4 m glowing humanoid at world origin) so it doesn't block the
-    // probe view. Sponza is the actually-tested geometry here.
-    const bool chrome_probe_mode =
-        cd::studio_rt::golden::enabled() &&
-        cd::studio_rt::golden::options().fixture_index == 5;
-    spawn_sponza_and_cesiumman_entities(
-        s.scene,
-        s.meshes.gltf,          s.meshes.gltf_loaded_name,
-        chrome_probe_mode ? cd::render::GpuMesh {} : s.meshes.gltf_cesium,
-        chrome_probe_mode ? std::string_view {}    : s.meshes.gltf_cesium_loaded_name,
-        s.entities);
-    spawn_pbr_grid_entities(s.scene, s.entities);
-
-    // phase797-rt-chrome-sponza-probe: opt-in chrome probe sphere inside
-    // Sponza nave, ONLY when CLI selected fixture #5 ("chrome_probe").
-    // Every other fixture + every interactive run is untouched.
-    if (chrome_probe_mode)
+    if (eager_golden_boot)
     {
-        spawn_chrome_probe_entity(s.scene, s.entities);
-    }
-
-    // phase508-generic-gltf-path: 3rd load path, runs strictly AFTER the
-    // legacy Sponza + CesiumMan paths above so the generic ingest does not
-    // perturb any of their boot state. The user-facing contract is "drop
-    // any .gltf into assets/samples/Generic/ and it loads with no code
-    // changes" -- everything else (entities, GPU resources, AABB,
-    // suggested world xform) is auto-driven by the SceneLoader +
-    // SceneIngest libraries. See StudioSceneAssetIngest.hpp for the scope
-    // caveats (visible draws of these meshes are deferred to the full
-    // P1.3 migration; this phase exercises load + ingest + cleanup
-    // end-to-end and logs the result).
-    {
+        spawn_primitive_seeds(s.scene, s.entities);
+        const bool chrome_probe_mode =
+            cd::studio_rt::golden::enabled() &&
+            cd::studio_rt::golden::options().fixture_index == 5;
+        spawn_sponza_and_cesiumman_entities(
+            s.scene,
+            s.meshes.gltf,          s.meshes.gltf_loaded_name,
+            chrome_probe_mode ? cd::render::GpuMesh {} : s.meshes.gltf_cesium,
+            chrome_probe_mode ? std::string_view {}    : s.meshes.gltf_cesium_loaded_name,
+            s.entities);
+        spawn_pbr_grid_entities(s.scene, s.entities);
+        if (chrome_probe_mode)
+        {
+            spawn_chrome_probe_entity(s.scene, s.entities);
+        }
         auto early_log = [&s](std::string msg)
         {
             s.log.emplace_back(std::move(msg));
@@ -4220,16 +4202,11 @@ cd::core::Result<void> StudioApp::on_boot()
         };
         s.generic_ingests = cd_studio::load_generic_gltf_scenes(
             *s.device_owner, s.ecs_world, s.scene, early_log);
-    }
-
-    // phase435-vis8: suppress editor floor when Sponza is loaded.
-    // Sponza provides its own floor; the large 1000m editor grid quad
-    // bleeds through Sponza vegetation alpha-discards and overlaps
-    // column bases near y=0. Show grid only in empty/non-Sponza scenes.
-    if (!s.meshes.gltf_loaded_name.empty() &&
-        s.meshes.gltf_loaded_name.find("Sponza") != std::string::npos)
-    {
-        s.show_editor_floor = false;
+        if (!s.meshes.gltf_loaded_name.empty() &&
+            s.meshes.gltf_loaded_name.find("Sponza") != std::string::npos)
+        {
+            s.show_editor_floor = false;
+        }
     }
 
     auto log_push_fn = [&s](std::string msg)
@@ -4239,9 +4216,7 @@ cd::core::Result<void> StudioApp::on_boot()
     };
     log_push_fn(
         std::string { "[boot] " } + std::to_string(s.entities.size()) +
-        " ECS entities spawned" +
-        (s.meshes.gltf_loaded_name.empty() ? ""
-            : std::string { " (incl. glTF: " } + s.meshes.gltf_loaded_name + ")"));
+        " ECS entities spawned (Empty_Stage — showcases load on demand)");
 
     // Selection + gizmo
     s.outline.style = cd::editor::OutlineStyle::kWireframe;
@@ -4921,6 +4896,44 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
         {
             if (ent.kind == PrimitiveKind::kGltf)   has_gltf_entity   = true;
             if (ent.kind == PrimitiveKind::kSponza) has_sponza_entity = true;
+        }
+        if ((has_sponza_entity && !s.meshes.gltf.vb.is_valid()) ||
+            (has_gltf_entity   && !s.meshes.gltf_cesium.vb.is_valid()))
+        {
+            auto upload_alb_lazy = [&device_ref = device](
+                const std::uint8_t* rgba, std::uint32_t w, std::uint32_t h)
+                -> std::pair<cd::rhi::TextureHandle, cd::rhi::TextureViewHandle>
+            {
+                auto t = create_texture_rgba8(device_ref, rgba, w, h);
+                return { t.image, t.view };
+            };
+            cd_studio::AlbedoSlot lazy_alb_slot {
+                .image_io = &s.albedo_tex.image,
+                .view_io  = &s.albedo_tex.view,
+                .sampler  = s.albedo_sampler,
+                .upload   = upload_alb_lazy,
+            };
+            bool loaded_any = false;
+            if (has_sponza_entity && !s.meshes.gltf.vb.is_valid())
+            {
+                loaded_any |= cd_studio::ensure_sponza_loaded_in_registry(
+                    s.meshes, device, lazy_alb_slot, s.prim_inst, s.materials.prim,
+                    s.normal_tex.view, s.mr_tex.view);
+            }
+            if (has_gltf_entity && !s.meshes.gltf_cesium.vb.is_valid())
+            {
+                loaded_any |= cd_studio::ensure_cesium_loaded_in_registry(
+                    s.meshes, device, lazy_alb_slot, s.prim_inst, s.materials.prim,
+                    s.normal_tex.view, s.mr_tex.view);
+            }
+            if (loaded_any)
+            {
+                if (s.meshes.has_gltf_texture || s.meshes.has_cesium_texture)
+                    s.has_gltf_texture = true;
+                cd_studio::wire_w8be_bindless_and_meta(
+                    s, device, cd_studio::kBootLightUboBytes, cd::studio_rt::kInstMatBytes);
+                s.last_tlas_scene_hash = 0;
+            }
         }
         const float pie_speed_scale = s.pie_playing
             ? std::clamp(cd::studio::studio_world().player_horiz_speed / 3.2F, 0.14F, 1.55F)

@@ -12,9 +12,10 @@
 // =============================================================================
 #pragma once
 
-#include "StudioIblBaker.hpp"            // bake_ibl_cpu / upload_ibl_gpu
+#include "StudioCliOptions.hpp"            // cd::studio_rt::golden::enabled
+#include "StudioIblBaker.hpp"              // bake_ibl_cpu / upload_ibl_gpu
 #include "StudioRayTracingTypes.hpp"       // cd::studio_rt::kInstMatBytes
-#include "StudioRenderTargets.hpp"  // kDepthFormat
+#include "StudioRenderTargets.hpp"         // kDepthFormat
 
 #include <cd/core/ErrorCode.hpp>
 #include <cd/core/Result.hpp>
@@ -86,7 +87,9 @@ setup_boot_gpu_buffers(StateT& s, DeviceT& device)
 
     // IBL bake
     constexpr cd::math::Vec3f kIblSunDirToward { 0.3F, 0.9F, 0.2F };
-    s.ibl_cpu = cd_studio::bake_ibl_cpu(cd_studio::normalize_dir(kIblSunDirToward));
+    const bool eager_showcase_bake = cd::studio_rt::golden::enabled();
+    s.ibl_cpu = cd_studio::bake_ibl_cpu(
+        cd_studio::normalize_dir(kIblSunDirToward), eager_showcase_bake);
     if (!s.ibl_cpu.ok)
         return std::unexpected(cd::core::ErrorCode { 0, 23, "ibl bake" });
     if (auto r = cd_studio::upload_ibl_gpu(device, s.ibl_cpu); !r.has_value())
@@ -97,27 +100,20 @@ setup_boot_gpu_buffers(StateT& s, DeviceT& device)
     return {};
 }
 
-/// phase1140 (on_boot extraction batch 6): procedural Earth-like
+/// phase1140 (on_boot extraction batch 6): default fallback
 /// albedo/normal/MR textures from the CPU IBL bake + the shared repeat
-/// sampler. Verbatim from on_boot (constants inlined to their
-/// cd_studio definitions).
+/// sampler.
 template <typename StateT, typename DeviceT>
 [[nodiscard]] inline cd::core::Result<void>
 setup_boot_procedural_textures(StateT& s, DeviceT& device)
 {
-    // Procedural textures
-    s.albedo_tex = create_texture_rgba8(device, s.ibl_cpu.earth_albedo.data(),
-                                        cd_studio::kStudioIblBakerEarthAlbedoSize, cd_studio::kStudioIblBakerEarthAlbedoSize);
+    const std::uint32_t alb_sz = s.ibl_cpu.earth_albedo_size;
+    const std::uint32_t nrm_sz = s.ibl_cpu.earth_normal_size;
+    const std::uint32_t mr_sz  = s.ibl_cpu.earth_mr_size;
+    s.albedo_tex = create_texture_rgba8(device, s.ibl_cpu.earth_albedo.data(), alb_sz, alb_sz);
     s.has_gltf_texture = true;
-    std::fprintf(stderr, "[showcase] procedural Earth-like albedo (%ux%u) bound\n",
-                 cd_studio::kStudioIblBakerEarthAlbedoSize, cd_studio::kStudioIblBakerEarthAlbedoSize);
-    s.normal_tex = create_texture_rgba8(device, s.ibl_cpu.earth_normal.data(),
-                                        cd_studio::kStudioIblBakerEarthNormalSize, cd_studio::kStudioIblBakerEarthNormalSize);
-    std::fprintf(stderr, "[showcase] procedural normal map (%ux%u) bound\n",
-                 cd_studio::kStudioIblBakerEarthNormalSize, cd_studio::kStudioIblBakerEarthNormalSize);
-    s.mr_tex = create_texture_rgba8(device, s.ibl_cpu.earth_mr.data(), cd_studio::kStudioIblBakerEarthMrSize, cd_studio::kStudioIblBakerEarthMrSize);
-    std::fprintf(stderr, "[showcase] procedural metallic-roughness (%ux%u) bound\n",
-                 cd_studio::kStudioIblBakerEarthMrSize, cd_studio::kStudioIblBakerEarthMrSize);
+    s.normal_tex = create_texture_rgba8(device, s.ibl_cpu.earth_normal.data(), nrm_sz, nrm_sz);
+    s.mr_tex = create_texture_rgba8(device, s.ibl_cpu.earth_mr.data(), mr_sz, mr_sz);
 
     cd::rhi::SamplerDesc alb_sd {};
     alb_sd.mag_filter  = cd::rhi::SamplerFilter::kLinear;
