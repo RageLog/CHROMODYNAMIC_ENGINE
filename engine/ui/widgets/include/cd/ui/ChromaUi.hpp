@@ -923,22 +923,22 @@ namespace cd::ui::chroma
 
 struct ThemePalette
 {
-    ImU32 window_bg       { IM_COL32(18, 22, 31, 246) };
-    ImU32 window_header0  { IM_COL32(30, 38, 56, 255) };
-    ImU32 window_header1  { IM_COL32(21, 26, 39, 255) };
-    ImU32 window_border   { IM_COL32(48, 59, 82, 235) };
-    ImU32 child_bg        { IM_COL32(13, 16, 24, 230) };
-    ImU32 button          { IM_COL32(34, 43, 63, 255) };
-    ImU32 button_hover    { IM_COL32(52, 94, 172, 255) };
-    ImU32 button_active   { IM_COL32(34, 132, 234, 255) };
-    ImU32 frame_bg        { IM_COL32(11, 14, 21, 255) };
-    ImU32 frame_hover     { IM_COL32(26, 35, 52, 255) };
-    ImU32 accent          { IM_COL32(45, 145, 255, 255) };
-    ImU32 accent_bright   { IM_COL32(85, 200, 255, 255) };
-    ImU32 text            { IM_COL32(238, 243, 252, 255) };
-    ImU32 text_disabled   { IM_COL32(134, 148, 172, 255) };
-    ImU32 separator       { IM_COL32(44, 55, 76, 225) };
-    ImU32 popup_bg        { IM_COL32(21, 26, 38, 252) };
+    ImU32 window_bg       { IM_COL32(20, 23, 30, 248) };
+    ImU32 window_header0  { IM_COL32(29, 34, 44, 255) };
+    ImU32 window_header1  { IM_COL32(22, 26, 34, 255) };
+    ImU32 window_border   { IM_COL32(44, 52, 68, 240) };
+    ImU32 child_bg        { IM_COL32(15, 18, 24, 238) };
+    ImU32 button          { IM_COL32(36, 43, 56, 255) };
+    ImU32 button_hover    { IM_COL32(48, 86, 150, 255) };
+    ImU32 button_active   { IM_COL32(37, 132, 232, 255) };
+    ImU32 frame_bg        { IM_COL32(12, 15, 20, 255) };
+    ImU32 frame_hover     { IM_COL32(26, 33, 46, 255) };
+    ImU32 accent          { IM_COL32(37, 132, 232, 255) };
+    ImU32 accent_bright   { IM_COL32(82, 184, 255, 255) };
+    ImU32 text            { IM_COL32(236, 240, 248, 255) };
+    ImU32 text_disabled   { IM_COL32(132, 144, 166, 255) };
+    ImU32 separator       { IM_COL32(40, 48, 62, 230) };
+    ImU32 popup_bg        { IM_COL32(22, 26, 35, 254) };
 };
 
 [[nodiscard]] inline const char* theme_preset_name(int preset) noexcept
@@ -2474,6 +2474,22 @@ inline void SetCursorScreenPos(const ImVec2& screen_pos) noexcept
     }
 }
 
+[[nodiscard]] inline ImVec2 GetContentRegionAvail() noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty()) return ImVec2(240.0F, 180.0F);
+    const auto& w = st.window_stack.back();
+    return ImVec2(
+        std::max(0.0F, (w.pos.x + w.size.x - 10.0F) - w.cursor.x),
+        std::max(0.0F, (w.pos.y + w.size.y - 8.0F) - w.cursor.y));
+}
+
+[[nodiscard]] inline ImDrawList* GetWindowDrawList() noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    return st.window_stack.empty() ? &st.win_dl : st.window_stack.back().draw_list;
+}
+
 // -----------------------------------------------------------------------------
 // DockBuilder & DockSpace (with interactive draggable splitters!)
 // -----------------------------------------------------------------------------
@@ -2588,13 +2604,14 @@ inline ImGuiID DockSpace(ImGuiID id, const ImVec2& /*size*/ = ImVec2(0, 0),
     const float lmy = std::round(top_y + work_h * st.dock_left_split_ratio);
 
     const ImVec2 mp = st.io.MousePos;
+    const bool has_left_split = !st.dock_slot_tabs[2].empty();
     const bool popup_open = (!st.active_menu_name.empty() || st.open_popup_id != 0U) &&
                             (mp.x >= st.last_popup_min.x && mp.x <= st.last_popup_max.x &&
                              mp.y >= st.last_popup_min.y && mp.y <= st.last_popup_max.y);
     const bool hover_l  = !popup_open && (mp.y >= top_y && std::fabs(mp.x - lx) <= 4.0F);
     const bool hover_r  = !popup_open && (mp.y >= top_y && std::fabs(mp.x - rx) <= 4.0F);
     const bool hover_b  = !popup_open && (mp.x >= lx && mp.x <= rx && std::fabs(mp.y - by) <= 4.0F);
-    const bool hover_lm = !popup_open && (mp.x <= lx && std::fabs(mp.y - lmy) <= 4.0F);
+    const bool hover_lm = has_left_split && !popup_open && (mp.x <= lx && std::fabs(mp.y - lmy) <= 4.0F);
 
     if (st.mouse_clicked[0] && !popup_open)
     {
@@ -2612,7 +2629,7 @@ inline ImGuiID DockSpace(ImGuiID id, const ImVec2& /*size*/ = ImVec2(0, 0),
             st.dock_right_w_ratio = std::clamp((W - mp.x) / W, 0.17F, 0.38F);
         else if (st.dragging_splitter == 3)
             st.dock_bottom_h_ratio = std::clamp((H - mp.y) / work_h, 0.12F, 0.42F);
-        else if (st.dragging_splitter == 4)
+        else if (st.dragging_splitter == 4 && has_left_split)
             st.dock_left_split_ratio = std::clamp((mp.y - top_y) / work_h, 0.25F, 0.80F);
     }
 
@@ -2624,8 +2641,11 @@ inline ImGuiID DockSpace(ImGuiID id, const ImVec2& /*size*/ = ImVec2(0, 0),
                             (hover_r || st.dragging_splitter == 2) ? grip_hi : grip_col);
     st.win_dl.AddRectFilled(ImVec2(lx, by - 1.5F), ImVec2(rx, by + 1.5F),
                             (hover_b || st.dragging_splitter == 3) ? grip_hi : grip_col);
-    st.win_dl.AddRectFilled(ImVec2(0.0F, lmy - 1.5F), ImVec2(lx, lmy + 1.5F),
-                            (hover_lm || st.dragging_splitter == 4) ? grip_hi : grip_col);
+    if (has_left_split)
+    {
+        st.win_dl.AddRectFilled(ImVec2(0.0F, lmy - 1.5F), ImVec2(lx, lmy + 1.5F),
+                                (hover_lm || st.dragging_splitter == 4) ? grip_hi : grip_col);
+    }
     if (st.workspace_mode == 0)
     {
         st.bg_dl.clear();
@@ -2696,8 +2716,9 @@ inline bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags fla
 
     if (slot == 1)
     {
+        const bool has_left_split = !st.dock_slot_tabs[2].empty();
         wl.pos  = ImVec2 { 0.0F, top_y };
-        wl.size = ImVec2 { lx - 1.0F, lmy - top_y - 1.0F };
+        wl.size = ImVec2 { lx - 1.0F, (has_left_split ? lmy : H) - top_y - 1.0F };
     }
     else if (slot == 2)
     {
@@ -3218,7 +3239,7 @@ inline void advance_item(cd::ui::chroma::WindowLayout& w, ImVec2 item_min, ImVec
     if (st.last_item_hovered) st.any_item_hovered = true;
 }
 
-[[nodiscard]] inline float resolve_item_width(const cd::ui::chroma::WindowLayout& w) noexcept
+[[nodiscard]] inline float resolve_item_width(const cd::ui::chroma::WindowLayout& w, float label_w = 0.0F) noexcept
 {
     auto& st = cd::ui::chroma::state();
     float avail = std::max(50.0F, (w.pos.x + w.size.x - 10.0F) - w.cursor.x);
@@ -3238,7 +3259,13 @@ inline void advance_item(cd::ui::chroma::WindowLayout& w, ImVec2 item_min, ImVec
         const float req = st.item_width_stack.back();
         return (req < 0.0F) ? std::max(40.0F, avail + req) : std::min(avail, req);
     }
-    return std::max(60.0F, avail * 0.62F);
+    const float base_w = std::max(60.0F, avail * 0.62F);
+    if (label_w > 0.0F)
+    {
+        const float max_for_label = std::max(85.0F, avail - label_w - 8.0F);
+        return std::min(base_w, max_for_label);
+    }
+    return base_w;
 }
 }  // namespace detail
 
@@ -3392,8 +3419,10 @@ inline bool Button(const char* label, const ImVec2& size_arg = ImVec2(0, 0)) noe
     auto& st = cd::ui::chroma::state();
     if (st.window_stack.empty() || label == nullptr) return false;
     auto& w = st.window_stack.back();
+    const float bh = (size_arg.y > 0.0F) ? size_arg.y : 22.0F;
+    float text_scale = (bh <= 19.0F) ? 1.18F : 1.28F;
     const auto vis = cd::ui::chroma::visible_label(label);
-    const ImVec2 tsz = cd::ui::chroma::measure_text_px(vis, 1.28F);
+    ImVec2 tsz = cd::ui::chroma::measure_text_px(vis, text_scale);
     float avail_w = std::max(36.0F, (w.pos.x + w.size.x - 10.0F) - w.cursor.x);
     if (!st.table_stack.empty())
     {
@@ -3403,7 +3432,11 @@ inline bool Button(const char* label, const ImVec2& size_arg = ImVec2(0, 0)) noe
     const float bw = (size_arg.x > 0.0F)
                          ? size_arg.x
                          : ((size_arg.x < 0.0F) ? avail_w : (tsz.x + 16.0F));
-    const float bh = (size_arg.y > 0.0F) ? size_arg.y : 22.0F;
+    if (size_arg.x != 0.0F && tsz.x > (bw - 8.0F) && tsz.x > 1.0F)
+    {
+        text_scale = std::max(0.76F, text_scale * ((bw - 8.0F) / tsz.x));
+        tsz = cd::ui::chroma::measure_text_px(vis, text_scale);
+    }
 
     const ImVec2 p0 = w.cursor;
     const ImVec2 p1 { p0.x + bw, p0.y + bh };
@@ -3421,9 +3454,9 @@ inline bool Button(const char* label, const ImVec2& size_arg = ImVec2(0, 0)) noe
     w.draw_list->AddRect(p0, p1, hov ? st.theme.accent_bright : st.theme.window_border, st.style_frame_rounding, 0, 1.0F);
 
     w.draw_list->PushClipRect(ImVec2(p0.x + 2.0F, p0.y + 1.0F), ImVec2(p1.x - 2.0F, p1.y - 1.0F));
-    const float tx = p0.x + std::max(4.0F, (bw - tsz.x) * 0.5F);
-    const float ty = p0.y + std::max(2.0F, (bh - 13.0F) * 0.5F);
-    w.draw_list->AddText(ImVec2(tx, ty), st.theme.text, vis.data(), vis.data() + vis.size(), 1.28F);
+    const float tx = p0.x + std::max(3.0F, (bw - tsz.x) * 0.5F);
+    const float ty = p0.y + std::max(2.0F, (bh - tsz.y) * 0.5F);
+    w.draw_list->AddText(ImVec2(tx, ty), st.theme.text, vis.data(), vis.data() + vis.size(), text_scale);
     w.draw_list->PopClipRect();
     return clicked;
 }
@@ -3433,8 +3466,8 @@ inline bool SmallButton(const char* label) noexcept
     auto& st = cd::ui::chroma::state();
     if (st.window_stack.empty() || label == nullptr) return false;
     const auto vis = cd::ui::chroma::visible_label(label);
-    const ImVec2 tsz = cd::ui::chroma::measure_text_px(vis, 1.24F);
-    return Button(label, ImVec2(tsz.x + 12.0F, 18.0F));
+    const ImVec2 tsz = cd::ui::chroma::measure_text_px(vis, 1.18F);
+    return Button(label, ImVec2(tsz.x + 10.0F, 18.0F));
 }
 
 inline bool Checkbox(const char* label, bool* v) noexcept
@@ -3694,7 +3727,7 @@ inline bool SliderFloat(const char* label, float* v, float v_min, float v_max,
     auto& w = st.window_stack.back();
     const auto vis = cd::ui::chroma::visible_label(label);
     const ImVec2 lsz = cd::ui::chroma::measure_text_px(vis, 1.28F);
-    const float iw = detail::resolve_item_width(w);
+    const float iw = detail::resolve_item_width(w, lsz.x);
     const float ih = 19.0F;
     const ImVec2 p0 = w.cursor;
     const ImVec2 bar_max { p0.x + iw, p0.y + ih };
@@ -3850,7 +3883,7 @@ inline bool DragFloat(const char* label, float* v, float v_speed = 0.05F,
     auto& w = st.window_stack.back();
     const auto vis = cd::ui::chroma::visible_label(label);
     const ImVec2 lsz = cd::ui::chroma::measure_text_px(vis, 1.28F);
-    const float iw = detail::resolve_item_width(w);
+    const float iw = detail::resolve_item_width(w, lsz.x);
     const float ih = 19.0F;
     const ImVec2 p0 = w.cursor;
     const ImVec2 bmax { p0.x + iw, p0.y + ih };
@@ -3963,7 +3996,7 @@ inline bool DragFloat3(const char* label, float v[3], float v_speed = 0.05F,
     auto& w = st.window_stack.back();
     const auto vis = cd::ui::chroma::visible_label(label);
     const ImVec2 lsz = cd::ui::chroma::measure_text_px(vis, 1.28F);
-    const float total_w = detail::resolve_item_width(w);
+    const float total_w = detail::resolve_item_width(w, lsz.x);
     const float gap = 4.0F;
     const float box_w = std::max(38.0F, (total_w - gap * 2.0F) / 3.0F);
     const float ih = 19.0F;
@@ -4090,7 +4123,7 @@ inline bool ColorEdit3(const char* label, float col[3]) noexcept
     auto& w = st.window_stack.back();
     const auto vis = cd::ui::chroma::visible_label(label);
     const ImVec2 lsz = cd::ui::chroma::measure_text_px(vis, 1.28F);
-    const float total_w = detail::resolve_item_width(w);
+    const float total_w = detail::resolve_item_width(w, lsz.x);
     const float swatch_w = 22.0F;
     const float gap = 4.0F;
     const float box_w = std::max(32.0F, (total_w - swatch_w - gap * 3.0F) / 3.0F);
@@ -4210,7 +4243,7 @@ inline bool Combo(const char* label, int* current_item, const char* const items[
     auto& w = st.window_stack.back();
     const auto vis = cd::ui::chroma::visible_label(label);
     const ImVec2 lsz = cd::ui::chroma::measure_text_px(vis, 1.28F);
-    const float iw = detail::resolve_item_width(w);
+    const float iw = detail::resolve_item_width(w, lsz.x);
     const float ih = 20.0F;
     const ImVec2 p0 = w.cursor;
     const ImVec2 bmax { p0.x + iw, p0.y + ih };
@@ -4299,7 +4332,7 @@ inline bool BeginCombo(const char* label, const char* preview_value) noexcept
     auto& w = st.window_stack.back();
     const auto vis = cd::ui::chroma::visible_label(label);
     const ImVec2 lsz = cd::ui::chroma::measure_text_px(vis, 1.28F);
-    const float iw = detail::resolve_item_width(w);
+    const float iw = detail::resolve_item_width(w, lsz.x);
     const float ih = 20.0F;
     const ImVec2 p0 = w.cursor;
     const ImVec2 bmax { p0.x + iw, p0.y + ih };
@@ -4383,7 +4416,7 @@ inline bool InputTextWithHint(const char* label, const char* hint, char* buf, st
     auto& w = st.window_stack.back();
     const auto vis = cd::ui::chroma::visible_label(label);
     const ImVec2 lsz = cd::ui::chroma::measure_text_px(vis, 1.28F);
-    const float iw = detail::resolve_item_width(w);
+    const float iw = detail::resolve_item_width(w, lsz.x);
     const float ih = 21.0F;
     const ImVec2 p0 = w.cursor;
     const ImVec2 bmax { p0.x + iw, p0.y + ih };
@@ -4454,9 +4487,9 @@ inline bool InputTextWithHint(const char* label, const char* hint, char* buf, st
     // Strictly clip text and blinking caret inside the input box so long text never spills over the right label!
     const float inner_w = std::max(10.0F, (bmax.x - 6.0F) - (p0.x + 6.0F));
     const std::string_view full_sv(buf, len);
-    const std::string_view pre_sv(buf, focused ? std::min(st.input_caret_pos, len) : len);
+    const std::string_view pre_sv(buf, focused ? std::min(st.input_caret_pos, len) : 0U);
     const float pre_w = cd::ui::chroma::measure_text_px(pre_sv, 1.28F).x;
-    const float scroll_x = (pre_w > inner_w - 4.0F) ? (pre_w - (inner_w - 4.0F)) : 0.0F;
+    const float scroll_x = (focused && pre_w > inner_w - 4.0F) ? (pre_w - (inner_w - 4.0F)) : 0.0F;
 
     w.draw_list->PushClipRect(ImVec2(p0.x + 4.0F, p0.y + 2.0F), ImVec2(bmax.x - 4.0F, bmax.y - 2.0F));
     if (buf[0] != '\0')
@@ -4499,6 +4532,12 @@ inline bool BeginTabBar(const char* str_id) noexcept
     st.tab_bar_stack.push_back(id);
     st.tab_bar_col_cursor[id] = 0;
     st.tab_bar_pos[id]        = w.cursor;
+    if (w.draw_list != nullptr && !w.skip)
+    {
+        w.draw_list->AddRectFilled(ImVec2(w.pos.x + 2.0F, w.cursor.y + 22.0F),
+                                   ImVec2(w.pos.x + w.size.x - 2.0F, w.cursor.y + 23.0F),
+                                   st.theme.separator);
+    }
     w.prev_item_min = w.cursor;
     w.prev_item_max = ImVec2 { w.cursor.x, w.cursor.y + 23.0F };
     w.cursor.y += 26.0F;
@@ -4519,13 +4558,15 @@ inline bool BeginTabItem(const char* label) noexcept
     const ImGuiID bar_id = st.tab_bar_stack.back();
     const int idx = st.tab_bar_col_cursor[bar_id]++;
 
+    const bool compact_tabs = (w.size.x > 0.0F && w.size.x < 355.0F);
+    const float tab_scale   = compact_tabs ? 1.04F : 1.25F;
     const auto vis = cd::ui::chroma::visible_label(label);
-    const ImVec2 tsz = cd::ui::chroma::measure_text_px(vis, 1.25F);
-    const float tab_w = std::max(54.0F, tsz.x + 16.0F);
+    const ImVec2 tsz = cd::ui::chroma::measure_text_px(vis, tab_scale);
+    const float tab_w = std::max(compact_tabs ? 42.0F : 54.0F, tsz.x + (compact_tabs ? 8.0F : 16.0F));
     ImVec2& tpos = st.tab_bar_pos[bar_id];
     const ImVec2 tmin = tpos;
     const ImVec2 tmax { tmin.x + tab_w, tmin.y + 22.0F };
-    tpos.x = tmax.x + 3.0F;
+    tpos.x = tmax.x + (compact_tabs ? 2.0F : 3.0F);
 
     const ImVec2 mp = st.io.MousePos;
     const bool hov = !detail::is_occluded_by_popup(w) && !w.skip &&
@@ -4544,9 +4585,9 @@ inline bool BeginTabItem(const char* label) noexcept
         w.draw_list->AddRectFilled(ImVec2(tmin.x + 2.0F, tmax.y - 2.5F),
                                    ImVec2(tmax.x - 2.0F, tmax.y), st.theme.accent_bright);
     }
-    w.draw_list->AddText(ImVec2(tmin.x + 7.0F, tmin.y + 5.0F),
+    w.draw_list->AddText(ImVec2(tmin.x + (compact_tabs ? 4.0F : 7.0F), tmin.y + 5.0F),
                          is_active ? st.theme.text : st.theme.text_disabled,
-                         vis.data(), vis.data() + vis.size(), 1.25F);
+                         vis.data(), vis.data() + vis.size(), tab_scale);
     return is_active;
 }
 

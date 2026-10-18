@@ -1090,140 +1090,45 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
         auto& cst = cd::ui::chroma::state();
         ImGui::SetNextWindowPos(ImVec2(0.0F, 28.0F), ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(sw, 32.0F), ImGuiCond_Always);
-        ImGui::SetNextWindowBgAlpha(0.96F);
+        ImGui::SetNextWindowBgAlpha(0.98F);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0F, 4.0F));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0F, 5.0F));
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(5.0F, 4.0F));
         if (ImGui::Begin("##studio_viewport_hud", nullptr,
                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
                 ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav))
         {
-            // Workspace Mode Switcher
-            const int cur_mode = cst.workspace_mode;
-            if (cur_mode == 0) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18F, 0.48F, 0.85F, 1.0F));
-            if (ImGui::SmallButton("3D Studio"))
+            // Group 1 (Left): [+ Create] + Stage / Level Selector
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12F, 0.56F, 0.34F, 1.0F));
+            if (ImGui::SmallButton("+ Create"))
             {
                 cst.workspace_mode = 0;
-                if (s.pie_playing) exit_pie_play_mode(s, log_push);
-                ImGui::PushToast("Workspace Mode", "Switched to 3D Studio Workspace", 0, 2.0F);
-            }
-            if (cur_mode == 0) ImGui::PopStyleColor();
-            ImGui::SameLine();
-
-            if (cur_mode == 1) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16F, 0.62F, 0.34F, 1.0F));
-            if (ImGui::SmallButton("In-Game HUD"))
-            {
-                cst.workspace_mode = 1;
-                ImGui::PushToast("Workspace Mode", "Switched to In-Game HUD & 3D World UI Mode", 0, 2.0F);
-            }
-            if (cur_mode == 1) ImGui::PopStyleColor();
-            ImGui::SameLine();
-
-            if (cur_mode == 2) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.58F, 0.28F, 0.82F, 1.0F));
-            if (ImGui::SmallButton("Node & App Lab"))
-            {
-                cst.workspace_mode = 2;
-                ImGui::PushToast("Workspace Mode", "Switched to Standalone Node & Curve Lab", 0, 2.0F);
-            }
-            if (cur_mode == 2) ImGui::PopStyleColor();
-
-            ImGui::SameLine();
-            ImGui::TextDisabled("|");
-            ImGui::SameLine();
-
-            // Transform Mode
-            const bool is_t = (s.gizmo_state.mode == GizmoMode::kTranslate);
-            const bool is_r = (s.gizmo_state.mode == GizmoMode::kRotate);
-            const bool is_s = (s.gizmo_state.mode == GizmoMode::kScale);
-            if (is_t) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.22F, 0.52F, 0.90F, 1.0F));
-            if (ImGui::SmallButton("Move(1)")) s.gizmo_state.mode = GizmoMode::kTranslate;
-            if (is_t) ImGui::PopStyleColor();
-            ImGui::SameLine();
-            if (is_r) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.22F, 0.52F, 0.90F, 1.0F));
-            if (ImGui::SmallButton("Rot(2)")) s.gizmo_state.mode = GizmoMode::kRotate;
-            if (is_r) ImGui::PopStyleColor();
-            ImGui::SameLine();
-            if (is_s) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.22F, 0.52F, 0.90F, 1.0F));
-            if (ImGui::SmallButton("Scale(3)")) s.gizmo_state.mode = GizmoMode::kScale;
-            if (is_s) ImGui::PopStyleColor();
-
-            ImGui::SameLine();
-            ImGui::TextDisabled("|");
-            ImGui::SameLine();
-            ImGui::Checkbox("Snap", &w.grid_snap_enabled);
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Floor(G)"))
-                snap_selected_entity_to_ground(s, log_push);
-
-            ImGui::SameLine();
-            ImGui::TextDisabled("|");
-            ImGui::SameLine();
-            // Physics Transport Controls
-            if (w.simulate_physics_in_edit)
-            {
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16F, 0.58F, 0.28F, 1.0F));
-                if (ImGui::SmallButton("[||] Phys ON"))
-                    w.simulate_physics_in_edit = false;
-                ImGui::PopStyleColor();
-            }
-            else
-            {
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.65F, 0.42F, 0.14F, 1.0F));
-                if (ImGui::SmallButton("[>] Phys PAUSED"))
-                    w.simulate_physics_in_edit = true;
-                ImGui::PopStyleColor();
-            }
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Step"))
-            {
-                w.simulate_physics_in_edit = false;
-                w.step_single_frame        = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Reset(R)"))
-                reset_physics_to_home_positions(s, log_push);
-            ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75F, 0.32F, 0.16F, 1.0F));
-            if (ImGui::SmallButton("Shoot(B)"))
-                shoot_physics_ball_from_camera(s, log_push);
-            ImGui::PopStyleColor();
-            ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Button, w.autopilot_play_active
-                ? ImVec4(0.18F, 0.72F, 0.42F, 1.0F)
-                : ImVec4(0.24F, 0.44F, 0.72F, 1.0F));
-            if (ImGui::SmallButton(w.autopilot_play_active ? "[AutoPlay: ON(P)]" : "AutoPlay(P)"))
-            {
-                if (!s.pie_playing) enter_pie_play_mode(s, log_push);
-                w.autopilot_play_active = !w.autopilot_play_active;
+                w.focus_bottom_node_catalog_tab = true;
+                ImGui::OpenPopup("studio_viewport_context_menu");
             }
             ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Spawn 3D Object / Open 250-Construct Catalog (Tab 2)");
 
             ImGui::SameLine();
-            ImGui::TextDisabled("|");
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Iso"))
-                apply_camera_bookmark(s, { -5.8F, 3.8F, 6.2F }, { 0.0F, 0.8F, 0.0F }, "Iso View", log_push);
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Top"))
-                apply_camera_bookmark(s, { 0.0F, 11.5F, 0.01F }, { 0.0F, 0.0F, 0.0F }, "Top View", log_push);
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Front"))
-                apply_camera_bookmark(s, { 0.0F, 2.2F, 7.8F }, { 0.0F, 1.0F, 0.0F }, "Front View", log_push);
-
-            ImGui::SameLine();
-            ImGui::TextDisabled("|");
-            ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18F, 0.36F, 0.56F, 1.0F));
-            const std::string lvl_btn = "[World/Level: " + w.active_level_name + "]##ribbon_lvl";
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16F, 0.21F, 0.29F, 1.0F));
+            std::string short_lvl = w.active_level_name;
+            if (const auto paren = short_lvl.find(" ("); paren != std::string::npos)
+                short_lvl = short_lvl.substr(0, paren);
+            if (short_lvl.size() > 34U)
+                short_lvl = short_lvl.substr(0, 32U) + "..";
+            const std::string lvl_btn = "Stage: " + short_lvl + " v##ribbon_lvl";
             if (ImGui::SmallButton(lvl_btn.c_str()))
                 ImGui::OpenPopup("ribbon_world_level_popup");
             ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Active Stage: %s (Click to switch World / Level)", w.active_level_name.c_str());
             if (ImGui::BeginPopup("ribbon_world_level_popup"))
             {
                 const auto* proj = s.cd_world.project();
                 const int num_worlds = proj ? static_cast<int>(proj->world_names().size()) : 6;
                 const int num_levels = proj ? static_cast<int>(proj->level_count()) : 15;
-                ImGui::TextColored(ImVec4(0.45F, 0.90F, 1.0F, 1.0F),
+                ImGui::TextColored(ImVec4(0.45F, 0.86F, 1.0F, 1.0F),
                                    "Project: %s (%d Worlds, %d Levels)",
                                    w.active_project_name.c_str(), num_worlds, num_levels);
                 ImGui::Separator();
@@ -1265,9 +1170,271 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
                 }
                 ImGui::EndPopup();
             }
+
+            ImGui::SameLine();
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+
+            // Group 2 (Transform Gizmo & Snap): Move / Rot / Scale | Snap / Floor
+            const bool is_t = (s.gizmo_state.mode == GizmoMode::kTranslate);
+            const bool is_r = (s.gizmo_state.mode == GizmoMode::kRotate);
+            const bool is_s = (s.gizmo_state.mode == GizmoMode::kScale);
+            ImGui::PushStyleColor(ImGuiCol_Button, is_t ? ImVec4(0.15F, 0.52F, 0.91F, 1.0F) : ImVec4(0.15F, 0.18F, 0.24F, 1.0F));
+            if (ImGui::SmallButton("Move(1)")) s.gizmo_state.mode = GizmoMode::kTranslate;
+            ImGui::PopStyleColor();
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Button, is_r ? ImVec4(0.15F, 0.52F, 0.91F, 1.0F) : ImVec4(0.15F, 0.18F, 0.24F, 1.0F));
+            if (ImGui::SmallButton("Rot(2)")) s.gizmo_state.mode = GizmoMode::kRotate;
+            ImGui::PopStyleColor();
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Button, is_s ? ImVec4(0.15F, 0.52F, 0.91F, 1.0F) : ImVec4(0.15F, 0.18F, 0.24F, 1.0F));
+            if (ImGui::SmallButton("Scale(3)")) s.gizmo_state.mode = GizmoMode::kScale;
+            ImGui::PopStyleColor();
+
+            ImGui::SameLine();
+            ImGui::Checkbox("Snap", &w.grid_snap_enabled);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Floor(G)"))
+                snap_selected_entity_to_ground(s, log_push);
+
+            // Group 3 (Center Transport Deck — centered over the 3D Viewport)
+            ImGui::SameLine();
+            if (ImGui::GetCursorScreenPos().x < sw * 0.43F)
+            {
+                ImGui::SetCursorScreenPos(ImVec2(sw * 0.43F, ImGui::GetCursorScreenPos().y));
+            }
+            if (!s.pie_playing)
+            {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12F, 0.62F, 0.35F, 1.0F));
+                if (ImGui::SmallButton("> PLAY (F5)"))
+                    enter_pie_play_mode(s, log_push);
+                ImGui::PopStyleColor();
+            }
+            else
+            {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.78F, 0.22F, 0.22F, 1.0F));
+                if (ImGui::SmallButton("STOP (Esc)"))
+                    exit_pie_play_mode(s, log_push);
+                ImGui::PopStyleColor();
+            }
+            ImGui::SameLine();
+            if (w.simulate_physics_in_edit)
+            {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14F, 0.45F, 0.52F, 1.0F));
+                if (ImGui::SmallButton("|| Sim ON"))
+                    w.simulate_physics_in_edit = false;
+                ImGui::PopStyleColor();
+            }
+            else
+            {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.45F, 0.34F, 0.16F, 1.0F));
+                if (ImGui::SmallButton("> Sim PAUSED"))
+                    w.simulate_physics_in_edit = true;
+                ImGui::PopStyleColor();
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Step"))
+            {
+                w.simulate_physics_in_edit = false;
+                w.step_single_frame        = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset(R)"))
+                reset_physics_to_home_positions(s, log_push);
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.46F, 0.26F, 0.18F, 1.0F));
+            if (ImGui::SmallButton("Shoot(B)"))
+                shoot_physics_ball_from_camera(s, log_push);
+            ImGui::PopStyleColor();
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Button, w.autopilot_play_active
+                ? ImVec4(0.14F, 0.62F, 0.38F, 1.0F)
+                : ImVec4(0.18F, 0.26F, 0.38F, 1.0F));
+            if (ImGui::SmallButton(w.autopilot_play_active ? "Auto-Bot: ON" : "Auto-Bot(P)"))
+            {
+                if (!s.pie_playing) enter_pie_play_mode(s, log_push);
+                w.autopilot_play_active = !w.autopilot_play_active;
+            }
+            ImGui::PopStyleColor();
+
+            // Group 4 (Right): Workspace Mode Switcher + Theme Cycle
+            ImGui::SameLine();
+            if (ImGui::GetCursorScreenPos().x < sw - 348.0F)
+            {
+                ImGui::SetCursorScreenPos(ImVec2(sw - 348.0F, ImGui::GetCursorScreenPos().y));
+            }
+            const int cur_mode = cst.workspace_mode;
+            ImGui::PushStyleColor(ImGuiCol_Button, (cur_mode == 0) ? ImVec4(0.15F, 0.52F, 0.91F, 1.0F) : ImVec4(0.13F, 0.16F, 0.22F, 1.0F));
+            if (ImGui::SmallButton("3D Studio"))
+            {
+                cst.workspace_mode = 0;
+                if (s.pie_playing) exit_pie_play_mode(s, log_push);
+                ImGui::PushToast("Workspace Mode", "Switched to 3D Studio Workspace", 0, 2.0F);
+            }
+            ImGui::PopStyleColor();
+            ImGui::SameLine();
+
+            ImGui::PushStyleColor(ImGuiCol_Button, (cur_mode == 1) ? ImVec4(0.15F, 0.52F, 0.91F, 1.0F) : ImVec4(0.13F, 0.16F, 0.22F, 1.0F));
+            if (ImGui::SmallButton("In-Game HUD"))
+            {
+                cst.workspace_mode = 1;
+                ImGui::PushToast("Workspace Mode", "Switched to In-Game HUD & 3D World UI Mode", 0, 2.0F);
+            }
+            ImGui::PopStyleColor();
+            ImGui::SameLine();
+
+            ImGui::PushStyleColor(ImGuiCol_Button, (cur_mode == 2) ? ImVec4(0.15F, 0.52F, 0.91F, 1.0F) : ImVec4(0.13F, 0.16F, 0.22F, 1.0F));
+            if (ImGui::SmallButton("Node & App Lab"))
+            {
+                cst.workspace_mode = 2;
+                ImGui::PushToast("Workspace Mode", "Switched to Standalone Node & Curve Lab", 0, 2.0F);
+            }
+            ImGui::PopStyleColor();
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16F, 0.20F, 0.27F, 1.0F));
+            if (ImGui::SmallButton("Theme"))
+            {
+                ImGui::ApplyTheme((cst.theme_index + 1) % 5);
+                ImGui::PushToast("Chroma Theme", cd::ui::chroma::theme_preset_name(cst.theme_index), 0, 1.8F);
+            }
+            ImGui::PopStyleColor();
         }
         ImGui::End();
         ImGui::PopStyleVar(3);
+    }
+
+    // 2B. In-Viewport HUD Overlays (Camera & Shading Pill Bar, 3D Orientation Rose, Telemetry, Shortcut Hint Strip)
+    if (sw > 600.0F && cd::ui::chroma::state().workspace_mode == 0 && !s.pie_playing)
+    {
+        auto& cst = cd::ui::chroma::state();
+        const float vp_x0 = std::round(sw * cst.dock_left_w_ratio);
+        const float vp_x1 = std::round(sw * (1.0F - cst.dock_right_w_ratio));
+        const float vp_y0 = 60.0F;
+        const float vp_y1 = std::round(60.0F + std::max(100.0F, sh - 60.0F) * (1.0F - cst.dock_bottom_h_ratio));
+        const float vp_w  = vp_x1 - vp_x0;
+        const float vp_h  = vp_y1 - vp_y0;
+
+        if (vp_w > 340.0F && vp_h > 180.0F)
+        {
+            // Top-Left Viewport Camera & Display Pill Bar
+            ImGui::SetNextWindowPos(ImVec2(vp_x0 + 10.0F, vp_y0 + 8.0F), ImGuiCond_Always);
+            ImGui::SetNextWindowSize(ImVec2(412.0F, 26.0F), ImGuiCond_Always);
+            ImGui::SetNextWindowBgAlpha(0.82F);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0F);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0F, 3.0F));
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0F, 2.0F));
+            if (ImGui::Begin("##vp_camera_pill_bar", nullptr,
+                    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
+                    ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove))
+            {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15F, 0.22F, 0.32F, 1.0F));
+                if (ImGui::SmallButton("Persp"))
+                    apply_camera_bookmark(s, { -7.5F, 2.2F, 1.2F }, { 0.0F, 1.5F, -0.2F }, "Perspective Overview", log_push);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Iso"))
+                    apply_camera_bookmark(s, { -5.8F, 3.8F, 6.2F }, { 0.0F, 0.8F, 0.0F }, "Iso View", log_push);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Top"))
+                    apply_camera_bookmark(s, { 0.0F, 11.5F, 0.01F }, { 0.0F, 0.0F, 0.0F }, "Top View", log_push);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Front"))
+                    apply_camera_bookmark(s, { 0.0F, 2.2F, 7.8F }, { 0.0F, 1.0F, 0.0F }, "Front View", log_push);
+                ImGui::PopStyleColor();
+
+                ImGui::SameLine();
+                ImGui::TextDisabled("|");
+                ImGui::SameLine();
+
+                ImGui::PushStyleColor(ImGuiCol_Button, s.show_editor_floor
+                    ? ImVec4(0.14F, 0.44F, 0.72F, 1.0F)
+                    : ImVec4(0.14F, 0.17F, 0.23F, 1.0F));
+                if (ImGui::SmallButton(s.show_editor_floor ? "Grid: ON" : "Grid: OFF"))
+                    s.show_editor_floor = !s.show_editor_floor;
+                ImGui::PopStyleColor();
+
+                ImGui::SameLine();
+                ImGui::PushStyleColor(ImGuiCol_Button, w.show_all_collider_wires
+                    ? ImVec4(0.14F, 0.52F, 0.36F, 1.0F)
+                    : ImVec4(0.14F, 0.17F, 0.23F, 1.0F));
+                if (ImGui::SmallButton("Wire Colliders"))
+                    w.show_all_collider_wires = !w.show_all_collider_wires;
+                ImGui::PopStyleColor();
+
+                ImGui::SameLine();
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18F, 0.26F, 0.38F, 1.0F));
+                if (ImGui::SmallButton("Focus (F)"))
+                    focus_selected(s, log_push);
+                ImGui::PopStyleColor();
+            }
+            ImGui::End();
+            ImGui::PopStyleVar(3);
+
+            // Top-Right Telemetry Pill + Blender 4 / Source 2 3D Orientation Gizmo Rose
+            const float fps = (w.smoothed_fps > 1.0F) ? w.smoothed_fps : 60.0F;
+            const float ms  = (w.smoothed_frame_ms > 0.01F) ? w.smoothed_frame_ms : 16.6F;
+            char tele_buf[96] {};
+            std::snprintf(tele_buf, sizeof(tele_buf), "%.0f FPS (%.1f ms)  |  %zu Entities  |  RT+PBR",
+                          static_cast<double>(fps), static_cast<double>(ms),
+                          s.entities.size());
+            const ImVec2 tele_sz = ImGui::CalcTextSize(tele_buf);
+            const ImVec2 tp0 { vp_x1 - tele_sz.x - 24.0F, vp_y0 + 8.0F };
+            const ImVec2 tp1 { vp_x1 - 8.0F, vp_y0 + 30.0F };
+            dl->AddRectFilled(tp0, tp1, IM_COL32(14, 17, 24, 210), 5.0F);
+            dl->AddRect(tp0, tp1, IM_COL32(46, 58, 78, 190), 5.0F, 0, 1.0F);
+            dl->AddText(ImVec2(tp0.x + 8.0F, tp0.y + 4.0F), IM_COL32(190, 212, 238, 255), tele_buf);
+
+            // 3D Orientation Rose projected by camera eye -> target basis
+            const ImVec2 rose_c { vp_x1 - 42.0F, vp_y0 + 68.0F };
+            const float  rose_r = 24.0F;
+            dl->AddCircleFilled(rose_c, rose_r + 8.0F, IM_COL32(14, 17, 24, 185), 24);
+            dl->AddCircle(rose_c, rose_r + 8.0F, IM_COL32(46, 58, 78, 180), 24, 1.0F);
+
+            cd::math::Vec3f cam_fwd = s.cam.target - s.cam.eye;
+            const float flen = cd::math::length(cam_fwd);
+            if (flen > 1e-5F) cam_fwd = cam_fwd * (1.0F / flen);
+            else cam_fwd = { 0.0F, 0.0F, -1.0F };
+
+            cd::math::Vec3f cam_right = cd::math::cross(cam_fwd, cd::math::Vec3f { 0.0F, 1.0F, 0.0F });
+            const float rlen = cd::math::length(cam_right);
+            if (rlen > 1e-5F) cam_right = cam_right * (1.0F / rlen);
+            else cam_right = { 1.0F, 0.0F, 0.0F };
+
+            const cd::math::Vec3f cam_up = cd::math::cross(cam_right, cam_fwd);
+
+            struct AxisDef
+            {
+                cd::math::Vec3f dir;
+                const char*     label;
+                ImU32           col;
+                ImU32           neg_col;
+            };
+            const AxisDef axes[3] = {
+                { { 1.0F, 0.0F, 0.0F }, "X", IM_COL32(235, 68, 68, 255),  IM_COL32(125, 42, 42, 165) },
+                { { 0.0F, 1.0F, 0.0F }, "Y", IM_COL32(72, 208, 96, 255),  IM_COL32(42, 115, 56, 165) },
+                { { 0.0F, 0.0F, 1.0F }, "Z", IM_COL32(62, 146, 250, 255), IM_COL32(38, 82, 140, 165) },
+            };
+            for (const auto& ax : axes)
+            {
+                const float px = cd::math::dot(ax.dir, cam_right) * rose_r;
+                const float py = -cd::math::dot(ax.dir, cam_up) * rose_r;
+                const ImVec2 pos_tip { rose_c.x + px, rose_c.y + py };
+                const ImVec2 neg_tip { rose_c.x - px * 0.72F, rose_c.y - py * 0.72F };
+                dl->AddLine(rose_c, neg_tip, ax.neg_col, 1.4F);
+                dl->AddCircleFilled(neg_tip, 3.2F, ax.neg_col, 12);
+                dl->AddLine(rose_c, pos_tip, ax.col, 2.2F);
+                dl->AddCircleFilled(pos_tip, 6.8F, ax.col, 16);
+                dl->AddText(ImVec2(pos_tip.x - 3.5F, pos_tip.y - 5.5F), IM_COL32(255, 255, 255, 255), ax.label, nullptr, 1.15F);
+            }
+
+            // Bottom-Left Viewport Shortcut Hint Strip
+            const char* hint_str = "LMB: Select / Gizmo   |   RMB+WASD: Fly Cam   |   F: Focus   |   G: Snap Floor   |   Ctrl+D: Duplicate   |   F5: Play";
+            const ImVec2 hsz = ImGui::CalcTextSize(hint_str);
+            const ImVec2 hp0 { vp_x0 + 10.0F, vp_y1 - 26.0F };
+            const ImVec2 hp1 { std::min(vp_x1 - 10.0F, hp0.x + hsz.x + 18.0F), vp_y1 - 6.0F };
+            dl->AddRectFilled(hp0, hp1, IM_COL32(14, 17, 24, 195), 4.0F);
+            dl->AddRect(hp0, hp1, IM_COL32(44, 54, 72, 165), 4.0F, 0, 1.0F);
+            dl->AddText(ImVec2(hp0.x + 8.0F, hp0.y + 3.0F), IM_COL32(168, 184, 208, 245), hint_str);
+        }
     }
 
 

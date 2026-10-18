@@ -1171,3 +1171,55 @@ TEST(Widgets, ChromaUiFirstFrameMenuAutoSizeAndPopupOcclusion)
     EXPECT_EQ(st.tab_map[tab_bar_id], 0);
 }
 
+TEST(Widgets, ChromaUiTextScrollResetFullLeftDockAndLongLabelFit)
+{
+    cd::ui::chroma::Context ctx {};
+    auto& st = cd::ui::chroma::state();
+    st = cd::ui::chroma::State {};
+    st.io.DisplaySize = ImVec2(1600.0F, 900.0F);
+    st.main_viewport.Size = st.io.DisplaySize;
+    st.main_viewport.WorkSize = st.io.DisplaySize;
+
+    // 1. Single-slot Left Dock ("Studio Workbench" in slot 1 with slot 2 empty) spans full height (839px)
+    ImGui::DockSpace(ImGui::GetID("MainDockSpace"));
+    if (ImGui::Begin("Studio Workbench", nullptr, ImGuiWindowFlags_NoTitleBar))
+    {
+        EXPECT_NEAR(ImGui::GetWindowHeight(), 900.0F - 60.0F - 1.0F, 1.5F);
+    }
+    ImGui::End();
+
+    // 2. Unfocused InputTextWithHint with long value resets scroll_x to 0.0F so char 0 is never left-clipped
+    char long_buf[128] = "AvatarVessel3D_With_Long_Identifier_Suffix_0123456789";
+    float input_box_x0 = 0.0F;
+    if (ImGui::Begin("Inspector", nullptr, ImGuiWindowFlags_NoTitleBar))
+    {
+        input_box_x0 = ImGui::GetCursorScreenPos().x;
+        ImGui::SetNextItemWidth(160.0F);
+        (void)ImGui::InputTextWithHint("##long_input", "Filter...", long_buf, sizeof(long_buf));
+
+        // 3. Long-label SliderFloat ("Thin-Film Iridescence (nm)") clamps bar width so label fits inside Inspector
+        float thin_film_nm = 380.0F;
+        (void)ImGui::SliderFloat("Thin-Film Iridescence (nm)", &thin_film_nm, 0.0F, 800.0F, "%.0f nm");
+    }
+    ImGui::End();
+
+    float long_text_x0 = 0.0F;
+    float thin_film_end_x = 0.0F;
+    for (const auto& c : st.win_dl.cmds())
+    {
+        if (c.kind == ImDrawList::CmdKind::kText)
+        {
+            if (c.text == long_buf)
+            {
+                long_text_x0 = c.x0;
+            }
+            else if (c.text == "Thin-Film Iridescence (nm)")
+            {
+                thin_film_end_x = c.x0 + cd::ui::chroma::measure_text_px(c.text, c.param0).x;
+            }
+        }
+    }
+    EXPECT_FLOAT_EQ(long_text_x0, input_box_x0 + 6.0F);
+    EXPECT_GT(thin_film_end_x, 1200.0F);
+    EXPECT_LE(thin_film_end_x, 1600.0F - 4.0F);
+}

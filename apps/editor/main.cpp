@@ -4880,12 +4880,10 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                     ImGui::DockBuilderAddNode(dock_id, static_cast<ImGuiDockNodeFlags>(flags));
                     ImGui::DockBuilderSetNodeSize(dock_id, mv->WorkSize);
                     ImGuiID m = dock_id;
-                    ImGuiID dl     = ImGui::DockBuilderSplitNode(m,  ImGuiDir_Left,  0.22F, nullptr, &m);
-                    ImGuiID dr     = ImGui::DockBuilderSplitNode(m,  ImGuiDir_Right, 0.25F, nullptr, &m);
-                    ImGuiID db     = ImGui::DockBuilderSplitNode(m,  ImGuiDir_Down,  0.19F, nullptr, &m);
-                    ImGuiID dl_bot = ImGui::DockBuilderSplitNode(dl, ImGuiDir_Down,  0.30F, nullptr, &dl);
+                    ImGuiID dl = ImGui::DockBuilderSplitNode(m, ImGuiDir_Left,  0.215F, nullptr, &m);
+                    ImGuiID dr = ImGui::DockBuilderSplitNode(m, ImGuiDir_Right, 0.24F,  nullptr, &m);
+                    ImGuiID db = ImGui::DockBuilderSplitNode(m, ImGuiDir_Down,  0.22F,  nullptr, &m);
                     ImGui::DockBuilderDockWindow("Studio Workbench", dl);
-                    ImGui::DockBuilderDockWindow("Scene",            dl_bot);
                     ImGui::DockBuilderDockWindow("Inspector",        dr);
                     ImGui::DockBuilderDockWindow("History",          db);
                     ImGui::DockBuilderFinish(dock_id);

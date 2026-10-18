@@ -569,36 +569,6 @@ inline void draw_studio_main_menu_bar(StateT& s, float dt, LogFn&& log_push)
         ImGui::EndMenu();
     }
 
-    ImGui::Separator();
-    // Play-In-Editor (PIE) button directly on the main menu bar
-    if (s.pie_playing)
-    {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.80F, 0.20F, 0.20F, 1.0F));
-        if (ImGui::SmallButton(" [# STOP GAME (F8)] "))
-        {
-            exit_pie_play_mode(s, log_push);
-        }
-        ImGui::PopStyleColor();
-        ImGui::TextColored(ImVec4(0.35F, 1.0F, 0.45F, 1.0F), "PLAYING (WASD + Space)");
-    }
-    else
-    {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18F, 0.62F, 0.28F, 1.0F));
-        if (ImGui::SmallButton(" [> PLAY GAME (F5)] "))
-        {
-            enter_pie_play_mode(s, log_push);
-        }
-        ImGui::PopStyleColor();
-    }
-
-    if (ImGui::SmallButton("Theme"))
-    {
-        auto& cst = cd::ui::chroma::state();
-        ImGui::ApplyTheme((cst.theme_index + 1) % 5);
-        ImGui::PushToast("ChromaUI Theme", "Switched UI Theme Preset", 0, 2.0F);
-        log_push("[ChromaUI] Switched UI Theme preset");
-    }
-
     const auto& w = studio_world();
     const double fps = (w.smoothed_fps > 1.0F)
         ? static_cast<double>(w.smoothed_fps)
