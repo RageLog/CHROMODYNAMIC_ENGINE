@@ -2,45 +2,40 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Debug hello_core (Ninja Debug)",
-      "type": "lldb",
+      "name": "CHROMODYNAMIC Studio (Ninja Debug)",
+      "type": "cppvsdbg",
       "request": "launch",
-      "program": "${workspaceFolder}/build/ninja-base/bin/Debug/hello_core.exe",
+      "program": "${workspaceFolder}/build/ninja-base/bin/Debug/editor.exe",
       "args": [],
       "cwd": "${workspaceFolder}",
-      "preLaunchTask": "cmake-build-debug",
-      "windows": {
-        "type": "cppvsdbg"
-      },
-      "linux": {
-        "type": "lldb"
-      },
-      "osx": {
-        "type": "lldb"
-      }
+      "console": "integratedTerminal"
     },
     {
-      "name": "Debug cd_test_core (Ninja Debug)",
-      "type": "lldb",
+      "name": "CHROMODYNAMIC Studio (Ninja Release - Ultra FPS)",
+      "type": "cppvsdbg",
       "request": "launch",
-      "program": "${workspaceFolder}/build/ninja-base/bin/Debug/cd_test_core.exe",
-      "args": ["--gtest_brief=0"],
+      "program": "${workspaceFolder}/build/ninja-base/bin/Release/editor.exe",
+      "args": [],
       "cwd": "${workspaceFolder}",
-      "preLaunchTask": "cmake-build-debug",
-      "windows": {
-        "type": "cppvsdbg"
-      }
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "CHROMODYNAMIC Studio — Stage 6.3 Rockstar Physics Arena",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/ninja-base/bin/Release/editor.exe",
+      "args": ["--studio-level", "15"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
     },
     {
       "name": "Debug current target (CMake Tools)",
-      "type": "lldb",
+      "type": "cppvsdbg",
       "request": "launch",
       "program": "${command:cmake.launchTargetPath}",
       "args": [],
       "cwd": "${workspaceFolder}",
-      "windows": {
-        "type": "cppvsdbg"
-      }
+      "console": "integratedTerminal"
     }
   ]
 }

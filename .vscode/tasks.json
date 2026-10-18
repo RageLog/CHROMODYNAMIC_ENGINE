@@ -13,16 +13,15 @@
       "label": "cmake-build-debug",
       "type": "shell",
       "command": "cmake",
-      "args": ["--build", "--preset", "ninja-debug"],
+      "args": ["--build", "build/ninja-base", "--config", "Debug", "--target", "cd_app_editor"],
       "group": { "kind": "build", "isDefault": true },
-      "problemMatcher": ["$gcc"],
-      "dependsOn": ["cmake-configure"]
+      "problemMatcher": ["$gcc"]
     },
     {
       "label": "cmake-build-release",
       "type": "shell",
       "command": "cmake",
-      "args": ["--build", "--preset", "ninja-release"],
+      "args": ["--build", "build/ninja-base", "--config", "Release", "--target", "cd_app_editor"],
       "group": "build",
       "problemMatcher": ["$gcc"]
     },

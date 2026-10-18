@@ -1,7 +1,9 @@
 {
   "// --- CMake Tools integration ---": "",
   "cmake.useCMakePresets": "always",
-  "cmake.configureOnOpen": true,
+  "cmake.configureOnOpen": false,
+  "cmake.buildBeforeRun": true,
+  "cmake.launchBehavior": "newTerminal",
   "cmake.copyCompileCommands": "${workspaceFolder}/compile_commands.json",
   "cmake.preferredGenerators": ["Ninja Multi-Config"],
   "cmake.parallelJobs": 0,
