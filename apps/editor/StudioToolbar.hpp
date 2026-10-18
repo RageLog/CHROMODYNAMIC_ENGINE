@@ -17,6 +17,9 @@
 // =============================================================================
 #pragma once
 
+#include "StudioModifierClasses.hpp"
+#include "StudioCollisionMath.hpp"
+
 #include <cd/editor/TransformCommands.hpp>
 #include <cd/light/ColorTemperature.hpp>
 #include <cd/light/Light.hpp>
@@ -68,6 +71,7 @@ inline void spawn_studio_entity(StateT& s,
     e.is_pbr    = is_pbr;
     e.metallic  = metallic;
     e.roughness = roughness;
+    cd::world_container::assign_layer(s.ecs_world, e.handle, studio_world().active_layer_name);
     const auto pos = camera_spawn_point(s, 3.5F);
     if (auto* lt = s.scene.local(e.handle))
     {
@@ -83,7 +87,15 @@ inline void spawn_studio_entity(StateT& s,
             lt->value.rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
         }
     }
+    auto& ms = studio_world().entity_modifiers[e.handle.id];
+    ms.add_or_replace(std::make_unique<PbrMaterialModifier>(tint, metallic, roughness));
+    if (kind == PrimitiveKind::kSphere)
+        ms.add_or_replace(std::make_unique<SphereColliderModifier>(0.5F));
+    else
+        ms.add_or_replace(std::make_unique<BoxColliderModifier>(cd::math::Vec3f { 0.5F, 0.5F, 0.5F }));
+    record_entity_home_transform(s, e.handle);
     s.entities.push_back(std::move(e));
+    s.scene.update_transforms();
     s.selected      = static_cast<int>(s.entities.size()) - 1;
     s.selected_kind = SelKind::kEntity;
     log_push("[studio] spawned " + s.entities.back().name);
@@ -96,22 +108,7 @@ inline void duplicate_selected(StateT& s, LogFn&& log_push)
     if (s.selected_kind == SelKind::kEntity &&
         std::cmp_less(s.selected, s.entities.size()))
     {
-        const SceneEntity src = s.entities[static_cast<std::size_t>(s.selected)];
-        SceneEntity copy      = src;
-        copy.handle           = s.scene.create_node();
-        copy.name             = src.name + " (Copy)";
-        if (const auto* src_lt = s.scene.local(src.handle))
-        {
-            if (auto* dst_lt = s.scene.local(copy.handle))
-            {
-                dst_lt->value = src_lt->value;
-                dst_lt->value.position.x += 0.9F;
-                dst_lt->value.position.z += 0.4F;
-            }
-        }
-        s.entities.push_back(std::move(copy));
-        s.selected = static_cast<int>(s.entities.size()) - 1;
-        log_push("[studio] duplicated entity -> " + s.entities.back().name);
+        duplicate_entity_with_modifiers(s, s.selected, log_push);
     }
     else if (s.selected_kind == SelKind::kLight &&
              std::cmp_less(s.selected, s.lights.size()))
@@ -132,8 +129,20 @@ inline void delete_selected(StateT& s, LogFn&& log_push)
     if (s.selected_kind == SelKind::kEntity &&
         std::cmp_less(s.selected, s.entities.size()))
     {
-        const std::string nm = s.entities[static_cast<std::size_t>(s.selected)].name;
-        s.scene.destroy_node(s.entities[static_cast<std::size_t>(s.selected)].handle);
+        const auto& ent = s.entities[static_cast<std::size_t>(s.selected)];
+        const std::string nm = ent.name;
+        if (nm.find("Ground_Floor") != std::string::npos)
+        {
+            log_push("[studio] Ground_Floor is protected and cannot be deleted");
+            return;
+        }
+        const auto hid = ent.handle;
+        cd::world_container::clear_layer(s.ecs_world, hid);
+        auto& w = studio_world();
+        w.entity_modifiers.erase(hid.id);
+        w.home_transforms.erase(hid.id);
+        w.euler_cache_deg.erase(hid.id);
+        s.scene.destroy_node(hid);
         s.entities.erase(s.entities.begin() + s.selected);
         s.selected = s.entities.empty() ? -1 : std::min(s.selected, static_cast<int>(s.entities.size()) - 1);
         log_push("[studio] deleted entity: " + nm);
@@ -227,25 +236,17 @@ namespace cd::studio
 template <typename StateT, typename LogFn>
 inline void draw_studio_main_menu_bar(StateT& s, float dt, LogFn&& log_push)
 {
-    // Tick Object-Oriented Modifiers (FogModifier, PbrMaterialModifier, etc.) +
-    // 3D RigidBody & Narrowphase Collider Physics Engine
-    tick_studio_modifiers_and_physics(s, dt, log_push);
-
     // Keyboard shortcuts for Play/Stop (F5/F8), Export (F9), Duplicate (Ctrl+D) / Undo / Redo
     if (!ImGui::GetIO().WantCaptureKeyboard)
     {
         if (ImGui::IsKeyPressed(ImGuiKey_F5, false))
         {
-            s.pie_playing = !s.pie_playing;
-            s.gizmo_state.visible = !s.pie_playing;
-            log_push(s.pie_playing ? "[PIE] Play-In-Editor started (F5)"
-                                   : "[PIE] Play-In-Editor stopped (F5)");
+            if (!s.pie_playing) enter_pie_play_mode(s, log_push);
+            else                exit_pie_play_mode(s, log_push);
         }
         if (ImGui::IsKeyPressed(ImGuiKey_F8, false) && s.pie_playing)
         {
-            s.pie_playing = false;
-            s.gizmo_state.visible = true;
-            log_push("[PIE] Play-In-Editor stopped (F8)");
+            exit_pie_play_mode(s, log_push);
         }
         if (ImGui::IsKeyPressed(ImGuiKey_F9, false))
         {
@@ -265,11 +266,25 @@ inline void draw_studio_main_menu_bar(StateT& s, float dt, LogFn&& log_push)
         }
         if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Z))
         {
-            if (s.history.undo()) log_push("[undo] Ctrl+Z");
+            if (s.history.undo())
+            {
+                for (auto& ent : s.entities)
+                    if (ent.name.find("CannonBall_") != 0)
+                        record_entity_home_transform(s, ent.handle);
+                s.scene.update_transforms();
+                log_push("[undo] Ctrl+Z");
+            }
         }
         if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Y))
         {
-            if (s.history.redo()) log_push("[redo] Ctrl+Y");
+            if (s.history.redo())
+            {
+                for (auto& ent : s.entities)
+                    if (ent.name.find("CannonBall_") != 0)
+                        record_entity_home_transform(s, ent.handle);
+                s.scene.update_transforms();
+                log_push("[redo] Ctrl+Y");
+            }
         }
     }
 
@@ -307,11 +322,25 @@ inline void draw_studio_main_menu_bar(StateT& s, float dt, LogFn&& log_push)
     {
         if (ImGui::MenuItem("Undo", "Ctrl+Z", false, s.history.undo_depth() > 0))
         {
-            if (s.history.undo()) log_push("[edit] undo");
+            if (s.history.undo())
+            {
+                for (auto& ent : s.entities)
+                    if (ent.name.find("CannonBall_") != 0)
+                        record_entity_home_transform(s, ent.handle);
+                s.scene.update_transforms();
+                log_push("[edit] undo");
+            }
         }
         if (ImGui::MenuItem("Redo", "Ctrl+Y", false, s.history.redo_depth() > 0))
         {
-            if (s.history.redo()) log_push("[edit] redo");
+            if (s.history.redo())
+            {
+                for (auto& ent : s.entities)
+                    if (ent.name.find("CannonBall_") != 0)
+                        record_entity_home_transform(s, ent.handle);
+                s.scene.update_transforms();
+                log_push("[edit] redo");
+            }
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Duplicate Selected", "Ctrl+D", false, s.selected >= 0))
@@ -358,6 +387,22 @@ inline void draw_studio_main_menu_bar(StateT& s, float dt, LogFn&& log_push)
             (void)spawn_entity_with_modifiers(s, "Prefab_DominoRow", camera_spawn_point(s, 3.5F), log_push);
         if (ImGui::MenuItem("+ Prefab: 5x Physics Crate Tower"))
             (void)spawn_entity_with_modifiers(s, "Prefab_CrateStack", camera_spawn_point(s, 3.5F), log_push);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Open 250-Node Universal Catalog (219 Godot + 31 SOTA)..."))
+        {
+            studio_world().focus_bottom_node_catalog_tab = true;
+            log_push("[catalog] Opened 250 Element & Vessel Catalog (219 Godot + 31 SOTA)");
+        }
+        if (ImGui::MenuItem("+ Vessel: CharacterBody3D (AvatarVessel3D #117)"))
+            (void)spawn_or_compose_studio_catalog_node(s, 117, CatalogComposeMode::SpawnRootElement, camera_spawn_point(s, 3.5F), log_push);
+        if (ImGui::MenuItem("+ Vessel: VehicleBody3D (RoverVessel3D #121)"))
+            (void)spawn_or_compose_studio_catalog_node(s, 121, CatalogComposeMode::SpawnRootElement, camera_spawn_point(s, 3.5F), log_push);
+        if (ImGui::MenuItem("+ SOTA: TurquinMultiScatterPBR3D (#221)"))
+            (void)spawn_or_compose_studio_catalog_node(s, 221, CatalogComposeMode::SpawnRootElement, camera_spawn_point(s, 3.5F), log_push);
+        if (ImGui::MenuItem("+ SOTA: SDFSmoothBooleanCSG3D (#226)"))
+            (void)spawn_or_compose_studio_catalog_node(s, 226, CatalogComposeMode::SpawnRootElement, camera_spawn_point(s, 3.5F), log_push);
+        if (ImGui::MenuItem("+ SOTA: DDGIIrradianceVolume3D / VoxelGI (#220)"))
+            (void)spawn_or_compose_studio_catalog_node(s, 220, CatalogComposeMode::SpawnRootElement, camera_spawn_point(s, 3.5F), log_push);
         ImGui::EndMenu();
     }
 
@@ -481,6 +526,7 @@ inline void draw_studio_main_menu_bar(StateT& s, float dt, LogFn&& log_push)
         ImGui::TextDisabled("Level: %s", w.active_level_name.c_str());
         ImGui::Separator();
 
+        std::string deferred_menu_level {};
         if (const auto* proj = s.cd_world.project())
         {
             for (const auto& wname : proj->world_names())
@@ -491,15 +537,20 @@ inline void draw_studio_main_menu_bar(StateT& s, float dt, LogFn&& log_push)
                     {
                         const auto* lvl = proj->level(li);
                         if (!lvl) continue;
-                        const bool is_cur = (w.active_level_name == lvl->name());
-                        if (ImGui::MenuItem(std::string(lvl->name()).c_str(), nullptr, is_cur))
+                        const std::string lvl_nm { lvl->name() };
+                        const bool is_cur = (w.active_level_name == lvl_nm);
+                        if (ImGui::MenuItem(lvl_nm.c_str(), nullptr, is_cur))
                         {
-                            (void)switch_to_project_level(s, lvl->name(), log_push);
+                            deferred_menu_level = lvl_nm;
                         }
                     }
                     ImGui::EndMenu();
                 }
             }
+        }
+        if (!deferred_menu_level.empty())
+        {
+            (void)switch_to_project_level(s, deferred_menu_level, log_push);
         }
 
         ImGui::Separator();
@@ -525,21 +576,17 @@ inline void draw_studio_main_menu_bar(StateT& s, float dt, LogFn&& log_push)
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.80F, 0.20F, 0.20F, 1.0F));
         if (ImGui::SmallButton(" [# STOP GAME (F8)] "))
         {
-            s.pie_playing = false;
-            s.gizmo_state.visible = true;
-            log_push("[PIE] Stopped -> returned to Editor mode");
+            exit_pie_play_mode(s, log_push);
         }
         ImGui::PopStyleColor();
-        ImGui::TextColored(ImVec4(0.35F, 1.0F, 0.45F, 1.0F), "PLAYING (WASD + RMB Fly)");
+        ImGui::TextColored(ImVec4(0.35F, 1.0F, 0.45F, 1.0F), "PLAYING (WASD + Space)");
     }
     else
     {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18F, 0.62F, 0.28F, 1.0F));
         if (ImGui::SmallButton(" [> PLAY GAME (F5)] "))
         {
-            s.pie_playing = true;
-            s.gizmo_state.visible = false;
-            log_push("[PIE] Started Play-In-Editor mode");
+            enter_pie_play_mode(s, log_push);
         }
         ImGui::PopStyleColor();
     }

@@ -36,12 +36,16 @@
 // =============================================================================
 
 #include "../SplashAudioCue.hpp"
+#include "../StudioCustomMeshLoader.hpp"
+#include "../StudioNodeCatalog.hpp"
 #include <cd/audio/IAudioBackend.hpp>
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <vector>
 
 namespace
@@ -210,4 +214,204 @@ TEST(SplashAudioCue, TriggerWithNullBackendSetsFireButNotChimed)
     EXPECT_FALSE(cue.chimed()) << "chimed() should stay false (no backend)";
 }
 
+TEST(StudioCustomMeshLoader, ParsesValidObjWithQuadsAndNormalizesBounds)
+{
+    const auto tmp_path = (std::filesystem::temp_directory_path() / "cd_test_custom_mesh.obj").string();
+    {
+        std::ofstream out(tmp_path);
+        out << "# Test Quad at large offset\n"
+            << "v 100.0 100.0 50.0\n"
+            << "v 120.0 100.0 50.0\n"
+            << "v 120.0 120.0 50.0\n"
+            << "v 100.0 120.0 50.0\n"
+            << "f 1 2 3 4\n";
+    }
+    cd::asset::PrimitiveMesh mesh {};
+    ASSERT_TRUE(cd::studio::parse_wavefront_obj_mesh(tmp_path, mesh));
+    EXPECT_EQ(mesh.vertices.size(), 6U);
+    ASSERT_TRUE(cd::studio::normalize_and_validate_custom_mesh(mesh));
+    for (const auto& v : mesh.vertices)
+    {
+        EXPECT_LE(std::fabs(v.pos[0]), 0.65F);
+        EXPECT_LE(std::fabs(v.pos[1]), 0.65F);
+        EXPECT_NEAR(v.normal[2], 1.0F, 1e-4F);
+    }
+    std::error_code ec {};
+    std::filesystem::remove(tmp_path, ec);
+}
+
+TEST(StudioCustomMeshLoader, RejectsEmptyOrMalformedObjFilesGracefully)
+{
+    const auto empty_path = (std::filesystem::temp_directory_path() / "cd_test_empty.obj").string();
+    {
+        std::ofstream out(empty_path);
+    }
+    cd::asset::PrimitiveMesh mesh {};
+    EXPECT_FALSE(cd::studio::parse_wavefront_obj_mesh(empty_path, mesh));
+    EXPECT_FALSE(cd::studio::parse_wavefront_obj_mesh("non_existent_path_xyz_404.obj", mesh));
+    EXPECT_FALSE(cd::studio::normalize_and_validate_custom_mesh(mesh));
+    std::error_code ec {};
+    std::filesystem::remove(empty_path, ec);
+}
+
+TEST(StudioNodeCatalog, HasExact219GodotAnd31SotaMaking250Total)
+{
+    using namespace cd::studio;
+    EXPECT_EQ(kStudioGodotVideoNodeCount, 219U);
+    EXPECT_EQ(kStudioNextGenSotaNodeCount, 31U);
+    EXPECT_EQ(kStudioTotalCatalogCount, 250U);
+    EXPECT_EQ(kStudioUniversalNodeCatalog.size(), 250U);
+
+    EXPECT_EQ(count_studio_nodes_in_category(StudioNodeCategory::CoreSystem), 21U);
+    EXPECT_EQ(count_studio_nodes_in_category(StudioNodeCategory::Node2D), 50U);
+    EXPECT_EQ(count_studio_nodes_in_category(StudioNodeCategory::Node3D), 88U);
+    EXPECT_EQ(count_studio_nodes_in_category(StudioNodeCategory::ControlUI), 60U);
+    EXPECT_EQ(count_studio_nodes_in_category(StudioNodeCategory::NextGenSOTA), 31U);
+
+    for (std::size_t i = 0; i < kStudioUniversalNodeCatalog.size(); ++i)
+    {
+        const auto& d = kStudioUniversalNodeCatalog[i];
+        EXPECT_EQ(d.id, static_cast<std::uint16_t>(i));
+        ASSERT_NE(d.godot_name, nullptr);
+        ASSERT_NE(d.chroma_name, nullptr);
+        ASSERT_NE(d.video_timestamp, nullptr);
+        ASSERT_NE(d.ux_upgrade, nullptr);
+        ASSERT_NE(d.tech_upgrade, nullptr);
+        EXPECT_FALSE(std::string_view(d.godot_name).empty()) << "Empty godot_name at id " << i;
+        EXPECT_FALSE(std::string_view(d.chroma_name).empty()) << "Empty chroma_name at id " << i;
+        EXPECT_FALSE(std::string_view(d.video_timestamp).empty()) << "Empty video_timestamp at id " << i;
+        EXPECT_FALSE(std::string_view(d.ux_upgrade).empty()) << "Empty ux_upgrade at id " << i;
+        EXPECT_FALSE(std::string_view(d.tech_upgrade).empty()) << "Empty tech_upgrade at id " << i;
+        EXPECT_STREQ(d.godot_equivalent(), d.godot_name);
+    }
+}
+
+TEST(StudioNodeCatalog, FindsAllIconicGodot219AndNextGenSota31Nodes)
+{
+    using namespace cd::studio;
+    constexpr std::string_view kRequiredLookups[] {
+        "Node", "Viewport", "SubViewportContainer", "WorldEnvironment", "AnimationPlayer",
+        "AnimationTree", "AudioStreamPlayer", "Timer", "HTTPRequest", "MultiplayerSpawner",
+        "MultiplayerSynchronizer", "Node2D", "Sprite2D", "CharacterBody2D", "RigidBody2D",
+        "TileMap", "Camera2D", "CanvasGroup", "BackBufferCopy", "ParallaxBackground",
+        "Node3D", "MeshInstance3D", "CharacterBody3D", "RigidBody3D", "StaticBody3D",
+        "Area3D", "VehicleBody3D", "SoftBody3D", "SpringArm3D", "OmniLight3D",
+        "SpotLight3D", "DirectionalLight3D", "VoxelGI", "LightmapGI", "ReflectionProbe",
+        "Decal", "FogVolume", "GPUParticles3D", "GPUParticlesAttractor3D", "CSGBox3D",
+        "CSGCombiner3D", "Skeleton3D", "SkeletonIK3D", "NavigationRegion3D", "NavigationAgent3D",
+        "GridMap", "XROrigin3D", "PhysicalBone3D", "RayCast3D", "ShapeCast3D",
+        "Control", "Button", "GraphEdit", "GraphNode", "RichTextLabel",
+        "SubViewport", "Tree", "ItemList", "TabContainer", "SplitContainer",
+        "ColorPicker", "CodeEdit"
+    };
+
+    for (const auto name : kRequiredLookups)
+    {
+        const auto* desc = find_studio_node(name);
+        ASSERT_NE(desc, nullptr) << "Failed to find required Godot node: " << name;
+        EXPECT_FALSE(std::string_view(desc->chroma_name).empty());
+    }
+
+    // Verify all 219 Godot nodes (IDs 0..218) and 31 Next-Gen SOTA nodes (IDs 219..249) are searchable
+    for (std::uint16_t id = 0; id < 250; ++id)
+    {
+        const auto* desc = find_studio_node_by_id(id);
+        ASSERT_NE(desc, nullptr);
+        EXPECT_EQ(find_studio_node_by_chroma_name(desc->chroma_name), desc);
+        EXPECT_NE(find_studio_node(desc->godot_name), nullptr);
+        if (id >= 219)
+            EXPECT_EQ(desc->category, StudioNodeCategory::NextGenSOTA);
+    }
+
+    // Edge cases
+    EXPECT_EQ(find_studio_node_by_id(250), nullptr);
+    EXPECT_EQ(find_studio_node_by_id(65535), nullptr);
+    EXPECT_EQ(find_studio_node(""), nullptr);
+    EXPECT_EQ(find_studio_node("__non_existent_node_xyz__"), nullptr);
+    EXPECT_EQ(filter_studio_nodes(-1, "").size(), 250U);
+    EXPECT_EQ(filter_studio_nodes(0, "").size(), 21U);
+    EXPECT_EQ(filter_studio_nodes(1, "").size(), 50U);
+    EXPECT_EQ(filter_studio_nodes(2, "").size(), 88U);
+    EXPECT_EQ(filter_studio_nodes(3, "").size(), 60U);
+    EXPECT_EQ(filter_studio_nodes(4, "").size(), 31U);
+    EXPECT_TRUE(filter_studio_nodes(-1, "__non_existent_node_xyz__").empty());
+}
+
+TEST(StudioNodeCatalog, SpawnsNestsFoldsAndSurvivesJsonRoundTripForAll250Nodes)
+{
+    using namespace cd::studio;
+    StudioState state {};
+
+    // 1. Spawn all 250 nodes as Root Elements/Vessels
+    for (std::uint16_t id = 0; id < 250; ++id)
+    {
+        ASSERT_TRUE(apply_catalog_node_to_studio_state(
+            state, id, CatalogComposeMode::SpawnRootElement));
+        ASSERT_EQ(state.selected_idx, static_cast<int>(id));
+        const auto& ent = state.entities[static_cast<std::size_t>(state.selected_idx)];
+        EXPECT_EQ(ent.catalog_node_id, id);
+        EXPECT_EQ(ent.parent_entity_idx, -1);
+        ASSERT_EQ(ent.folded_capsule_ids.size(), 1U);
+        EXPECT_EQ(ent.folded_capsule_ids[0], id);
+    }
+    EXPECT_EQ(state.entities.size(), 250U);
+
+    // 2. Select CharacterBody3D (#117) -> nest SpringArm3D (#120) -> nest Camera3D (#119) as grandchild
+    state.selected_idx = 117;
+    ASSERT_TRUE(apply_catalog_node_to_studio_state(
+        state, 120, CatalogComposeMode::NestAsChildElement));
+    ASSERT_EQ(state.selected_idx, 250);
+    EXPECT_EQ(state.entities[250].parent_entity_idx, 117);
+    EXPECT_EQ(state.entities[250].godot_name, "SpringArm3D");
+    EXPECT_EQ(studio_state_entity_depth(state, 117), 0U);
+    EXPECT_EQ(studio_state_entity_depth(state, 250), 1U);
+
+    ASSERT_TRUE(apply_catalog_node_to_studio_state(
+        state, 119, CatalogComposeMode::NestAsChildElement));
+    ASSERT_EQ(state.selected_idx, 251);
+    EXPECT_EQ(state.entities[251].parent_entity_idx, 250);
+    EXPECT_EQ(studio_state_entity_depth(state, 251), 2U);
+
+    // 3. Fold Camera3D (#119), UtilityGOAPBrainAI (#234), and ThinFilmIridescenceCoat3D (#223) onto #117
+    state.selected_idx = 117;
+    EXPECT_TRUE(apply_catalog_node_to_studio_state(state, 119, CatalogComposeMode::FoldAsInlineCapsule));
+    EXPECT_TRUE(apply_catalog_node_to_studio_state(state, 234, CatalogComposeMode::FoldAsInlineCapsule));
+    EXPECT_TRUE(apply_catalog_node_to_studio_state(state, 223, CatalogComposeMode::FoldAsInlineCapsule));
+    // Duplicate fold of #234 should be idempotent
+    EXPECT_TRUE(apply_catalog_node_to_studio_state(state, 234, CatalogComposeMode::FoldAsInlineCapsule));
+    EXPECT_EQ(state.entities[117].folded_capsule_ids.size(), 4U);
+    EXPECT_TRUE(has_folded_capsule(state.entities[117], 117));
+    EXPECT_TRUE(has_folded_capsule(state.entities[117], 119));
+    EXPECT_TRUE(has_folded_capsule(state.entities[117], 234));
+    EXPECT_TRUE(has_folded_capsule(state.entities[117], 223));
+    EXPECT_GT(state.entities[117].iridescence_nm, 0.0F);
+
+    // 4. Out-of-range node ID returns false safely
+    EXPECT_FALSE(apply_catalog_node_to_studio_state(state, 999, CatalogComposeMode::SpawnRootElement));
+
+    // 5. JSON scene save/load round-trip preserves all 252 entities, parent-child links, and folded capsules
+    const std::string json_blob = serialize_studio_state_json(state, false);
+    EXPECT_FALSE(json_blob.empty());
+
+    StudioState restored {};
+    ASSERT_TRUE(deserialize_studio_state_json(json_blob, restored));
+    ASSERT_EQ(restored.entities.size(), state.entities.size());
+    EXPECT_EQ(restored.selected_idx, state.selected_idx);
+    EXPECT_EQ(restored.active_env_flags, state.active_env_flags);
+    EXPECT_EQ(restored.spawned_lights, state.spawned_lights);
+    EXPECT_EQ(restored.planar_2d_count, state.planar_2d_count);
+    EXPECT_EQ(restored.chroma_ui_count, state.chroma_ui_count);
+    EXPECT_EQ(restored.sota_compute_count, state.sota_compute_count);
+
+    EXPECT_EQ(restored.entities[117].godot_name, "CharacterBody3D");
+    EXPECT_EQ(restored.entities[117].chroma_name, "AvatarVessel3D");
+    EXPECT_EQ(restored.entities[117].folded_capsule_ids.size(), 4U);
+    EXPECT_TRUE(has_folded_capsule(restored.entities[117], 234));
+    EXPECT_TRUE(has_folded_capsule(restored.entities[117], 223));
+    EXPECT_EQ(restored.entities[250].parent_entity_idx, 117);
+    EXPECT_EQ(restored.entities[251].parent_entity_idx, 250);
+    EXPECT_EQ(studio_state_entity_depth(restored, 251), 2U);
+}
+
 }  // namespace
+

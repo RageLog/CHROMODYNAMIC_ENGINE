@@ -114,7 +114,8 @@ rebuild_tlas_and_transition_depth(
     // reflection ray with a meaningful normal. Default is "never a
     // sphere" so the legacy single-bounce + IBL-shine path stays.
     IsSphereFor                             is_sphere_for = {},
-    bool                                    rebuild_needed = true)
+    bool                                    rebuild_needed = true,
+    float                                   floor_y = -0.55F)
 {
     // 1) tick deferred destroy queue (3-frame margin beyond fif=2).
     while (!destroy_queue.empty()
@@ -153,12 +154,12 @@ rebuild_tlas_and_transition_depth(
         inst_mats.push_back(im);
     };
 
-    // Floor: identity scale, y = kFloorY (matches the floor draw).
+    // Floor: identity scale, y = floor_y (matches the floor draw).
     // W8-BC: distinct neutral grey so chrome reflections show a proper
     // grey floor, not garbage or a wrong entity tint.
     {
         cd::math::Mat4f fm = cd::math::Mat4f::identity();
-        fm[3][1] = -0.55F;
+        fm[3][1] = floor_y;
         push_inst(blas_floor, fm, cd::math::Vec3f { 0.5F, 0.5F, 0.5F });
     }
 

@@ -1,0 +1,2147 @@
+{
+  "active_level": 0,
+  "levels": [
+    {
+      "active_layer": 0,
+      "bounds": {
+        "max": [
+          60,
+          30,
+          60
+        ],
+        "min": [
+          -60,
+          -5,
+          -60
+        ]
+      },
+      "description": "Minimal static floor & sun for 500-2000+ FPS baseline telemetry",
+      "layers": [
+        {
+          "color_tag": [
+            0.69999998807907104,
+            0.69999998807907104,
+            0.75
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Default",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.34999999403953552,
+            0.77999997138977051,
+            0.94999998807907104
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Geometry",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.94999998807907104,
+            0.62000000476837158,
+            0.23999999463558197
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Physics",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.31999999284744263,
+            0.92000001668930054,
+            0.51999998092651367
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            1,
+            0.87999999523162842,
+            0.31999999284744263
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Lights",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.77999997138977051,
+            0.44999998807907104,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "UI",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        }
+      ],
+      "name": "1.1 Clean Empty Sandbox (Ultra-FPS)",
+      "scene_path": "",
+      "template_id": 0,
+      "world_name": "World 1: Ultra-FPS & Physics"
+    },
+    {
+      "active_layer": 0,
+      "bounds": {
+        "max": [
+          60,
+          30,
+          60
+        ],
+        "min": [
+          -60,
+          -5,
+          -60
+        ]
+      },
+      "description": "25-deg OBB slope, rolling metallic sphere, 5x crate stack & CesiumMan",
+      "layers": [
+        {
+          "color_tag": [
+            0.69999998807907104,
+            0.69999998807907104,
+            0.75
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Default",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.34999999403953552,
+            0.77999997138977051,
+            0.94999998807907104
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Geometry",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.94999998807907104,
+            0.62000000476837158,
+            0.23999999463558197
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Physics",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.31999999284744263,
+            0.92000001668930054,
+            0.51999998092651367
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            1,
+            0.87999999523162842,
+            0.31999999284744263
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Lights",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.77999997138977051,
+            0.44999998807907104,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "UI",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        }
+      ],
+      "name": "1.2 OBB Ramp & 5x Crate Tower",
+      "scene_path": "",
+      "template_id": 1,
+      "world_name": "World 1: Ultra-FPS & Physics"
+    },
+    {
+      "active_layer": 0,
+      "bounds": {
+        "max": [
+          60,
+          30,
+          60
+        ],
+        "min": [
+          -60,
+          -5,
+          -60
+        ]
+      },
+      "description": "6 dynamic dominoes & high-velocity cannonball chain reaction",
+      "layers": [
+        {
+          "color_tag": [
+            0.69999998807907104,
+            0.69999998807907104,
+            0.75
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Default",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.34999999403953552,
+            0.77999997138977051,
+            0.94999998807907104
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Geometry",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.94999998807907104,
+            0.62000000476837158,
+            0.23999999463558197
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Physics",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.31999999284744263,
+            0.92000001668930054,
+            0.51999998092651367
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            1,
+            0.87999999523162842,
+            0.31999999284744263
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Lights",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.77999997138977051,
+            0.44999998807907104,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "UI",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        }
+      ],
+      "name": "1.3 6x Domino Chain & Striker",
+      "scene_path": "",
+      "template_id": 2,
+      "world_name": "World 1: Ultra-FPS & Physics"
+    },
+    {
+      "active_layer": 0,
+      "bounds": {
+        "max": [
+          60,
+          30,
+          60
+        ],
+        "min": [
+          -60,
+          -5,
+          -60
+        ]
+      },
+      "description": "25 Cook-Torrance metallic/roughness spheres + Turquin MS + Iridescence",
+      "layers": [
+        {
+          "color_tag": [
+            0.69999998807907104,
+            0.69999998807907104,
+            0.75
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Default",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.34999999403953552,
+            0.77999997138977051,
+            0.94999998807907104
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Geometry",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.94999998807907104,
+            0.62000000476837158,
+            0.23999999463558197
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Physics",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.31999999284744263,
+            0.92000001668930054,
+            0.51999998092651367
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            1,
+            0.87999999523162842,
+            0.31999999284744263
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Lights",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.77999997138977051,
+            0.44999998807907104,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "UI",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        }
+      ],
+      "name": "2.1 PBR 5x5 Sphere Matrix (01_pbr)",
+      "scene_path": "",
+      "template_id": 4,
+      "world_name": "World 2: Photoreal PBR & Sponza GI"
+    },
+    {
+      "active_layer": 0,
+      "bounds": {
+        "max": [
+          60,
+          30,
+          60
+        ],
+        "min": [
+          -60,
+          -5,
+          -60
+        ]
+      },
+      "description": "Full Crytek Sponza Atrium glTF + Clustered Lights + Ray-Traced DDGI",
+      "layers": [
+        {
+          "color_tag": [
+            0.69999998807907104,
+            0.69999998807907104,
+            0.75
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Default",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.34999999403953552,
+            0.77999997138977051,
+            0.94999998807907104
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Geometry",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.94999998807907104,
+            0.62000000476837158,
+            0.23999999463558197
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Physics",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.31999999284744263,
+            0.92000001668930054,
+            0.51999998092651367
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            1,
+            0.87999999523162842,
+            0.31999999284744263
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Lights",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.77999997138977051,
+            0.44999998807907104,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "UI",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        }
+      ],
+      "name": "2.2 Crytek Sponza Atrium & DDGI (03_sponza)",
+      "scene_path": "",
+      "template_id": 5,
+      "world_name": "World 2: Photoreal PBR & Sponza GI"
+    },
+    {
+      "active_layer": 0,
+      "bounds": {
+        "max": [
+          60,
+          30,
+          60
+        ],
+        "min": [
+          -60,
+          -5,
+          -60
+        ]
+      },
+      "description": "Chrome, 24K Gold & Ceramic sculptures with HDR Bloom & Lens Optics",
+      "layers": [
+        {
+          "color_tag": [
+            0.69999998807907104,
+            0.69999998807907104,
+            0.75
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Default",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.34999999403953552,
+            0.77999997138977051,
+            0.94999998807907104
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Geometry",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.94999998807907104,
+            0.62000000476837158,
+            0.23999999463558197
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Physics",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.31999999284744263,
+            0.92000001668930054,
+            0.51999998092651367
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            1,
+            0.87999999523162842,
+            0.31999999284744263
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Lights",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.77999997138977051,
+            0.44999998807907104,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "UI",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        }
+      ],
+      "name": "2.3 Cinematic Optics & Bloom (04_optics)",
+      "scene_path": "",
+      "template_id": 6,
+      "world_name": "World 2: Photoreal PBR & Sponza GI"
+    },
+    {
+      "active_layer": 0,
+      "bounds": {
+        "max": [
+          60,
+          30,
+          60
+        ],
+        "min": [
+          -60,
+          -5,
+          -60
+        ]
+      },
+      "description": "Multi-textured 3D objects (Brick, UV Checker, Marble, Carbon) + Folder Tree",
+      "layers": [
+        {
+          "color_tag": [
+            0.69999998807907104,
+            0.69999998807907104,
+            0.75
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Default",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.34999999403953552,
+            0.77999997138977051,
+            0.94999998807907104
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Geometry",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.94999998807907104,
+            0.62000000476837158,
+            0.23999999463558197
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Physics",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.31999999284744263,
+            0.92000001668930054,
+            0.51999998092651367
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            1,
+            0.87999999523162842,
+            0.31999999284744263
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Lights",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.77999997138977051,
+            0.44999998807907104,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "UI",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        }
+      ],
+      "name": "2.4 Asset Browser & Texture/Mesh Lab",
+      "scene_path": "",
+      "template_id": 12,
+      "world_name": "World 2: Photoreal PBR & Sponza GI"
+    },
+    {
+      "active_layer": 0,
+      "bounds": {
+        "max": [
+          60,
+          30,
+          60
+        ],
+        "min": [
+          -60,
+          -5,
+          -60
+        ]
+      },
+      "description": "Twin opposing 25-deg OBB ramps + heavy collider impact & crate wall",
+      "layers": [
+        {
+          "color_tag": [
+            0.69999998807907104,
+            0.69999998807907104,
+            0.75
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Default",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.34999999403953552,
+            0.77999997138977051,
+            0.94999998807907104
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Geometry",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.94999998807907104,
+            0.62000000476837158,
+            0.23999999463558197
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Physics",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.31999999284744263,
+            0.92000001668930054,
+            0.51999998092651367
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            1,
+            0.87999999523162842,
+            0.31999999284744263
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Lights",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.77999997138977051,
+            0.44999998807907104,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "UI",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        }
+      ],
+      "name": "3.1 Double Ramp & Rover Collision (06_jolt)",
+      "scene_path": "",
+      "template_id": 7,
+      "world_name": "World 3: Jolt Dynamics & Shatter Lab"
+    },
+    {
+      "active_layer": 0,
+      "bounds": {
+        "max": [
+          60,
+          30,
+          60
+        ],
+        "min": [
+          -60,
+          -5,
+          -60
+        ]
+      },
+      "description": "High-restitution (0.96) trampoline pads + multi-sphere bounce",
+      "layers": [
+        {
+          "color_tag": [
+            0.69999998807907104,
+            0.69999998807907104,
+            0.75
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Default",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.34999999403953552,
+            0.77999997138977051,
+            0.94999998807907104
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Geometry",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.94999998807907104,
+            0.62000000476837158,
+            0.23999999463558197
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Physics",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.31999999284744263,
+            0.92000001668930054,
+            0.51999998092651367
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            1,
+            0.87999999523162842,
+            0.31999999284744263
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Lights",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.77999997138977051,
+            0.44999998807907104,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "UI",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        }
+      ],
+      "name": "3.2 Trampoline Bounce Arena",
+      "scene_path": "",
+      "template_id": 3,
+      "world_name": "World 3: Jolt Dynamics & Shatter Lab"
+    },
+    {
+      "active_layer": 0,
+      "bounds": {
+        "max": [
+          60,
+          30,
+          60
+        ],
+        "min": [
+          -60,
+          -5,
+          -60
+        ]
+      },
+      "description": "3x Skinned animated CesiumMan characters + obstacle course",
+      "layers": [
+        {
+          "color_tag": [
+            0.69999998807907104,
+            0.69999998807907104,
+            0.75
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Default",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.34999999403953552,
+            0.77999997138977051,
+            0.94999998807907104
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Geometry",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.94999998807907104,
+            0.62000000476837158,
+            0.23999999463558197
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Physics",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.31999999284744263,
+            0.92000001668930054,
+            0.51999998092651367
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            1,
+            0.87999999523162842,
+            0.31999999284744263
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Lights",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.77999997138977051,
+            0.44999998807907104,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "UI",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        }
+      ],
+      "name": "4.1 Skinned Avatar Squad & IK (05_avatar)",
+      "scene_path": "",
+      "template_id": 8,
+      "world_name": "World 4: Avatar Locomotion & Combat"
+    },
+    {
+      "active_layer": 0,
+      "bounds": {
+        "max": [
+          60,
+          30,
+          60
+        ],
+        "min": [
+          -60,
+          -5,
+          -60
+        ]
+      },
+      "description": "Tactical cover barriers, squad avatars & dynamic point lights",
+      "layers": [
+        {
+          "color_tag": [
+            0.69999998807907104,
+            0.69999998807907104,
+            0.75
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Default",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.34999999403953552,
+            0.77999997138977051,
+            0.94999998807907104
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Geometry",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.94999998807907104,
+            0.62000000476837158,
+            0.23999999463558197
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Physics",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.31999999284744263,
+            0.92000001668930054,
+            0.51999998092651367
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            1,
+            0.87999999523162842,
+            0.31999999284744263
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Lights",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.77999997138977051,
+            0.44999998807907104,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "UI",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        }
+      ],
+      "name": "4.2 Tactical Synth Squad Arena (08_synth)",
+      "scene_path": "",
+      "template_id": 9,
+      "world_name": "World 4: Avatar Locomotion & Combat"
+    },
+    {
+      "active_layer": 0,
+      "bounds": {
+        "max": [
+          60,
+          30,
+          60
+        ],
+        "min": [
+          -60,
+          -5,
+          -60
+        ]
+      },
+      "description": "Wronski volumetric fog, sun god-ray light shafts & monoliths",
+      "layers": [
+        {
+          "color_tag": [
+            0.69999998807907104,
+            0.69999998807907104,
+            0.75
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Default",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.34999999403953552,
+            0.77999997138977051,
+            0.94999998807907104
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Geometry",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.94999998807907104,
+            0.62000000476837158,
+            0.23999999463558197
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Physics",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.31999999284744263,
+            0.92000001668930054,
+            0.51999998092651367
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            1,
+            0.87999999523162842,
+            0.31999999284744263
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Lights",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.77999997138977051,
+            0.44999998807907104,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "UI",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        }
+      ],
+      "name": "5.1 Celestial Fog & God-Rays (02_aether)",
+      "scene_path": "",
+      "template_id": 10,
+      "world_name": "World 5: Volumetric Atmosphere & Nature"
+    },
+    {
+      "active_layer": 0,
+      "bounds": {
+        "max": [
+          60,
+          30,
+          60
+        ],
+        "min": [
+          -60,
+          -5,
+          -60
+        ]
+      },
+      "description": "3200K golden-hour sun, mirror water plane & island pillars",
+      "layers": [
+        {
+          "color_tag": [
+            0.69999998807907104,
+            0.69999998807907104,
+            0.75
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Default",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.34999999403953552,
+            0.77999997138977051,
+            0.94999998807907104
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Geometry",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.94999998807907104,
+            0.62000000476837158,
+            0.23999999463558197
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Physics",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.31999999284744263,
+            0.92000001668930054,
+            0.51999998092651367
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            1,
+            0.87999999523162842,
+            0.31999999284744263
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Lights",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.77999997138977051,
+            0.44999998807907104,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "UI",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        }
+      ],
+      "name": "5.2 Golden Hour Ocean & Terra (07_terra)",
+      "scene_path": "",
+      "template_id": 11,
+      "world_name": "World 5: Volumetric Atmosphere & Nature"
+    },
+    {
+      "active_layer": 0,
+      "bounds": {
+        "max": [
+          60,
+          30,
+          60
+        ],
+        "min": [
+          -60,
+          -5,
+          -60
+        ]
+      },
+      "description": "Playable 3D Game: Avatar + Moving Platforms + JumpPads + Energy Cores + AI Bot + Goal",
+      "layers": [
+        {
+          "color_tag": [
+            0.69999998807907104,
+            0.69999998807907104,
+            0.75
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Default",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.34999999403953552,
+            0.77999997138977051,
+            0.94999998807907104
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Geometry",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.94999998807907104,
+            0.62000000476837158,
+            0.23999999463558197
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Physics",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.31999999284744263,
+            0.92000001668930054,
+            0.51999998092651367
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            1,
+            0.87999999523162842,
+            0.31999999284744263
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Lights",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.77999997138977051,
+            0.44999998807907104,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "UI",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        }
+      ],
+      "name": "6.1 Cyber-Core Action Platformer (Playable Game)",
+      "scene_path": "",
+      "template_id": 13,
+      "world_name": "World 6: Playable Games & Interactive Templates"
+    },
+    {
+      "active_layer": 0,
+      "bounds": {
+        "max": [
+          60,
+          30,
+          60
+        ],
+        "min": [
+          -60,
+          -5,
+          -60
+        ]
+      },
+      "description": "250-Node Universal Showcase: CharacterBody3D+SpringArm3D, VehicleBody3D, SoftBody3D/XPBD, CSG/SDF, VoxelGI/DDGI, GPUParticlesAttractor3D & TurquinMultiScatterPBR3D",
+      "layers": [
+        {
+          "color_tag": [
+            0.69999998807907104,
+            0.69999998807907104,
+            0.75
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Default",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.34999999403953552,
+            0.77999997138977051,
+            0.94999998807907104
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Geometry",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.94999998807907104,
+            0.62000000476837158,
+            0.23999999463558197
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Physics",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.31999999284744263,
+            0.92000001668930054,
+            0.51999998092651367
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            1,
+            0.87999999523162842,
+            0.31999999284744263
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Lights",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.77999997138977051,
+            0.44999998807907104,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "UI",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        }
+      ],
+      "name": "6.2 Universal 250-Node Showcase (Godot 219 + SOTA 31)",
+      "scene_path": "",
+      "template_id": 14,
+      "world_name": "World 6: Playable Games & Interactive Templates"
+    }
+  ],
+  "name": "ChromodynamicMasterShowcase",
+  "schema_version": 1,
+  "settings": {
+    "default_transport": "udp",
+    "enable_bloom": false,
+    "enable_csm": true,
+    "enable_gtao": false,
+    "enable_rt_shadows": true,
+    "enable_ssr": false,
+    "master_volume": 1,
+    "tonemap_op": 2
+  }
+}

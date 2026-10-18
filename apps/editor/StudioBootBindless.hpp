@@ -173,16 +173,42 @@ inline void wire_w8be_bindless_and_meta(StateT& s, DeviceT& device,
     else
     {
         // Fallback to procedural sphere VB/IB so the layout has
-        // non-null buffers for bindings 11/12.
-        const cd::rhi::DescriptorWrite dw_be_fb[2] = {
+        // non-null buffers for bindings 11/12/14/15.
+        const cd::rhi::DescriptorWrite dw_be_fb[4] = {
             { .binding = 11, .array_element = 0,
               .type = cd::rhi::DescriptorType::kStorageBuffer,
               .buffer = s.meshes.sphere.vb },
             { .binding = 12, .array_element = 0,
               .type = cd::rhi::DescriptorType::kStorageBuffer,
               .buffer = s.meshes.sphere.ib },
+            { .binding = 14, .array_element = 0,
+              .type = cd::rhi::DescriptorType::kStorageBuffer,
+              .buffer = s.meshes.sphere.vb },
+            { .binding = 15, .array_element = 0,
+              .type = cd::rhi::DescriptorType::kStorageBuffer,
+              .buffer = s.meshes.sphere.ib },
         };
         (void)s.prim_inst.update(std::span<const cd::rhi::DescriptorWrite>(dw_be_fb));
+        if (auto bs_r = device.allocate_descriptor_set(
+                s.materials.prim_bindless_layout); bs_r.has_value())
+        {
+            s.prim_bindless_set = *bs_r;
+            std::vector<cd::rhi::DescriptorWrite> dw_b {};
+            dw_b.reserve(256u);
+            for (std::uint32_t slot_idx = 0u; slot_idx < 256u; ++slot_idx)
+            {
+                dw_b.push_back(cd::rhi::DescriptorWrite {
+                    .binding       = 0,
+                    .array_element = slot_idx,
+                    .type          = cd::rhi::DescriptorType::kBindlessSampledImage,
+                    .view          = s.albedo_tex.view,
+                    .sampler       = s.albedo_sampler,
+                });
+            }
+            (void)device.update_descriptor_set(
+                s.prim_bindless_set,
+                std::span<const cd::rhi::DescriptorWrite>(dw_b));
+        }
     }
 
     // phase-descriptor-sync: write global bindings (0,1,3,5,6,7,10) to every

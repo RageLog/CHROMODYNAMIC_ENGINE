@@ -211,10 +211,15 @@ void main()
 
 struct Submitter::Impl
 {
+    static constexpr std::size_t kBufferRingSize = 4U;
+
     cd::rhi::IDevice*           device { nullptr };
     SubmitterCreateInfo         info {};
     cd::rhi::BufferHandle       vb {};
     cd::rhi::BufferHandle       ib {};
+    std::array<cd::rhi::BufferHandle, kBufferRingSize> vb_ring {};
+    std::array<cd::rhi::BufferHandle, kBufferRingSize> ib_ring {};
+    std::uint32_t               ring_cursor { 0U };
     std::uint32_t               vb_capacity_bytes { 0U };
     std::uint32_t               ib_capacity_bytes { 0U };
 
@@ -344,8 +349,18 @@ void Submitter::destroy() noexcept
             }
             impl_->material_variant.reset();
         }
-        if (impl_->vb.is_valid()) impl_->device->destroy_buffer(impl_->vb);
-        if (impl_->ib.is_valid()) impl_->device->destroy_buffer(impl_->ib);
+        for (auto& h : impl_->vb_ring)
+        {
+            if (h.is_valid()) impl_->device->destroy_buffer(h);
+            h = {};
+        }
+        for (auto& h : impl_->ib_ring)
+        {
+            if (h.is_valid()) impl_->device->destroy_buffer(h);
+            h = {};
+        }
+        impl_->vb = {};
+        impl_->ib = {};
     }
     impl_.reset();
 }
@@ -376,26 +391,34 @@ Submitter::create(cd::rhi::IDevice& device, const SubmitterCreateInfo& info)
     vbd.usage  = cd::rhi::BufferUsage::kVertex | cd::rhi::BufferUsage::kTransferDst;
     vbd.memory = cd::rhi::MemoryUsage::kCpuToGpu;
     vbd.debug_name = "cd_ui_renderer_rhi.vb";
-    auto vb_r = device.create_buffer(vbd);
-    if (!vb_r.has_value())
-    {
-        out.destroy();
-        return std::unexpected(vb_r.error());
-    }
-    out.impl_->vb = *vb_r;
 
     cd::rhi::BufferDesc ibd {};
     ibd.size   = out.impl_->ib_capacity_bytes;
     ibd.usage  = cd::rhi::BufferUsage::kIndex | cd::rhi::BufferUsage::kTransferDst;
     ibd.memory = cd::rhi::MemoryUsage::kCpuToGpu;
     ibd.debug_name = "cd_ui_renderer_rhi.ib";
-    auto ib_r = device.create_buffer(ibd);
-    if (!ib_r.has_value())
+
+    for (std::size_t slot = 0U; slot < Impl::kBufferRingSize; ++slot)
     {
-        out.destroy();
-        return std::unexpected(ib_r.error());
+        auto vb_r = device.create_buffer(vbd);
+        if (!vb_r.has_value())
+        {
+            out.destroy();
+            return std::unexpected(vb_r.error());
+        }
+        out.impl_->vb_ring[slot] = *vb_r;
+
+        auto ib_r = device.create_buffer(ibd);
+        if (!ib_r.has_value())
+        {
+            out.destroy();
+            return std::unexpected(ib_r.error());
+        }
+        out.impl_->ib_ring[slot] = *ib_r;
     }
-    out.impl_->ib = *ib_r;
+    out.impl_->ring_cursor = 0U;
+    out.impl_->vb          = out.impl_->vb_ring[0];
+    out.impl_->ib          = out.impl_->ib_ring[0];
 
     return out;
 }
@@ -900,6 +923,11 @@ bool Submitter::upload(const cd::ui::renderer::DrawBatcher& batcher)
     const auto ic = static_cast<std::uint32_t>(batcher.index_count());
     if (vc > impl_->info.max_vertices) return false;
     if (ic > impl_->info.max_indices)  return false;
+
+    const std::size_t slot = impl_->ring_cursor % Impl::kBufferRingSize;
+    impl_->ring_cursor = static_cast<std::uint32_t>((slot + 1U) % Impl::kBufferRingSize);
+    if (impl_->vb_ring[slot].is_valid()) impl_->vb = impl_->vb_ring[slot];
+    if (impl_->ib_ring[slot].is_valid()) impl_->ib = impl_->ib_ring[slot];
 
     if (vc > 0U)
     {

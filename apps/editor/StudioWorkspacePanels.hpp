@@ -106,30 +106,34 @@ inline void draw_studio_modifier_stack_ui(
     }
 }
 
-template <typename StateT>
+template <typename StateT, typename LogFn>
 inline void draw_ingame_hud_workspace(
     StateT&                s,
     float                  dt,
     const cd::math::Mat4f& vp,
     std::uint32_t          frame_w,
-    std::uint32_t          frame_h)
+    std::uint32_t          frame_h,
+    LogFn&&                log_push)
 {
+    auto& w = studio_world();
     const float sw = static_cast<float>(frame_w);
     const float sh = static_cast<float>(frame_h);
 
-    static float s_health     = 86.0F;
-    static float s_shield     = 64.0F;
-    static float s_spread     = 0.22F;
+    static float s_spread      = 0.18F;
     static int   s_active_slot = 0;
-    static bool  s_show_tags  = true;
+    static bool  s_show_tags   = true;
 
     // 1. Project 3D entities to screen and draw World-Space Entity Health/Status Tags
     if (s_show_tags)
     {
+        std::vector<ImVec2> placed_tags;
+        placed_tags.reserve(s.entities.size());
         for (std::size_t i = 0; i < s.entities.size(); ++i)
         {
             const auto& ent = s.entities[i];
-            if (ent.kind == PrimitiveKind::kSponza || ent.name.find("Floor") != std::string::npos)
+            if (!ent.visible || ent.kind == PrimitiveKind::kSponza ||
+                ent.name.find("Floor") != std::string::npos ||
+                ent.name.find("Kinematic_Platform") != std::string::npos)
                 continue;
             const auto* lt = s.scene.local(ent.handle);
             if (!lt) continue;
@@ -142,11 +146,31 @@ inline void draw_ingame_hud_workspace(
             ImVec2 tag_px{};
             if (project_world_to_screen(tag_world, vp, sw, sh, tag_px))
             {
+                // De-overlap screen-space tag boxes so labels never collide
+                for (int pass = 0; pass < 4; ++pass)
+                {
+                    bool collided = false;
+                    for (const auto& prev : placed_tags)
+                    {
+                        if (std::fabs(tag_px.x - prev.x) < 150.0F &&
+                            std::fabs(tag_px.y - prev.y) < 27.0F)
+                        {
+                            tag_px.y = prev.y - 28.0F;
+                            collided = true;
+                        }
+                    }
+                    if (!collided) break;
+                }
+                tag_px.y = std::clamp(tag_px.y, 92.0F, sh - 120.0F);
+                placed_tags.push_back(tag_px);
+
                 const float dx = lt->value.position.x - s.cam.eye.x;
                 const float dy = lt->value.position.y - s.cam.eye.y;
                 const float dz = lt->value.position.z - s.cam.eye.z;
                 const float dist_m = std::sqrt(dx * dx + dy * dy + dz * dz);
-                const float hp_frac = 0.35F + 0.65F * std::abs(std::sin(static_cast<float>(i) * 1.3F + 0.5F));
+                const float hp_frac = (ent.name.find("Player") != std::string::npos)
+                    ? std::clamp(w.player_hp / std::max(1.0F, w.player_max_hp), 0.0F, 1.0F)
+                    : 1.0F;
                 cd::ui::chroma::hud::DrawWorldSpaceEntityTag(
                     tag_px, ent.name.c_str(), dist_m, hp_frac, static_cast<int>(i) == s.selected);
             }
@@ -158,6 +182,7 @@ inline void draw_ingame_hud_workspace(
     std::size_t blip_count = 0;
     for (std::size_t i = 0; i < s.entities.size() && blip_count < 16U; ++i)
     {
+        if (!s.entities[i].visible) continue;
         if (const auto* lt = s.scene.local(s.entities[i].handle))
         {
             blip_coords[blip_count] = ImVec2((lt->value.position.x - s.cam.eye.x) * 0.08F,
@@ -174,9 +199,12 @@ inline void draw_ingame_hud_workspace(
     cd::ui::chroma::hud::DrawDynamicCrosshair(
         ImVec2(sw * 0.5F, sh * 0.5F), 6.0F + s_spread * 16.0F, IM_COL32(90, 245, 165, 230));
 
-    // 4. Bottom-Left Player Health & Shield Bars
+    // 4. Bottom-Left Player Health, Shield & Energy Bars (driven by live StudioRuntimeWorld!)
     cd::ui::chroma::hud::DrawHealthShieldBar(
-        ImVec2(28.0F, sh - 92.0F), 280.0F, s_health, 100.0F, s_shield, 100.0F, 0.78F);
+        ImVec2(28.0F, sh - 92.0F), 280.0F,
+        w.player_hp, w.player_max_hp,
+        w.player_shield, 100.0F,
+        std::clamp(w.player_energy / 100.0F, 0.0F, 1.0F));
 
     // 5. Bottom-Center Inventory Hotbar (8 slots)
     const char* slot_names[8] = {
@@ -187,27 +215,213 @@ inline void draw_ingame_hud_workspace(
     s_active_slot = cd::ui::chroma::hud::DrawInventoryHotbar(
         ImVec2(sw * 0.5F, sh - 10.0F), s_active_slot, slot_names, slot_cooldowns);
 
-    // 6. Floating Tactical HUD Controller Window (Top-Left)
-    ImGui::SetNextWindowPos(ImVec2(24.0F, 74.0F), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(320.0F, 240.0F), ImGuiCond_Always);
-    if (ImGui::Begin("In-Game HUD Telemetry & Controls"))
+    // 6. Top-Left Mission & Live Gameplay Telemetry HUD Panel
+    ImGui::SetNextWindowPos(ImVec2(24.0F, 72.0F), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(385.0F, 285.0F), ImGuiCond_Always);
+    if (ImGui::Begin("In-Game HUD & Mission Objectives"))
     {
-        ImGui::TextColored(ImVec4(0.35F, 0.95F, 0.55F, 1.0F), "ChromaUI In-Game HUD Overlay (%.1f FPS)",
-                           static_cast<double>(dt > 1e-5F ? 1.0F / dt : 60.0F));
-        ImGui::SliderFloat("Armor Integrity", &s_health, 0.0F, 100.0F, "%.0f HP");
-        ImGui::SliderFloat("Kinetic Shield", &s_shield, 0.0F, 100.0F, "%.0f SP");
-        ImGui::SliderFloat("Reticle Bloom", &s_spread, 0.0F, 1.0F, "%.2f");
-        ImGui::SliderInt("Equipped Slot", &s_active_slot, 0, 7);
-        ImGui::ToggleSwitch("3D World-Space Entity Tags", &s_show_tags);
-        if (ImGui::Button("Trigger Mission Objective Toast", ImVec2(-1.0F, 24.0F)))
+        const double fps = (w.smoothed_fps > 1.0F)
+            ? static_cast<double>(w.smoothed_fps)
+            : ((dt > 1e-5F) ? (1.0 / static_cast<double>(dt)) : 60.0);
+        ImGui::TextColored(ImVec4(0.35F, 0.95F, 0.55F, 1.0F),
+                           "%s (%.0f FPS)",
+                           w.active_level_name.c_str(), fps);
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(1.0F, 0.86F, 0.28F, 1.0F),
+                           "SCORE: %d PTS  |  CORES: %d / %d  |  BOTS: %d",
+                           w.game_score, w.collected_cores,
+                           std::max(w.total_cores_in_level, w.collected_cores),
+                           w.defeated_enemies);
+        if (w.level_goal_reached)
         {
-            ImGui::PushToast("Mission Objective", "Secure Sponza Courtyard", 0, 3.0F);
+            ImGui::TextColored(ImVec4(0.25F, 1.0F, 0.65F, 1.0F),
+                               "*** VICTORY! LEVEL GOAL REACHED! ***");
         }
+        else
+        {
+            ImGui::TextDisabled("%s", w.hud_toast_message.c_str());
+        }
+        ImGui::TextDisabled("Controls: WASD/Arrows=Move | Space=Jump | B/LMB=Fire | P=AutoPlay");
+
+        ImGui::PushStyleColor(ImGuiCol_Button, w.autopilot_play_active
+            ? ImVec4(0.18F, 0.68F, 0.38F, 1.0F)
+            : ImVec4(0.20F, 0.44F, 0.74F, 1.0F));
+        if (ImGui::Button(w.autopilot_play_active ? "[Auto-Play AI: ACTIVE (P)]" : "[>] Auto-Play Level (P)", ImVec2(175.0F, 22.0F)))
+        {
+            if (!s.pie_playing) enter_pie_play_mode(s, log_push);
+            w.autopilot_play_active = !w.autopilot_play_active;
+        }
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75F, 0.32F, 0.16F, 1.0F));
+        if (ImGui::Button("Fire(B)", ImVec2(76.0F, 22.0F)))
+            shoot_physics_ball_from_camera(s, log_push);
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        if (ImGui::Button("Reset(R)", ImVec2(-1.0F, 22.0F)))
+            reset_physics_to_home_positions(s, log_push);
+
+        ImGui::Separator();
+        ImGui::SliderFloat("Armor Integrity", &w.player_hp, 0.0F, 100.0F, "%.0f HP");
+        ImGui::SliderFloat("Kinetic Shield", &w.player_shield, 0.0F, 100.0F, "%.0f SP");
+        ImGui::SliderFloat("Reticle Bloom", &s_spread, 0.0F, 1.0F, "%.2f");
+        ImGui::ToggleSwitch("3D World-Space Entity Tags", &s_show_tags);
     }
     ImGui::End();
 }
 
-inline void draw_node_and_app_lab_workspace(std::uint32_t frame_w, std::uint32_t frame_h)
+template <typename StateT, typename LogFn>
+inline void draw_universal_250_node_catalog_panel(StateT& s, LogFn&& log_push)
+{
+    auto& w = studio_world();
+
+    // Top Row: Category Filter Tabs (-1=All 250, 0=Core(21), 1=2D(50), 2=3D(88), 3=UI(60), 4=SOTA(31)) + Search
+    struct CatFilterItem
+    {
+        const char* label;
+        int         cat_idx;
+    };
+    constexpr std::array<CatFilterItem, 6> kCatButtons {{
+        { "All (250)",       -1 },
+        { "Base/Sys (21)",    0 },
+        { "2D (50)",          1 },
+        { "3D (88)",          2 },
+        { "UI/Control (60)",  3 },
+        { "Next-Gen SOTA (31)", 4 },
+    }};
+    for (std::size_t ci = 0; ci < kCatButtons.size(); ++ci)
+    {
+        if (ci > 0) ImGui::SameLine();
+        const bool is_active_cat = (w.node_catalog_category_filter == kCatButtons[ci].cat_idx);
+        if (is_active_cat)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                (kCatButtons[ci].cat_idx == 4) ? ImVec4(0.55F, 0.24F, 0.78F, 1.0F)
+                                               : ImVec4(0.18F, 0.52F, 0.84F, 1.0F));
+        }
+        if (ImGui::SmallButton(kCatButtons[ci].label))
+        {
+            w.node_catalog_category_filter = kCatButtons[ci].cat_idx;
+        }
+        if (is_active_cat) ImGui::PopStyleColor();
+    }
+
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(165.0F);
+    ImGui::InputTextWithHint("##node250_search", "Search Chroma / Godot 219...",
+                             w.node_catalog_search, sizeof(w.node_catalog_search));
+    if (w.node_catalog_search[0] != '\0')
+    {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear##clr250"))
+            w.node_catalog_search[0] = '\0';
+    }
+
+    const auto filtered = filter_studio_nodes(w.node_catalog_category_filter, w.node_catalog_search);
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.42F, 0.96F, 0.68F, 1.0F),
+                       "| %zu / %zu Constructs", filtered.size(), kStudioTotalCatalogCount);
+
+    ImGui::Separator();
+
+    // Left Pane: Scrollable List of Matching Nodes (Chroma Construct + Godot Equivalent + Video Timestamp)
+    ImGui::BeginChild("catalog_250_list_pane", ImVec2(350.0F, 0.0F), true);
+    for (const auto* desc : filtered)
+    {
+        if (!desc) continue;
+        const bool is_sel = (w.selected_catalog_node_id == desc->id);
+        char row_buf[196] {};
+        std::snprintf(row_buf, sizeof(row_buf), "[#%03u|%s] %s <-> %s (%s)##cat250_%u",
+                      static_cast<unsigned>(desc->id),
+                      chroma_construct_kind_badge(desc->construct_kind),
+                      desc->chroma_name,
+                      desc->godot_name,
+                      desc->video_timestamp,
+                      static_cast<unsigned>(desc->id));
+        if (ImGui::Selectable(row_buf, is_sel))
+        {
+            w.selected_catalog_node_id = desc->id;
+        }
+    }
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+
+    // Right Pane: Detailed Chroma Construct vs Godot Node Comparison Card + 3 Composition Mode Buttons
+    ImGui::BeginChild("catalog_250_detail_pane", ImVec2(0.0F, 0.0F), true);
+    const StudioNodeDescriptor* sel_desc = find_studio_node_by_id(w.selected_catalog_node_id);
+    if (!filtered.empty())
+    {
+        const bool in_filtered = (sel_desc != nullptr) &&
+            (std::find(filtered.begin(), filtered.end(), sel_desc) != filtered.end());
+        if (!in_filtered)
+        {
+            sel_desc                   = filtered.front();
+            w.selected_catalog_node_id = sel_desc->id;
+        }
+    }
+    if (!sel_desc) sel_desc = &kStudioUniversalNodeCatalog[117];
+
+    ImGui::TextColored(ImVec4(0.32F, 0.96F, 0.68F, 1.0F),
+                       "[#%03u | %s] %s",
+                       static_cast<unsigned>(sel_desc->id),
+                       chroma_construct_kind_label(sel_desc->construct_kind),
+                       sel_desc->chroma_name);
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(1.00F, 0.84F, 0.32F, 1.0F),
+                       " <-> Godot: %s (@ %s | %s)",
+                       sel_desc->godot_name,
+                       sel_desc->video_timestamp,
+                       studio_node_category_label(sel_desc->category));
+
+    ImGui::TextColored(ImVec4(0.58F, 0.88F, 1.00F, 1.0F),
+                       "UX Upgrade:   %s",
+                       sel_desc->ux_upgrade);
+    ImGui::TextColored(ImVec4(0.84F, 0.75F, 1.00F, 1.0F),
+                       "SOTA Tech:    %s",
+                       sel_desc->tech_upgrade);
+    ImGui::TextColored(ImVec4(0.52F, 0.96F, 0.74F, 1.0F),
+                       "Auto-Bundled: %s  [Layer: %s]",
+                       sel_desc->spawn_preset.bundled_summary != nullptr
+                           ? sel_desc->spawn_preset.bundled_summary
+                           : "Transform3D + PbrMaterialModifier",
+                       sel_desc->spawn_preset.semantic_layer != nullptr
+                           ? sel_desc->spawn_preset.semantic_layer
+                           : "Default");
+
+    // 3 Composition Mode Action Buttons (Spawn Root Element/Vessel | Nest as Child Element | Fold as Inline Capsule)
+    const cd::math::Vec3f spawn_pt = camera_spawn_point(s, 3.5F);
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16F, 0.56F, 0.36F, 1.0F));
+    if (ImGui::Button("[+ Spawn Root Element/Vessel]", ImVec2(162.0F, 22.0F)))
+    {
+        (void)spawn_or_compose_studio_catalog_node(
+            s, sel_desc->id, CatalogComposeMode::SpawnRootElement, { spawn_pt.x, 0.0F, spawn_pt.z }, log_push);
+    }
+    ImGui::PopStyleColor();
+
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18F, 0.44F, 0.76F, 1.0F));
+    if (ImGui::Button("[+ Nest as Child Element]", ImVec2(148.0F, 22.0F)))
+    {
+        (void)spawn_or_compose_studio_catalog_node(
+            s, sel_desc->id, CatalogComposeMode::NestAsChildElement, { spawn_pt.x, 0.0F, spawn_pt.z }, log_push);
+    }
+    ImGui::PopStyleColor();
+
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.52F, 0.26F, 0.74F, 1.0F));
+    if (ImGui::Button("[+ Fold as Inline Capsule]", ImVec2(152.0F, 22.0F)))
+    {
+        (void)spawn_or_compose_studio_catalog_node(
+            s, sel_desc->id, CatalogComposeMode::FoldAsInlineCapsule, { spawn_pt.x, 0.0F, spawn_pt.z }, log_push);
+    }
+    ImGui::PopStyleColor();
+
+    ImGui::EndChild();
+}
+
+template <typename StateT, typename LogFn>
+inline void draw_node_and_app_lab_workspace(StateT& s, std::uint32_t frame_w, std::uint32_t frame_h, LogFn&& log_push)
 {
     const float sw = static_cast<float>(frame_w);
     const float sh = static_cast<float>(frame_h);
@@ -227,14 +441,14 @@ inline void draw_node_and_app_lab_workspace(std::uint32_t frame_w, std::uint32_t
     static bool  s_ray_shadows = true;
     static int   s_blend_mode  = 0;
 
-    // Left Window: Node Graph & Shader Pipeline Editor
+    // Left Window: Node Graph & Shader Pipeline Editor + 250-Node Universal Catalog
     ImGui::SetNextWindowPos(ImVec2(14.0F, 68.0F), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(sw * 0.62F - 20.0F, sh - 82.0F), ImGuiCond_Always);
-    if (ImGui::Begin("ChromaUI Node Graph & Timeline Studio"))
+    if (ImGui::Begin("ChromaUI Node Graph & 250-Node Universal Studio"))
     {
         ImGui::TextColored(ImVec4(0.45F, 0.85F, 1.0F, 1.0F),
                            "PBR Material & Post-FX Shader Graph (Drag Nodes, Cubic Bezier Wires)");
-        ImGui::BeginNodeGraph("StudioShaderGraph", ImVec2(0.0F, sh - 265.0F));
+        ImGui::BeginNodeGraph("StudioShaderGraph", ImVec2(0.0F, sh * 0.42F));
 
         ImGui::BeginNode(1U, "Texture2D Sampler (Albedo)", ImVec2(32.0F, 42.0F),
                          ImVec2(205.0F, 86.0F), IM_COL32(45, 115, 185, 255));
@@ -268,9 +482,9 @@ inline void draw_node_and_app_lab_workspace(std::uint32_t frame_w, std::uint32_t
 
         ImGui::EndNodeGraph();
 
-        ImGui::Separator();
-        const float kf_times[5] = { 0.35F, 1.20F, 2.45F, 3.80F, 4.65F };
-        ImGui::TimelineScrubber("Keyframe Track", &s_timeline_t, 5.0F, kf_times, 5);
+        ImGui::SeparatorText("250 Element & Vessel Universal Catalog (219 Godot + 31 Next-Gen SOTA)");
+        draw_universal_250_node_catalog_panel(s, log_push);
+        (void)s_timeline_t;
     }
     ImGui::End();
 
@@ -341,12 +555,12 @@ inline void draw_clean_studio_workspace_panels(
 
     if (s.pie_playing || cst.workspace_mode == 1)
     {
-        draw_ingame_hud_workspace(s, dt, vp, frame_w, frame_h);
+        draw_ingame_hud_workspace(s, dt, vp, frame_w, frame_h, log_push);
         return;
     }
     if (cst.workspace_mode == 2)
     {
-        draw_node_and_app_lab_workspace(frame_w, frame_h);
+        draw_node_and_app_lab_workspace(s, frame_w, frame_h, log_push);
         return;
     }
 
@@ -359,29 +573,27 @@ inline void draw_clean_studio_workspace_panels(
         if (!s.pie_playing)
         {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16F, 0.62F, 0.28F, 1.0F));
-            if (ImGui::Button("[>] PLAY(F5)", ImVec2(96.0F, 25.0F)))
+            if (ImGui::Button("[>] PLAY(F5)", ImVec2(96.0F, 21.0F)))
             {
-                s.pie_playing = true;
-                log_push("[studio] Entered Play-In-Editor (F5)");
+                enter_pie_play_mode(s, log_push);
             }
             ImGui::PopStyleColor();
         }
         else
         {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.78F, 0.22F, 0.20F, 1.0F));
-            if (ImGui::Button("[#] STOP(F8)", ImVec2(96.0F, 25.0F)))
+            if (ImGui::Button("[#] STOP(F8)", ImVec2(96.0F, 21.0F)))
             {
-                s.pie_playing = false;
-                reset_physics_to_home_positions(s, log_push);
+                exit_pie_play_mode(s, log_push);
             }
             ImGui::PopStyleColor();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Reset Pos(R)", ImVec2(92.0F, 25.0F)))
+        if (ImGui::Button("Reset Pos(R)", ImVec2(92.0F, 21.0F)))
             reset_physics_to_home_positions(s, log_push);
         ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.72F, 0.34F, 0.14F, 1.0F));
-        if (ImGui::Button("Shoot(B)", ImVec2(-1.0F, 25.0F)))
+        if (ImGui::Button("Shoot(B)", ImVec2(-1.0F, 21.0F)))
             shoot_physics_ball_from_camera(s, log_push);
         ImGui::PopStyleColor();
 
@@ -391,61 +603,82 @@ inline void draw_clean_studio_workspace_panels(
 
         // ---- SECTION A: 1-Click Interactive Scene Templates ----
         ImGui::SeparatorText("Quick Scene Playgrounds (1-Click)");
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16F, 0.56F, 0.32F, 1.0F));
+        if (ImGui::Button("[*] 6.1 Action Platformer", ImVec2(178.0F, 19.5F)))
+        {
+            build_and_save_custom_game_level(s, log_push);
+        }
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20F, 0.46F, 0.78F, 1.0F));
+        if (ImGui::Button("[>] Auto-Play E2E(P)", ImVec2(-1.0F, 19.5F)))
+        {
+            build_and_save_custom_game_level(s, log_push);
+            enter_pie_play_mode(s, log_push);
+            w.autopilot_play_active = true;
+        }
+        ImGui::PopStyleColor();
         if (ImGui::BeginTable("tpl_grid", 2, ImGuiTableFlags_SizingStretchSame))
         {
             ImGui::TableNextColumn();
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14F, 0.45F, 0.36F, 1.0F));
-            if (ImGui::Button("0. Clean Ultra-FPS", ImVec2(-1.0F, 19.5F)))
+            if (ImGui::Button("0. Clean Ultra-FPS", ImVec2(-1.0F, 17.0F)))
             {
                 load_studio_interactive_template(s, 0, log_push);
             }
             ImGui::PopStyleColor();
             ImGui::TableNextColumn();
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20F, 0.42F, 0.32F, 1.0F));
-            if (ImGui::Button("1. Ramp & Tower", ImVec2(-1.0F, 19.5F)))
+            if (ImGui::Button("1. Ramp & Tower", ImVec2(-1.0F, 17.0F)))
                 load_studio_interactive_template(s, 1, log_push);
             ImGui::PopStyleColor();
 
             ImGui::TableNextColumn();
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20F, 0.42F, 0.32F, 1.0F));
-            if (ImGui::Button("2. Domino Chain", ImVec2(-1.0F, 19.5F)))
+            if (ImGui::Button("2. Domino Chain", ImVec2(-1.0F, 17.0F)))
                 load_studio_interactive_template(s, 2, log_push);
             ImGui::PopStyleColor();
             ImGui::TableNextColumn();
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.24F, 0.34F, 0.50F, 1.0F));
-            if (ImGui::Button("4. PBR 5x5 Grid", ImVec2(-1.0F, 19.5F)))
+            if (ImGui::Button("4. PBR 5x5 Grid", ImVec2(-1.0F, 17.0F)))
                 load_studio_interactive_template(s, 4, log_push);
             ImGui::PopStyleColor();
 
             ImGui::TableNextColumn();
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.32F, 0.26F, 0.48F, 1.0F));
-            if (ImGui::Button("5. Sponza Atrium", ImVec2(-1.0F, 19.5F)))
+            if (ImGui::Button("5. Sponza Atrium", ImVec2(-1.0F, 17.0F)))
                 load_studio_interactive_template(s, 5, log_push);
             ImGui::PopStyleColor();
             ImGui::TableNextColumn();
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.42F, 0.30F, 0.18F, 1.0F));
-            if (ImGui::Button("6. Asset & Tex Lab", ImVec2(-1.0F, 19.5F)))
+            if (ImGui::Button("6. Asset & Tex Lab", ImVec2(-1.0F, 17.0F)))
                 load_studio_interactive_template(s, 12, log_push);
             ImGui::PopStyleColor();
             ImGui::EndTable();
         }
 
         // ---- SECTION B: 2-Column Drag & Drop 3D Objects Grid ----
-        ImGui::SeparatorText("1. Drag & Drop 3D Objects -> Viewport");
+        ImGui::SeparatorText("1. Drag & Drop 3D Objects & Gameplay Prefabs");
         struct SpawnCard { const char* id; const char* short_label; const char* tip; };
-        constexpr std::array<SpawnCard, 12> kSpawnCards {{
-            { "Dynamic_Cube",        "[+] Dynamic Cube",   "Dynamic RigidBody Cube + BoxCollider3D" },
-            { "Dynamic_Sphere",      "[+] Bounce Sphere",  "Dynamic Metallic Sphere + SphereCollider3D" },
-            { "Static_Ramp",         "[+] Ramp 25 deg",    "Angled 25 deg OBB Ramp (spheres/boxes slide down!)" },
-            { "Trampoline_Pad",      "[+] Trampoline",     "High-restitution (0.96) Bouncing Pad" },
-            { "Prefab_CrateStack",   "[+] 5x Crate Tower", "Stack of 5 Dynamic Physics Crates" },
-            { "Prefab_DominoRow",    "[+] 6x Domino Row",  "Row of 6 Dynamic Dominoes for chain reactions" },
-            { "Static_Wall",         "[+] Static Wall",    "Immovable Barrier Wall + BoxCollider3D" },
-            { "Cylinder",            "[+] Dyn Cylinder",   "Dynamic Cylinder + CapsuleCollider3D" },
-            { "Cone",                "[+] Dynamic Cone",   "Dynamic Cone + BoxCollider3D" },
-            { "Torus",               "[+] Dynamic Torus",  "Dynamic Torus + BoxCollider3D" },
-            { "Character_CesiumMan", "[+] CesiumMan",      "Skinned Animated Character + Capsule + Controller" },
-            { "World_Sponza",        "[+] Sponza Atrium",  "Crytek Sponza Atrium World (glTF)" },
+        constexpr std::array<SpawnCard, 18> kSpawnCards {{
+            { "Dynamic_Cube",           "[+] Dynamic Cube",   "Dynamic RigidBody Cube + BoxCollider3D" },
+            { "Dynamic_Sphere",         "[+] Bounce Sphere",  "Dynamic Metallic Sphere + SphereCollider3D" },
+            { "Static_Ramp",            "[+] Ramp 25 deg",    "Angled 25 deg OBB Ramp (spheres/boxes slide down!)" },
+            { "Trampoline_Pad",         "[+] Trampoline",     "High-restitution (0.96) Bouncing Pad" },
+            { "Moving_Platform",        "[+] Moving Platf.",  "KinematicMover3D platform that carries riders" },
+            { "Collectible_EnergyCore", "[+] Energy Core",    "TriggerVolume3D collectible (+250 score + light)" },
+            { "JumpPad_Trigger",        "[+] Boost JumpPad",  "TriggerVolume3D vertical launch pad (Vy=12.5)" },
+            { "Hazard_LaserBarrier",    "[+] Laser Hazard",   "Moving TriggerVolume3D hazard (-25 HP on contact)" },
+            { "Patrol_SynthBot",        "[+] AI Patrol Bot",  "Autonomous PatrolWaypoint3D + Hazard AI Drone" },
+            { "Goal_Beacon",            "[+] Victory Beacon", "TriggerVolume3D Level Goal (unlocks after cores)" },
+            { "Prefab_CrateStack",      "[+] 5x Crate Tower", "Stack of 5 Dynamic Physics Crates" },
+            { "Prefab_DominoRow",       "[+] 6x Domino Row",  "Row of 6 Dynamic Dominoes for chain reactions" },
+            { "Static_Wall",            "[+] Static Wall",    "Immovable Barrier Wall + BoxCollider3D" },
+            { "Cylinder",               "[+] Dyn Cylinder",   "Dynamic Cylinder + CapsuleCollider3D" },
+            { "Cone",                   "[+] Dynamic Cone",   "Dynamic Cone + BoxCollider3D" },
+            { "Torus",                  "[+] Dynamic Torus",  "Dynamic Torus + BoxCollider3D" },
+            { "Character_CesiumMan",    "[+] Player Avatar",  "Skinned Animated Character + WASD/Jump Controller" },
+            { "World_Sponza",           "[+] Sponza Atrium",  "Crytek Sponza Atrium World (glTF)" },
         }};
 
         if (ImGui::BeginTable("spawn_grid_2col", 2, ImGuiTableFlags_SizingStretchSame))
@@ -454,7 +687,7 @@ inline void draw_clean_studio_workspace_panels(
             {
                 ImGui::TableNextColumn();
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.17F, 0.28F, 0.40F, 1.0F));
-                if (ImGui::Button(card.short_label, ImVec2(-1.0F, 19.5F)))
+                if (ImGui::Button(card.short_label, ImVec2(-1.0F, 17.0F)))
                 {
                     const cd::math::Vec3f pt = camera_spawn_point(s, 3.8F);
                     (void)spawn_entity_with_modifiers(s, card.id, { pt.x, 0.0F, pt.z }, log_push);
@@ -501,7 +734,7 @@ inline void draw_clean_studio_workspace_panels(
                                 : ImVec4(0.26F, 0.20F, 0.38F, 1.0F));
                 const std::string btn_txt = std::string(active_here ? "[ON] " : "[") +
                     (active_here ? "" : (std::string(mdesc.short_badge) + "] ")) + mdesc.title;
-                if (ImGui::Button(btn_txt.c_str(), ImVec2(-1.0F, 19.5F)))
+                if (ImGui::Button(btn_txt.c_str(), ImVec2(-1.0F, 17.0F)))
                 {
                     if (auto mod = instantiate_modifier_by_class(mdesc.class_id))
                     {
@@ -549,8 +782,15 @@ inline void draw_clean_studio_workspace_panels(
         {
             if (ImGui::BeginTabItem("Hierarchy & Entities"))
             {
-                ImGui::SetNextItemWidth(135.0F);
+                ImGui::SetNextItemWidth(105.0F);
                 ImGui::InputTextWithHint("##filter_nodes", "Filter nodes...", w.hierarchy_filter, sizeof(w.hierarchy_filter));
+                ImGui::SameLine();
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18F, 0.50F, 0.36F, 1.0F));
+                if (ImGui::SmallButton("+ Node (250)"))
+                {
+                    w.focus_bottom_node_catalog_tab = true;
+                }
+                ImGui::PopStyleColor();
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Save"))
                     (void)save_full_studio_scene(s, "studio_scene.cdscene.json", log_push);
@@ -589,6 +829,7 @@ inline void draw_clean_studio_workspace_panels(
                     ImGui::EndDragDropTarget();
                 }
 
+                ImGui::BeginChild("scene_hierarchy_scroll", ImVec2(0.0F, 0.0F), true);
                 int deferred_dup_idx = -1;
                 int deferred_del_idx = -1;
                 for (std::size_t i = 0; i < s.entities.size(); ++i)
@@ -600,7 +841,41 @@ inline void draw_clean_studio_workspace_panels(
                         continue;
                     }
                     ModifierStack& ms = w.entity_modifiers[ent.handle.id];
-                    const bool has_parent = s.scene.parent_of(ent.handle).is_valid();
+                    std::uint32_t hierarchy_depth = 0U;
+                    {
+                        auto cur_p = s.scene.parent_of(ent.handle);
+                        while (cur_p.is_valid() && hierarchy_depth < 8U)
+                        {
+                            ++hierarchy_depth;
+                            cur_p = s.scene.parent_of(cur_p);
+                        }
+                    }
+                    const bool has_parent = (hierarchy_depth > 0U);
+
+                    // Inline Godot-style Visibility [V] and Lock [L] toggle buttons
+                    ImGui::PushStyleColor(ImGuiCol_Button,
+                        ent.visible ? ImVec4(0.16F, 0.36F, 0.24F, 0.85F) : ImVec4(0.28F, 0.16F, 0.16F, 0.85F));
+                    const std::string vis_btn = std::string(ent.visible ? "V" : "-") + "##vis_" + std::to_string(i);
+                    if (ImGui::SmallButton(vis_btn.c_str()))
+                    {
+                        ent.visible = !ent.visible;
+                    }
+                    ImGui::PopStyleColor();
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Toggle Visibility (%s)", ent.visible ? "Visible" : "Hidden");
+
+                    ImGui::SameLine();
+                    ImGui::PushStyleColor(ImGuiCol_Button,
+                        ent.locked ? ImVec4(0.52F, 0.28F, 0.14F, 0.90F) : ImVec4(0.20F, 0.22F, 0.28F, 0.80F));
+                    const std::string lck_btn = std::string(ent.locked ? "L" : "U") + "##lck_" + std::to_string(i);
+                    if (ImGui::SmallButton(lck_btn.c_str()))
+                    {
+                        ent.locked = !ent.locked;
+                    }
+                    ImGui::PopStyleColor();
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Toggle Selection Lock (%s)", ent.locked ? "Locked" : "Unlocked");
+                    ImGui::SameLine();
 
                     std::string badges;
                     if (!ent.visible) badges += "[HIDDEN]";
@@ -612,6 +887,7 @@ inline void draw_clean_studio_workspace_panels(
                     {
                         badges += "[" + std::string(ent_lyr) + "]";
                     }
+                    std::size_t capsule_count = 0;
                     for (const auto& m : ms.items)
                     {
                         if (!m->enabled) continue;
@@ -622,10 +898,25 @@ inline void draw_clean_studio_workspace_panels(
                         else if (m->class_name() == "FogModifier")                 badges += "[Fog]";
                         else if (m->class_name() == "LightEmitterModifier")        badges += "[Light]";
                         else if (m->class_name() == "CharacterControllerModifier") badges += "[CharCtl]";
+                        else if (m->class_name() == "KinematicMoverModifier")      badges += "[MOV]";
+                        else if (m->class_name() == "TriggerVolumeModifier")       badges += "[TRG]";
+                        else if (m->class_name() == "PatrolWaypointModifier")      badges += "[AI]";
+                        else if (m->class_name() == "UniversalNodeModifier")       ++capsule_count;
                     }
+                    if (capsule_count == 1U)
+                        badges += "[CAPSULE]";
+                    else if (capsule_count > 1U)
+                        badges += "[CAPx" + std::to_string(capsule_count) + "]";
 
+                    std::string indent_prefix {};
+                    if (hierarchy_depth > 0U)
+                    {
+                        for (std::uint32_t d = 1U; d < hierarchy_depth; ++d)
+                            indent_prefix += "   ";
+                        indent_prefix += "   |-- ";
+                    }
                     const std::string row_label =
-                        (has_parent ? "   |-- " : "") + ent.name + "  " + badges + "##node_" + std::to_string(i);
+                        indent_prefix + ent.name + "  " + badges + "##node_" + std::to_string(i);
                     const bool is_sel = (s.selected_kind == SelKind::kEntity && std::cmp_equal(s.selected, i));
                     if (ImGui::Selectable(row_label.c_str(), is_sel))
                     {
@@ -748,6 +1039,7 @@ inline void draw_clean_studio_workspace_panels(
                         s.selected_kind = SelKind::kLight;
                     }
                 }
+                ImGui::EndChild();
                 ImGui::EndTabItem();
             }
 
@@ -759,7 +1051,7 @@ inline void draw_clean_studio_workspace_panels(
                     ImGui::TextColored(ImVec4(0.45F, 0.95F, 0.65F, 1.0F),
                                        "Project: %s (%zu Levels)",
                                        proj_nm.c_str(), proj->level_count());
-                    if (ImGui::SmallButton("Restore Master 5-World Project"))
+                    if (ImGui::SmallButton("Restore Master 6-World Project"))
                     {
                         s.cd_world.set_project(nullptr);
                         populate_master_showcase_project(s.cd_world);
@@ -769,10 +1061,11 @@ inline void draw_clean_studio_workspace_panels(
                             if (const auto* lvl0 = np->level(0))
                                 (void)switch_to_project_level(s, lvl0->name(), log_push);
                         }
-                        log_push("[project] Restored ChromodynamicMasterShowcase (5 Worlds, 12 Levels)");
+                        log_push("[project] Restored ChromodynamicMasterShowcase (6 Worlds, 15 Levels)");
                     }
-                    ImGui::Separator();
 
+                    ImGui::BeginChild("worlds_levels_scroll", ImVec2(0.0F, -32.0F), true);
+                    std::string deferred_switch_level {};
                     if (const auto* cur_proj = s.cd_world.project())
                     {
                         const auto worlds = cur_proj->world_names();
@@ -784,25 +1077,29 @@ inline void draw_clean_studio_workspace_panels(
                             {
                                 const auto* lvl = cur_proj->level(li);
                                 if (!lvl) continue;
-                                const std::string lvl_nm { lvl->name() };
+                                const std::string lvl_nm   { lvl->name() };
+                                const std::string wn_str   { lvl->world_name() };
+                                const std::string desc_str { lvl->description() };
                                 const bool is_active = (cur_proj->active_level() == li);
                                 const std::string btn_lbl = (is_active ? "[ACTIVE] " : "   ") + lvl_nm + "##wl_" + lvl_nm;
                                 if (ImGui::Selectable(btn_lbl.c_str(), is_active))
                                 {
-                                    (void)switch_to_project_level(s, lvl->name(), log_push);
+                                    deferred_switch_level = lvl_nm;
                                 }
-                                if (!lvl->description().empty() && ImGui::IsItemHovered())
+                                if (!desc_str.empty() && ImGui::IsItemHovered())
                                 {
-                                    const std::string wn_str { lvl->world_name() };
-                                    const std::string desc_str { lvl->description() };
                                     ImGui::SetTooltip("World: %s\nLevel: %s\n%s",
                                                       wn_str.c_str(), lvl_nm.c_str(), desc_str.c_str());
                                 }
                             }
                         }
                     }
+                    ImGui::EndChild();
+                    if (!deferred_switch_level.empty())
+                    {
+                        (void)switch_to_project_level(s, deferred_switch_level, log_push);
+                    }
 
-                    ImGui::Separator();
                     ImGui::SetNextItemWidth(145.0F);
                     ImGui::InputTextWithHint("##new_lvl_nm", "New level name...", w.new_level_name_buf, sizeof(w.new_level_name_buf));
                     ImGui::SameLine();
@@ -917,7 +1214,7 @@ inline void draw_clean_studio_workspace_panels(
                 {
                     auto& ent = s.entities[static_cast<std::size_t>(s.selected)];
 
-                    // Quick Action Toolbar at top of Inspector
+                    // Quick Action Toolbar pinned at top of Inspector
                     if (ImGui::SmallButton("Focus(F)"))    focus_selected(s, log_push);
                     ImGui::SameLine();
                     if (ImGui::SmallButton("Dup(Ctrl+D)")) duplicate_entity_with_modifiers(s, s.selected, log_push);
@@ -928,6 +1225,7 @@ inline void draw_clean_studio_workspace_panels(
                     if (ImGui::SmallButton("Delete"))      delete_selected(s, log_push);
                     ImGui::PopStyleColor();
 
+                    ImGui::BeginChild("inspector_entity_scroll", ImVec2(0.0F, 0.0F), false);
                     // Editable Entity Name
                     char name_buf[128] {};
                     std::snprintf(name_buf, sizeof(name_buf), "%s", ent.name.c_str());
@@ -1033,13 +1331,15 @@ inline void draw_clean_studio_workspace_panels(
                     {
                         switch (k)
                         {
-                            case PrimitiveKind::kCube:     return "Cube.mesh";
-                            case PrimitiveKind::kSphere:   return "Sphere.mesh";
-                            case PrimitiveKind::kCylinder: return "Cylinder.mesh";
-                            case PrimitiveKind::kCone:     return "Cone.mesh";
-                            case PrimitiveKind::kTorus:    return "Torus.mesh";
-                            case PrimitiveKind::kGltf:     return "CesiumMan.glb";
-                            case PrimitiveKind::kSponza:   return "Sponza.gltf";
+                            case PrimitiveKind::kCube:       return "Cube.mesh";
+                            case PrimitiveKind::kSphere:     return "Sphere.mesh";
+                            case PrimitiveKind::kCylinder:   return "Cylinder.mesh";
+                            case PrimitiveKind::kCone:       return "Cone.mesh";
+                            case PrimitiveKind::kTorus:      return "Torus.mesh";
+                            case PrimitiveKind::kTorusKnot:  return "TorusKnot.mesh";
+                            case PrimitiveKind::kGltf:       return "CesiumMan.glb";
+                            case PrimitiveKind::kSponza:     return "Sponza.gltf";
+                            case PrimitiveKind::kCustomGltf: return "CustomModel.gltf";
                         }
                         return "Cube.mesh";
                     };
@@ -1066,6 +1366,8 @@ inline void draw_clean_studio_workspace_panels(
                     if (ImGui::SmallButton("Cyl"))       (void)assign_mesh_asset_to_entity(s, s.selected, "assets/meshes/Cylinder.mesh", log_push);
                     ImGui::SameLine();
                     if (ImGui::SmallButton("Torus"))     (void)assign_mesh_asset_to_entity(s, s.selected, "assets/meshes/Torus.mesh", log_push);
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Knot"))      (void)assign_mesh_asset_to_entity(s, s.selected, "assets/meshes/TorusKnot.mesh", log_push);
                     ImGui::SameLine();
                     if (ImGui::SmallButton("CesiumMan")) (void)assign_mesh_asset_to_entity(s, s.selected, "assets/samples/Generic/CesiumMan.glb", log_push);
 
@@ -1116,6 +1418,7 @@ inline void draw_clean_studio_workspace_panels(
                         w.entity_modifiers[ent.handle.id],
                         ent.name.c_str(),
                         s, log_push);
+                    ImGui::EndChild();
                 }
                 else if (s.selected_kind == SelKind::kLight &&
                          s.selected >= 0 && std::cmp_less(s.selected, s.lights.size()))
@@ -1140,17 +1443,20 @@ inline void draw_clean_studio_workspace_panels(
 
             if (ImGui::BeginTabItem("World & Fog"))
             {
+                ImGui::BeginChild("inspector_world_scroll", ImVec2(0.0F, 0.0F), false);
                 ImGui::SliderFloat("World Gravity Y (m/s^2)", &w.world_gravity_y, -25.0F, 5.0F, "%.2f");
                 ImGui::Separator();
                 draw_studio_modifier_stack_ui(
                     w.environment_modifiers,
                     "World Environment",
                     s, log_push);
+                ImGui::EndChild();
                 ImGui::EndTabItem();
             }
 
             if (ImGui::BeginTabItem("Lights & Export"))
             {
+                ImGui::BeginChild("inspector_lights_scroll", ImVec2(0.0F, 0.0F), false);
                 ImGui::SeparatorText("Clustered Scene Lights");
                 if (ImGui::Button("+ Add Point Light"))
                 {
@@ -1186,6 +1492,7 @@ inline void draw_clean_studio_workspace_panels(
                 {
                     (void)export_standalone_game_package(s, "build/export/ChromodynamicGame", log_push);
                 }
+                ImGui::EndChild();
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
@@ -1194,10 +1501,15 @@ inline void draw_clean_studio_workspace_panels(
     ImGui::End();
 
     // =========================================================================
-    // PANEL 4 (Bottom): Content Browser & Folder Tree, Console, Showcase Hub, Profiler
+    // PANEL 4 (Bottom): Content Browser & Folder Tree, 250-Node Catalog, Console, Showcase Hub, Profiler
     // =========================================================================
-    if (ImGui::Begin("History"))
+    if (ImGui::Begin("History", nullptr, ImGuiWindowFlags_NoTitleBar))
     {
+        if (w.focus_bottom_node_catalog_tab)
+        {
+            cd::ui::chroma::state().tab_map[ImGui::GetID("BottomDockTabBar")] = 1;
+            w.focus_bottom_node_catalog_tab = false;
+        }
         if (ImGui::BeginTabBar("BottomDockTabBar"))
         {
             if (ImGui::BeginTabItem("Content Browser & Folder Tree"))
@@ -1278,90 +1590,112 @@ inline void draw_clean_studio_workspace_panels(
                     int         kind; // 1 = Mesh, 2 = Texture, 3 = Material, 4 = Scene/Shader
                     std::string badge;
                 };
-                std::vector<AssetEntry> entries {};
-                entries.reserve(32);
+                static std::string             s_cached_folder {};
+                static std::vector<AssetEntry> s_cached_entries {};
 
-                // 1. Always provide core ready-to-assign Meshes & Textures when in "assets", "assets/meshes", or "assets/textures"
-                if (w.current_content_folder == "assets")
+                if (s_cached_folder != w.current_content_folder || s_cached_entries.empty())
                 {
-                    // Row 1: Core 3D Meshes & glTFs
-                    entries.push_back({ "Sphere.mesh",           "assets/meshes/Sphere.mesh",                             1, "[MESH]" });
-                    entries.push_back({ "Cube.mesh",             "assets/meshes/Cube.mesh",                               1, "[MESH]" });
-                    entries.push_back({ "Cylinder.mesh",         "assets/meshes/Cylinder.mesh",                           1, "[MESH]" });
-                    entries.push_back({ "CesiumMan.glb",         "assets/samples/Generic/CesiumMan.glb",                  1, "[GLTF]" });
-                    // Row 2: Core Surface Textures & PBR Maps (immediately visible!)
-                    entries.push_back({ "UV_Checkerboard_2K.tex","assets/textures/UV_Checkerboard_2K.tex",                2, "[TEX]" });
-                    entries.push_back({ "Brick_Wall_PBR.tex",    "assets/samples/Sponza/textures/sponza_brick_a_diff.jpg",2, "[TEX]" });
-                    entries.push_back({ "Carbon_Fiber_Twill.tex","assets/textures/Carbon_Fiber_Twill.tex",                2, "[TEX]" });
-                    entries.push_back({ "Carrara_Marble.tex",    "assets/textures/Carrara_Marble.tex",                    2, "[TEX]" });
-                    // Row 3+: Additional Meshes, Wood Texture & PBR Materials
-                    entries.push_back({ "Oak_Wood_Planks.tex",   "assets/textures/Oak_Wood_Planks.tex",                   2, "[TEX]" });
-                    entries.push_back({ "Torus.mesh",            "assets/meshes/Torus.mesh",                              1, "[MESH]" });
-                    entries.push_back({ "Cone.mesh",             "assets/meshes/Cone.mesh",                               1, "[MESH]" });
-                    entries.push_back({ "Sponza.gltf",           "assets/samples/Sponza/Sponza.gltf",                     1, "[GLTF]" });
-                    entries.push_back({ "Mat_Gold_24K.pbr",      "assets/materials/Mat_Gold_24K.pbr",                     3, "[MAT]" });
-                    entries.push_back({ "Mat_Iridescent_440nm.pbr","assets/materials/Mat_Iridescent_440nm.pbr",           3, "[MAT]" });
-                }
-                else
-                {
-                    if (w.current_content_folder == "assets/meshes" ||
-                        w.current_content_folder == "assets/samples/Generic" || w.current_content_folder == "assets/samples/Sponza")
-                    {
-                        entries.push_back({ "Sphere.mesh",    "assets/meshes/Sphere.mesh",    1, "[MESH]" });
-                        entries.push_back({ "Cube.mesh",      "assets/meshes/Cube.mesh",      1, "[MESH]" });
-                        entries.push_back({ "Cylinder.mesh",  "assets/meshes/Cylinder.mesh",  1, "[MESH]" });
-                        entries.push_back({ "Torus.mesh",     "assets/meshes/Torus.mesh",     1, "[MESH]" });
-                        entries.push_back({ "Cone.mesh",      "assets/meshes/Cone.mesh",      1, "[MESH]" });
-                        entries.push_back({ "Ramp_Wedge.mesh","assets/meshes/Ramp_Wedge.mesh",1, "[MESH]" });
-                        entries.push_back({ "CesiumMan.glb",  "assets/samples/Generic/CesiumMan.glb", 1, "[GLTF]" });
-                        entries.push_back({ "Sponza.gltf",    "assets/samples/Sponza/Sponza.gltf",    1, "[GLTF]" });
-                    }
-                    if (w.current_content_folder == "assets/textures" ||
-                        w.current_content_folder == "assets/samples/Sponza/textures")
-                    {
-                        entries.push_back({ "UV_Checkerboard_2K.tex",  "assets/textures/UV_Checkerboard_2K.tex",  2, "[TEX]" });
-                        entries.push_back({ "Brick_Wall_PBR.tex",      "assets/samples/Sponza/textures/sponza_brick_a_diff.jpg", 2, "[TEX]" });
-                        entries.push_back({ "Carbon_Fiber_Twill.tex",  "assets/textures/Carbon_Fiber_Twill.tex",  2, "[TEX]" });
-                        entries.push_back({ "Carrara_Marble.tex",      "assets/textures/Carrara_Marble.tex",      2, "[TEX]" });
-                        entries.push_back({ "Oak_Wood_Planks.tex",     "assets/textures/Oak_Wood_Planks.tex",     2, "[TEX]" });
-                        entries.push_back({ "Earth_Albedo.png",        "assets/textures/Earth_Albedo.png",        2, "[TEX]" });
-                        entries.push_back({ "Mat_Gold_24K.pbr",        "assets/materials/Mat_Gold_24K.pbr",       3, "[MAT]" });
-                        entries.push_back({ "Mat_Iridescent_440nm.pbr","assets/materials/Mat_Iridescent_440nm.pbr",3,"[MAT]" });
-                    }
-                }
+                    s_cached_folder = w.current_content_folder;
+                    s_cached_entries.clear();
+                    s_cached_entries.reserve(32);
 
-                // 2. Scan real disk directory via std::filesystem::directory_iterator if it exists on disk!
-                std::error_code ec {};
-                if (std::filesystem::exists(w.current_content_folder, ec) &&
-                    std::filesystem::is_directory(w.current_content_folder, ec))
-                {
-                    std::size_t disk_count = 0;
-                    for (const auto& dir_ent : std::filesystem::directory_iterator(w.current_content_folder, ec))
+                    // 1. Always provide core ready-to-assign Meshes & Textures when in "assets", "assets/meshes", or "assets/textures"
+                    if (w.current_content_folder == "assets")
                     {
-                        if (disk_count >= 24U) break;
-                        const auto p = dir_ent.path();
-                        const std::string fname = p.filename().string();
-                        const std::string ext   = p.extension().string();
-                        const std::string full  = p.generic_string();
-                        if (dir_ent.is_directory(ec))
+                        // Row 1: Core 3D Meshes, glTFs & Wavefront OBJs
+                        s_cached_entries.push_back({ "Sphere.mesh",           "assets/meshes/Sphere.mesh",                             1, "[MESH]" });
+                        s_cached_entries.push_back({ "Cube.mesh",             "assets/meshes/Cube.mesh",                               1, "[MESH]" });
+                        s_cached_entries.push_back({ "TorusKnot.mesh",        "assets/meshes/TorusKnot.mesh",                          1, "[MESH]" });
+                        s_cached_entries.push_back({ "Star_Crystal.obj",      "assets/samples/Generic/Star_Crystal.obj",               1, "[OBJ]" });
+                        // Row 2: Core Surface Textures & Real Disk Maps (immediately visible!)
+                        s_cached_entries.push_back({ "UV_Checkerboard_2K.tex","assets/textures/UV_Checkerboard_2K.tex",                2, "[TEX]" });
+                        s_cached_entries.push_back({ "Sponza_Stone_Disk.jpg", "assets/samples/Sponza/7268504077753552595.jpg",         2, "[TEX]" });
+                        s_cached_entries.push_back({ "Carbon_Fiber_Twill.tex","assets/textures/Carbon_Fiber_Twill.tex",                2, "[TEX]" });
+                        s_cached_entries.push_back({ "Carrara_Marble.tex",    "assets/textures/Carrara_Marble.tex",                    2, "[TEX]" });
+                        // Row 3+: Additional Meshes, Real Disk Sponza Maps & PBR Materials
+                        s_cached_entries.push_back({ "Oak_Wood_Planks.tex",   "assets/textures/Oak_Wood_Planks.tex",                   2, "[TEX]" });
+                        s_cached_entries.push_back({ "Sponza_Relief_Disk.jpg","assets/samples/Sponza/8750083169368950601.jpg",         2, "[TEX]" });
+                        s_cached_entries.push_back({ "Sponza_Foliage.png",    "assets/samples/Sponza/5061699253647017043.png",         2, "[TEX]" });
+                        s_cached_entries.push_back({ "CesiumMan.glb",         "assets/samples/CesiumMan.glb",                          1, "[GLTF]" });
+                        s_cached_entries.push_back({ "Torus.mesh",            "assets/meshes/Torus.mesh",                              1, "[MESH]" });
+                        s_cached_entries.push_back({ "Cylinder.mesh",         "assets/meshes/Cylinder.mesh",                           1, "[MESH]" });
+                        s_cached_entries.push_back({ "Cone.mesh",             "assets/meshes/Cone.mesh",                               1, "[MESH]" });
+                        s_cached_entries.push_back({ "triangle.gltf",         "assets/samples/Generic/triangle.gltf",                  1, "[GLTF]" });
+                        s_cached_entries.push_back({ "Sponza.gltf",           "assets/samples/Sponza/Sponza.gltf",                     1, "[GLTF]" });
+                        s_cached_entries.push_back({ "Mat_Gold_24K.pbr",      "assets/materials/Mat_Gold_24K.pbr",                     3, "[MAT]" });
+                        s_cached_entries.push_back({ "Mat_Iridescent_440nm.pbr","assets/materials/Mat_Iridescent_440nm.pbr",           3, "[MAT]" });
+                    }
+                    else
+                    {
+                        if (w.current_content_folder == "assets/meshes" ||
+                            w.current_content_folder == "assets/samples/Generic" || w.current_content_folder == "assets/samples/Sponza")
                         {
-                            entries.push_back({ "[DIR] " + fname, full, 0, "[DIR]" });
-                            ++disk_count;
+                            s_cached_entries.push_back({ "Sphere.mesh",      "assets/meshes/Sphere.mesh",              1, "[MESH]" });
+                            s_cached_entries.push_back({ "Cube.mesh",        "assets/meshes/Cube.mesh",                1, "[MESH]" });
+                            s_cached_entries.push_back({ "Cylinder.mesh",    "assets/meshes/Cylinder.mesh",            1, "[MESH]" });
+                            s_cached_entries.push_back({ "Torus.mesh",       "assets/meshes/Torus.mesh",               1, "[MESH]" });
+                            s_cached_entries.push_back({ "TorusKnot.mesh",   "assets/meshes/TorusKnot.mesh",           1, "[MESH]" });
+                            s_cached_entries.push_back({ "Cone.mesh",        "assets/meshes/Cone.mesh",                1, "[MESH]" });
+                            s_cached_entries.push_back({ "Star_Crystal.obj", "assets/samples/Generic/Star_Crystal.obj",1, "[OBJ]" });
+                            s_cached_entries.push_back({ "triangle.gltf",    "assets/samples/Generic/triangle.gltf",   1, "[GLTF]" });
+                            s_cached_entries.push_back({ "CesiumMan.glb",    "assets/samples/CesiumMan.glb",           1, "[GLTF]" });
+                            s_cached_entries.push_back({ "Sponza.gltf",      "assets/samples/Sponza/Sponza.gltf",      1, "[GLTF]" });
                         }
-                        else if (ext == ".gltf" || ext == ".glb" || ext == ".obj")
+                        if (w.current_content_folder == "assets/textures" ||
+                            w.current_content_folder == "assets/samples/Sponza/textures")
                         {
-                            entries.push_back({ fname, full, 1, "[GLTF]" });
-                            ++disk_count;
+                            s_cached_entries.push_back({ "UV_Checkerboard_2K.tex",  "assets/textures/UV_Checkerboard_2K.tex",          2, "[TEX]" });
+                            s_cached_entries.push_back({ "Sponza_Stone_Disk.jpg",   "assets/samples/Sponza/7268504077753552595.jpg",   2, "[TEX]" });
+                            s_cached_entries.push_back({ "Sponza_Relief_Disk.jpg",  "assets/samples/Sponza/8750083169368950601.jpg",   2, "[TEX]" });
+                            s_cached_entries.push_back({ "Sponza_Foliage.png",      "assets/samples/Sponza/5061699253647017043.png",   2, "[TEX]" });
+                            s_cached_entries.push_back({ "Brick_Wall_PBR.tex",      "assets/textures/Brick_Wall_PBR.tex",              2, "[TEX]" });
+                            s_cached_entries.push_back({ "Carbon_Fiber_Twill.tex",  "assets/textures/Carbon_Fiber_Twill.tex",          2, "[TEX]" });
+                            s_cached_entries.push_back({ "Carrara_Marble.tex",      "assets/textures/Carrara_Marble.tex",              2, "[TEX]" });
+                            s_cached_entries.push_back({ "Oak_Wood_Planks.tex",     "assets/textures/Oak_Wood_Planks.tex",             2, "[TEX]" });
+                            s_cached_entries.push_back({ "Earth_Albedo.png",        "assets/textures/Earth_Albedo.png",                2, "[TEX]" });
+                            s_cached_entries.push_back({ "Mat_Gold_24K.pbr",        "assets/materials/Mat_Gold_24K.pbr",               3, "[MAT]" });
+                            s_cached_entries.push_back({ "Mat_Iridescent_440nm.pbr","assets/materials/Mat_Iridescent_440nm.pbr",       3, "[MAT]" });
                         }
-                        else if (ext == ".jpg" || ext == ".png" || ext == ".ktx2" || ext == ".hdr")
+                    }
+
+                    // 2. Scan real disk directory via std::filesystem::directory_iterator only when folder changes!
+                    std::error_code ec {};
+                    if (std::filesystem::exists(w.current_content_folder, ec) &&
+                        std::filesystem::is_directory(w.current_content_folder, ec))
+                    {
+                        std::size_t disk_count = 0;
+                        for (const auto& dir_ent : std::filesystem::directory_iterator(w.current_content_folder, ec))
                         {
-                            entries.push_back({ fname, full, 2, "[DISK-TEX]" });
-                            ++disk_count;
-                        }
-                        else if (ext == ".glsl" || ext == ".cdproj" || ext == ".md" || ext == ".json")
-                        {
-                            entries.push_back({ fname, full, 4, "[FILE]" });
-                            ++disk_count;
+                            if (disk_count >= 24U) break;
+                            const auto p = dir_ent.path();
+                            const std::string fname = p.filename().string();
+                            const std::string ext   = p.extension().string();
+                            const std::string full  = p.generic_string();
+                            if (dir_ent.is_directory(ec))
+                            {
+                                s_cached_entries.push_back({ "[DIR] " + fname, full, 0, "[DIR]" });
+                                ++disk_count;
+                            }
+                            else if (ext == ".obj")
+                            {
+                                s_cached_entries.push_back({ fname, full, 1, "[OBJ]" });
+                                ++disk_count;
+                            }
+                            else if (ext == ".gltf" || ext == ".glb")
+                            {
+                                s_cached_entries.push_back({ fname, full, 1, "[GLTF]" });
+                                ++disk_count;
+                            }
+                            else if (ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".tga" || ext == ".bmp" || ext == ".ktx2" || ext == ".hdr")
+                            {
+                                s_cached_entries.push_back({ fname, full, 2, "[DISK-TEX]" });
+                                ++disk_count;
+                            }
+                            else if (ext == ".glsl" || ext == ".cdproj" || ext == ".md" || ext == ".json")
+                            {
+                                s_cached_entries.push_back({ fname, full, 4, "[FILE]" });
+                                ++disk_count;
+                            }
                         }
                     }
                 }
@@ -1369,7 +1703,7 @@ inline void draw_clean_studio_workspace_panels(
                 if (ImGui::BeginTable("asset_cards_grid_4col", 4, ImGuiTableFlags_SizingStretchSame))
                 {
                     int card_id = 0;
-                    for (const auto& item : entries)
+                    for (const auto& item : s_cached_entries)
                     {
                         if (w.content_type_filter != 0 && item.kind != 0 && item.kind != w.content_type_filter)
                             continue;
@@ -1449,6 +1783,12 @@ inline void draw_clean_studio_workspace_panels(
                 ImGui::EndTabItem();
             }
 
+            if (ImGui::BeginTabItem("250-Node Catalog (Godot+SOTA)"))
+            {
+                draw_universal_250_node_catalog_panel(s, log_push);
+                ImGui::EndTabItem();
+            }
+
             if (ImGui::BeginTabItem("Console & Physics"))
             {
                 std::size_t dyn_rb_count = 0;
@@ -1465,10 +1805,7 @@ inline void draw_clean_studio_workspace_panels(
                 }
 
                 if (ImGui::SmallButton("Clean Ultra-FPS"))
-                {
-                    w.initialized = false;
-                    init_clean_studio_workspace(s, log_push);
-                }
+                    load_studio_interactive_template(s, 0, log_push);
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Ramp & Tower"))
                     load_studio_interactive_template(s, 1, log_push);
@@ -1507,7 +1844,7 @@ inline void draw_clean_studio_workspace_panels(
                                    w.active_world_name.c_str(),
                                    w.active_level_name.c_str());
                 ImGui::SameLine();
-                if (ImGui::SmallButton("Reset Master 5-World Project"))
+                if (ImGui::SmallButton("Reset Master 6-World Project"))
                 {
                     s.cd_world.set_project(nullptr);
                     populate_master_showcase_project(s.cd_world);

@@ -423,3 +423,35 @@ TEST(SubmitterHostState, ReUploadOverwritesFrameState)
     EXPECT_EQ(sub.index_count(), 6U);
     EXPECT_EQ(sub.command_count(), 1U);
 }
+
+// -----------------------------------------------------------------------------
+// Ring rotation -- 5 consecutive uploads + records cycle cleanly through all
+// 4 host-visible ring buffer slots and wrap around to slot 0 without error.
+// -----------------------------------------------------------------------------
+TEST(SubmitterHostState, RingBufferRotatesAcrossConsecutiveUploadsAndRecords)
+{
+    cd::rhi::NullDevice dev;
+    auto r = rh::Submitter::create(dev, small_info());
+    ASSERT_TRUE(r.has_value());
+    auto& sub = *r;
+
+    for (std::uint32_t frame = 1U; frame <= 5U; ++frame)
+    {
+        ur::DrawBatcher batcher;
+        batcher.begin_frame();
+        for (std::uint32_t q = 0U; q < frame; ++q)
+        {
+            batcher.quad(static_cast<float>(q * 16U), 0.0F, 12.0F, 12.0F, ur::Color::white());
+        }
+        ASSERT_TRUE(sub.upload(batcher));
+        EXPECT_EQ(sub.vertex_count(), frame * 4U);
+        EXPECT_EQ(sub.index_count(), frame * 6U);
+
+        auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
+        ASSERT_NE(cmd, nullptr);
+        cmd->begin();
+        sub.record(*cmd, cd::rhi::Extent2D { 1280U, 720U });
+        cmd->end();
+    }
+}
+

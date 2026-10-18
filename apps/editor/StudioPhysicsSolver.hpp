@@ -85,9 +85,29 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
         s.fx.ddgi_on         = sky->ddgi_gi_enabled;
     }
 
-    // ---- B. Evaluate Per-Entity Modifiers ----
-    const float clamped_dt = std::clamp(dt, 0.001F, 0.033F);
+    // ---- B. Evaluate Per-Entity Modifiers & Godot+ Gameplay Logic ----
+    const float raw_clamped_dt = std::clamp(dt, 0.001F, 0.033F);
+    const float clamped_dt     = (s.pie_playing && w.autopilot_play_active)
+                                     ? std::max(raw_clamped_dt, 1.0F / 50.0F)
+                                     : raw_clamped_dt;
+    const bool sim_active = (s.pie_playing || w.simulate_physics_in_edit || w.step_single_frame);
+    if (sim_active)
+    {
+        w.sim_time_accum += clamped_dt;
+    }
+    if (w.hud_toast_timer > 0.0F)
+    {
+        w.hud_toast_timer = std::max(0.0F, w.hud_toast_timer - clamped_dt);
+    }
+    if (w.autopilot_fire_cooldown > 0.0F)
+    {
+        w.autopilot_fire_cooldown = std::max(0.0F, w.autopilot_fire_cooldown - clamped_dt);
+    }
     bool has_active_dynamic_rb = false;
+    bool fire_autopilot_shot   = false;
+    int  player_entity_idx     = -1;
+    cd::math::Vec3f player_pos { 0.0F, 0.0F, 0.0F };
+    w.player_horiz_speed = 0.0F;
 
     for (std::size_t idx = 0; idx < s.entities.size(); ++idx)
     {
@@ -130,35 +150,436 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
             s.fx.aerial_perspective = efog->aerial_perspective;
         }
 
+        // 1. CharacterControllerModifier (WASD/Arrows + Space in PIE, or Autonomous E2E Autopilot Driver!)
         if (auto* cc = ms.template find<CharacterControllerModifier>(); cc && cc->enabled && ent.visible && !ent.locked)
+        {
+            player_entity_idx = static_cast<int>(idx);
+            if (auto* lt = s.scene.local(ent.handle))
+            {
+                cd::math::Vec3f horiz_move_delta { 0.0F, 0.0F, 0.0F };
+                bool want_jump = false;
+
+                if (!ImGui::GetIO().WantCaptureKeyboard)
+                {
+                    float fwd = 0.0F;
+                    float rgt = 0.0F;
+                    if (ImGui::IsKeyDown(ImGuiKey_UpArrow)    || (s.pie_playing && ImGui::IsKeyDown(ImGuiKey_W))) fwd += 1.0F;
+                    if (ImGui::IsKeyDown(ImGuiKey_DownArrow)  || (s.pie_playing && ImGui::IsKeyDown(ImGuiKey_S))) fwd -= 1.0F;
+                    if (ImGui::IsKeyDown(ImGuiKey_RightArrow) || (s.pie_playing && ImGui::IsKeyDown(ImGuiKey_D))) rgt += 1.0F;
+                    if (ImGui::IsKeyDown(ImGuiKey_LeftArrow)  || (s.pie_playing && ImGui::IsKeyDown(ImGuiKey_A))) rgt -= 1.0F;
+                    if (std::abs(fwd) > 0.01F || std::abs(rgt) > 0.01F)
+                    {
+                        // Human manual input overrides autopilot
+                        w.autopilot_play_active = false;
+                        cd::math::Vec3f cam_fwd = s.cam.target - s.cam.eye;
+                        cam_fwd.y = 0.0F;
+                        const float fl = cd::math::length(cam_fwd);
+                        if (fl > 1e-4F) cam_fwd = cam_fwd * (1.0F / fl);
+                        else cam_fwd = { 0.0F, 0.0F, -1.0F };
+                        const cd::math::Vec3f cam_rgt { -cam_fwd.z, 0.0F, cam_fwd.x };
+                        cd::math::Vec3f wish_dir = cam_fwd * fwd + cam_rgt * rgt;
+                        const float wl = cd::math::length(wish_dir);
+                        if (wl > 1e-4F) wish_dir = wish_dir * (1.0F / wl);
+                        horiz_move_delta = wish_dir * (cc->move_speed * clamped_dt);
+                    }
+                    want_jump = ImGui::IsKeyPressed(ImGuiKey_PageUp, false) ||
+                                (s.pie_playing && ImGui::IsKeyPressed(ImGuiKey_Space, false));
+                }
+
+                // Autonomous Gameplay Driver (`--autopilot` or `[Auto-Play (P)]` UI toggle)
+                if (s.pie_playing && w.autopilot_play_active && !w.level_goal_reached &&
+                    cd::math::length(horiz_move_delta) < 1e-5F)
+                {
+                    // Check if any enemy bot or hazard barrier is active and fire plasma cannonball
+                    for (std::size_t ti = 0; ti < s.entities.size(); ++ti)
+                    {
+                        if (ti == idx || !s.entities[ti].visible) continue;
+                        const auto& t_ms = w.entity_modifiers[s.entities[ti].handle.id];
+                        const auto* pat  = t_ms.template find<PatrolWaypointModifier>();
+                        const auto* trg  = t_ms.template find<TriggerVolumeModifier>();
+                        const bool active_threat = (pat && pat->enabled) ||
+                            (trg && trg->enabled && trg->action == TriggerActionKind::kHazardDamage);
+                        if (active_threat && w.autopilot_fire_cooldown <= 0.0F)
+                        {
+                            fire_autopilot_shot       = true;
+                            w.autopilot_fire_cooldown = 0.42F;
+                            break;
+                        }
+                    }
+
+                    // Select next objective: nearest uncollected CollectibleScore core, then LevelGoalWin beacon
+                    int   best_obj_idx  = -1;
+                    float best_obj_dist = 1e9F;
+                    for (std::size_t ti = 0; ti < s.entities.size(); ++ti)
+                    {
+                        if (ti == idx || !s.entities[ti].visible) continue;
+                        const auto* trg = w.entity_modifiers[s.entities[ti].handle.id].template find<TriggerVolumeModifier>();
+                        if (!trg || !trg->enabled || trg->triggered) continue;
+                        if (trg->action != TriggerActionKind::kCollectibleScore) continue;
+                        if (const auto* t_lt = s.scene.local(s.entities[ti].handle))
+                        {
+                            const float d = cd::math::length(t_lt->value.position - lt->value.position);
+                            if (d < best_obj_dist)
+                            {
+                                best_obj_dist = d;
+                                best_obj_idx  = static_cast<int>(ti);
+                            }
+                        }
+                    }
+                    if (best_obj_idx < 0)
+                    {
+                        for (std::size_t ti = 0; ti < s.entities.size(); ++ti)
+                        {
+                            if (ti == idx || !s.entities[ti].visible) continue;
+                            const auto* trg = w.entity_modifiers[s.entities[ti].handle.id].template find<TriggerVolumeModifier>();
+                            if (!trg || !trg->enabled || trg->triggered) continue;
+                            if (trg->action == TriggerActionKind::kLevelGoalWin)
+                            {
+                                best_obj_idx = static_cast<int>(ti);
+                                break;
+                            }
+                        }
+                    }
+
+                    if (best_obj_idx >= 0)
+                    {
+                        if (const auto* obj_lt = s.scene.local(s.entities[static_cast<std::size_t>(best_obj_idx)].handle))
+                        {
+                            cd::math::Vec3f to_obj = obj_lt->value.position - lt->value.position;
+                            const float dy = to_obj.y;
+                            to_obj.y = 0.0F;
+                            const float hdist = cd::math::length(to_obj);
+                            if (hdist > 0.05F)
+                            {
+                                const cd::math::Vec3f dir = to_obj * (1.0F / hdist);
+                                const float step_len = std::min(hdist, cc->move_speed * 1.15F * clamped_dt);
+                                horiz_move_delta = dir * step_len;
+                            }
+                            if (dy > 0.55F && hdist < 2.2F)
+                            {
+                                want_jump = true;
+                            }
+                        }
+                    }
+                }
+
+                if (cd::math::length(horiz_move_delta) > 1e-5F)
+                {
+                    lt->value.position   = lt->value.position + horiz_move_delta;
+                    w.player_horiz_speed = cd::math::length(horiz_move_delta) / std::max(1e-4F, clamped_dt);
+
+                    // Smoothly rotate character to face movement velocity direction
+                    const float target_yaw_deg = std::atan2(horiz_move_delta.x, horiz_move_delta.z) * 57.2957795F;
+                    float diff = target_yaw_deg - w.player_heading_yaw_deg;
+                    while (diff >  180.0F) diff -= 360.0F;
+                    while (diff < -180.0F) diff += 360.0F;
+                    w.player_heading_yaw_deg += diff * std::clamp(clamped_dt * 14.0F, 0.1F, 1.0F);
+
+                    if (ent.kind == PrimitiveKind::kGltf)
+                    {
+                        const cd::math::Quatf q_yaw     = euler_deg_to_quat({ 0.0F, w.player_heading_yaw_deg, 0.0F });
+                        const cd::math::Quatf q_upright = euler_deg_to_quat({ -90.0F, 0.0F, 0.0F });
+                        lt->value.rotation = cd::math::normalize(q_yaw * q_upright);
+                    }
+                    else
+                    {
+                        lt->value.rotation = euler_deg_to_quat({ 0.0F, w.player_heading_yaw_deg, 0.0F });
+                    }
+                    s.scene.update_transforms();
+                }
+
+                if (want_jump)
+                {
+                    if (auto* rb = ms.template find<RigidBodyModifier>())
+                    {
+                        if (rb->is_grounded || std::abs(rb->linear_velocity.y) < 0.85F)
+                        {
+                            rb->linear_velocity.y = cc->jump_impulse;
+                            rb->is_grounded       = false;
+                        }
+                    }
+                }
+
+                // Respawn player if fallen into abyss (y < -4.0m)
+                if (lt->value.position.y < -4.0F)
+                {
+                    if (auto it = w.home_transforms.find(ent.handle.id); it != w.home_transforms.end())
+                        lt->value = it->second;
+                    else
+                        lt->value.position = { 0.0F, 1.5F, 0.0F };
+                    if (auto* rb = ms.template find<RigidBodyModifier>())
+                        rb->linear_velocity = { 0.0F, 0.0F, 0.0F };
+                    w.player_hp = std::max(15.0F, w.player_hp - 20.0F);
+                    w.hud_toast_message = "Fell out of bounds! Respawned at Checkpoint (-20 HP)";
+                    w.hud_toast_timer   = 2.5F;
+                    s.scene.update_transforms();
+                }
+                player_pos = lt->value.position;
+            }
+        }
+
+        // 2. KinematicMoverModifier (Oscillating/Rotating Platform & Rider Carry)
+        if (auto* km = ms.template find<KinematicMoverModifier>();
+            km && km->enabled && sim_active && ent.visible && !ent.locked &&
+            !(s.gizmo.is_dragging() && std::cmp_equal(s.selected, idx)))
         {
             if (auto* lt = s.scene.local(ent.handle))
             {
-                float fwd = 0.0F;
-                float rgt = 0.0F;
-                if (ImGui::IsKeyDown(ImGuiKey_UpArrow))    fwd += 1.0F;
-                if (ImGui::IsKeyDown(ImGuiKey_DownArrow))  fwd -= 1.0F;
-                if (ImGui::IsKeyDown(ImGuiKey_RightArrow)) rgt += 1.0F;
-                if (ImGui::IsKeyDown(ImGuiKey_LeftArrow))  rgt -= 1.0F;
-                if (std::abs(fwd) > 0.01F || std::abs(rgt) > 0.01F)
+                if (!w.home_transforms.contains(ent.handle.id))
+                    record_entity_home_transform(s, ent.handle);
+                const cd::math::Transformf base_tr = w.home_transforms[ent.handle.id];
+                const float phase = w.sim_time_accum * km->frequency_hz * 6.2831853F + km->phase_offset;
+                const cd::math::Vec3f prev_pos = lt->value.position;
+                if (km->amplitude > 1e-4F)
                 {
-                    cd::math::Vec3f cam_fwd = s.cam.target - s.cam.eye;
-                    cam_fwd.y = 0.0F;
-                    const float fl = cd::math::length(cam_fwd);
-                    if (fl > 1e-4F) cam_fwd = cam_fwd * (1.0F / fl);
-                    else cam_fwd = { 0.0F, 0.0F, -1.0F };
-                    const cd::math::Vec3f cam_rgt { -cam_fwd.z, 0.0F, cam_fwd.x };
-                    lt->value.position = lt->value.position +
-                        (cam_fwd * fwd + cam_rgt * rgt) * (cc->move_speed * clamped_dt);
-                    s.scene.update_transforms();
+                    lt->value.position = base_tr.position + km->move_axis * (km->amplitude * std::sin(phase));
                 }
-                if (ImGui::IsKeyPressed(ImGuiKey_PageUp))
+                km->last_frame_delta = lt->value.position - prev_pos;
+
+                if (std::abs(km->angular_deg_per_sec.x) > 0.01F ||
+                    std::abs(km->angular_deg_per_sec.y) > 0.01F ||
+                    std::abs(km->angular_deg_per_sec.z) > 0.01F)
                 {
-                    if (auto* rb = ms.template find<RigidBodyModifier>())
-                        rb->linear_velocity.y = cc->jump_impulse;
+                    const cd::math::Vec3f base_eul = w.euler_cache_deg[ent.handle.id];
+                    const cd::math::Vec3f cur_eul  = base_eul + km->angular_deg_per_sec * w.sim_time_accum;
+                    lt->value.rotation = euler_deg_to_quat(cur_eul);
+                }
+
+                // Carry standing riders on top of this kinematic platform
+                if (km->carry_riders && cd::math::length(km->last_frame_delta) > 1e-6F)
+                {
+                    const auto* plat_col = ms.find_collider();
+                    const cd::physics::Aabb plat_box = compute_entity_world_aabb(lt->value, plat_col);
+                    for (std::size_t ri = 0; ri < s.entities.size(); ++ri)
+                    {
+                        if (ri == idx) continue;
+                        auto& r_ent = s.entities[ri];
+                        auto& r_ms  = w.entity_modifiers[r_ent.handle.id];
+                        const auto* r_rb = r_ms.template find<RigidBodyModifier>();
+                        if (!r_rb || !r_rb->enabled || r_rb->body_type != cd::physics::BodyType::kDynamic)
+                            continue;
+                        if (auto* r_lt = s.scene.local(r_ent.handle))
+                        {
+                            const auto* r_col = r_ms.find_collider();
+                            const cd::physics::Aabb r_box = compute_entity_world_aabb(r_lt->value, r_col);
+                            const bool horiz_overlap =
+                                (r_box.max.x > plat_box.min.x && r_box.min.x < plat_box.max.x &&
+                                 r_box.max.z > plat_box.min.z && r_box.min.z < plat_box.max.z);
+                            const bool standing_on_top =
+                                (std::abs(r_box.min.y - plat_box.max.y) < 0.28F);
+                            if (horiz_overlap && standing_on_top)
+                            {
+                                r_lt->value.position = r_lt->value.position + km->last_frame_delta;
+                                if (static_cast<int>(ri) == player_entity_idx)
+                                    player_pos = r_lt->value.position;
+                            }
+                        }
+                    }
                 }
             }
         }
+    }
+
+    if (fire_autopilot_shot)
+    {
+        shoot_physics_ball_from_camera(s, log_push);
+        has_active_dynamic_rb = true;
+    }
+
+    // Second pass for AI Waypoint Patrol, Projectile Combat & Gameplay Trigger Volumes
+    if (sim_active)
+    {
+        for (std::size_t idx = 0; idx < s.entities.size(); ++idx)
+        {
+            auto&          ent = s.entities[idx];
+            if (!ent.visible || ent.locked) continue;
+            ModifierStack& ms  = w.entity_modifiers[ent.handle.id];
+            auto*          lt  = s.scene.local(ent.handle);
+            if (!lt) continue;
+
+            auto* pat = ms.template find<PatrolWaypointModifier>();
+            auto* trg = ms.template find<TriggerVolumeModifier>();
+
+            // Projectile-vs-Enemy & Hazard Combat Check (`CannonBall_*` hits)
+            const bool is_combat_target = (std::cmp_not_equal(idx, player_entity_idx)) &&
+                                          ((pat && pat->enabled) ||
+                                           (trg && trg->enabled && trg->action == TriggerActionKind::kHazardDamage));
+            if (is_combat_target)
+            {
+                const cd::math::Vec3f target_center = lt->value.position + cd::math::Vec3f { 0.0F, 0.55F, 0.0F };
+                for (std::size_t bi = 0; bi < s.entities.size(); ++bi)
+                {
+                    if (bi == idx || !s.entities[bi].visible) continue;
+                    if (s.entities[bi].name.find("CannonBall_") != 0) continue;
+                    if (auto* b_lt = s.scene.local(s.entities[bi].handle))
+                    {
+                        if (cd::math::length(b_lt->value.position - target_center) <= 1.25F)
+                        {
+                            if (pat) pat->enabled = false;
+                            if (trg) { trg->enabled = false; trg->triggered = true; }
+                            ent.visible            = false;
+                            s.entities[bi].visible = false;
+                            if (auto* b_rb = w.entity_modifiers[s.entities[bi].handle.id].template find<RigidBodyModifier>())
+                                b_rb->enabled = false;
+                            const int pts = (pat != nullptr) ? 500 : 250;
+                            w.game_score += pts;
+                            ++w.defeated_enemies;
+                            w.hud_toast_message = "Direct Hit! Neutralized " + ent.name + "! (+" +
+                                                  std::to_string(pts) + " Score)";
+                            w.hud_toast_timer   = 3.0F;
+                            log_push("[combat] Neutralized " + ent.name + " with Plasma CannonBall (+" +
+                                     std::to_string(pts) + " Score)");
+                            break;
+                        }
+                    }
+                }
+                if (!ent.visible) continue;
+            }
+
+            // 3. PatrolWaypointModifier (Autonomous AI Patrol & Player Pursuit)
+            if (pat && pat->enabled && std::cmp_not_equal(idx, player_entity_idx) &&
+                !(s.gizmo.is_dragging() && std::cmp_equal(s.selected, idx)))
+            {
+                if (!w.home_transforms.contains(ent.handle.id))
+                    record_entity_home_transform(s, ent.handle);
+                const cd::math::Vec3f home_p = w.home_transforms[ent.handle.id].position;
+                bool chased = false;
+                if (s.pie_playing && pat->chase_player && player_entity_idx >= 0 && std::cmp_not_equal(idx, player_entity_idx))
+                {
+                    cd::math::Vec3f to_p = player_pos - lt->value.position;
+                    to_p.y = 0.0F;
+                    const float dist = cd::math::length(to_p);
+                    if (dist > 0.35F && dist <= pat->chase_range)
+                    {
+                        lt->value.position = lt->value.position + (to_p * (1.0F / dist)) * (pat->move_speed * clamped_dt);
+                        chased = true;
+                    }
+                }
+                if (!chased)
+                {
+                    const int ax = std::clamp(pat->patrol_axis, 0, 2);
+                    float* coord = (ax == 0) ? &lt->value.position.x : ((ax == 1) ? &lt->value.position.y : &lt->value.position.z);
+                    const float home_c = (ax == 0) ? home_p.x : ((ax == 1) ? home_p.y : home_p.z);
+                    *coord += pat->direction_sign * pat->move_speed * clamped_dt;
+                    if (*coord > home_c + pat->patrol_span) { *coord = home_c + pat->patrol_span; pat->direction_sign = -1.0F; }
+                    if (*coord < home_c - pat->patrol_span) { *coord = home_c - pat->patrol_span; pat->direction_sign =  1.0F; }
+                }
+            }
+
+            // 4. TriggerVolumeModifier (Collectible, JumpPad, Hazard, Heal, Goal Beacon)
+            if (trg && trg->enabled)
+            {
+                if (trg->cooldown_sec > 0.0F)
+                    trg->cooldown_sec = std::max(0.0F, trg->cooldown_sec - clamped_dt);
+
+                // Gently spin collectible cores and goal beacons so they look alive!
+                if (trg->action == TriggerActionKind::kCollectibleScore ||
+                    trg->action == TriggerActionKind::kLevelGoalWin)
+                {
+                    const cd::math::Vec3f base_eul = w.euler_cache_deg[ent.handle.id];
+                    lt->value.rotation = euler_deg_to_quat({
+                        base_eul.x,
+                        base_eul.y + w.sim_time_accum * 95.0F,
+                        base_eul.z
+                    });
+                }
+
+                const bool allow_trigger = s.pie_playing || (trg->action == TriggerActionKind::kJumpPadBoost);
+                if (allow_trigger && !trg->triggered && trg->cooldown_sec <= 0.0F && player_entity_idx >= 0 &&
+                    std::cmp_not_equal(idx, player_entity_idx))
+                {
+                    auto& p_ent = s.entities[static_cast<std::size_t>(player_entity_idx)];
+                    auto* p_lt  = s.scene.local(p_ent.handle);
+                    auto* p_rb  = w.entity_modifiers[p_ent.handle.id].template find<RigidBodyModifier>();
+                    if (p_lt)
+                    {
+                        // Measure distance to closest point on player's upright capsule [feet..head]
+                        const cd::math::Vec3f p_closest {
+                            p_lt->value.position.x,
+                            std::clamp(lt->value.position.y, p_lt->value.position.y, p_lt->value.position.y + 1.45F),
+                            p_lt->value.position.z
+                        };
+                        const float dist = cd::math::length(p_closest - lt->value.position);
+                        if (dist <= trg->trigger_radius + 0.28F)
+                        {
+                            switch (trg->action)
+                            {
+                                case TriggerActionKind::kCollectibleScore:
+                                    w.game_score      += static_cast<int>(trg->effect_value);
+                                    w.collected_cores += 1;
+                                    w.player_energy    = std::min(100.0F, w.player_energy + 15.0F);
+                                    w.hud_toast_message = "Collected Energy Core! (+" +
+                                        std::to_string(static_cast<int>(trg->effect_value)) + " Score)";
+                                    w.hud_toast_timer = 2.8F;
+                                    if (trg->one_shot) { trg->triggered = true; ent.visible = false; }
+                                    else trg->cooldown_sec = 1.0F;
+                                    log_push("[gameplay] Collected " + ent.name + " -> Score=" + std::to_string(w.game_score));
+                                    break;
+                                case TriggerActionKind::kJumpPadBoost:
+                                    if (p_rb)
+                                    {
+                                        p_rb->linear_velocity.y = std::max(p_rb->linear_velocity.y, trg->effect_value);
+                                        p_rb->is_grounded       = false;
+                                    }
+                                    trg->cooldown_sec   = 0.35F;
+                                    w.hud_toast_message = "Jump Pad Boost! (+" +
+                                        std::to_string(static_cast<int>(trg->effect_value)) + " m/s Upward)";
+                                    w.hud_toast_timer   = 2.0F;
+                                    break;
+                                case TriggerActionKind::kHazardDamage:
+                                    if (w.player_shield > 0.0F)
+                                    {
+                                        const float absorb = std::min(w.player_shield, trg->effect_value);
+                                        w.player_shield -= absorb;
+                                        w.player_hp     -= (trg->effect_value - absorb);
+                                    }
+                                    else
+                                    {
+                                        w.player_hp -= trg->effect_value;
+                                    }
+                                    if (p_rb)
+                                    {
+                                        p_rb->linear_velocity.y = 5.2F;
+                                        p_rb->linear_velocity.z += 3.5F;
+                                    }
+                                    trg->cooldown_sec   = 0.75F;
+                                    w.hud_toast_message = "Hazard Hit! (-" +
+                                        std::to_string(static_cast<int>(trg->effect_value)) + " Shield/HP)";
+                                    w.hud_toast_timer   = 2.5F;
+                                    if (w.player_hp <= 0.0F)
+                                    {
+                                        w.player_hp     = w.player_max_hp;
+                                        w.player_shield = 100.0F;
+                                        if (auto it = w.home_transforms.find(p_ent.handle.id); it != w.home_transforms.end())
+                                            p_lt->value = it->second;
+                                        w.hud_toast_message = "Shields Depleted - Respawned at Start Beacon!";
+                                    }
+                                    break;
+                                case TriggerActionKind::kHealStation:
+                                    w.player_hp         = std::min(w.player_max_hp, w.player_hp + trg->effect_value);
+                                    w.player_shield     = 100.0F;
+                                    w.hud_toast_message = "Nano-Repair Station: HP & Shield Restored!";
+                                    w.hud_toast_timer   = 2.5F;
+                                    if (trg->one_shot) { trg->triggered = true; ent.visible = false; }
+                                    else trg->cooldown_sec = 2.0F;
+                                    break;
+                                case TriggerActionKind::kLevelGoalWin:
+                                    w.level_goal_reached    = true;
+                                    w.autopilot_play_active = false;
+                                    trg->triggered          = true;
+                                    w.game_score           += static_cast<int>(trg->effect_value);
+                                    w.hud_toast_message     = "VICTORY! Level Goal Reached! Total Score: " +
+                                        std::to_string(w.game_score);
+                                    w.hud_toast_timer       = 8.0F;
+                                    log_push("[gameplay] LEVEL COMPLETE! Final Score: " + std::to_string(w.game_score));
+                                    break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        s.scene.update_transforms();
     }
 
     // ---- C. Step 3D RigidBody Physics & Narrowphase Collision Engine ----
@@ -218,6 +639,7 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
         for (std::size_t i = 0; i < n; ++i)
         {
             auto&          ent_a = s.entities[i];
+            if (s.scene.parent_of(ent_a.handle).is_valid()) continue;
             ModifierStack& ms_a  = w.entity_modifiers[ent_a.handle.id];
             auto*          col_a = ms_a.find_collider();
             if (!col_a) continue;
@@ -228,6 +650,7 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
             for (std::size_t j = i + 1; j < n; ++j)
             {
                 auto&          ent_b = s.entities[j];
+                if (s.scene.parent_of(ent_b.handle).is_valid()) continue;
                 ModifierStack& ms_b  = w.entity_modifiers[ent_b.handle.id];
                 auto*          col_b = ms_b.find_collider();
                 if (!col_b) continue;
@@ -312,6 +735,20 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
             }
         }
     }
+
+    // ---- D. 3rd-Person Spring Follow Camera in PIE Mode (Tracks X, Y, Z + Jumps/Platforms) ----
+    if (s.pie_playing && player_entity_idx >= 0 && std::cmp_less(player_entity_idx, s.entities.size()))
+    {
+        if (const auto* p_lt = s.scene.local(s.entities[static_cast<std::size_t>(player_entity_idx)].handle))
+        {
+            const cd::math::Vec3f cam_rel        = s.cam.eye - s.cam.target;
+            const cd::math::Vec3f desired_target = p_lt->value.position + cd::math::Vec3f { 0.0F, 0.95F, 0.0F };
+            const float           follow_alpha   = std::clamp(clamped_dt * 10.5F, 0.08F, 1.0F);
+            s.cam.target = s.cam.target + (desired_target - s.cam.target) * follow_alpha;
+            s.cam.eye    = s.cam.target + cam_rel;
+        }
+    }
+
     s.scene.update_transforms();
 }
 
@@ -326,10 +763,11 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
     ImVec2&                out_px) noexcept
 {
     const cd::math::Vec4f clip = vp * cd::math::Vec4f { world_pt.x, world_pt.y, world_pt.z, 1.0F };
-    if (clip.w <= 0.05F) return false;
+    if (clip.w <= 0.25F) return false;
     const float inv_w = 1.0F / clip.w;
     const float ndc_x = clip.x * inv_w;
     const float ndc_y = clip.y * inv_w;
+    if (ndc_x < -4.0F || ndc_x > 4.0F || ndc_y < -4.0F || ndc_y > 4.0F) return false;
     out_px.x = (ndc_x * 0.5F + 0.5F) * screen_w;
     out_px.y = (0.5F - ndc_y * 0.5F) * screen_h;
     return true;
@@ -394,6 +832,12 @@ inline void draw_wireframe_obb_3d(
     ImU32                       col,
     float                       thickness = 1.8F) noexcept
 {
+    if (col_mod != nullptr && (col_mod->shape_kind() == ColliderShapeKind::kSphere ||
+                               col_mod->shape_kind() == ColliderShapeKind::kCapsule))
+    {
+        draw_wireframe_aabb_3d(dl, compute_entity_world_aabb(tr, col_mod), vp, sw, sh, col, thickness);
+        return;
+    }
     const cd::math::Quatf q      = cd::math::normalize(tr.rotation);
     const cd::math::Vec3f half   = compute_collider_local_half_extents(tr, col_mod);
     const cd::math::Vec3f offset = (col_mod != nullptr) ? col_mod->center_offset : cd::math::Vec3f { 0.0F, 0.0F, 0.0F };
@@ -527,7 +971,10 @@ template <typename StateT>
     float best_dist = 85.0F;
     for (std::size_t i = 0; i < s.entities.size(); ++i)
     {
-        if (const auto* lt = s.scene.local(s.entities[i].handle))
+        const auto& ent = s.entities[i];
+        if (!ent.visible || ent.locked) continue;
+        if (ent.name.find("Ground_Floor") != std::string::npos) continue;
+        if (const auto* lt = s.scene.local(ent.handle))
         {
             ImVec2 sp {};
             if (project_world_to_screen(lt->value.position, vp, screen_w, screen_h, sp))
@@ -569,21 +1016,41 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
         if (ImGui::IsKeyPressed(ImGuiKey_G, false)) snap_selected_entity_to_ground(s, log_push);
         if (ImGui::IsKeyPressed(ImGuiKey_B, false)) shoot_physics_ball_from_camera(s, log_push);
         if (ImGui::IsKeyPressed(ImGuiKey_R, false)) reset_physics_to_home_positions(s, log_push);
-        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_D) && s.selected >= 0)
-            duplicate_entity_with_modifiers(s, s.selected, log_push);
+        if (!s.mod_ctrl && !s.mod_shift && ImGui::IsKeyPressed(ImGuiKey_P, false))
+        {
+            if (!s.pie_playing) enter_pie_play_mode(s, log_push);
+            w.autopilot_play_active = !w.autopilot_play_active;
+            w.hud_toast_message = w.autopilot_play_active
+                ? "Autopilot AI Driver ENGAGED - Playing Level Automatically!"
+                : "Autopilot AI Driver OFF - Manual WASD/Space Control";
+            w.hud_toast_timer = 3.0F;
+        }
+    }
+    if (s.pie_playing && !ImGui::GetIO().WantCaptureMouse &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::GetMousePos().y > 64.0F)
+    {
+        shoot_physics_ball_from_camera(s, log_push);
     }
 
-    // 1. Draw 3D Collider Wireframes (OBB & Sphere) + Contact Manifolds
+    // 1. Draw 3D Collider Wireframes (OBB & Sphere) + Trigger Volume Sensor Radii + Contact Manifolds
     if (w.show_all_collider_wires && !s.pie_playing)
     {
         for (std::size_t ei = 0; ei < s.entities.size(); ++ei)
         {
             const auto& ent = s.entities[ei];
+            if (!ent.visible) continue;
             if (ent.name.find("Ground_Floor") != std::string::npos && !std::cmp_equal(s.selected, ei))
                 continue;
             const auto* lt  = s.scene.local(ent.handle);
-            const auto* col = w.entity_modifiers[ent.handle.id].find_collider();
-            if (!lt || !col || !col->show_wireframe) continue;
+            if (!lt) continue;
+            auto& ms = w.entity_modifiers[ent.handle.id];
+            if (const auto* trg = ms.template find<TriggerVolumeModifier>(); trg && trg->enabled)
+            {
+                draw_wireframe_sphere_3d(dl, lt->value.position, trg->trigger_radius,
+                                         vp, sw, sh, IM_COL32(255, 200, 45, 200), 1.6F);
+            }
+            const auto* col = ms.find_collider();
+            if (!col || !col->show_wireframe) continue;
 
             const ImU32 wire_color = col->currently_colliding
                 ? IM_COL32(255, 72, 42, 240)
@@ -637,7 +1104,7 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
             if (ImGui::SmallButton("3D Studio"))
             {
                 cst.workspace_mode = 0;
-                s.pie_playing = false;
+                if (s.pie_playing) exit_pie_play_mode(s, log_push);
                 ImGui::PushToast("Workspace Mode", "Switched to 3D Studio Workspace", 0, 2.0F);
             }
             if (cur_mode == 0) ImGui::PopStyleColor();
@@ -720,6 +1187,16 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
             if (ImGui::SmallButton("Shoot(B)"))
                 shoot_physics_ball_from_camera(s, log_push);
             ImGui::PopStyleColor();
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Button, w.autopilot_play_active
+                ? ImVec4(0.18F, 0.72F, 0.42F, 1.0F)
+                : ImVec4(0.24F, 0.44F, 0.72F, 1.0F));
+            if (ImGui::SmallButton(w.autopilot_play_active ? "[AutoPlay: ON(P)]" : "AutoPlay(P)"))
+            {
+                if (!s.pie_playing) enter_pie_play_mode(s, log_push);
+                w.autopilot_play_active = !w.autopilot_play_active;
+            }
+            ImGui::PopStyleColor();
 
             ImGui::SameLine();
             ImGui::TextDisabled("|");
@@ -743,11 +1220,15 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
             ImGui::PopStyleColor();
             if (ImGui::BeginPopup("ribbon_world_level_popup"))
             {
+                const auto* proj = s.cd_world.project();
+                const int num_worlds = proj ? static_cast<int>(proj->world_names().size()) : 6;
+                const int num_levels = proj ? static_cast<int>(proj->level_count()) : 15;
                 ImGui::TextColored(ImVec4(0.45F, 0.90F, 1.0F, 1.0F),
-                                   "Project: %s (5 Worlds, 12 Levels)",
-                                   w.active_project_name.c_str());
+                                   "Project: %s (%d Worlds, %d Levels)",
+                                   w.active_project_name.c_str(), num_worlds, num_levels);
                 ImGui::Separator();
-                if (const auto* proj = s.cd_world.project())
+                std::string deferred_popup_level {};
+                if (proj)
                 {
                     for (const auto& wname : proj->world_names())
                     {
@@ -757,15 +1238,20 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
                             {
                                 const auto* lvl = proj->level(li);
                                 if (!lvl) continue;
-                                const bool is_cur = (w.active_level_name == lvl->name());
-                                if (ImGui::MenuItem(std::string(lvl->name()).c_str(), nullptr, is_cur))
+                                const std::string lvl_nm { lvl->name() };
+                                const bool is_cur = (w.active_level_name == lvl_nm);
+                                if (ImGui::MenuItem(lvl_nm.c_str(), nullptr, is_cur))
                                 {
-                                    (void)switch_to_project_level(s, lvl->name(), log_push);
+                                    deferred_popup_level = lvl_nm;
                                 }
                             }
                             ImGui::EndMenu();
                         }
                     }
+                }
+                if (!deferred_popup_level.empty())
+                {
+                    (void)switch_to_project_level(s, deferred_popup_level, log_push);
                 }
                 ImGui::Separator();
                 if (ImGui::BeginMenu("Load Showcase Project (.cdproj)"))
@@ -907,9 +1393,14 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
     }
 
     // 4. Handle Active Drag-and-Drop of 3D Objects, Modifiers, Meshes & Textures over the 3D Viewport!
-    const bool mouse_in_central_viewport = !ImGui::GetIO().WantCaptureMouse ||
-        w.is_dragging_spawn || w.is_dragging_modifier ||
-        w.is_dragging_asset_mesh || w.is_dragging_asset_texture;
+    const auto& ui_st = cd::ui::chroma::state();
+    const float vp_min_x = sw * ui_st.dock_left_w_ratio;
+    const float vp_max_x = sw * (1.0F - ui_st.dock_right_w_ratio);
+    const float vp_min_y = 60.0F;
+    const float vp_max_y = 60.0F + std::max(100.0F, sh - 60.0F) * (1.0F - ui_st.dock_bottom_h_ratio);
+    const bool mouse_in_central_viewport =
+        (mouse_px.x > vp_min_x && mouse_px.x < vp_max_x &&
+         mouse_px.y > vp_min_y && mouse_px.y < vp_max_y);
 
     if (w.is_dragging_spawn)
     {
@@ -937,7 +1428,7 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
 
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
         {
-            if (mouse_in_central_viewport && mouse_px.x > 280.0F && mouse_px.x < sw - 300.0F)
+            if (mouse_in_central_viewport)
             {
                 (void)spawn_entity_with_modifiers(s, w.drag_spawn_id, w.drag_preview_pos, log_push);
             }
@@ -971,7 +1462,7 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
 
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
         {
-            if (mouse_px.x > 280.0F && mouse_px.x < sw - 300.0F)
+            if (mouse_in_central_viewport)
             {
                 auto mod = instantiate_modifier_by_class(w.drag_modifier_class);
                 if (mod)
@@ -1029,7 +1520,7 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
 
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
         {
-            if (mouse_px.x > 260.0F && mouse_px.x < sw - 280.0F && target_idx >= 0)
+            if (mouse_in_central_viewport && target_idx >= 0)
             {
                 if (w.is_dragging_asset_mesh)
                     (void)assign_mesh_asset_to_entity(s, target_idx, w.drag_asset_mesh_id, log_push);

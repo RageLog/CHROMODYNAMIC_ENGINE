@@ -84,6 +84,7 @@ struct StudioMeshRegistry
     cd::rhi::AccelStructureHandle blas_cone   {};
     cd::rhi::AccelStructureHandle blas_cyl    {};
     cd::rhi::AccelStructureHandle blas_torus  {};
+    cd::rhi::AccelStructureHandle blas_knot   {};
     cd::rhi::AccelStructureHandle blas_floor  {};
     cd::rhi::AccelStructureHandle blas_gltf   {};   ///< Sponza BLAS
     cd::rhi::AccelStructureHandle blas_cesium {};   ///< CesiumMan BLAS
@@ -187,7 +188,7 @@ boot_meshes(cd::rhi::IDevice&                device,
     StudioMeshRegistry out {};
 
     auto cube_cpu       = cd::asset::make_cube();
-    auto sphere_cpu_mut = cd::asset::make_sphere(18, 28);
+    auto sphere_cpu_mut = cd::asset::make_sphere(36, 56);
     auto cone_cpu_mut   = cd::asset::make_cone(32);
     auto cyl_cpu_mut    = cd::asset::make_cylinder(32);
     auto torus_cpu_mut  = cd::asset::make_torus(0.45F, 0.18F, 16, 24);
@@ -349,6 +350,7 @@ boot_meshes(cd::rhi::IDevice&                device,
     out.blas_cone   = build_mesh_blas(device, out.cone,   "blas_cone");
     out.blas_cyl    = build_mesh_blas(device, out.cyl,    "blas_cyl");
     out.blas_torus  = build_mesh_blas(device, out.torus,  "blas_torus");
+    out.blas_knot   = build_mesh_blas(device, out.knot,   "blas_knot");
     out.blas_floor  = build_mesh_blas(device, out.floor,  "blas_floor");
     // phase465-perprim: Sponza gets a MULTI-GEOMETRY BLAS where each
     // glTF prim range becomes its own geometry. Closest-hit rays then
@@ -417,6 +419,7 @@ boot_meshes(cd::rhi::IDevice&                device,
                         out.blas_cone,
                         out.blas_cyl,
                         out.blas_torus,
+                        out.blas_knot,
                         out.blas_floor,
                         out.blas_gltf,
                         out.blas_cesium })
@@ -451,6 +454,7 @@ destroy_meshes(cd::rhi::IDevice& device, StudioMeshRegistry& m) noexcept
                     m.blas_cone,
                     m.blas_cyl,
                     m.blas_torus,
+                    m.blas_knot,
                     m.blas_floor,
                     m.blas_gltf,
                     m.blas_cesium })

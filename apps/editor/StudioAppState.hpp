@@ -123,12 +123,12 @@ inline void update_free_look_camera(FreeLookState&                    fl,
 {
     const bool wasd_active = fl.key_w || fl.key_a || fl.key_s || fl.key_d
                           || fl.key_q || fl.key_e;
+    static bool wasd_was_active_prev = false;
     if (fl.right_drag || wasd_active)
     {
         // On WASD-first frame, sync yaw/pitch/dist from current cam so the
         // position doesn't snap. State is per-call function-local static to
         // match the pre-extract semantics (single global per program run).
-        static bool wasd_was_active_prev = false;
         if (wasd_active && !wasd_was_active_prev && !fl.right_drag)
         {
             const float dxd  = cam.target.x - cam.eye.x;
@@ -138,7 +138,7 @@ inline void update_free_look_camera(FreeLookState&                    fl,
             if (dist > 1e-3F)
             {
                 fl.dist  = dist;
-                fl.pitch = std::asin(dyd / dist);
+                fl.pitch = std::asin(std::clamp(dyd / dist, -1.0F, 1.0F));
                 fl.yaw   = std::atan2(dxd, -dzd);
             }
         }
@@ -197,12 +197,16 @@ inline void update_free_look_camera(FreeLookState&                    fl,
         cam.eye.y = cam.target.y - forward.y * fl.dist;
         cam.eye.z = cam.target.z - forward.z * fl.dist;
     }
-    else if (!fl.manual_mode)
+    else
     {
-        // Only auto-orbit if the user hasn't started manual control.
-        // Once manual mode engages, the camera stays exactly where the
-        // user left it on right-mouse release / WASD release.
-        scene_cam.update(dt);
+        wasd_was_active_prev = false;
+        if (!fl.manual_mode)
+        {
+            // Only auto-orbit if the user hasn't started manual control.
+            // Once manual mode engages, the camera stays exactly where the
+            // user left it on right-mouse release / WASD release.
+            scene_cam.update(dt);
+        }
     }
 }
 

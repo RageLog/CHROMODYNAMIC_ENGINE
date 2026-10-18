@@ -38,6 +38,8 @@
 // =============================================================================
 #pragma once
 
+#include "StudioNodeCatalog.hpp"
+
 #include <cd/asset/json/Json.hpp>
 #include <cd/ecs/Entity.hpp>
 #include <cd/light/ColorTemperature.hpp>
@@ -53,6 +55,7 @@
 #include <cd/physics/Sphere.hpp>
 #include <cd/scene/Scene.hpp>
 #include <cd/scene/Serializer.hpp>
+#include <cd/scene/constructs/ChromaConstructRegistry.hpp>
 #include <cd/ui/ChromaUi.hpp>
 #include <cd/world_container/LayerMember.hpp>
 #include <cd/world_container/ProjectIo.hpp>
@@ -570,6 +573,227 @@ public:
     }
 };
 
+/// Godot+ Kinematic Mover / Oscillating Platform & Rotator Modifier (`MOV`).
+class KinematicMoverModifier final : public IStudioModifier
+{
+public:
+    cd::math::Vec3f move_axis           { 1.0F, 0.0F, 0.0F };
+    float           amplitude           { 3.5F };
+    float           frequency_hz        { 0.35F };
+    float           phase_offset        { 0.0F };
+    cd::math::Vec3f angular_deg_per_sec { 0.0F, 0.0F, 0.0F };
+    bool            carry_riders        { true };
+    cd::math::Vec3f last_frame_delta    { 0.0F, 0.0F, 0.0F };
+
+    [[nodiscard]] std::string_view class_name() const noexcept override { return "KinematicMoverModifier"; }
+    [[nodiscard]] std::string_view display_name() const noexcept override { return "Kinematic Mover / Platform 3D"; }
+    [[nodiscard]] ModifierCategory category() const noexcept override { return ModifierCategory::kGameplay; }
+
+    [[nodiscard]] std::unique_ptr<IStudioModifier> clone() const override
+    {
+        return std::make_unique<KinematicMoverModifier>(*this);
+    }
+
+    void draw_inspector_ui() override
+    {
+        ImGui::DragFloat3("Move Axis", &move_axis.x, 0.05F, -1.0F, 1.0F, "%.2f");
+        ImGui::SliderFloat("Amplitude (m)", &amplitude, 0.0F, 20.0F, "%.2f");
+        ImGui::SliderFloat("Speed (Hz)", &frequency_hz, 0.05F, 3.0F, "%.2f");
+        ImGui::SliderFloat("Phase (rad)", &phase_offset, 0.0F, 6.28F, "%.2f");
+        ImGui::DragFloat3("Spin (deg/s)", &angular_deg_per_sec.x, 1.0F, -360.0F, 360.0F, "%.1f");
+        ImGui::Checkbox("Carry Standing Riders", &carry_riders);
+    }
+};
+
+/// Gameplay Trigger Volume Action Kind.
+enum class TriggerActionKind : int
+{
+    kCollectibleScore = 0,
+    kJumpPadBoost     = 1,
+    kHazardDamage     = 2,
+    kHealStation      = 3,
+    kLevelGoalWin     = 4,
+};
+
+/// Godot+ Gameplay Trigger Volume Sensor Modifier (`TRG`).
+class TriggerVolumeModifier final : public IStudioModifier
+{
+public:
+    TriggerActionKind action         { TriggerActionKind::kCollectibleScore };
+    float             effect_value   { 100.0F };
+    float             trigger_radius { 1.25F };
+    bool              one_shot       { true };
+    bool              triggered      { false };
+    float             cooldown_sec   { 0.0F };
+
+    [[nodiscard]] std::string_view class_name() const noexcept override { return "TriggerVolumeModifier"; }
+    [[nodiscard]] std::string_view display_name() const noexcept override { return "Gameplay Trigger Volume 3D"; }
+    [[nodiscard]] ModifierCategory category() const noexcept override { return ModifierCategory::kGameplay; }
+
+    [[nodiscard]] std::unique_ptr<IStudioModifier> clone() const override
+    {
+        return std::make_unique<TriggerVolumeModifier>(*this);
+    }
+
+    void draw_inspector_ui() override
+    {
+        int act = static_cast<int>(action);
+        const char* act_names[] = {
+            "Collectible (+Score & Consume)",
+            "Jump Pad (+Y Velocity Boost)",
+            "Hazard Zone (-HP Damage)",
+            "Heal / Shield Station (+HP)",
+            "Level Goal Beacon (Victory!)"
+        };
+        if (ImGui::Combo("Trigger Action", &act, act_names, 5))
+            action = static_cast<TriggerActionKind>(act);
+        ImGui::SliderFloat("Effect Value", &effect_value, 1.0F, 500.0F, "%.1f");
+        ImGui::SliderFloat("Trigger Radius (m)", &trigger_radius, 0.25F, 8.0F, "%.2f");
+        ImGui::Checkbox("One-Shot (Consume on Hit)", &one_shot);
+        if (triggered)
+        {
+            ImGui::TextColored(ImVec4(1.0F, 0.78F, 0.22F, 1.0F), "Status: TRIGGERED");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset Trigger"))
+                triggered = false;
+        }
+        else
+        {
+            ImGui::TextColored(ImVec4(0.30F, 0.92F, 0.50F, 1.0F), "Status: ARMED (Ready)");
+        }
+    }
+};
+
+/// Godot+ Autonomous AI Waypoint Patrol / Synth Bot Modifier (`AI`).
+class PatrolWaypointModifier final : public IStudioModifier
+{
+public:
+    int   patrol_axis    { 0 }; // 0=X, 1=Y, 2=Z
+    float patrol_span    { 4.0F };
+    float move_speed     { 2.6F };
+    bool  chase_player   { true };
+    float chase_range    { 6.0F };
+    float direction_sign { 1.0F };
+
+    [[nodiscard]] std::string_view class_name() const noexcept override { return "PatrolWaypointModifier"; }
+    [[nodiscard]] std::string_view display_name() const noexcept override { return "AI Waypoint Patrol / Synth Bot"; }
+    [[nodiscard]] ModifierCategory category() const noexcept override { return ModifierCategory::kGameplay; }
+
+    [[nodiscard]] std::unique_ptr<IStudioModifier> clone() const override
+    {
+        return std::make_unique<PatrolWaypointModifier>(*this);
+    }
+
+    void draw_inspector_ui() override
+    {
+        const char* axes[] = { "X Axis (Left-Right)", "Y Axis (Up-Down)", "Z Axis (Forward-Back)" };
+        ImGui::Combo("Patrol Axis", &patrol_axis, axes, 3);
+        ImGui::SliderFloat("Patrol Span (m)", &patrol_span, 0.5F, 20.0F, "%.1f");
+        ImGui::SliderFloat("Move Speed (m/s)", &move_speed, 0.5F, 12.0F, "%.1f");
+        ImGui::Checkbox("Chase Player in Range", &chase_player);
+        if (chase_player)
+            ImGui::SliderFloat("Detect Range (m)", &chase_range, 1.0F, 20.0F, "%.1f");
+    }
+};
+
+/// Universal 250-Node Catalog Trait Capsule (`Godot 219 + Next-Gen SOTA 31`).
+/// Can be attached to any entity viaSpawnRootElement, NestAsChildElement, or FoldAsInlineCapsule.
+class UniversalNodeModifier final : public IStudioModifier
+{
+public:
+    std::uint16_t       node_id            { 117 }; // Default: CharacterBody3D / AvatarVessel3D
+    std::string         godot_name         { "CharacterBody3D" };
+    std::string         chroma_name        { "AvatarVessel3D" };
+    std::string         video_timestamp    { "17:44" };
+    std::string         ux_upgrade         { "Inline Capsule + SpringArm + GroundSensor + CoyoteJump in 1 Vessel" };
+    std::string         tech_upgrade       { "Jolt 60Hz Sub-Stepped Kinematic Sweep + Slope/Stair Solver" };
+    StudioNodeCategory  catalog_category   { StudioNodeCategory::Node3D };
+    ChromaConstructKind construct_kind     { ChromaConstructKind::Vessel };
+    float               intensity_or_rate  { 1.0F };
+    int                 substeps_or_quality{ 4 };
+    bool                gpu_accelerated    { true };
+    std::string         display_label_buf  { "VSL: AvatarVessel3D (CharacterBody3D)" };
+    std::shared_ptr<cd::scene::IChromaConstruct> construct_instance {
+        cd::scene::instantiate_chroma_construct(117u)
+    };
+
+    UniversalNodeModifier() = default;
+
+    explicit UniversalNodeModifier(const StudioNodeDescriptor& desc)
+        : node_id { desc.id }
+        , godot_name { desc.godot_name }
+        , chroma_name { desc.chroma_name }
+        , video_timestamp { desc.video_timestamp }
+        , ux_upgrade { desc.ux_upgrade }
+        , tech_upgrade { desc.tech_upgrade }
+        , catalog_category { desc.category }
+        , construct_kind { desc.construct_kind }
+        , construct_instance { cd::scene::instantiate_chroma_construct(desc.id) }
+    {
+        rebuild_label();
+    }
+
+    void rebuild_label()
+    {
+        display_label_buf = std::string(chroma_construct_kind_badge(construct_kind)) + ": " +
+                            chroma_name + " (" + godot_name + ")";
+    }
+
+    void bind_descriptor(const StudioNodeDescriptor& desc)
+    {
+        node_id            = desc.id;
+        godot_name         = std::string(desc.godot_name);
+        chroma_name        = std::string(desc.chroma_name);
+        video_timestamp    = std::string(desc.video_timestamp);
+        ux_upgrade         = std::string(desc.ux_upgrade);
+        tech_upgrade       = std::string(desc.tech_upgrade);
+        catalog_category   = desc.category;
+        construct_kind     = desc.construct_kind;
+        construct_instance = cd::scene::instantiate_chroma_construct(desc.id);
+        rebuild_label();
+    }
+
+    [[nodiscard]] std::string_view class_name() const noexcept override { return "UniversalNodeModifier"; }
+    [[nodiscard]] std::string_view display_name() const noexcept override { return display_label_buf; }
+    [[nodiscard]] ModifierCategory category() const noexcept override { return ModifierCategory::kGameplay; }
+
+    [[nodiscard]] std::unique_ptr<IStudioModifier> clone() const override
+    {
+        auto copy = std::make_unique<UniversalNodeModifier>(*this);
+        if (construct_instance)
+        {
+            copy->construct_instance = std::shared_ptr<cd::scene::IChromaConstruct>(
+                construct_instance->clone().release());
+        }
+        return copy;
+    }
+
+    void draw_inspector_ui() override
+    {
+        int id_edit = static_cast<int>(node_id);
+        if (ImGui::SliderInt("Catalog Construct ID", &id_edit, 0, static_cast<int>(kTotalStudioNodeCount - 1)))
+        {
+            if (const auto* desc = find_studio_node_by_id(static_cast<std::uint16_t>(id_edit)))
+                bind_descriptor(*desc);
+        }
+        ImGui::TextColored(ImVec4(0.32F, 0.94F, 0.68F, 1.0F),
+                           "[%s #%u] class cd::scene::%s",
+                           chroma_construct_kind_badge(construct_kind),
+                           static_cast<unsigned>(node_id),
+                           chroma_name.c_str());
+        ImGui::TextColored(ImVec4(0.55F, 0.82F, 1.0F, 1.0F),
+                           "Godot Equivalent: %s | Video @ %s | %s",
+                           godot_name.c_str(),
+                           video_timestamp.c_str(),
+                           studio_node_category_label(catalog_category));
+        ImGui::TextDisabled("UX Upgrade: %s", ux_upgrade.c_str());
+        ImGui::TextDisabled("SOTA Tech:  %s", tech_upgrade.c_str());
+        ImGui::SliderFloat("Capsule Gain / Rate", &intensity_or_rate, 0.05F, 10.0F, "%.2f");
+        ImGui::SliderInt("Solver Substeps / LOD", &substeps_or_quality, 1, 16);
+        ImGui::Checkbox("GPU Compute / SIMD Fast-Path", &gpu_accelerated);
+    }
+};
+
 // =============================================================================
 // 3. Modifier Factory & Registry (Instantiate any Modifier Class by Name)
 // =============================================================================
@@ -582,7 +806,7 @@ struct ModifierDescriptor
     const char*      tooltip     {};
 };
 
-inline constexpr std::array<ModifierDescriptor, 11> kModifierCatalog {{
+inline constexpr std::array<ModifierDescriptor, 15> kModifierCatalog {{
     { "RigidBodyModifier",           "RigidBody 3D",   "RB",   ModifierCategory::kPhysics,
       "Adds mass, gravity (-9.81 m/s^2), velocity, bounce restitution, and friction." },
     { "BoxColliderModifier",         "Box Collider",   "BOX",  ModifierCategory::kCollision,
@@ -597,6 +821,14 @@ inline constexpr std::array<ModifierDescriptor, 11> kModifierCatalog {{
       "Attaches a real-time clustered Point/Spot/Area light to this entity." },
     { "CharacterControllerModifier", "Char Control",   "CHR",  ModifierCategory::kGameplay,
       "Drive this entity with Arrow Keys and jump with physics." },
+    { "KinematicMoverModifier",      "Mover Platform", "MOV",  ModifierCategory::kGameplay,
+      "Oscillating/rotating kinematic platform, elevator, or obstacle that carries riders." },
+    { "TriggerVolumeModifier",       "Trigger Zone",   "TRG",  ModifierCategory::kGameplay,
+      "Overlap sensor for Collectibles (+Score), JumpPads (+Y Boost), Hazards (-HP), or Goal Beacons." },
+    { "PatrolWaypointModifier",      "AI Patrol Bot",  "AI",   ModifierCategory::kGameplay,
+      "Autonomous waypoint patrol & player-pursuit AI behavior for enemies and synth bots." },
+    { "UniversalNodeModifier",       "Chroma Capsule", "CAP+", ModifierCategory::kGameplay,
+      "Any of the 250 Universal Catalog Constructs (219 Godot Equivalents + 31 Next-Gen SOTA) folded inline." },
     { "FogModifier",                 "Volumetric Fog", "FOG",  ModifierCategory::kEnvironment,
       "Instantiates volumetric fog, height falloff, and sun god-ray light shafts." },
     { "BloomLensModifier",           "Bloom & Lens",   "BLM",  ModifierCategory::kEnvironment,
@@ -621,6 +853,10 @@ inline constexpr std::array<ModifierDescriptor, 11> kModifierCatalog {{
     if (class_id == "CapsuleColliderModifier")     return std::make_unique<CapsuleColliderModifier>();
     if (class_id == "LightEmitterModifier")        return std::make_unique<LightEmitterModifier>();
     if (class_id == "CharacterControllerModifier") return std::make_unique<CharacterControllerModifier>();
+    if (class_id == "KinematicMoverModifier")      return std::make_unique<KinematicMoverModifier>();
+    if (class_id == "TriggerVolumeModifier")       return std::make_unique<TriggerVolumeModifier>();
+    if (class_id == "PatrolWaypointModifier")      return std::make_unique<PatrolWaypointModifier>();
+    if (class_id == "UniversalNodeModifier")       return std::make_unique<UniversalNodeModifier>();
     return nullptr;
 }
 
@@ -651,6 +887,41 @@ struct ModifierStack
         return nullptr;
     }
 
+    [[nodiscard]] UniversalNodeModifier* find_universal_node(std::uint16_t node_id) noexcept
+    {
+        for (auto& m : items)
+        {
+            if (auto* u = dynamic_cast<UniversalNodeModifier*>(m.get()))
+            {
+                if (u->node_id == node_id) return u;
+            }
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] const UniversalNodeModifier* find_universal_node(std::uint16_t node_id) const noexcept
+    {
+        for (const auto& m : items)
+        {
+            if (const auto* u = dynamic_cast<const UniversalNodeModifier*>(m.get()))
+            {
+                if (u->node_id == node_id) return u;
+            }
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] std::size_t count_universal_nodes() const noexcept
+    {
+        std::size_t count = 0;
+        for (const auto& m : items)
+        {
+            if (dynamic_cast<const UniversalNodeModifier*>(m.get()) != nullptr)
+                ++count;
+        }
+        return count;
+    }
+
     [[nodiscard]] IColliderModifier* find_collider() noexcept
     {
         for (auto& m : items)
@@ -666,10 +937,19 @@ struct ModifierStack
     IStudioModifier* add_or_replace(std::unique_ptr<IStudioModifier> mod)
     {
         if (!mod) return nullptr;
+        const auto* incoming_un = dynamic_cast<const UniversalNodeModifier*>(mod.get());
         for (auto& existing : items)
         {
             if (existing->class_name() == mod->class_name())
             {
+                if (incoming_un != nullptr)
+                {
+                    const auto* existing_un = dynamic_cast<const UniversalNodeModifier*>(existing.get());
+                    if (existing_un != nullptr && existing_un->node_id != incoming_un->node_id)
+                    {
+                        continue; // Allow multiple distinct UniversalNodeModifier capsules on the same entity
+                    }
+                }
                 existing = std::move(mod);
                 return existing.get();
             }
@@ -737,6 +1017,30 @@ struct StudioRuntimeWorld
     std::string                                           drag_asset_mesh_id        {};
     bool                                                  is_dragging_asset_texture { false };
     std::string                                           drag_asset_texture_id     {};
+    // 250 Element & Vessel Universal Catalog UI state (Godot 219 + Next-Gen SOTA 31)
+    int                                                   node_catalog_category_filter { -1 }; // -1=All 250, 0=Core(21), 1=2D(50), 2=3D(88), 3=UI(60), 4=SOTA(31)
+    char                                                  node_catalog_search[64]      {};
+    std::uint16_t                                         selected_catalog_node_id     { 117 }; // CharacterBody3D / PhysicsCharacterVessel3D
+    bool                                                  focus_bottom_node_catalog_tab{ false };
+    // Live Gameplay & Pre-PIE Snapshot / Restore State
+    float                                                 sim_time_accum            { 0.0F };
+    float                                                 player_hp                 { 100.0F };
+    float                                                 player_max_hp             { 100.0F };
+    float                                                 player_shield             { 100.0F };
+    float                                                 player_energy             { 100.0F };
+    int                                                   game_score                { 0 };
+    int                                                   collected_cores           { 0 };
+    int                                                   total_cores_in_level      { 0 };
+    int                                                   defeated_enemies          { 0 };
+    bool                                                  level_goal_reached        { false };
+    bool                                                  autopilot_play_active     { false };
+    float                                                 autopilot_fire_cooldown   { 0.0F };
+    float                                                 player_heading_yaw_deg    { 90.0F };
+    float                                                 player_horiz_speed        { 0.0F };
+    std::string                                           hud_toast_message         { "Ready - Press F5 or [> PLAY] to test gameplay!" };
+    float                                                 hud_toast_timer           { 0.0F };
+    std::string                                           pre_pie_scene_snapshot    {};
+    std::uint32_t                                         pre_pie_selected_id       { 0 };
 };
 
 inline StudioRuntimeWorld& studio_world() noexcept

@@ -4,8 +4,9 @@
 #include <cd/asset/image/Image.hpp>
 
 // stb_image is single-header; define the implementation macro in exactly
-// this TU. The SYSTEM include in CMakeLists keeps -Werror from tripping
-// on stb's relaxed warning posture.
+// this TU with STB_IMAGE_STATIC so linking both cd_asset_image and
+// cd_asset_gltf (tinygltf) never produces duplicate stbi_* symbols.
+#define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 
 #if defined(_MSC_VER)

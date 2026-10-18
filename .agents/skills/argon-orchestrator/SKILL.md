@@ -58,3 +58,20 @@ Never paste full source files or long terminal outputs into subagent prompts. St
 - **Done Kriteri**: <exact command or file path + expected verdict>
 - **Çıktı Sınırı**: Max 25 satır (Yapıldı | Dosyalar | Kanıt | Verdict | Varsayımlar | Sonraki)
 ```
+
+## 3. End-to-End Deterministic Pipeline Gate (`tools/argon_pipeline_runner.py`)
+
+Before closing any multi-step engineering or UI/rendering wave, execute the timeout-protected Argon Orchestrator verifier:
+
+```powershell
+python tools/argon_pipeline_runner.py --build-dir build/ide-base
+```
+
+This single command deterministically verifies:
+1. **Layer DAG (`layer_dag`)**: Zero `#include` cycle or upward dependency violations across `engine/`.
+2. **Academic Iron-Rule Manifest (`academic_manifest`)**: 100% SHA-256 and `MANIFEST.csv` / `bibliography.bib` integrity.
+3. **CMake Build (`cmake_build`)**: Clean compilation of `cd_app_editor` and affected test targets.
+4. **CTest Suite (`ctest_suite`)**: Zero test failures across `cd_test_ui_widgets`, `cd_test_submitter_host_state`, `cd_test_world_container`, and `cd_test_brdf_multiscatter`.
+5. **Golden Fixture #5 Parity (`golden_fixture_5`)**: Byte-identical `DIFF 0 / 921600 pixels (0.0000%) -- IDENTICAL` ray-traced reflection & PBR parity.
+6. **Full 14-Level GPU Visual Capture (`capture_level_*`)**: GPU frame captures across all 14 levels (`Templates 0..13` across all 6 Worlds) with zlib `IDAT` viewport pixel variance verification, writing structured JSON evidence to `build/ide-base/argon_pipeline_report.json`.
+

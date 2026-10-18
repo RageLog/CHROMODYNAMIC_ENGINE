@@ -410,6 +410,11 @@ enum class IconKind : std::uint8_t
         ++idx;
         cp = (cp << 6U) | (bn & 0x3FU);
     }
+    if (cp == 0x2013U || cp == 0x2014U || cp == 0x2212U) return static_cast<std::uint32_t>('-');
+    if (cp == 0x2018U || cp == 0x2019U) return static_cast<std::uint32_t>('\'');
+    if (cp == 0x201CU || cp == 0x201DU) return static_cast<std::uint32_t>('"');
+    if (cp == 0x2022U) return static_cast<std::uint32_t>('*');
+    if (cp == 0x2192U) return static_cast<std::uint32_t>('>');
     return cp;
 }
 
@@ -655,21 +660,46 @@ public:
     void clear()
     {
         cmds_.clear();
+        clip_stack_.clear();
+    }
+
+    [[nodiscard]] bool is_clipped_out(float x0, float y0, float x1, float y1) const noexcept
+    {
+        if (clip_stack_.empty()) return false;
+        const ImVec4& c = clip_stack_.back();
+        return (c.z <= c.x || c.w <= c.y || x1 <= c.x || x0 >= c.z || y1 <= c.y || y0 >= c.w);
     }
 
     void PushClipRect(ImVec2 mn, ImVec2 mx)
     {
+        if (!clip_stack_.empty())
+        {
+            const ImVec4& p = clip_stack_.back();
+            mn.x = std::max(mn.x, p.x);
+            mn.y = std::max(mn.y, p.y);
+            mx.x = std::min(mx.x, p.z);
+            mx.y = std::min(mx.y, p.w);
+        }
+        clip_stack_.push_back(ImVec4(mn.x, mn.y, mx.x, mx.y));
         RecordedCmd rc {};
         rc.kind = CmdKind::kPushScissor;
-        rc.scissor.x = static_cast<std::int32_t>(std::max(0.0F, mn.x));
-        rc.scissor.y = static_cast<std::int32_t>(std::max(0.0F, mn.y));
-        rc.scissor.width  = static_cast<std::uint32_t>(std::max(1.0F, mx.x - mn.x));
-        rc.scissor.height = static_cast<std::uint32_t>(std::max(1.0F, mx.y - mn.y));
+        if (mx.x > mn.x && mx.y > mn.y)
+        {
+            rc.scissor.x      = static_cast<std::int32_t>(std::max(0.0F, mn.x));
+            rc.scissor.y      = static_cast<std::int32_t>(std::max(0.0F, mn.y));
+            rc.scissor.width  = static_cast<std::uint32_t>(std::max(1.0F, mx.x - mn.x));
+            rc.scissor.height = static_cast<std::uint32_t>(std::max(1.0F, mx.y - mn.y));
+        }
+        else
+        {
+            rc.scissor = { 32000, 32000, 1U, 1U };
+        }
         cmds_.push_back(std::move(rc));
     }
 
     void PopClipRect()
     {
+        if (!clip_stack_.empty()) clip_stack_.pop_back();
         RecordedCmd rc {};
         rc.kind = CmdKind::kPopScissor;
         cmds_.push_back(std::move(rc));
@@ -679,7 +709,7 @@ public:
     {
         const float w = p_max.x - p_min.x;
         const float h = p_max.y - p_min.y;
-        if (w <= 0.0F || h <= 0.0F) return;
+        if (w <= 0.0F || h <= 0.0F || is_clipped_out(p_min.x, p_min.y, p_max.x, p_max.y)) return;
         RecordedCmd rc {};
         if (rounding >= 1.5F)
         {
@@ -704,7 +734,7 @@ public:
     {
         const float w = p_max.x - p_min.x;
         const float h = p_max.y - p_min.y;
-        if (w <= 0.0F || h <= 0.0F) return;
+        if (w <= 0.0F || h <= 0.0F || is_clipped_out(p_min.x, p_min.y, p_max.x, p_max.y)) return;
         if (rounding >= 1.5F)
         {
             RecordedCmd rc {};
@@ -732,7 +762,7 @@ public:
     {
         const float w = p_max.x - p_min.x;
         const float h = p_max.y - p_min.y;
-        if (w <= 0.0F || h <= 0.0F) return;
+        if (w <= 0.0F || h <= 0.0F || is_clipped_out(p_min.x, p_min.y, p_max.x, p_max.y)) return;
         RecordedCmd rc {};
         rc.kind   = CmdKind::kDropShadow;
         rc.x0     = p_min.x;
@@ -749,7 +779,7 @@ public:
     {
         const float w = p_max.x - p_min.x;
         const float h = p_max.y - p_min.y;
-        if (w <= 0.0F || h <= 0.0F) return;
+        if (w <= 0.0F || h <= 0.0F || is_clipped_out(p_min.x, p_min.y, p_max.x, p_max.y)) return;
         RecordedCmd rc {};
         rc.kind = CmdKind::kLinearGrad;
         rc.x0   = p_min.x;
@@ -851,6 +881,7 @@ public:
                  float scale = 1.30F)
     {
         if (text_begin == nullptr || *text_begin == '\0') return;
+        if (is_clipped_out(pos.x, pos.y, pos.x + 800.0F, pos.y + 20.0F)) return;
         RecordedCmd rc {};
         rc.kind   = CmdKind::kText;
         rc.x0     = std::floor(pos.x);
@@ -864,10 +895,24 @@ public:
         cmds_.push_back(std::move(rc));
     }
 
+    void mark_last_cmd_right_aligned(float right_offset = 0.0F) noexcept
+    {
+        if (!cmds_.empty())
+        {
+            cmds_.back().flag   = true;
+            cmds_.back().param1 = right_offset;
+        }
+    }
+
+    [[nodiscard]] std::size_t cmd_count() const noexcept { return cmds_.size(); }
+    [[nodiscard]] std::span<RecordedCmd> mutable_cmds() noexcept { return cmds_; }
+    [[nodiscard]] std::span<const RecordedCmd> cmds() const noexcept { return cmds_; }
+
     void replay_into(cd::ui::renderer::DrawBatcher& batcher) const;
 
 private:
     std::vector<RecordedCmd> cmds_ {};
+    std::vector<ImVec4>      clip_stack_ {};
 };
 
 // =============================================================================
@@ -1000,6 +1045,9 @@ struct WindowLayout
     bool        is_docked { false };
     bool        appearing { false };
     bool        skip { false };
+    std::size_t popup_cmd_start { 0U };
+    std::size_t child_popup_cmd_start { 0U };
+    std::size_t child_popup_cmd_end { 0U };
     ImDrawList* draw_list { nullptr };
 };
 
@@ -1068,7 +1116,7 @@ struct State
     float dock_left_w_ratio { 0.22F };
     float dock_right_w_ratio { 0.25F };
     float dock_bottom_h_ratio { 0.21F };
-    float dock_left_split_ratio { 0.66F };
+    float dock_left_split_ratio { 0.70F };
     int   dragging_splitter { 0 }; // 1=left, 2=right, 3=bottom, 4=left_mid
     bool  dock_node_created { false };
     // Dock slot mapping: 1=LeftTop, 2=LeftBottom, 3=Right, 4=Bottom, 0=Floating
@@ -1376,6 +1424,7 @@ inline void DrawIcon(ImDrawList* dl, IconKind kind, ImVec2 c, float r, ImU32 col
 
 inline void ImDrawList::replay_into(cd::ui::renderer::DrawBatcher& batcher) const
 {
+    int scissor_depth = 0;
     const auto& st    = cd::ui::chroma::state();
     const bool  use_ttf = st.font.is_loaded() && st.font_gpu_ready;
     const auto& table = cd::ui::chroma::glyph_stroke_table();
@@ -1385,9 +1434,14 @@ inline void ImDrawList::replay_into(cd::ui::renderer::DrawBatcher& batcher) cons
         {
             case CmdKind::kPushScissor:
                 (void)batcher.push_scissor(cmd.scissor);
+                ++scissor_depth;
                 break;
             case CmdKind::kPopScissor:
-                batcher.pop_scissor();
+                if (scissor_depth > 0)
+                {
+                    --scissor_depth;
+                    batcher.pop_scissor();
+                }
                 break;
             case CmdKind::kSolidQuad:
                 batcher.quad(cmd.x0, cmd.y0, cmd.x1, cmd.y1,
@@ -1534,6 +1588,11 @@ inline void ImDrawList::replay_into(cd::ui::renderer::DrawBatcher& batcher) cons
                 break;
             }
         }
+    }
+    while (scissor_depth > 0)
+    {
+        --scissor_depth;
+        batcher.pop_scissor();
     }
 }
 
@@ -1888,6 +1947,13 @@ public:
             default:
                 break;
         }
+        if (st.io.MousePos.y <= 28.0F || !st.active_menu_name.empty() || st.open_popup_id != 0U ||
+            st.dragging_window_id != 0U || st.resizing_window_id != 0U || st.dragging_splitter != 0 ||
+            (st.io.MousePos.x >= st.last_popup_min.x && st.io.MousePos.x <= st.last_popup_max.x &&
+             st.io.MousePos.y >= st.last_popup_min.y && st.io.MousePos.y <= st.last_popup_max.y))
+        {
+            st.io.WantCaptureMouse = true;
+        }
     }
 
     void new_frame() noexcept
@@ -1990,6 +2056,7 @@ public:
                 if (!in_pop)
                 {
                     st.open_popup_id = 0U;
+                    st.active_submenu_name.clear();
                 }
             }
         }
@@ -2521,12 +2588,15 @@ inline ImGuiID DockSpace(ImGuiID id, const ImVec2& /*size*/ = ImVec2(0, 0),
     const float lmy = std::round(top_y + work_h * st.dock_left_split_ratio);
 
     const ImVec2 mp = st.io.MousePos;
-    const bool hover_l  = (mp.y >= top_y && std::fabs(mp.x - lx) <= 4.0F);
-    const bool hover_r  = (mp.y >= top_y && std::fabs(mp.x - rx) <= 4.0F);
-    const bool hover_b  = (mp.x >= lx && mp.x <= rx && std::fabs(mp.y - by) <= 4.0F);
-    const bool hover_lm = (mp.x <= lx && std::fabs(mp.y - lmy) <= 4.0F);
+    const bool popup_open = (!st.active_menu_name.empty() || st.open_popup_id != 0U) &&
+                            (mp.x >= st.last_popup_min.x && mp.x <= st.last_popup_max.x &&
+                             mp.y >= st.last_popup_min.y && mp.y <= st.last_popup_max.y);
+    const bool hover_l  = !popup_open && (mp.y >= top_y && std::fabs(mp.x - lx) <= 4.0F);
+    const bool hover_r  = !popup_open && (mp.y >= top_y && std::fabs(mp.x - rx) <= 4.0F);
+    const bool hover_b  = !popup_open && (mp.x >= lx && mp.x <= rx && std::fabs(mp.y - by) <= 4.0F);
+    const bool hover_lm = !popup_open && (mp.x <= lx && std::fabs(mp.y - lmy) <= 4.0F);
 
-    if (st.mouse_clicked[0])
+    if (st.mouse_clicked[0] && !popup_open)
     {
         if (hover_l) st.dragging_splitter = 1;
         else if (hover_r) st.dragging_splitter = 2;
@@ -2556,12 +2626,22 @@ inline ImGuiID DockSpace(ImGuiID id, const ImVec2& /*size*/ = ImVec2(0, 0),
                             (hover_b || st.dragging_splitter == 3) ? grip_hi : grip_col);
     st.win_dl.AddRectFilled(ImVec2(0.0F, lmy - 1.5F), ImVec2(lx, lmy + 1.5F),
                             (hover_lm || st.dragging_splitter == 4) ? grip_hi : grip_col);
+    if (st.workspace_mode == 0)
+    {
+        st.bg_dl.clear();
+        st.bg_dl.PushClipRect(ImVec2(lx + 2.0F, top_y + 2.0F), ImVec2(rx - 2.0F, by - 2.0F));
+    }
     return id;
 }
 
 // -----------------------------------------------------------------------------
 // Window & Child Management
 // -----------------------------------------------------------------------------
+namespace detail
+{
+[[nodiscard]] inline bool is_occluded_by_popup(const cd::ui::chroma::WindowLayout& w) noexcept;
+}  // namespace detail
+
 inline bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags flags = 0)
 {
     auto& st = cd::ui::chroma::state();
@@ -2688,9 +2768,11 @@ inline bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags fla
     }
 
     const ImVec2 mp = st.io.MousePos;
+    const bool popup_occluded = detail::is_occluded_by_popup(wl);
     if (!is_docked && (flags & ImGuiWindowFlags_NoTitleBar) == 0 && (flags & ImGuiWindowFlags_NoMove) == 0)
     {
-        const bool in_title = (mp.x >= wl.pos.x && mp.x <= wl.pos.x + wl.size.x - 44.0F &&
+        const bool in_title = !popup_occluded &&
+                              (mp.x >= wl.pos.x && mp.x <= wl.pos.x + wl.size.x - 44.0F &&
                                mp.y >= wl.pos.y && mp.y <= wl.pos.y + 26.0F);
         if (in_title && st.mouse_clicked[0])
         {
@@ -2706,7 +2788,8 @@ inline bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags fla
     }
     if (!is_docked && (flags & ImGuiWindowFlags_NoResize) == 0 && (flags & ImGuiWindowFlags_AlwaysAutoResize) == 0)
     {
-        const bool in_corner = (mp.x >= wl.pos.x + wl.size.x - 14.0F && mp.x <= wl.pos.x + wl.size.x &&
+        const bool in_corner = !popup_occluded &&
+                               (mp.x >= wl.pos.x + wl.size.x - 14.0F && mp.x <= wl.pos.x + wl.size.x &&
                                 mp.y >= wl.pos.y + wl.size.y - 14.0F && mp.y <= wl.pos.y + wl.size.y);
         if (in_corner && st.mouse_clicked[0])
         {
@@ -2759,7 +2842,8 @@ inline bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags fla
                 const float tw = std::clamp(tsz.x + 20.0F, 72.0F, 180.0F);
                 const ImVec2 t0 { tx_cursor, wl.pos.y };
                 const ImVec2 t1 { tx_cursor + tw, wl.pos.y + title_h };
-                const bool thov = (mp.x >= t0.x && mp.x <= t1.x && mp.y >= t0.y && mp.y <= t1.y);
+                const bool thov = !popup_occluded &&
+                                  (mp.x >= t0.x && mp.x <= t1.x && mp.y >= t0.y && mp.y <= t1.y);
                 const bool tact = (st.active_dock_tab[slot] == tname);
                 if (thov && st.mouse_clicked[0])
                 {
@@ -2801,7 +2885,8 @@ inline bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags fla
         {
             const ImVec2 cb_min { wl.pos.x + wl.size.x - 22.0F, wl.pos.y + 4.0F };
             const ImVec2 cb_max { wl.pos.x + wl.size.x - 4.0F,  wl.pos.y + 22.0F };
-            const bool cb_hov = (mp.x >= cb_min.x && mp.x <= cb_max.x && mp.y >= cb_min.y && mp.y <= cb_max.y);
+            const bool cb_hov = !popup_occluded &&
+                                (mp.x >= cb_min.x && mp.x <= cb_max.x && mp.y >= cb_min.y && mp.y <= cb_max.y);
             if (cb_hov)
             {
                 st.any_item_hovered = true;
@@ -2821,6 +2906,11 @@ inline bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags fla
     st.window_stack.push_back(std::move(wl));
     return true;
 }
+
+namespace detail
+{
+[[nodiscard]] inline bool is_occluded_by_popup(const cd::ui::chroma::WindowLayout& w) noexcept;
+}  // namespace detail
 
 inline void End()
 {
@@ -2852,8 +2942,9 @@ inline void End()
             const float thumb_h  = std::max(18.0F, track_h * ratio);
             const float max_scr  = std::max(1.0F, used_h - wl.size.y);
             const ImVec2 mp = st.io.MousePos;
-            const bool win_hov = (mp.x >= wl.pos.x && mp.x <= wl.pos.x + wl.size.x &&
-                                  mp.y >= wl.pos.y && mp.y <= wl.pos.y + wl.size.y);
+            const bool win_hov = !detail::is_occluded_by_popup(wl) &&
+                                  (mp.x >= wl.pos.x && mp.x <= wl.pos.x + wl.size.x &&
+                                   mp.y >= wl.pos.y && mp.y <= wl.pos.y + wl.size.y);
             if (win_hov && std::fabs(st.io.MouseWheel) > 0.01F)
             {
                 wl.scroll_y = std::clamp(wl.scroll_y - st.io.MouseWheel * 32.0F, 0.0F, max_scr);
@@ -2862,8 +2953,9 @@ inline void End()
             st.scroll_map[win_id] = std::clamp(wl.scroll_y, 0.0F, max_scr);
 
             const ImGuiID sb_id = win_id ^ 0x5C8011BAU;
-            const bool sb_hov = (mp.x >= wl.pos.x + wl.size.x - 10.0F && mp.x <= wl.pos.x + wl.size.x &&
-                                 mp.y >= track_y0 && mp.y <= track_y0 + track_h);
+            const bool sb_hov = !detail::is_occluded_by_popup(wl) &&
+                                 (mp.x >= wl.pos.x + wl.size.x - 10.0F && mp.x <= wl.pos.x + wl.size.x &&
+                                  mp.y >= track_y0 && mp.y <= track_y0 + track_h);
             if (sb_hov && st.mouse_clicked[0]) st.active_id = sb_id;
             if (st.active_id == sb_id && st.mouse_down[0])
             {
@@ -2913,7 +3005,7 @@ inline bool BeginChild(const char* str_id, const ImVec2& size = ImVec2(0, 0), bo
                                  st.theme.window_border, 4.0F, 0, 1.0F);
     }
     child.draw_list->PushClipRect(child.pos, ImVec2(child.pos.x + child.size.x, child.pos.y + child.size.y));
-    child.cursor = ImVec2 { child.pos.x + 6.0F, child.pos.y + 6.0F - child.scroll_y };
+    child.cursor = ImVec2 { child.pos.x + st.style_window_padding.x, child.pos.y + 6.0F - child.scroll_y };
     child.content_max_x = child.cursor.x;
     child.content_max_y = child.cursor.y;
 
@@ -2921,7 +3013,7 @@ inline bool BeginChild(const char* str_id, const ImVec2& size = ImVec2(0, 0), bo
     parent.prev_item_max = ImVec2 { child.pos.x + child.size.x, child.pos.y + child.size.y };
     parent.cursor.y      = child.pos.y + child.size.y + 5.0F;
     parent.content_max_x = std::max(parent.content_max_x, parent.prev_item_max.x);
-    parent.content_max_y = std::max(parent.content_max_y, parent.cursor.y);
+    parent.content_max_y = std::max(parent.content_max_y, parent.prev_item_max.y);
 
     st.window_stack.push_back(std::move(child));
     return true;
@@ -2938,13 +3030,28 @@ inline void EndChild()
     const float used_h  = (child.content_max_y + child.scroll_y) - child.pos.y + 6.0F;
     const float max_scr = std::max(0.0F, used_h - child.size.y);
     const ImVec2 mp = st.io.MousePos;
-    if (max_scr > 0.0F &&
+    if (max_scr > 0.0F && !detail::is_occluded_by_popup(child) &&
         mp.x >= child.pos.x && mp.x <= child.pos.x + child.size.x &&
-        mp.y >= child.pos.y && mp.y <= child.pos.y + child.size.y &&
-        std::fabs(st.io.MouseWheel) > 0.01F)
+        mp.y >= child.pos.y && mp.y <= child.pos.y + child.size.y)
     {
-        child.scroll_y = std::clamp(child.scroll_y - st.io.MouseWheel * 26.0F, 0.0F, max_scr);
-        st.io.MouseWheel = 0.0F;
+        if (std::fabs(st.io.MouseWheel) > 0.01F)
+        {
+            child.scroll_y = std::clamp(child.scroll_y - st.io.MouseWheel * 26.0F, 0.0F, max_scr);
+            st.io.MouseWheel = 0.0F;
+        }
+        else if (st.dnd_active && st.mouse_down[0] && child.size.y > 40.0F)
+        {
+            const float edge_zone = 18.0F;
+            const float dt_step   = std::clamp(st.io.DeltaTime, 1.0F / 240.0F, 0.05F) * 180.0F;
+            if (mp.y < child.pos.y + edge_zone)
+            {
+                child.scroll_y = std::clamp(child.scroll_y - dt_step, 0.0F, max_scr);
+            }
+            else if (mp.y > child.pos.y + child.size.y - edge_zone)
+            {
+                child.scroll_y = std::clamp(child.scroll_y + dt_step, 0.0F, max_scr);
+            }
+        }
     }
     st.scroll_map[cid]  = std::clamp(child.scroll_y, 0.0F, max_scr);
 
@@ -2956,8 +3063,9 @@ inline void EndChild()
         const float thumb_h  = std::max(14.0F, track_h * ratio);
 
         const ImGuiID sb_id = cid ^ 0x5C8011BAU;
-        const bool sb_hov = (mp.x >= child.pos.x + child.size.x - 10.0F && mp.x <= child.pos.x + child.size.x &&
-                             mp.y >= track_y0 && mp.y <= track_y0 + track_h);
+        const bool sb_hov = !detail::is_occluded_by_popup(child) &&
+                             (mp.x >= child.pos.x + child.size.x - 10.0F && mp.x <= child.pos.x + child.size.x &&
+                              mp.y >= track_y0 && mp.y <= track_y0 + track_h);
         if (sb_hov && st.mouse_clicked[0]) st.active_id = sb_id;
         if (st.active_id == sb_id && st.mouse_down[0])
         {
@@ -2991,6 +3099,83 @@ namespace detail
             mp.y >= st.last_popup_min.y && mp.y <= st.last_popup_max.y);
 }
 
+[[nodiscard]] inline bool is_in_window_clip(const cd::ui::chroma::WindowLayout& w, ImVec2 mp) noexcept
+{
+    return (mp.x >= w.pos.x && mp.x <= w.pos.x + w.size.x &&
+            mp.y >= w.pos.y && mp.y <= w.pos.y + w.size.y);
+}
+
+inline void finalize_popup_layout(cd::ui::chroma::WindowLayout& pw, ImVec2 final_sz) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    const float dx = final_sz.x - pw.size.x;
+    pw.size = final_sz;
+    if (!st.in_open_submenu && pw.child_popup_cmd_end == pw.child_popup_cmd_start)
+    {
+        st.last_popup_min = pw.pos;
+        st.last_popup_max = ImVec2(pw.pos.x + final_sz.x, pw.pos.y + final_sz.y);
+    }
+    else
+    {
+        st.last_popup_min = ImVec2(std::min(st.last_popup_min.x, pw.pos.x),
+                                   std::min(st.last_popup_min.y, pw.pos.y));
+        st.last_popup_max = ImVec2(std::max(st.last_popup_max.x, pw.pos.x + final_sz.x),
+                                   std::max(st.last_popup_max.y, pw.pos.y + final_sz.y));
+    }
+    if (pw.draw_list == nullptr) return;
+    auto cmds = pw.draw_list->mutable_cmds();
+    if (pw.popup_cmd_start + 3U > cmds.size()) return;
+    for (std::size_t i = pw.popup_cmd_start; i < pw.popup_cmd_start + 3U; ++i)
+    {
+        cmds[i].x0 = pw.pos.x;
+        cmds[i].y0 = pw.pos.y;
+        cmds[i].x1 = final_sz.x;
+        cmds[i].y1 = final_sz.y;
+    }
+    for (std::size_t i = pw.popup_cmd_start + 3U; i < cmds.size(); ++i)
+    {
+        if (pw.child_popup_cmd_end > pw.child_popup_cmd_start &&
+            i >= pw.child_popup_cmd_start && i < pw.child_popup_cmd_end)
+        {
+            if (dx > 0.5F)
+            {
+                cmds[i].x0 += dx;
+                if (cmds[i].kind == ImDrawList::CmdKind::kTriangle)
+                {
+                    cmds[i].x1 += dx;
+                    cmds[i].x2 += dx;
+                }
+                else if (cmds[i].kind == ImDrawList::CmdKind::kPolyQuad)
+                {
+                    cmds[i].x1 += dx;
+                    cmds[i].x2 += dx;
+                    cmds[i].x3 += dx;
+                }
+            }
+            continue;
+        }
+        auto& rc = cmds[i];
+        if (rc.kind == ImDrawList::CmdKind::kText && rc.flag)
+        {
+            rc.x0 = std::floor(pw.pos.x + final_sz.x - rc.param1);
+        }
+        else if (rc.kind == ImDrawList::CmdKind::kTriangle && rc.flag)
+        {
+            const float cx = pw.pos.x + final_sz.x - 10.0F;
+            rc.x0 = cx - 4.0F * 0.35F;
+            rc.x1 = cx - 4.0F * 0.35F;
+            rc.x2 = cx + 4.0F * 0.45F;
+        }
+        else if ((rc.kind == ImDrawList::CmdKind::kSolidQuad ||
+                  rc.kind == ImDrawList::CmdKind::kRoundedRect) &&
+                 rc.x0 >= pw.pos.x + 3.0F && rc.x0 <= pw.pos.x + 14.0F && rc.x1 > 80.0F)
+        {
+            const float pad_x = rc.x0 - pw.pos.x;
+            rc.x1 = std::max(rc.x1, final_sz.x - pad_x * 2.0F);
+        }
+    }
+}
+
 inline void advance_item(cd::ui::chroma::WindowLayout& w, ImVec2 item_min, ImVec2 item_max) noexcept
 {
     auto& st = cd::ui::chroma::state();
@@ -3008,7 +3193,7 @@ inline void advance_item(cd::ui::chroma::WindowLayout& w, ImVec2 item_min, ImVec
         const auto& ts = st.table_stack.back();
         const float col_w = ts.width / static_cast<float>(ts.cols);
         w.cursor.x = ts.start_x + static_cast<float>(ts.col_idx) * col_w;
-        w.cursor.y = item_max.y + st.style_item_spacing.y;
+        w.cursor.y = item_max.y + 2.0F;
     }
     else
     {
@@ -3016,12 +3201,18 @@ inline void advance_item(cd::ui::chroma::WindowLayout& w, ImVec2 item_min, ImVec
         w.cursor.y = item_max.y + st.style_item_spacing.y;
     }
     w.content_max_y = std::max(w.content_max_y, item_max.y + 2.0F);
+    if (w.is_popup)
+    {
+        w.size.x = std::clamp(std::max(w.size.x, w.content_max_x - w.pos.x + 16.0F), 165.0F, 520.0F);
+        w.size.y = std::clamp(std::max(w.size.y, w.content_max_y - w.pos.y + 8.0F), 32.0F, 480.0F);
+    }
 
     st.last_item_min = item_min;
     st.last_item_max = item_max;
     const ImVec2 mp  = st.io.MousePos;
     const bool occluded = is_occluded_by_popup(w);
-    st.last_item_hovered = !occluded && !w.skip &&
+    const bool in_win   = is_in_window_clip(w, mp);
+    st.last_item_hovered = !occluded && !w.skip && in_win &&
                            (mp.x >= item_min.x && mp.x <= item_max.x &&
                             mp.y >= item_min.y && mp.y <= item_max.y);
     if (st.last_item_hovered) st.any_item_hovered = true;
@@ -3129,6 +3320,11 @@ inline void TextUnformatted(const char* text) noexcept
 {
     auto& st = cd::ui::chroma::state();
     if (st.window_stack.empty() || text == nullptr) return;
+    if (st.dnd_in_source)
+    {
+        st.dnd_label = cd::ui::chroma::visible_label(text);
+        return;
+    }
     auto& w = st.window_stack.back();
     const std::string_view sv { text };
     w.draw_list->AddText(ImVec2(w.cursor.x, w.cursor.y + 2.0F), st.theme.text,
@@ -3384,6 +3580,7 @@ inline bool Selectable(const char* label, bool selected = false,
     w.draw_list->PopClipRect();
     if (hov && st.mouse_clicked[0])
     {
+        st.active_id = id;
         if (w.is_popup)
         {
             st.open_popup_id = 0U;
@@ -3509,6 +3706,7 @@ inline bool SliderFloat(const char* label, float* v, float v_min, float v_max,
 
     const ImVec2 mp = st.io.MousePos;
     const bool bar_hov = !detail::is_occluded_by_popup(w) && !w.skip &&
+                         detail::is_in_window_clip(w, mp) &&
                          (mp.x >= p0.x && mp.x <= bar_max.x && mp.y >= p0.y && mp.y <= bar_max.y);
 
     // Double-click or Ctrl+Click inline numeric entry
@@ -3525,10 +3723,12 @@ inline bool SliderFloat(const char* label, float* v, float v_min, float v_max,
         st.inline_edit_id = id;
         st.inline_edit_select_all = true;
         st.active_id = 0U;
+        st.io.WantCaptureKeyboard = true;
         std::snprintf(st.inline_edit_buf, sizeof(st.inline_edit_buf), "%.3f", static_cast<double>(*v));
     }
     if (st.inline_edit_id == id)
     {
+        st.io.WantCaptureKeyboard = true;
         bool changed = false;
         std::size_t len = std::strlen(st.inline_edit_buf);
         for (char c : st.input_chars)
@@ -3561,16 +3761,25 @@ inline bool SliderFloat(const char* label, float* v, float v_min, float v_max,
                 st.inline_edit_buf[--len] = '\0';
             }
         }
-        if (st.keys_pressed[ImGuiKey_Enter] || (!bar_hov && st.mouse_clicked[0]))
+        if (st.keys_pressed[ImGuiKey_Escape])
+        {
+            st.inline_edit_id = 0U;
+            st.inline_edit_select_all = false;
+            st.io.WantCaptureKeyboard = (st.focused_input_id != 0U);
+        }
+        else if (st.keys_pressed[ImGuiKey_Enter] || (!bar_hov && st.mouse_clicked[0]))
         {
             *v = std::clamp(static_cast<float>(std::atof(st.inline_edit_buf)), v_min, v_max);
             st.inline_edit_id = 0U;
             st.inline_edit_select_all = false;
+            st.io.WantCaptureKeyboard = (st.focused_input_id != 0U);
             changed = true;
         }
         w.draw_list->AddRectFilled(p0, bar_max, st.theme.frame_bg, 4.0F);
         w.draw_list->AddRect(p0, bar_max, st.theme.accent_bright, 4.0F, 0, 1.5F);
+        w.draw_list->PushClipRect(ImVec2(p0.x + 2.0F, p0.y), ImVec2(bar_max.x - 2.0F, bar_max.y));
         w.draw_list->AddText(ImVec2(p0.x + 6.0F, p0.y + 3.0F), st.theme.text, st.inline_edit_buf, nullptr, 1.28F);
+        w.draw_list->PopClipRect();
         if (!vis.empty())
             w.draw_list->AddText(ImVec2(bar_max.x + 6.0F, p0.y + 3.0F), st.theme.text, vis.data(), vis.data() + vis.size(), 1.28F);
         return changed;
@@ -3651,7 +3860,79 @@ inline bool DragFloat(const char* label, float* v, float v_speed = 0.05F,
 
     const ImVec2 mp = st.io.MousePos;
     const bool hov = !detail::is_occluded_by_popup(w) && !w.skip &&
+                     detail::is_in_window_clip(w, mp) &&
                      (mp.x >= p0.x && mp.x <= bmax.x && mp.y >= p0.y && mp.y <= bmax.y);
+
+    // Double-click or Ctrl+Click inline numeric entry
+    if (hov && (st.mouse_double_clicked || (st.mouse_clicked[0] && st.mod_ctrl)))
+    {
+        st.inline_edit_id = id;
+        st.inline_edit_select_all = true;
+        st.active_id = 0U;
+        st.io.WantCaptureKeyboard = true;
+        std::snprintf(st.inline_edit_buf, sizeof(st.inline_edit_buf), "%.3f", static_cast<double>(*v));
+    }
+    if (st.inline_edit_id == id)
+    {
+        st.io.WantCaptureKeyboard = true;
+        bool changed = false;
+        std::size_t len = std::strlen(st.inline_edit_buf);
+        for (char c : st.input_chars)
+        {
+            if ((c >= '0' && c <= '9') || c == '.' || c == '-' || c == '+')
+            {
+                if (st.inline_edit_select_all)
+                {
+                    st.inline_edit_buf[0] = '\0';
+                    len = 0U;
+                    st.inline_edit_select_all = false;
+                }
+                if (len + 1 < sizeof(st.inline_edit_buf))
+                {
+                    st.inline_edit_buf[len++] = c;
+                    st.inline_edit_buf[len]   = '\0';
+                }
+            }
+        }
+        if (st.keys_pressed[ImGuiKey_Backspace] && len > 0)
+        {
+            if (st.inline_edit_select_all)
+            {
+                st.inline_edit_buf[0] = '\0';
+                len = 0U;
+                st.inline_edit_select_all = false;
+            }
+            else
+            {
+                st.inline_edit_buf[--len] = '\0';
+            }
+        }
+        if (st.keys_pressed[ImGuiKey_Escape])
+        {
+            st.inline_edit_id = 0U;
+            st.inline_edit_select_all = false;
+            st.io.WantCaptureKeyboard = (st.focused_input_id != 0U);
+        }
+        else if (st.keys_pressed[ImGuiKey_Enter] || (!hov && st.mouse_clicked[0]))
+        {
+            float nv = static_cast<float>(std::atof(st.inline_edit_buf));
+            if (v_max > v_min) nv = std::clamp(nv, v_min, v_max);
+            *v = nv;
+            st.inline_edit_id = 0U;
+            st.inline_edit_select_all = false;
+            st.io.WantCaptureKeyboard = (st.focused_input_id != 0U);
+            changed = true;
+        }
+        w.draw_list->AddRectFilled(p0, bmax, st.theme.frame_bg, 3.5F);
+        w.draw_list->AddRect(p0, bmax, st.theme.accent_bright, 3.5F, 0, 1.5F);
+        w.draw_list->PushClipRect(ImVec2(p0.x + 2.0F, p0.y), ImVec2(bmax.x - 2.0F, bmax.y));
+        w.draw_list->AddText(ImVec2(p0.x + 6.0F, p0.y + 3.0F), st.theme.text, st.inline_edit_buf, nullptr, 1.28F);
+        w.draw_list->PopClipRect();
+        if (!vis.empty())
+            w.draw_list->AddText(ImVec2(bmax.x + 6.0F, p0.y + 3.0F), st.theme.text, vis.data(), vis.data() + vis.size(), 1.28F);
+        return changed;
+    }
+
     if (hov && st.mouse_clicked[0]) st.active_id = id;
     bool changed = false;
     if (st.active_id == id && st.mouse_down[0] && std::fabs(st.mouse_delta.x) > 0.01F)
@@ -3697,13 +3978,81 @@ inline bool DragFloat3(const char* label, float v[3], float v_speed = 0.05F,
 
     bool changed = false;
     const ImVec2 mp = st.io.MousePos;
-    const bool occluded = detail::is_occluded_by_popup(w) || w.skip;
+    const bool occluded = detail::is_occluded_by_popup(w) || w.skip || !detail::is_in_window_clip(w, mp);
     for (int i = 0; i < 3; ++i)
     {
         const ImVec2 bmin { p0.x + static_cast<float>(i) * (box_w + gap), p0.y };
         const ImVec2 bmax { bmin.x + box_w, p0.y + ih };
         const ImGuiID cid = base_id + static_cast<ImGuiID>(i + 1);
         const bool hov = !occluded && (mp.x >= bmin.x && mp.x <= bmax.x && mp.y >= bmin.y && mp.y <= bmax.y);
+
+        if (hov && (st.mouse_double_clicked || (st.mouse_clicked[0] && st.mod_ctrl)))
+        {
+            st.inline_edit_id = cid;
+            st.inline_edit_select_all = true;
+            st.active_id = 0U;
+            st.io.WantCaptureKeyboard = true;
+            std::snprintf(st.inline_edit_buf, sizeof(st.inline_edit_buf), "%.3f", static_cast<double>(v[i]));
+        }
+        if (st.inline_edit_id == cid)
+        {
+            st.io.WantCaptureKeyboard = true;
+            std::size_t len = std::strlen(st.inline_edit_buf);
+            for (char c : st.input_chars)
+            {
+                if ((c >= '0' && c <= '9') || c == '.' || c == '-' || c == '+')
+                {
+                    if (st.inline_edit_select_all)
+                    {
+                        st.inline_edit_buf[0] = '\0';
+                        len = 0U;
+                        st.inline_edit_select_all = false;
+                    }
+                    if (len + 1 < sizeof(st.inline_edit_buf))
+                    {
+                        st.inline_edit_buf[len++] = c;
+                        st.inline_edit_buf[len]   = '\0';
+                    }
+                }
+            }
+            if (st.keys_pressed[ImGuiKey_Backspace] && len > 0)
+            {
+                if (st.inline_edit_select_all)
+                {
+                    st.inline_edit_buf[0] = '\0';
+                    len = 0U;
+                    st.inline_edit_select_all = false;
+                }
+                else
+                {
+                    st.inline_edit_buf[--len] = '\0';
+                }
+            }
+            if (st.keys_pressed[ImGuiKey_Escape])
+            {
+                st.inline_edit_id = 0U;
+                st.inline_edit_select_all = false;
+                st.io.WantCaptureKeyboard = (st.focused_input_id != 0U);
+            }
+            else if (st.keys_pressed[ImGuiKey_Enter] || (!hov && st.mouse_clicked[0]))
+            {
+                float nv = static_cast<float>(std::atof(st.inline_edit_buf));
+                if (v_max > v_min) nv = std::clamp(nv, v_min, v_max);
+                v[i] = nv;
+                st.inline_edit_id = 0U;
+                st.inline_edit_select_all = false;
+                st.io.WantCaptureKeyboard = (st.focused_input_id != 0U);
+                changed = true;
+            }
+            w.draw_list->AddRectFilled(bmin, bmax, st.theme.frame_bg, 3.0F);
+            w.draw_list->AddRectFilled(bmin, ImVec2(bmin.x + 3.5F, bmax.y), kAxisCols[i]);
+            w.draw_list->AddRect(bmin, bmax, st.theme.accent_bright, 3.0F, 0, 1.5F);
+            w.draw_list->PushClipRect(ImVec2(bmin.x + 4.0F, bmin.y), ImVec2(bmax.x - 2.0F, bmax.y));
+            w.draw_list->AddText(ImVec2(bmin.x + 6.0F, bmin.y + 3.0F), st.theme.text, st.inline_edit_buf, nullptr, 1.25F);
+            w.draw_list->PopClipRect();
+            continue;
+        }
+
         if (hov && st.mouse_clicked[0]) st.active_id = cid;
         if (st.active_id == cid && st.mouse_down[0] && std::fabs(st.mouse_delta.x) > 0.01F)
         {
@@ -3751,7 +4100,7 @@ inline bool ColorEdit3(const char* label, float col[3]) noexcept
 
     bool changed = false;
     const ImVec2 mp = st.io.MousePos;
-    const bool occluded = detail::is_occluded_by_popup(w) || w.skip;
+    const bool occluded = detail::is_occluded_by_popup(w) || w.skip || !detail::is_in_window_clip(w, mp);
     for (int i = 0; i < 3; ++i)
     {
         const ImVec2 bmin { p0.x + static_cast<float>(i) * (box_w + gap), p0.y };
@@ -3780,7 +4129,11 @@ inline bool ColorEdit3(const char* label, float col[3]) noexcept
     if (s_hov && st.mouse_clicked[0])
     {
         st.open_popup_id = (st.open_popup_id == (base_id ^ 0xC010B000U)) ? 0U : (base_id ^ 0xC010B000U);
-        st.open_popup_pos = ImVec2(std::min(smin.x, st.io.DisplaySize.x - 210.0F), smax.y + 4.0F);
+        const float pop_x = std::clamp(smin.x, 6.0F, std::max(6.0F, st.io.DisplaySize.x - 202.0F));
+        const float pop_y = std::clamp(smax.y + 4.0F, 6.0F, std::max(6.0F, st.io.DisplaySize.y - 156.0F));
+        st.open_popup_pos = ImVec2(pop_x, pop_y);
+        st.active_menu_name.clear();
+        st.active_submenu_name.clear();
         st.popup_opened_this_frame = true;
         st.mouse_clicked[0] = false;
     }
@@ -3867,11 +4220,14 @@ inline bool Combo(const char* label, int* current_item, const char* const items[
 
     const ImVec2 mp = st.io.MousePos;
     const bool hov = !detail::is_occluded_by_popup(w) && !w.skip &&
+                     detail::is_in_window_clip(w, mp) &&
                      (mp.x >= p0.x && mp.x <= bmax.x && mp.y >= p0.y && mp.y <= bmax.y);
     if (hov && st.mouse_clicked[0])
     {
         st.open_popup_id  = (st.open_popup_id == id) ? 0U : id;
         st.open_popup_pos = ImVec2 { p0.x, bmax.y + 2.0F };
+        st.active_menu_name.clear();
+        st.active_submenu_name.clear();
         st.popup_opened_this_frame = true;
         st.mouse_clicked[0] = false;
     }
@@ -3902,7 +4258,11 @@ inline bool Combo(const char* label, int* current_item, const char* const items[
             max_item_w = std::max(max_item_w, isz.x + 24.0F);
         }
         const float ph = static_cast<float>(items_count) * 21.0F + 8.0F;
-        const ImVec2 pp0 = st.open_popup_pos;
+        ImVec2 pp0 = st.open_popup_pos;
+        if (st.io.DisplaySize.x > max_item_w + 12.0F)
+            pp0.x = std::clamp(pp0.x, 6.0F, st.io.DisplaySize.x - max_item_w - 6.0F);
+        if (st.io.DisplaySize.y > ph + 12.0F)
+            pp0.y = std::clamp(pp0.y, 6.0F, st.io.DisplaySize.y - ph - 6.0F);
         const ImVec2 pp1 { pp0.x + max_item_w, pp0.y + ph };
         st.last_popup_min = pp0;
         st.last_popup_max = pp1;
@@ -3949,11 +4309,14 @@ inline bool BeginCombo(const char* label, const char* preview_value) noexcept
 
     const ImVec2 mp = st.io.MousePos;
     const bool hov = !detail::is_occluded_by_popup(w) && !w.skip &&
+                     detail::is_in_window_clip(w, mp) &&
                      (mp.x >= p0.x && mp.x <= bmax.x && mp.y >= p0.y && mp.y <= bmax.y);
     if (hov && st.mouse_clicked[0])
     {
         st.open_popup_id  = (st.open_popup_id == id) ? 0U : id;
         st.open_popup_pos = ImVec2 { p0.x, bmax.y + 2.0F };
+        st.active_menu_name.clear();
+        st.active_submenu_name.clear();
         st.popup_opened_this_frame = true;
         st.mouse_clicked[0] = false;
     }
@@ -3977,16 +4340,17 @@ inline bool BeginCombo(const char* label, const char* preview_value) noexcept
     auto sz_it = st.auto_size_map.find(id);
     const ImVec2 pop_sz = (sz_it != st.auto_size_map.end()) ? sz_it->second : ImVec2 { std::max(iw, 165.0F), 150.0F };
     cd::ui::chroma::WindowLayout pw {};
-    pw.name          = std::string("##combo_") + label;
-    pw.id            = id;
-    pw.is_popup      = true;
-    pw.pos           = ImVec2(std::min(st.open_popup_pos.x, st.io.DisplaySize.x - pop_sz.x - 6.0F),
-                              std::min(st.open_popup_pos.y, st.io.DisplaySize.y - pop_sz.y - 6.0F));
-    pw.size          = pop_sz;
-    pw.cursor        = ImVec2 { pw.pos.x + 6.0F, pw.pos.y + 6.0F };
-    pw.content_max_x = pw.cursor.x;
-    pw.content_max_y = pw.cursor.y;
-    pw.draw_list     = &st.popup_dl;
+    pw.name            = std::string("##combo_") + label;
+    pw.id              = id;
+    pw.is_popup        = true;
+    pw.pos             = ImVec2(std::clamp(st.open_popup_pos.x, 6.0F, std::max(6.0F, st.io.DisplaySize.x - pop_sz.x - 6.0F)),
+                                std::clamp(st.open_popup_pos.y, 6.0F, std::max(6.0F, st.io.DisplaySize.y - pop_sz.y - 6.0F)));
+    pw.size            = pop_sz;
+    pw.cursor          = ImVec2 { pw.pos.x + 6.0F, pw.pos.y + 6.0F };
+    pw.content_max_x   = pw.cursor.x;
+    pw.content_max_y   = pw.cursor.y;
+    pw.popup_cmd_start = st.popup_dl.cmd_count();
+    pw.draw_list       = &st.popup_dl;
     st.last_popup_min = pw.pos;
     st.last_popup_max = ImVec2(pw.pos.x + pw.size.x, pw.pos.y + pw.size.y);
     st.popup_dl.AddShadow(pw.pos, st.last_popup_max, 10.0F, 2.0F, IM_COL32(0, 0, 0, 180));
@@ -4004,8 +4368,10 @@ inline void EndCombo() noexcept
         auto pw = std::move(st.window_stack.back());
         st.window_stack.pop_back();
         const ImGuiID id = (pw.id != 0U) ? pw.id : GetID(pw.name.c_str());
-        st.auto_size_map[id] = ImVec2(std::clamp(pw.content_max_x - pw.pos.x + 14.0F, 165.0F, 420.0F),
-                                      std::clamp(pw.content_max_y - pw.pos.y + 8.0F, 34.0F, 460.0F));
+        const ImVec2 final_sz(std::clamp(pw.content_max_x - pw.pos.x + 14.0F, 165.0F, 420.0F),
+                              std::clamp(pw.content_max_y - pw.pos.y + 8.0F, 34.0F, 460.0F));
+        st.auto_size_map[id] = final_sz;
+        detail::finalize_popup_layout(pw, final_sz);
     }
 }
 
@@ -4040,6 +4406,11 @@ inline bool InputTextWithHint(const char* label, const char* hint, char* buf, st
     {
         st.focused_input_id = 0U;
     }
+    if (st.focused_input_id == id && st.keys_pressed[ImGuiKey_Escape])
+    {
+        st.focused_input_id = 0U;
+    }
+    st.io.WantCaptureKeyboard = (st.focused_input_id != 0U || st.inline_edit_id != 0U);
 
     bool changed = false;
     const bool focused = (st.focused_input_id == id);
@@ -4157,7 +4528,9 @@ inline bool BeginTabItem(const char* label) noexcept
     tpos.x = tmax.x + 3.0F;
 
     const ImVec2 mp = st.io.MousePos;
-    const bool hov = (mp.x >= tmin.x && mp.x <= tmax.x && mp.y >= tmin.y && mp.y <= tmax.y);
+    const bool hov = !detail::is_occluded_by_popup(w) && !w.skip &&
+                     detail::is_in_window_clip(w, mp) &&
+                     (mp.x >= tmin.x && mp.x <= tmax.x && mp.y >= tmin.y && mp.y <= tmax.y);
     if (hov)
     {
         st.any_item_hovered = true;
@@ -4222,6 +4595,7 @@ inline void EndTable() noexcept
     st.table_stack.pop_back();
     w.cursor.x = ts.start_x;
     w.cursor.y = std::max(ts.row_max_y, w.cursor.y) + 3.0F;
+    w.content_max_y = std::max(w.content_max_y, w.cursor.y);
 }
 
 // -----------------------------------------------------------------------------
@@ -4264,10 +4638,10 @@ inline bool BeginMenu(const char* label, bool enabled = true) noexcept
     const auto vis = cd::ui::chroma::visible_label(label);
     const ImVec2 tsz = cd::ui::chroma::measure_text_px(vis, 1.28F);
 
-    // Nested submenu inside an already-open top-level menu
-    if (st.in_open_menu && !st.in_open_submenu)
+    // Nested submenu inside an already-open top-level menu OR inside any Popup (BeginPopup / BeginPopupContextItem)
+    if ((st.in_open_menu || w.is_popup) && !st.in_open_submenu)
     {
-        const float rw = w.size.x - 16.0F;
+        const float rw = std::max(w.size.x - 16.0F, tsz.x + 28.0F);
         const ImVec2 p0 = w.cursor;
         const ImVec2 p1 { p0.x + rw, p0.y + 20.0F };
         detail::advance_item(w, p0, p1);
@@ -4285,21 +4659,30 @@ inline bool BeginMenu(const char* label, bool enabled = true) noexcept
                              enabled ? st.theme.text : st.theme.text_disabled,
                              vis.data(), vis.data() + vis.size(), 1.28F);
         cd::ui::chroma::DrawIcon(w.draw_list, cd::ui::chroma::IconKind::kChevronRight,
-                                 ImVec2(p1.x - 8.0F, p0.y + 10.0F), 4.0F, st.theme.accent_bright);
+                                 ImVec2(std::max(p1.x - 8.0F, w.pos.x + w.size.x - 10.0F), p0.y + 10.0F),
+                                 4.0F, st.theme.accent_bright);
+        w.draw_list->mark_last_cmd_right_aligned();
         if (sub_open)
         {
             const ImGuiID sub_id = cd::ui::chroma::hash_str(std::string("##sub_") + std::string(vis));
             auto sz_it = st.auto_size_map.find(sub_id);
-            const ImVec2 pop_sz = (sz_it != st.auto_size_map.end()) ? sz_it->second : ImVec2 { 220.0F, 140.0F };
+            const ImVec2 pop_sz = (sz_it != st.auto_size_map.end()) ? sz_it->second : ImVec2 { 280.0F, 160.0F };
+            float sub_x = w.pos.x + w.size.x - 2.0F;
+            if (sub_x + pop_sz.x > st.io.DisplaySize.x - 6.0F)
+            {
+                sub_x = std::max(6.0F, w.pos.x - pop_sz.x + 2.0F);
+            }
+            const float sub_y = std::clamp(p0.y, 6.0F, std::max(6.0F, st.io.DisplaySize.y - pop_sz.y - 6.0F));
             cd::ui::chroma::WindowLayout spw {};
-            spw.name      = std::string("##sub_") + std::string(vis);
-            spw.is_popup  = true;
-            spw.pos       = ImVec2 { w.pos.x + w.size.x - 2.0F, p0.y };
-            spw.size      = pop_sz;
-            spw.cursor    = ImVec2 { spw.pos.x + 8.0F, spw.pos.y + 6.0F };
-            spw.content_max_x = spw.cursor.x;
-            spw.content_max_y = spw.cursor.y;
-            spw.draw_list = &st.popup_dl;
+            spw.name            = std::string("##sub_") + std::string(vis);
+            spw.is_popup        = true;
+            spw.pos             = ImVec2 { sub_x, sub_y };
+            spw.size            = pop_sz;
+            spw.cursor          = ImVec2 { spw.pos.x + 8.0F, spw.pos.y + 6.0F };
+            spw.content_max_x   = spw.cursor.x;
+            spw.content_max_y   = spw.cursor.y;
+            spw.popup_cmd_start = st.popup_dl.cmd_count();
+            spw.draw_list       = &st.popup_dl;
             st.last_popup_min = ImVec2(std::min(st.last_popup_min.x, spw.pos.x), std::min(st.last_popup_min.y, spw.pos.y));
             st.last_popup_max = ImVec2(std::max(st.last_popup_max.x, spw.pos.x + spw.size.x), std::max(st.last_popup_max.y, spw.pos.y + spw.size.y));
             st.popup_dl.AddShadow(spw.pos, ImVec2(spw.pos.x + spw.size.x, spw.pos.y + spw.size.y), 10.0F, 2.0F, IM_COL32(0, 0, 0, 185));
@@ -4325,6 +4708,7 @@ inline bool BeginMenu(const char* label, bool enabled = true) noexcept
         {
             st.active_menu_name = (st.active_menu_name == vis) ? "" : std::string(vis);
             st.active_submenu_name.clear();
+            st.open_popup_id    = 0U;
             st.current_menu_x   = p0.x;
             st.popup_opened_this_frame = true;
         }
@@ -4332,6 +4716,7 @@ inline bool BeginMenu(const char* label, bool enabled = true) noexcept
         {
             st.active_menu_name = std::string(vis);
             st.active_submenu_name.clear();
+            st.open_popup_id    = 0U;
             st.current_menu_x   = p0.x;
         }
     }
@@ -4351,17 +4736,18 @@ inline bool BeginMenu(const char* label, bool enabled = true) noexcept
     {
         const ImGuiID menu_id = cd::ui::chroma::hash_str(std::string("##menu_") + std::string(vis));
         auto sz_it = st.auto_size_map.find(menu_id);
-        const ImVec2 pop_sz = (sz_it != st.auto_size_map.end()) ? sz_it->second : ImVec2 { 250.0F, 180.0F };
+        const ImVec2 pop_sz = (sz_it != st.auto_size_map.end()) ? sz_it->second : ImVec2 { 340.0F, 185.0F };
 
         cd::ui::chroma::WindowLayout mpw {};
-        mpw.name      = std::string("##menu_") + std::string(vis);
-        mpw.is_popup  = true;
-        mpw.pos       = ImVec2 { p0.x, 29.0F };
-        mpw.size      = pop_sz;
-        mpw.cursor    = ImVec2 { p0.x + 8.0F, 35.0F };
-        mpw.content_max_x = mpw.cursor.x;
-        mpw.content_max_y = mpw.cursor.y;
-        mpw.draw_list = &st.popup_dl;
+        mpw.name            = std::string("##menu_") + std::string(vis);
+        mpw.is_popup        = true;
+        mpw.pos             = ImVec2 { p0.x, 29.0F };
+        mpw.size            = pop_sz;
+        mpw.cursor          = ImVec2 { p0.x + 8.0F, 35.0F };
+        mpw.content_max_x   = mpw.cursor.x;
+        mpw.content_max_y   = mpw.cursor.y;
+        mpw.popup_cmd_start = st.popup_dl.cmd_count();
+        mpw.draw_list       = &st.popup_dl;
         st.last_popup_min = mpw.pos;
         st.last_popup_max = ImVec2(mpw.pos.x + mpw.size.x, mpw.pos.y + mpw.size.y);
         st.popup_dl.AddShadow(mpw.pos, st.last_popup_max, 12.0F, 2.0F, IM_COL32(0, 0, 0, 190));
@@ -4382,8 +4768,15 @@ inline void EndMenu() noexcept
         auto spw = std::move(st.window_stack.back());
         st.window_stack.pop_back();
         const ImGuiID sub_id = cd::ui::chroma::hash_str(spw.name);
-        st.auto_size_map[sub_id] = ImVec2(std::clamp(spw.content_max_x - spw.pos.x + 14.0F, 170.0F, 360.0F),
-                                          std::clamp(spw.content_max_y - spw.pos.y + 8.0F, 32.0F, 420.0F));
+        const ImVec2 final_sz(std::clamp(spw.content_max_x - spw.pos.x + 16.0F, 190.0F, 520.0F),
+                              std::clamp(spw.content_max_y - spw.pos.y + 8.0F, 32.0F, 440.0F));
+        st.auto_size_map[sub_id] = final_sz;
+        detail::finalize_popup_layout(spw, final_sz);
+        if (!st.window_stack.empty())
+        {
+            st.window_stack.back().child_popup_cmd_start = spw.popup_cmd_start;
+            st.window_stack.back().child_popup_cmd_end   = st.popup_dl.cmd_count();
+        }
         st.in_open_submenu = false;
         return;
     }
@@ -4392,8 +4785,10 @@ inline void EndMenu() noexcept
         auto mpw = std::move(st.window_stack.back());
         st.window_stack.pop_back();
         const ImGuiID menu_id = cd::ui::chroma::hash_str(mpw.name);
-        st.auto_size_map[menu_id] = ImVec2(std::clamp(mpw.content_max_x - mpw.pos.x + 14.0F, 210.0F, 380.0F),
-                                           std::clamp(mpw.content_max_y - mpw.pos.y + 8.0F, 34.0F, 480.0F));
+        const ImVec2 final_sz(std::clamp(mpw.content_max_x - mpw.pos.x + 16.0F, 220.0F, 520.0F),
+                              std::clamp(mpw.content_max_y - mpw.pos.y + 8.0F, 34.0F, 480.0F));
+        st.auto_size_map[menu_id] = final_sz;
+        detail::finalize_popup_layout(mpw, final_sz);
         st.in_open_menu = false;
     }
 }
@@ -4416,6 +4811,10 @@ inline bool MenuItem(const char* label, const char* shortcut = nullptr,
     detail::advance_item(w, p0, p1);
 
     const bool hov = st.last_item_hovered && enabled;
+    if (hov && !st.in_open_submenu)
+    {
+        st.active_submenu_name.clear();
+    }
     if (hov || selected)
     {
         w.draw_list->AddRectFilled(p0, p1, hov ? st.theme.button_hover : st.theme.button, 3.0F);
@@ -4428,6 +4827,7 @@ inline bool MenuItem(const char* label, const char* shortcut = nullptr,
         const std::string_view ssv { shortcut };
         w.draw_list->AddText(ImVec2(w.pos.x + w.size.x - ssz.x - 10.0F, p0.y + 3.0F),
                              st.theme.text_disabled, ssv.data(), ssv.data() + ssv.size(), 1.24F);
+        w.draw_list->mark_last_cmd_right_aligned(ssz.x + 10.0F);
     }
     if (hov && st.mouse_clicked[0])
     {
@@ -4457,6 +4857,8 @@ inline void OpenPopup(const char* str_id) noexcept
     auto& st = cd::ui::chroma::state();
     st.open_popup_id  = GetID(str_id);
     st.open_popup_pos = st.io.MousePos;
+    st.active_menu_name.clear();
+    st.active_submenu_name.clear();
     st.popup_opened_this_frame = true;
 }
 
@@ -4467,19 +4869,20 @@ inline bool BeginPopup(const char* str_id) noexcept
     if (st.open_popup_id != id) return false;
 
     auto sz_it = st.auto_size_map.find(id);
-    const ImVec2 pop_sz = (sz_it != st.auto_size_map.end()) ? sz_it->second : ImVec2 { 250.0F, 185.0F };
+    const ImVec2 pop_sz = (sz_it != st.auto_size_map.end()) ? sz_it->second : ImVec2 { 325.0F, 210.0F };
 
     cd::ui::chroma::WindowLayout pw {};
-    pw.name      = str_id != nullptr ? str_id : "popup";
-    pw.id        = id;
-    pw.is_popup  = true;
-    pw.pos       = ImVec2(std::min(st.open_popup_pos.x, st.io.DisplaySize.x - pop_sz.x - 6.0F),
-                          std::min(st.open_popup_pos.y, st.io.DisplaySize.y - pop_sz.y - 6.0F));
-    pw.size      = pop_sz;
-    pw.cursor    = ImVec2 { pw.pos.x + 8.0F, pw.pos.y + 8.0F };
-    pw.content_max_x = pw.cursor.x;
-    pw.content_max_y = pw.cursor.y;
-    pw.draw_list = &st.popup_dl;
+    pw.name            = str_id != nullptr ? str_id : "popup";
+    pw.id              = id;
+    pw.is_popup        = true;
+    pw.pos             = ImVec2(std::clamp(st.open_popup_pos.x, 6.0F, std::max(6.0F, st.io.DisplaySize.x - pop_sz.x - 6.0F)),
+                                std::clamp(st.open_popup_pos.y, 6.0F, std::max(6.0F, st.io.DisplaySize.y - pop_sz.y - 6.0F)));
+    pw.size            = pop_sz;
+    pw.cursor          = ImVec2 { pw.pos.x + 10.0F, pw.pos.y + 8.0F };
+    pw.content_max_x   = pw.cursor.x;
+    pw.content_max_y   = pw.cursor.y;
+    pw.popup_cmd_start = st.popup_dl.cmd_count();
+    pw.draw_list       = &st.popup_dl;
     st.last_popup_min = pw.pos;
     st.last_popup_max = ImVec2(pw.pos.x + pw.size.x, pw.pos.y + pw.size.y);
     st.popup_dl.AddShadow(pw.pos, st.last_popup_max, 12.0F, 2.0F, IM_COL32(0, 0, 0, 185));
@@ -4497,24 +4900,27 @@ inline bool BeginPopupContextItem(const char* str_id = nullptr) noexcept
     {
         st.open_popup_id  = id;
         st.open_popup_pos = st.io.MousePos;
+        st.active_menu_name.clear();
+        st.active_submenu_name.clear();
         st.popup_opened_this_frame = true;
     }
     if (st.open_popup_id != id) return false;
 
     auto sz_it = st.auto_size_map.find(id);
-    const ImVec2 pop_sz = (sz_it != st.auto_size_map.end()) ? sz_it->second : ImVec2 { 225.0F, 130.0F };
+    const ImVec2 pop_sz = (sz_it != st.auto_size_map.end()) ? sz_it->second : ImVec2 { 250.0F, 140.0F };
 
     cd::ui::chroma::WindowLayout pw {};
-    pw.name      = str_id != nullptr ? str_id : "ctx_popup";
-    pw.id        = id;
-    pw.is_popup  = true;
-    pw.pos       = ImVec2(std::min(st.open_popup_pos.x, st.io.DisplaySize.x - pop_sz.x - 6.0F),
-                          std::min(st.open_popup_pos.y, st.io.DisplaySize.y - pop_sz.y - 6.0F));
-    pw.size      = pop_sz;
-    pw.cursor    = ImVec2 { pw.pos.x + 8.0F, pw.pos.y + 8.0F };
-    pw.content_max_x = pw.cursor.x;
-    pw.content_max_y = pw.cursor.y;
-    pw.draw_list = &st.popup_dl;
+    pw.name            = str_id != nullptr ? str_id : "ctx_popup";
+    pw.id              = id;
+    pw.is_popup        = true;
+    pw.pos             = ImVec2(std::clamp(st.open_popup_pos.x, 6.0F, std::max(6.0F, st.io.DisplaySize.x - pop_sz.x - 6.0F)),
+                                std::clamp(st.open_popup_pos.y, 6.0F, std::max(6.0F, st.io.DisplaySize.y - pop_sz.y - 6.0F)));
+    pw.size            = pop_sz;
+    pw.cursor          = ImVec2 { pw.pos.x + 10.0F, pw.pos.y + 8.0F };
+    pw.content_max_x   = pw.cursor.x;
+    pw.content_max_y   = pw.cursor.y;
+    pw.popup_cmd_start = st.popup_dl.cmd_count();
+    pw.draw_list       = &st.popup_dl;
     st.last_popup_min = pw.pos;
     st.last_popup_max = ImVec2(pw.pos.x + pw.size.x, pw.pos.y + pw.size.y);
     st.popup_dl.AddShadow(pw.pos, st.last_popup_max, 12.0F, 2.0F, IM_COL32(0, 0, 0, 185));
@@ -4532,8 +4938,10 @@ inline void EndPopup() noexcept
         auto pw = std::move(st.window_stack.back());
         st.window_stack.pop_back();
         const ImGuiID id = (pw.id != 0U) ? pw.id : GetID(pw.name.c_str());
-        st.auto_size_map[id] = ImVec2(std::clamp(pw.content_max_x - pw.pos.x + 14.0F, 180.0F, 420.0F),
-                                      std::clamp(pw.content_max_y - pw.pos.y + 8.0F, 34.0F, 460.0F));
+        const ImVec2 final_sz(std::clamp(pw.content_max_x - pw.pos.x + 16.0F, 220.0F, 520.0F),
+                              std::clamp(pw.content_max_y - pw.pos.y + 10.0F, 34.0F, 480.0F));
+        st.auto_size_map[id] = final_sz;
+        detail::finalize_popup_layout(pw, final_sz);
     }
 }
 
@@ -4541,24 +4949,56 @@ inline void SetTooltip(const char* fmt, ...) noexcept
 {
     auto& st = cd::ui::chroma::state();
     if (fmt == nullptr) return;
-    char buf[256] {};
+    char buf[512] {};
     va_list args;
     va_start(args, fmt);
     std::vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
 
     const std::string_view sv { buf };
-    const ImVec2 tsz = cd::ui::chroma::measure_text_px(sv, 1.28F);
-    const float tw = tsz.x + 18.0F;
-    const float th = std::max(24.0F, tsz.y + 10.0F);
-    const ImVec2 p0 { std::min(st.io.MousePos.x + 14.0F, st.io.DisplaySize.x - tw - 6.0F),
-                      std::min(st.io.MousePos.y + 18.0F, st.io.DisplaySize.y - th - 6.0F) };
+    float max_line_w = 0.0F;
+    std::size_t line_count = 0U;
+    std::size_t start = 0U;
+    while (start <= sv.size())
+    {
+        const std::size_t nl = sv.find('\n', start);
+        const std::string_view line = (nl == std::string_view::npos)
+                                          ? sv.substr(start)
+                                          : sv.substr(start, nl - start);
+        const ImVec2 lsz = cd::ui::chroma::measure_text_px(line, 1.28F);
+        max_line_w = std::max(max_line_w, lsz.x);
+        ++line_count;
+        if (nl == std::string_view::npos) break;
+        start = nl + 1U;
+    }
+
+    const float line_h = 17.0F;
+    const float tw = max_line_w + 18.0F;
+    const float th = std::max(24.0F, static_cast<float>(line_count) * line_h + 8.0F);
+    ImVec2 p0 { st.io.MousePos.x + 14.0F, st.io.MousePos.y + 18.0F };
+    if (st.io.DisplaySize.x > tw + 12.0F)
+        p0.x = std::clamp(p0.x, 6.0F, st.io.DisplaySize.x - tw - 6.0F);
+    if (st.io.DisplaySize.y > th + 12.0F)
+        p0.y = std::clamp(p0.y, 6.0F, st.io.DisplaySize.y - th - 6.0F);
     const ImVec2 p1 { p0.x + tw, p0.y + th };
     st.fg_dl.AddShadow(p0, p1, 8.0F, 1.0F, IM_COL32(0, 0, 0, 180));
     st.fg_dl.AddRectFilled(p0, p1, st.theme.popup_bg, 4.0F);
     st.fg_dl.AddRect(p0, p1, st.theme.accent_bright, 4.0F, 0, 1.0F);
-    st.fg_dl.AddText(ImVec2(p0.x + 9.0F, p0.y + 5.0F), st.theme.text,
-                     sv.data(), sv.data() + sv.size(), 1.28F);
+
+    start = 0U;
+    std::size_t idx = 0U;
+    while (start <= sv.size())
+    {
+        const std::size_t nl = sv.find('\n', start);
+        const std::string_view line = (nl == std::string_view::npos)
+                                          ? sv.substr(start)
+                                          : sv.substr(start, nl - start);
+        st.fg_dl.AddText(ImVec2(p0.x + 9.0F, p0.y + 5.0F + static_cast<float>(idx) * line_h),
+                         st.theme.text, line.data(), line.data() + line.size(), 1.28F);
+        ++idx;
+        if (nl == std::string_view::npos) break;
+        start = nl + 1U;
+    }
 }
 
 #if defined(__clang__)
@@ -4571,7 +5011,12 @@ inline void SetTooltip(const char* fmt, ...) noexcept
 inline bool BeginDragDropSource(ImGuiDragDropFlags /*flags*/ = 0) noexcept
 {
     auto& st = cd::ui::chroma::state();
-    if ((st.last_item_hovered || st.active_id == st.last_item_id) && st.mouse_down[0])
+    if (!st.mouse_down[0] || st.last_item_id == 0U) return false;
+    if (st.active_id == 0U && st.last_item_hovered && !st.dnd_active)
+    {
+        st.active_id = st.last_item_id;
+    }
+    if (st.active_id == st.last_item_id)
     {
         st.dnd_in_source = true;
         return true;
@@ -4602,12 +5047,13 @@ inline bool BeginDragDropTarget() noexcept
 {
     auto& st = cd::ui::chroma::state();
     if (!st.dnd_active || st.window_stack.empty()) return false;
-    const auto& w = st.window_stack.back();
-    const ImVec2 mp = st.io.MousePos;
-    const bool in_win = (mp.x >= w.pos.x && mp.x <= w.pos.x + w.size.x &&
-                         mp.y >= w.pos.y && mp.y <= w.pos.y + w.size.y);
-    if (in_win || st.last_item_hovered)
+    if (st.last_item_hovered)
     {
+        auto& w = st.window_stack.back();
+        if (w.draw_list != nullptr && !w.skip)
+        {
+            w.draw_list->AddRect(st.last_item_min, st.last_item_max, st.theme.accent_bright, 3.5F, 0, 1.5F);
+        }
         st.dnd_in_target = true;
         return true;
     }
@@ -4789,7 +5235,7 @@ inline bool CurveEditor(const char* label, float points_xy[8], ImVec2 size_arg =
 
     bool changed = false;
     const ImVec2 mp = st.io.MousePos;
-    const bool occluded = detail::is_occluded_by_popup(w) || w.skip;
+    const bool occluded = detail::is_occluded_by_popup(w) || w.skip || !detail::is_in_window_clip(w, mp);
     ImVec2 sp[4] {};
     for (int i = 0; i < 4; ++i)
     {
@@ -5171,10 +5617,30 @@ inline void DrawWorldSpaceEntityTag(ImVec2 screen_pos, const char* name,
     const ImVec2 tsz = measure_text_px(label_buf, 1.22F);
     const float bw = std::max(96.0F, tsz.x + 16.0F);
     const float bh = 30.0F;
-    const float max_x = std::max(4.0F, st.io.DisplaySize.x - bw - 4.0F);
+    float min_x = 4.0F;
+    float max_x = std::max(4.0F, st.io.DisplaySize.x - bw - 4.0F);
+    float min_y = 64.0F;
+    if (st.workspace_mode == 0 && !st.window_dock_slot.empty())
+    {
+        const float W = st.io.DisplaySize.x;
+        const float H = st.io.DisplaySize.y;
+        const float top_y = 60.0F;
+        const float work_h = std::max(100.0F, H - top_y);
+        const float lx = std::round(W * st.dock_left_w_ratio);
+        const float rx = std::round(W * (1.0F - st.dock_right_w_ratio));
+        const float by = std::round(top_y + work_h * (1.0F - st.dock_bottom_h_ratio));
+        if (screen_pos.x < lx + 8.0F || screen_pos.x > rx - 8.0F ||
+            screen_pos.y < top_y + 8.0F || screen_pos.y > by - 8.0F)
+        {
+            return;
+        }
+        min_x = lx + 6.0F;
+        max_x = std::max(min_x, rx - bw - 6.0F);
+        min_y = top_y + 6.0F;
+    }
     const ImVec2 p0 {
-        std::clamp(std::round(screen_pos.x - bw * 0.5F), 4.0F, max_x),
-        std::max(64.0F, std::round(screen_pos.y - bh - 12.0F))
+        std::clamp(std::round(screen_pos.x - bw * 0.5F), min_x, max_x),
+        std::max(min_y, std::round(screen_pos.y - bh - 12.0F))
     };
     const ImVec2 p1 { p0.x + bw, p0.y + bh };
 

@@ -818,4 +818,356 @@ TEST(Widgets, ChromaUiInteractiveCurveNodeChildAndDynamicDocking)
     const ImGuiID child_id = cd::ui::chroma::hash_str("LogChild");
     EXPECT_GT(st.scroll_map[child_id], 0.0F);
     EXPECT_LT(st.scroll_map[child_id], 300.0F);
+
+    // 5. BeginMenu inside BeginPopup stacks vertically (regression test for Ribbon World/Level popup)
+    st.window_stack.clear();
+    st.in_open_menu = false;
+    st.in_open_submenu = false;
+    st.io.MousePos = ImVec2(900.0F, 50.0F);
+    ImGui::OpenPopup("ribbon_world_level_popup");
+    ASSERT_TRUE(ImGui::BeginPopup("ribbon_world_level_popup"));
+    const float y_before_m1 = ImGui::GetCursorScreenPos().y;
+    const float x_before_m1 = ImGui::GetCursorScreenPos().x;
+    (void)ImGui::BeginMenu("World 1: Ultra-FPS & Physics");
+    const float y_after_m1  = ImGui::GetCursorScreenPos().y;
+    const float x_after_m1  = ImGui::GetCursorScreenPos().x;
+    (void)ImGui::BeginMenu("World 2: Photoreal PBR & Sponza GI");
+    const float y_after_m2  = ImGui::GetCursorScreenPos().y;
+    ImGui::EndPopup();
+
+    EXPECT_NEAR(x_after_m1, x_before_m1, 1e-3F);
+    EXPECT_GT(y_after_m1, y_before_m1 + 18.0F);
+    EXPECT_GT(y_after_m2, y_after_m1 + 18.0F);
+
+    // 6. DragFloat3 inline numeric edit via Ctrl+Click and multi-line SetTooltip
+    st.window_stack.clear();
+    st.in_open_menu = false;
+    st.in_open_submenu = false;
+    ImGui::SetNextWindowPos(ImVec2(300.0F, 300.0F));
+    ImGui::SetNextWindowSize(ImVec2(260.0F, 120.0F));
+    float vec3_val[3] = { 1.0F, 2.0F, 3.0F };
+
+    // Frame A: Ctrl+Click on the X box of DragFloat3 (around x=316, y=340)
+    st.io.MousePos = ImVec2(318.0F, 342.0F);
+    st.mouse_clicked[0] = true;
+    st.mod_ctrl = true;
+    if (ImGui::Begin("InspectorDragEditWin"))
+    {
+        (void)ImGui::DragFloat3("Position", vec3_val, 0.05F, -100.0F, 100.0F);
+    }
+    ImGui::End();
+    EXPECT_NE(st.inline_edit_id, 0U);
+    EXPECT_TRUE(ImGui::GetIO().WantCaptureKeyboard);
+
+    // Frame B: Type "12.5" and press Enter
+    st.window_stack.clear();
+    st.mouse_clicked[0] = false;
+    st.mod_ctrl = false;
+    st.input_chars = { '1', '2', '.', '5' };
+    st.keys_pressed[ImGuiKey_Enter] = true;
+    bool drag_committed = false;
+    if (ImGui::Begin("InspectorDragEditWin"))
+    {
+        drag_committed = ImGui::DragFloat3("Position", vec3_val, 0.05F, -100.0F, 100.0F);
+        ImGui::SetTooltip("Line 1: Transform X\nLine 2: Inline Edit Verified\nLine 3: Clamped");
+    }
+    ImGui::End();
+    st.input_chars.clear();
+    st.keys_pressed[ImGuiKey_Enter] = false;
+
+    EXPECT_TRUE(drag_committed);
+    EXPECT_NEAR(vec3_val[0], 12.5F, 1e-3F);
+    EXPECT_EQ(st.inline_edit_id, 0U);
+    EXPECT_FALSE(ImGui::GetIO().WantCaptureKeyboard);
+
+    // 7. SliderFloat inline numeric edit sets WantCaptureKeyboard and Escape cancels cleanly
+    st.window_stack.clear();
+    ImGui::SetNextWindowPos(ImVec2(300.0F, 300.0F));
+    ImGui::SetNextWindowSize(ImVec2(260.0F, 120.0F));
+    float slider_val = 0.5F;
+    st.io.MousePos = ImVec2(340.0F, 342.0F);
+    st.mouse_clicked[0] = true;
+    st.mod_ctrl = true;
+    if (ImGui::Begin("SliderInlineEditWin"))
+    {
+        (void)ImGui::SliderFloat("Roughness", &slider_val, 0.0F, 1.0F);
+    }
+    ImGui::End();
+    EXPECT_NE(st.inline_edit_id, 0U);
+    EXPECT_TRUE(ImGui::GetIO().WantCaptureKeyboard);
+
+    // Frame B: Type "0.9" then press Escape -> cancels edit, restores original value, clears WantCaptureKeyboard
+    st.window_stack.clear();
+    st.mouse_clicked[0] = false;
+    st.mod_ctrl = false;
+    st.input_chars = { '0', '.', '9' };
+    st.keys_pressed[ImGuiKey_Escape] = true;
+    bool slider_changed = false;
+    if (ImGui::Begin("SliderInlineEditWin"))
+    {
+        slider_changed = ImGui::SliderFloat("Roughness", &slider_val, 0.0F, 1.0F);
+    }
+    ImGui::End();
+    st.input_chars.clear();
+    st.keys_pressed[ImGuiKey_Escape] = false;
+    EXPECT_FALSE(slider_changed);
+    EXPECT_NEAR(slider_val, 0.5F, 1e-3F);
+    EXPECT_EQ(st.inline_edit_id, 0U);
+    EXPECT_FALSE(ImGui::GetIO().WantCaptureKeyboard);
+
+    // 8. Open popup occludes mouse-wheel scrolling in background End() / EndChild()
+    const float prev_child_scroll = st.scroll_map[child_id];
+    st.window_stack.clear();
+    st.open_popup_id = 1U;
+    st.last_popup_min = ImVec2(400.0F, 100.0F);
+    st.last_popup_max = ImVec2(700.0F, 320.0F);
+    st.io.MousePos = ImVec2(450.0F, 160.0F);
+    st.io.MouseWheel = 10.0F; // Attempt to scroll up while occluded by popup
+    ImGui::SetNextWindowPos(ImVec2(400.0F, 100.0F));
+    ImGui::SetNextWindowSize(ImVec2(300.0F, 220.0F));
+    if (ImGui::Begin("ScrollChildWin"))
+    {
+        if (ImGui::BeginChild("LogChild", ImVec2(260.0F, 80.0F), true))
+        {
+            for (int i = 0; i < 10; ++i)
+            {
+                ImGui::Text("Line %d", i);
+            }
+            ImGui::EndChild();
+        }
+    }
+    ImGui::End();
+    st.open_popup_id = 0U;
+    EXPECT_NEAR(st.scroll_map[child_id], prev_child_scroll, 1e-3F);
+
+    // 9. Widgets scrolled above BeginChild top clip boundary do not intercept clicks in pinned header
+    st.window_stack.clear();
+    st.active_id = 0U;
+    st.open_popup_id = 0U;
+    const ImGuiID insp_child_id = cd::ui::chroma::hash_str("InspectorScrollChild");
+    st.scroll_map[insp_child_id] = 42.0F; // Scroll child down so its first widgets sit above child.pos.y
+
+    bool pinned_btn_clicked = false;
+    bool scrolled_combo_opened = false;
+    float scrolled_vec3[3] = { 1.0F, 2.0F, 3.0F };
+    float scrolled_slider = 0.25F;
+
+    // Click at (430, 136), which is inside the pinned header button and also where the scrolled-out child widgets land
+    st.io.MousePos = ImVec2(430.0F, 136.0F);
+    st.mouse_clicked[0] = true;
+    st.mouse_down[0] = true;
+    st.mouse_delta = ImVec2(20.0F, 0.0F);
+    ImGui::SetNextWindowPos(ImVec2(400.0F, 100.0F));
+    ImGui::SetNextWindowSize(ImVec2(280.0F, 240.0F));
+    if (ImGui::Begin("PinnedInspectorWin"))
+    {
+        pinned_btn_clicked = ImGui::Button("Pinned Header Action", ImVec2(200.0F, 22.0F));
+        if (ImGui::BeginChild("InspectorScrollChild", ImVec2(260.0F, 160.0F), true))
+        {
+            scrolled_combo_opened = ImGui::BeginCombo("ScrolledLayerCombo", "Default");
+            if (scrolled_combo_opened) ImGui::EndCombo();
+            (void)ImGui::DragFloat3("ScrolledPos", scrolled_vec3, 0.5F, -100.0F, 100.0F);
+            (void)ImGui::SliderFloat("ScrolledSlider", &scrolled_slider, 0.0F, 1.0F);
+            for (int i = 0; i < 12; ++i)
+            {
+                ImGui::Text("Inspector Row %d", i);
+            }
+            ImGui::EndChild();
+        }
+    }
+    ImGui::End();
+    EXPECT_TRUE(pinned_btn_clicked);
+    EXPECT_FALSE(scrolled_combo_opened);
+    EXPECT_NEAR(scrolled_vec3[0], 1.0F, 1e-4F);
+    EXPECT_NEAR(scrolled_slider, 0.25F, 1e-4F);
+
+    // 10. Multi-row BeginDragDropSource / BeginDragDropTarget accuracy + BeginChild edge auto-scroll
+    st.window_stack.clear();
+    st.active_id = 0U;
+    st.dnd_active = false;
+    st.mouse_clicked[0] = false;
+    st.mouse_down[0] = false;
+    st.mouse_released[0] = false;
+    const ImGuiID dnd_child_id = cd::ui::chroma::hash_str("HierarchyDndChild");
+    st.scroll_map[dnd_child_id] = 0.0F;
+
+    ImVec2 row_pos[4] {};
+    auto run_dnd_hierarchy_frame = [&](int* out_dropped_on_row, int* out_dropped_payload) {
+        ImGui::SetNextWindowPos(ImVec2(100.0F, 100.0F));
+        ImGui::SetNextWindowSize(ImVec2(260.0F, 180.0F));
+        if (ImGui::Begin("HierarchyDndWin"))
+        {
+            if (ImGui::BeginChild("HierarchyDndChild", ImVec2(240.0F, 110.0F), true))
+            {
+                for (int r = 0; r < 12; ++r)
+                {
+                    ImGui::PushID(r);
+                    if (r < 4) row_pos[r] = ImGui::GetCursorScreenPos();
+                    char lbl[32] {};
+                    std::snprintf(lbl, sizeof(lbl), "Entity_%d", r);
+                    (void)ImGui::Selectable(lbl, false);
+                    if (ImGui::BeginDragDropSource())
+                    {
+                        ImGui::SetDragDropPayload("CD_STUDIO_NODE_IDX", &r, sizeof(int));
+                        ImGui::Text("Reparent Entity_%d", r);
+                        ImGui::EndDragDropSource();
+                    }
+                    if (ImGui::BeginDragDropTarget())
+                    {
+                        if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("CD_STUDIO_NODE_IDX"))
+                        {
+                            if (out_dropped_on_row != nullptr) *out_dropped_on_row = r;
+                            if (out_dropped_payload != nullptr) *out_dropped_payload = *static_cast<const int*>(p->Data);
+                        }
+                        ImGui::EndDragDropTarget();
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::EndChild();
+            }
+        }
+        ImGui::End();
+    };
+
+    // Layout pass to capture row positions
+    run_dnd_hierarchy_frame(nullptr, nullptr);
+
+    // Frame A: Press mouse on Row 2 to start dragging Entity_2
+    st.window_stack.clear();
+    st.io.MousePos = ImVec2(row_pos[2].x + 30.0F, row_pos[2].y + 8.0F);
+    st.mouse_clicked[0] = true;
+    st.mouse_down[0] = true;
+    run_dnd_hierarchy_frame(nullptr, nullptr);
+    EXPECT_TRUE(st.dnd_active);
+    ASSERT_EQ(st.dnd_payload.DataSize, static_cast<int>(sizeof(int)));
+    EXPECT_EQ(*static_cast<const int*>(st.dnd_payload.Data), 2);
+    EXPECT_EQ(st.dnd_label, "Reparent Entity_2");
+
+    // Frame B: Drag across Row 1 while holding mouse down -> Row 1 must NOT hijack source payload!
+    st.window_stack.clear();
+    st.mouse_clicked[0] = false;
+    st.mouse_down[0] = true;
+    st.io.MousePos = ImVec2(row_pos[1].x + 30.0F, row_pos[1].y + 8.0F);
+    run_dnd_hierarchy_frame(nullptr, nullptr);
+    EXPECT_TRUE(st.dnd_active);
+    EXPECT_EQ(*static_cast<const int*>(st.dnd_payload.Data), 2);
+
+    // Frame C: Hold drag near bottom edge of HierarchyDndChild -> EndChild auto-scrolls downward
+    st.window_stack.clear();
+    st.io.DeltaTime = 0.05F;
+    st.io.MousePos = ImVec2(row_pos[0].x + 30.0F, row_pos[0].y + 100.0F);
+    run_dnd_hierarchy_frame(nullptr, nullptr);
+    EXPECT_GT(st.scroll_map[dnd_child_id], 0.0F);
+    st.scroll_map[dnd_child_id] = 0.0F;
+
+    // Frame D: Release mouse over Row 1 -> payload (2) is delivered to Row 1 (not stolen by Row 0!)
+    st.window_stack.clear();
+    st.io.MousePos = ImVec2(row_pos[1].x + 30.0F, row_pos[1].y + 8.0F);
+    st.mouse_down[0] = false;
+    st.mouse_released[0] = true;
+    int dropped_row = -1;
+    int dropped_payload = -1;
+    run_dnd_hierarchy_frame(&dropped_row, &dropped_payload);
+    EXPECT_EQ(dropped_row, 1);
+    EXPECT_EQ(dropped_payload, 2);
+    st.mouse_released[0] = false;
 }
+
+TEST(Widgets, ChromaUiFirstFrameMenuAutoSizeAndPopupOcclusion)
+{
+    cd::ui::chroma::Context ctx {};
+    auto& st = cd::ui::chroma::state();
+    st = cd::ui::chroma::State {};
+    st.io.DisplaySize = ImVec2(1600.0F, 900.0F);
+    st.main_viewport.Size = st.io.DisplaySize;
+    st.main_viewport.WorkSize = st.io.DisplaySize;
+
+    // 1. Same-frame move+click into MainMenuBar immediately sets WantCaptureMouse in handle_event
+    st.io.WantCaptureMouse = false;
+    cd::platform::OSEvent move_ev {};
+    move_ev.kind = cd::platform::OSEventKind::kMouseMove;
+    move_ev.mouse_x = 24.0F;
+    move_ev.mouse_y = 14.0F;
+    ctx.handle_event(move_ev);
+    EXPECT_TRUE(st.io.WantCaptureMouse);
+
+    cd::platform::OSEvent click_ev {};
+    click_ev.kind = cd::platform::OSEventKind::kMouseButtonDown;
+    click_ev.mouse_button = cd::platform::MouseButton::kLeft;
+    click_ev.mouse_x = 24.0F;
+    click_ev.mouse_y = 14.0F;
+    ctx.handle_event(click_ev);
+
+    // 2. Frame 1 of opening BeginMenu("File"): background commands in popup_dl must be patched on Frame 1
+    // to fit the long label + shortcut without overlapping, and items beyond 185px height must be hoverable.
+    if (ImGui::BeginMainMenuBar())
+    {
+        if (ImGui::BeginMenu("File"))
+        {
+            (void)ImGui::MenuItem("New Empty Scene", "Ctrl+N");
+            (void)ImGui::MenuItem("Save Scene (.cdscene.json)", "Ctrl+S");
+            ImGui::Separator();
+            (void)ImGui::MenuItem("Export Standalone Game Package (.cdproj + .cdscene + Shaders)", "F9");
+            ImGui::EndMenu();
+        }
+        ImGui::EndMainMenuBar();
+    }
+    EXPECT_EQ(st.active_menu_name, "File");
+    const auto popup_cmds = st.popup_dl.cmds();
+    ASSERT_GE(popup_cmds.size(), 3U);
+    // First 3 commands are kDropShadow, kRoundedRect (fill), kRoundedRect (border)
+    EXPECT_GT(popup_cmds[0].x1, 420.0F);
+    EXPECT_FLOAT_EQ(popup_cmds[1].x1, popup_cmds[0].x1);
+    EXPECT_FLOAT_EQ(popup_cmds[2].x1, popup_cmds[0].x1);
+
+    // Verify "F9" shortcut is positioned to the right of the long label text (no overlap)
+    float export_label_end_x = 0.0F;
+    float f9_x0 = 0.0F;
+    for (const auto& c : popup_cmds)
+    {
+        if (c.kind == ImDrawList::CmdKind::kText)
+        {
+            if (c.text.find("Export Standalone Game Package") != std::string::npos)
+            {
+                export_label_end_x = c.x0 + cd::ui::chroma::measure_text_px(c.text, c.param0).x;
+            }
+            else if (c.text == "F9")
+            {
+                f9_x0 = c.x0;
+            }
+        }
+    }
+    EXPECT_GT(export_label_end_x, 350.0F);
+    EXPECT_GT(f9_x0, export_label_end_x);
+
+    // 3. Verify DockSpace splitter and BeginTabItem underneath the open menu are occluded
+    const float lx = std::round(st.io.DisplaySize.x * st.dock_left_w_ratio); // 352.0F
+    ASSERT_GT(st.last_popup_max.x, lx);
+    st.window_stack.clear();
+    st.tab_bar_stack.clear();
+    st.io.MousePos = ImVec2(lx, 75.0F); // Inside open File menu and directly on left dock splitter
+    st.mouse_clicked[0] = true;
+    st.mouse_down[0] = true;
+    (void)ImGui::DockSpace(ImGui::GetID("MainDockSpace"));
+    EXPECT_EQ(st.dragging_splitter, 0);
+
+    ImGui::SetNextWindowPos(ImVec2(20.0F, 60.0F));
+    ImGui::SetNextWindowSize(ImVec2(320.0F, 160.0F));
+    if (ImGui::Begin("OccludedTabWin"))
+    {
+        if (ImGui::BeginTabBar("OccludedTabs"))
+        {
+            (void)ImGui::BeginTabItem("TabA");
+            ImGui::EndTabItem();
+            // Place cursor over TabB which is also underneath the open File menu
+            st.io.MousePos = ImVec2(110.0F, 98.0F);
+            (void)ImGui::BeginTabItem("TabB");
+            ImGui::EndTabItem();
+            ImGui::EndTabBar();
+        }
+    }
+    ImGui::End();
+    const ImGuiID tab_bar_id = cd::ui::chroma::hash_str("OccludedTabs");
+    EXPECT_EQ(st.tab_map[tab_bar_id], 0);
+}
+

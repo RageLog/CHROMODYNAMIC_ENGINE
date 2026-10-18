@@ -263,9 +263,11 @@ enum class PrimitiveKind : std::uint8_t
     kCone,
     kCylinder,
     kTorus,
-    kGltf,    ///< CesiumMan / animated character
-    kSponza,  ///< Sponza atrium static scene — separate from kGltf so
-              ///  the turntable + Z-up correction never touch it
+    kTorusKnot,
+    kGltf,       ///< CesiumMan / animated character
+    kSponza,     ///< Sponza atrium static scene — separate from kGltf so
+                 ///  the turntable + Z-up correction never touch it
+    kCustomGltf, ///< User-loaded disk .gltf/.glb mesh from Content Browser
 };
 
 struct SceneEntity
@@ -288,7 +290,7 @@ struct SceneEntity
     // and multiplies by tint instead of using the vertex-coloured
     // procedural path.
     bool use_texture { false };
-    int custom_texture_id { 0 }; // 0=None, 1=Earth/Disk, 2=Checker, 3=Brick, 4=Carbon, 5=Marble, 6=Wood
+    int custom_texture_id { 0 }; // 0=None, 1=Earth/Disk, 2=Checker, 3=Brick, 4=Carbon, 5=Marble, 6=Wood, 120..250=DiskTexture
     std::string custom_texture_path {};
     std::string custom_mesh_path {};
     bool visible { true };
@@ -299,12 +301,14 @@ struct SceneEntity
 
 [[maybe_unused]] [[nodiscard]] static inline PrimitiveKind kind_from_name(std::string_view n) noexcept
 {
-    if (n == "Sphere")   return PrimitiveKind::kSphere;
-    if (n == "Cone")     return PrimitiveKind::kCone;
-    if (n == "Cylinder") return PrimitiveKind::kCylinder;
-    if (n == "Torus")    return PrimitiveKind::kTorus;
-    if (n == "Gltf")     return PrimitiveKind::kGltf;
-    if (n == "Sponza")   return PrimitiveKind::kSponza;
+    if (n == "Sphere")     return PrimitiveKind::kSphere;
+    if (n == "Cone")       return PrimitiveKind::kCone;
+    if (n == "Cylinder")   return PrimitiveKind::kCylinder;
+    if (n == "Torus")      return PrimitiveKind::kTorus;
+    if (n == "TorusKnot")  return PrimitiveKind::kTorusKnot;
+    if (n == "Gltf")       return PrimitiveKind::kGltf;
+    if (n == "Sponza")     return PrimitiveKind::kSponza;
+    if (n == "CustomGltf") return PrimitiveKind::kCustomGltf;
     return PrimitiveKind::kCube;
 }
 
@@ -395,12 +399,19 @@ struct PrevCamBasis
 
 namespace
 {
-std::string   g_studio_capture_png      {};
-std::uint32_t g_studio_capture_frame    { 8U };
-std::uint32_t g_studio_max_frames       { 0U };
-bool          g_studio_start_pie        { false };
-bool          g_studio_demo_all_phases  { false };
-int           g_studio_initial_template { -1 };
+std::string   g_studio_capture_png          {};
+std::uint32_t g_studio_capture_frame        { 8U };
+std::uint32_t g_studio_max_frames           { 0U };
+bool          g_studio_start_pie            { false };
+bool          g_studio_autopilot_e2e        { false };
+std::string   g_studio_capture_gameplay_dir {};
+bool          g_studio_demo_all_phases      { false };
+int           g_studio_initial_template     { -1 };
+std::string   g_studio_initial_scene        {};
+bool          g_studio_has_cli_cam_eye      { false };
+cd::math::Vec3f g_studio_cli_cam_eye        {};
+bool          g_studio_has_cli_cam_target   { false };
+cd::math::Vec3f g_studio_cli_cam_target     {};
 
 
 // ============================================================================
@@ -677,31 +688,32 @@ inline void draw_selection_outline_overlay(const std::vector<SceneEntity>& entit
             {
                 clip[r] = vp[0][r] * wp[0] + vp[1][r] * wp[1] + vp[2][r] * wp[2] + vp[3][r] * wp[3];
             }
-            if (clip[3] <= 0.0F)
-                continue;  // behind camera
+            if (clip[3] <= 0.25F)
+                continue;  // behind or too close to camera near plane
             const float ndc_x = clip[0] / clip[3];
             const float ndc_y = clip[1] / clip[3];
             const float sx = (ndc_x * 0.5F + 0.5F) * vw;
             const float sy = (1.0F - (ndc_y * 0.5F + 0.5F)) * vh;
-            // Radius shrinks with distance.
-            const float radius = std::max(8.0F, 60.0F / std::max(0.5F, clip[3] * 0.25F));
-            dl->AddCircle(ImVec2(sx, sy), radius, col, 32, outline.thickness * 1.5F);
-            // Crosshair tick marks for emphasis.
-            dl->AddLine(ImVec2(sx - radius - 6.0F, sy), ImVec2(sx - radius + 6.0F, sy), col, outline.thickness);
-            dl->AddLine(ImVec2(sx + radius - 6.0F, sy), ImVec2(sx + radius + 6.0F, sy), col, outline.thickness);
-            dl->AddLine(ImVec2(sx, sy - radius - 6.0F), ImVec2(sx, sy - radius + 6.0F), col, outline.thickness);
-            dl->AddLine(ImVec2(sx, sy + radius - 6.0F), ImVec2(sx, sy + radius + 6.0F), col, outline.thickness);
+            if (sx < -vw || sx > 2.0F * vw || sy < -vh || sy > 2.0F * vh)
+                continue;
+            // Radius matches the outer projected silhouette of the entity.
+            const auto& sc = lt->value.scale;
+            const float s_max = std::max({ std::abs(sc.x), std::abs(sc.y), std::abs(sc.z), 0.25F });
+            const float radius = std::clamp((0.58F * s_max / clip[3]) * vh, 14.0F, 180.0F);
+            dl->AddCircle(ImVec2(sx, sy), radius, col, 48, outline.thickness * 1.5F);
+            // Crosshair tick marks outside the silhouette ring.
+            dl->AddLine(ImVec2(sx - radius - 8.0F, sy), ImVec2(sx - radius - 2.0F, sy), col, outline.thickness);
+            dl->AddLine(ImVec2(sx + radius + 2.0F, sy), ImVec2(sx + radius + 8.0F, sy), col, outline.thickness);
+            dl->AddLine(ImVec2(sx, sy - radius - 8.0F), ImVec2(sx, sy - radius - 2.0F), col, outline.thickness);
+            dl->AddLine(ImVec2(sx, sy + radius + 2.0F), ImVec2(sx, sy + radius + 8.0F), col, outline.thickness);
         }
     }
 }
 
 // ---- draw_light_markers_overlay -------------------------------------------
-// Each enabled light gets a small visual in the viewport so the user can
-// SEE where the lights are placed.
-//   Directional: a yellow line from sky toward target (sun ray)
-//   Point:       filled circle in light color + range ring
-//   Spot:        filled circle at apex + cone wireframe (4 lines to far disk)
-//   Rect area:   4 corners outlined in light color + emit-normal arrow
+// Each enabled light gets a visual in the viewport when selected in the
+// Lights / Inspector panel so unselected lights never clutter the 3D scene
+// with floating text or near-plane-exploding wireframe lines.
 inline void draw_light_markers_overlay(const std::vector<LightRow>& lights,
                                        int selected,
                                        SelKind selected_kind,
@@ -720,9 +732,13 @@ inline void draw_light_markers_overlay(const std::vector<LightRow>& lights,
         cd::math::Vec4f c {};
         for (std::size_t r = 0; r < 4; ++r)
             c[r] = vp[0][r] * wp[0] + vp[1][r] * wp[1] + vp[2][r] * wp[2] + vp[3][r] * wp[3];
-        if (c[3] <= 0.0F)
+        if (c[3] <= 0.25F)
             return { -1.0F, -1.0F };
-        return { (c[0] / c[3] * 0.5F + 0.5F) * vw, (1.0F - (c[1] / c[3] * 0.5F + 0.5F)) * vh };
+        const float sx = (c[0] / c[3] * 0.5F + 0.5F) * vw;
+        const float sy = (1.0F - (c[1] / c[3] * 0.5F + 0.5F)) * vh;
+        if (sx < -vw || sx > 2.0F * vw || sy < -vh || sy > 2.0F * vh)
+            return { -1.0F, -1.0F };
+        return { sx, sy };
     };
     for (std::size_t li = 0; li < lights.size(); ++li)
     {
@@ -731,6 +747,8 @@ inline void draw_light_markers_overlay(const std::vector<LightRow>& lights,
             continue;
         const auto& L = lrow.light;
         const bool sel = (selected_kind == SelKind::kLight && std::cmp_equal(selected,li));
+        if (!sel)
+            continue;
         const ImU32 col = ImGui::ColorConvertFloat4ToU32(ImVec4(L.color.x, L.color.y, L.color.z, 1.0F));
         const ImU32 col_dim =
             ImGui::ColorConvertFloat4ToU32(ImVec4(L.color.x * 0.6F, L.color.y * 0.6F, L.color.z * 0.6F, 0.7F));
@@ -1619,6 +1637,9 @@ inline void draw_shadow_map_pass(cd::rhi::ICommandBuffer& cmd,
             auto prep_csm_one = [&](std::size_t i) {
                 const auto& ent = entities[i];
                 if (!ent.visible) return;
+                if (ent.name.find("Ground_Floor") != std::string::npos &&
+                    !ent.use_texture && ent.custom_texture_id == 0)
+                    return;
                 const auto& mesh = mesh_for(ent.kind);
                 if (!mesh.vb.is_valid()) return;
                 auto* lt = scene.local(ent.handle);
@@ -1731,26 +1752,65 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
             gizmo.set_target(*target_pos);
             const auto vw = static_cast<float>(extent.width);
             const auto vh = static_cast<float>(extent.height);
+            const auto& tgt = gizmo.target();
+            const cd::math::Vec4f wp_org { tgt.x, tgt.y, tgt.z, 1.0F };
+            cd::math::Vec4f clip_org {};
+            for (std::size_t r = 0; r < 4; ++r)
+                clip_org[r] = vp[0][r] * wp_org[0] + vp[1][r] * wp_org[1] + vp[2][r] * wp_org[2] + vp[3][r] * wp_org[3];
+            const float w_org = clip_org[3];
             auto project = [&](const cd::math::Vec3f& p) -> ImVec2
             {
+                if (w_org <= 0.20F)
+                    return { -1.0F, -1.0F };
                 const cd::math::Vec4f wp { p.x, p.y, p.z, 1.0F };
                 cd::math::Vec4f c {};
                 for (std::size_t r = 0; r < 4; ++r)
                     c[r] = vp[0][r] * wp[0] + vp[1][r] * wp[1] + vp[2][r] * wp[2] + vp[3][r] * wp[3];
-                if (c[3] <= 0.0F)
+                if (c[3] <= 0.20F)
                     return { -1.0F, -1.0F };
-                return { (c[0] / c[3] * 0.5F + 0.5F) * vw, (1.0F - (c[1] / c[3] * 0.5F + 0.5F)) * vh };
+                // Divide by w_org (the gizmo origin's clip w) rather than c[3] so
+                // off-center gizmos project onto the local tangent plane at tgt
+                // without false perspective deflection toward the screen center.
+                const float sx = (c[0] / w_org * 0.5F + 0.5F) * vw;
+                const float sy = (1.0F - (c[1] / w_org * 0.5F + 0.5F)) * vh;
+                if (sx < -vw || sx > 2.0F * vw || sy < -vh || sy > 2.0F * vh)
+                    return { -1.0F, -1.0F };
+                return { sx, sy };
             };
-            const auto& tgt = gizmo.target();
-            constexpr float kAxisLen = 1.5F;
+            const float dx_cam = tgt.x - cam.eye.x;
+            const float dy_cam = tgt.y - cam.eye.y;
+            const float dz_cam = tgt.z - cam.eye.z;
+            const float cam_dist = std::sqrt(dx_cam * dx_cam + dy_cam * dy_cam + dz_cam * dz_cam);
+            const float inv_dist = (cam_dist > 1e-4F) ? (1.0F / cam_dist) : 0.0F;
+            const float vx_dir = dx_cam * inv_dist;
+            const float vy_dir = dy_cam * inv_dist;
+            const float vz_dir = dz_cam * inv_dist;
+            const float kAxisLen = std::clamp(cam_dist * 0.18F, 0.42F, 1.25F);
             const ImVec2 p_org = project(tgt);
             const ImVec2 p_x = project({ tgt.x + kAxisLen, tgt.y, tgt.z });
             const ImVec2 p_y = project({ tgt.x, tgt.y + kAxisLen, tgt.z });
             const ImVec2 p_z = project({ tgt.x, tgt.y, tgt.z + kAxisLen });
+            auto axis_screen_len = [&](ImVec2 p) -> float
+            {
+                if (p.x < 0.0F)
+                    return 0.0F;
+                const float dx = p.x - p_org.x;
+                const float dy = p.y - p_org.y;
+                return std::sqrt(dx * dx + dy * dy);
+            };
+            const bool show_x = (p_x.x >= 0.0F) &&
+                ((std::abs(vx_dir) < 0.92F && axis_screen_len(p_x) >= 14.0F) ||
+                 gizmo.active_axis() == cd::editor::GizmoAxis::kX);
+            const bool show_y = (p_y.x >= 0.0F) &&
+                ((std::abs(vy_dir) < 0.92F && axis_screen_len(p_y) >= 14.0F) ||
+                 gizmo.active_axis() == cd::editor::GizmoAxis::kY);
+            const bool show_z = (p_z.x >= 0.0F) &&
+                ((std::abs(vz_dir) < 0.92F && axis_screen_len(p_z) >= 14.0F) ||
+                 gizmo.active_axis() == cd::editor::GizmoAxis::kZ);
 
             if (p_org.x >= 0.0F)
             {
-                auto* dl = ImGui::GetForegroundDrawList();
+                auto* dl = ImGui::GetBackgroundDrawList();
                 auto axis_color_imgui = [](cd::editor::GizmoAxis a)
                 {
                     const auto c = cd::editor::axis_color(a);
@@ -1765,45 +1825,50 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                     return (gizmo.hover() == a || gizmo.active_axis() == a) ? 5.0F : 3.0F;
                 };
 
-                dl->AddLine(p_org, p_x, cx, thick(cd::editor::GizmoAxis::kX));
-                dl->AddLine(p_org, p_y, cy, thick(cd::editor::GizmoAxis::kY));
-                dl->AddLine(p_org, p_z, cz, thick(cd::editor::GizmoAxis::kZ));
-                // Arrowheads (filled triangles).
-                auto arrowhead = [&](ImVec2 from, ImVec2 to, ImU32 col)
+                if (gizmo_state.mode != GizmoMode::kRotate)
+                {
+                    if (show_x)
+                        dl->AddLine(p_org, p_x, cx, thick(cd::editor::GizmoAxis::kX));
+                    if (show_y)
+                        dl->AddLine(p_org, p_y, cy, thick(cd::editor::GizmoAxis::kY));
+                    if (show_z)
+                        dl->AddLine(p_org, p_z, cz, thick(cd::editor::GizmoAxis::kZ));
+                }
+                dl->AddCircleFilled(p_org, 4.5F, ImGui::ColorConvertFloat4ToU32(ImVec4(0.95F, 0.96F, 0.98F, 0.95F)));
+
+                // Arrowheads (filled triangles) + axis labels ("X", "Y", "Z").
+                auto arrowhead_and_label = [&](ImVec2 from, ImVec2 to, ImU32 col, const char* lbl)
                 {
                     const float dx = to.x - from.x;
                     const float dy = to.y - from.y;
                     const float len = std::sqrt(dx * dx + dy * dy);
-                    if (len < 1e-3F)
+                    if (len < 6.0F)
                         return;
                     const float nx = dx / len;
                     const float ny = dy / len;
                     const float sx = -ny;
                     const float sy = nx;
-                    constexpr float kHead = 10.0F;
+                    const float kHead = std::clamp(len * 0.28F, 5.5F, 11.0F);
+                    const float kWing = kHead * 0.50F;
                     const ImVec2 a = to;
-                    const ImVec2 b { to.x - nx * kHead + sx * 5.0F, to.y - ny * kHead + sy * 5.0F };
-                    const ImVec2 c { to.x - nx * kHead - sx * 5.0F, to.y - ny * kHead - sy * 5.0F };
+                    const ImVec2 b { to.x - nx * kHead + sx * kWing, to.y - ny * kHead + sy * kWing };
+                    const ImVec2 c { to.x - nx * kHead - sx * kWing, to.y - ny * kHead - sy * kWing };
                     dl->AddTriangleFilled(a, b, c, col);
+                    dl->AddText(ImVec2(to.x + nx * 8.0F - 4.0F, to.y + ny * 8.0F - 6.0F), col, lbl);
                 };
-                // Mode-specific tip decoration:
-                //   translate ??' arrowheads
-                //   rotate    ??' small circles at tips
-                //   scale     ??' small filled cubes at tips
                 if (gizmo_state.mode == GizmoMode::kTranslate)
                 {
-                    arrowhead(p_org, p_x, cx);
-                    arrowhead(p_org, p_y, cy);
-                    arrowhead(p_org, p_z, cz);
+                    if (show_x)
+                        arrowhead_and_label(p_org, p_x, cx, "X");
+                    if (show_y)
+                        arrowhead_and_label(p_org, p_y, cy, "Y");
+                    if (show_z)
+                        arrowhead_and_label(p_org, p_z, cz, "Z");
                 }
                 else if (gizmo_state.mode == GizmoMode::kRotate)
                 {
-                    // Draw the standard 3 rotation rings on each
-                    // world-axis plane. Each ring is the projection
-                    // of a unit-radius circle (scaled by kAxisLen)
-                    // in the plane perpendicular to its color axis.
                     constexpr int kRingSeg = 48;
-                    constexpr float kRingRad = 1.5F;
+                    const float kRingRad = kAxisLen;
                     auto draw_ring = [&](cd::math::Vec3f u, cd::math::Vec3f v, ImU32 c, float t)
                     {
                         for (int i = 0; i < kRingSeg; ++i)
@@ -1829,43 +1894,39 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                     const float th_x = (gizmo.hover() == cd::editor::GizmoAxis::kX) ? 4.0F : 2.0F;
                     const float th_y = (gizmo.hover() == cd::editor::GizmoAxis::kY) ? 4.0F : 2.0F;
                     const float th_z = (gizmo.hover() == cd::editor::GizmoAxis::kZ) ? 4.0F : 2.0F;
-                    // Ring around X axis lives in (Y, Z) plane.
                     draw_ring({ 0, 1, 0 }, { 0, 0, 1 }, cx, th_x);
-                    // Ring around Y axis lives in (X, Z) plane.
                     draw_ring({ 1, 0, 0 }, { 0, 0, 1 }, cy, th_y);
-                    // Ring around Z axis lives in (X, Y) plane.
                     draw_ring({ 1, 0, 0 }, { 0, 1, 0 }, cz, th_z);
                 }
                 else  // kScale
                 {
-                    const auto cube_at = [&](ImVec2 c, ImU32 col)
+                    const auto cube_at = [&](ImVec2 c, ImU32 col, const char* lbl)
                     {
                         const ImVec2 a { c.x - 5, c.y - 5 };
                         const ImVec2 b { c.x + 5, c.y + 5 };
                         dl->AddRectFilled(a, b, col);
+                        dl->AddText(ImVec2(c.x + 7.0F, c.y - 6.0F), col, lbl);
                     };
-                    cube_at(p_x, cx);
-                    cube_at(p_y, cy);
-                    cube_at(p_z, cz);
+                    if (show_x)
+                        cube_at(p_x, cx, "X");
+                    if (show_y)
+                        cube_at(p_y, cy, "Y");
+                    if (show_z)
+                        cube_at(p_z, cz, "Z");
                 }
-                // Mode label.
+                // Mode label offset to upper-left of origin so it doesn't collide with +X/+Z arrows.
                 const char* mode_lbl = "S";
                 if (gizmo_state.mode == GizmoMode::kTranslate)
                     mode_lbl = "T";
                 else if (gizmo_state.mode == GizmoMode::kRotate)
                     mode_lbl = "R";
                 dl->AddText(
-                    ImVec2(p_org.x + 8, p_org.y + 8),
-                    ImGui::ColorConvertFloat4ToU32(ImVec4(1, 1, 1, 0.9F)),
+                    ImVec2(p_org.x - 14.0F, p_org.y - 16.0F),
+                    ImGui::ColorConvertFloat4ToU32(ImVec4(1, 1, 1, 0.85F)),
                     mode_lbl
                 );
 
-                // Hover test. Translate/Scale modes measure mouse-to-
-                // axis-line distance (arrows). Rotate mode measures
-                // mouse-to-ring polyline distance (so the user grabs a
-                // ring, not an arrow - feedback "rotation islemini
-                // yeni koydugun cemberler userinden yapabilmek
-                // istiyorum").
+                // Hover test.
                 const ImVec2 mp = ImGui::GetIO().MousePos;
                 auto dist_to_seg = [](ImVec2 a, ImVec2 b, ImVec2 p)
                 {
@@ -1883,12 +1944,8 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                 float best_d = gizmo.hover_tolerance_pixels;
                 if (gizmo_state.mode == GizmoMode::kRotate)
                 {
-                    // Sample each ring at the same resolution we draw
-                    // it (48 segments); compute min distance from
-                    // mouse to the ring polyline. Cheap (3 ?- 48 = 144
-                    // segments per frame at hover-test time).
                     constexpr int kHoverSeg = 48;
-                    constexpr float kHoverRad = 1.5F;  // matches kRingRad above
+                    const float kHoverRad = kAxisLen;  // matches kRingRad above
                     auto ring_dist = [&](cd::math::Vec3f u, cd::math::Vec3f v) -> float
                     {
                         float min_d = std::numeric_limits<float>::infinity();
@@ -1920,9 +1977,9 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                         }
                         return min_d;
                     };
-                    const float dx = ring_dist({ 0, 1, 0 }, { 0, 0, 1 });  // X-axis ring lives in YZ
-                    const float dy = ring_dist({ 1, 0, 0 }, { 0, 0, 1 });  // Y-axis ring lives in XZ
-                    const float dz = ring_dist({ 1, 0, 0 }, { 0, 1, 0 });  // Z-axis ring lives in XY
+                    const float dx = ring_dist({ 0, 1, 0 }, { 0, 0, 1 });
+                    const float dy = ring_dist({ 1, 0, 0 }, { 0, 0, 1 });
+                    const float dz = ring_dist({ 1, 0, 0 }, { 0, 1, 0 });
                     if (dx < best_d)
                     {
                         best_d = dx;
@@ -1941,26 +1998,42 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                 }
                 else  // translate / scale - axis-arrow hover
                 {
-                    if (auto d = dist_to_seg(p_org, p_x, mp); d < best_d)
+                    if (show_x)
                     {
-                        best_d = d;
-                        best = cd::editor::GizmoAxis::kX;
+                        if (auto d = dist_to_seg(p_org, p_x, mp); d < best_d)
+                        {
+                            best_d = d;
+                            best = cd::editor::GizmoAxis::kX;
+                        }
                     }
-                    if (auto d = dist_to_seg(p_org, p_y, mp); d < best_d)
+                    if (show_y)
                     {
-                        best_d = d;
-                        best = cd::editor::GizmoAxis::kY;
+                        if (auto d = dist_to_seg(p_org, p_y, mp); d < best_d)
+                        {
+                            best_d = d;
+                            best = cd::editor::GizmoAxis::kY;
+                        }
                     }
-                    if (auto d = dist_to_seg(p_org, p_z, mp); d < best_d)
+                    if (show_z)
                     {
-                        best_d = d;
-                        best = cd::editor::GizmoAxis::kZ;
+                        if (auto d = dist_to_seg(p_org, p_z, mp); d < best_d)
+                        {
+                            best_d = d;
+                            best = cd::editor::GizmoAxis::kZ;
+                        }
                     }
+                }
+                const bool over_imgui_ui =
+                    cd::ui::chroma::state().mouse_in_any_window ||
+                    !cd::ui::chroma::state().active_menu_name.empty() ||
+                    cd::ui::chroma::state().open_popup_id != 0U ||
+                    (ImGui::GetIO().WantCaptureMouse && ImGui::IsAnyItemHovered());
+                if (over_imgui_ui && !gizmo.is_dragging())
+                {
+                    best = cd::editor::GizmoAxis::kNone;
                 }
                 gizmo.set_hover(best);
                 gizmo_state.was_hovered = (best != cd::editor::GizmoAxis::kNone);
-
-                const bool over_imgui_ui = ImGui::GetIO().WantCaptureMouse && ImGui::IsAnyItemHovered();
                 // If the mouse is hovering an axis arrow AND a left-
                 // click is pending from the OS event loop, the gizmo
                 // wins over the 3D pick path - suppress the pick.
@@ -2320,6 +2393,13 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                                 break;
                             }
                         }
+                        if (target_is_entity && lt != nullptr)
+                        {
+                            cd::studio::studio_world().home_transforms[sel_ent.id] = lt->value;
+                            cd::studio::studio_world().euler_cache_deg[sel_ent.id] =
+                                cd::studio::quat_to_euler_deg(lt->value.rotation);
+                            scene.update_transforms();
+                        }
                     }
                     if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
                     {
@@ -2349,27 +2429,56 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                                     }
                                     else
                                     {
-                                        // Light translate - apply directly (no history wire yet).
-                                        // W8-AL: removed W8-X auto-aim-at-origin after
-                                        // translate. User reported "otomatik merkeze
-                                        // odaklaniyor" — the magic auto-rotation was
-                                        // annoying because it overrode their manual
-                                        // rotation immediately after a move. The
-                                        // "Aim at origin" panel button (W8-V) is still
-                                        // available for one-click manual re-aim.
                                         log_push("[gizmo] light translate applied");
                                     }
                                 }
                                 break;
                             }
                             case GizmoMode::kScale:
-                                if (lt != nullptr)
-                                    log_push("[gizmo] scale applied");
+                                if (target_is_entity && lt != nullptr)
+                                {
+                                    const cd::math::Vec3f end_sc = lt->value.scale;
+                                    const cd::math::Vec3f st_sc  = gizmo_state.drag_scale_start;
+                                    if (std::abs(end_sc.x - st_sc.x) +
+                                        std::abs(end_sc.y - st_sc.y) +
+                                        std::abs(end_sc.z - st_sc.z) > 1e-4F)
+                                    {
+                                        const cd::math::Vec3f factor {
+                                            (std::abs(st_sc.x) > 1e-5F) ? (end_sc.x / st_sc.x) : 1.0F,
+                                            (std::abs(st_sc.y) > 1e-5F) ? (end_sc.y / st_sc.y) : 1.0F,
+                                            (std::abs(st_sc.z) > 1e-5F) ? (end_sc.z / st_sc.z) : 1.0F
+                                        };
+                                        lt->value.scale = st_sc;
+                                        history.push(std::make_unique<cd::editor::ScaleCommand>(
+                                            scene, sel_ent, factor));
+                                        log_push("[gizmo] entity scale (undoable)");
+                                    }
+                                }
                                 break;
                             case GizmoMode::kRotate:
-                                if (lt != nullptr)
-                                    log_push("[gizmo] rotate applied");
+                                if (target_is_entity && lt != nullptr)
+                                {
+                                    const cd::math::Quatf end_rot = lt->value.rotation;
+                                    const cd::math::Quatf st_rot  = gizmo_state.drag_rot_start;
+                                    if (std::abs(end_rot.x - st_rot.x) +
+                                        std::abs(end_rot.y - st_rot.y) +
+                                        std::abs(end_rot.z - st_rot.z) +
+                                        std::abs(end_rot.w - st_rot.w) > 1e-4F)
+                                    {
+                                        lt->value.rotation = st_rot;
+                                        history.push(std::make_unique<cd::editor::RotateCommand>(
+                                            scene, sel_ent, end_rot));
+                                        log_push("[gizmo] entity rotate (undoable)");
+                                    }
+                                }
                                 break;
+                        }
+                        if (target_is_entity && lt != nullptr)
+                        {
+                            cd::studio::studio_world().home_transforms[sel_ent.id] = lt->value;
+                            cd::studio::studio_world().euler_cache_deg[sel_ent.id] =
+                                cd::studio::quat_to_euler_deg(lt->value.rotation);
+                            scene.update_transforms();
                         }
                     }
                 }
@@ -3266,7 +3375,7 @@ inline void draw_floor_and_entities(cd::rhi::IDrawRecorder& cmd,
         const auto& ent = entities[i];
         if (!ent.visible)
             return;
-        if (show_editor_floor && ent.name.find("Ground_Floor") != std::string::npos &&
+        if (ent.name.find("Ground_Floor") != std::string::npos &&
             !ent.use_texture && ent.custom_texture_id == 0)
             return;
         const auto& mesh = mesh_for(ent.kind);
@@ -3283,19 +3392,21 @@ inline void draw_floor_and_entities(cd::rhi::IDrawRecorder& cmd,
         pp.tint[0] = ent.tint.x;
         pp.tint[1] = ent.tint.y;
         pp.tint[2] = ent.tint.z;
+        const bool has_custom_override_tex =
+            (ent.kind == PrimitiveKind::kGltf && ent.use_texture && ent.custom_texture_id >= 2);
         const bool is_gltf_prim = (ent.kind == PrimitiveKind::kSponza ||
-                                   ent.kind == PrimitiveKind::kGltf);
+                                   (ent.kind == PrimitiveKind::kGltf && !has_custom_override_tex));
         pp.tint[3] = 1.0F;
-        if (ent.is_pbr)
-            pp.tint[3] = 3.0F;
-        else if (is_gltf_prim)
+        if (is_gltf_prim)
             pp.tint[3] = 4.0F;
+        else if (ent.is_pbr)
+            pp.tint[3] = 3.0F;
         fill_prim_push_shared(pp, fx, sun, cam);
-        const bool gltf_tex_path = (!ent.is_pbr && (ent.kind == PrimitiveKind::kGltf) && has_gltf_texture);
-        const bool pbr_tex_path  = (ent.is_pbr && ent.use_texture);
+        const bool gltf_tex_path = ((ent.kind == PrimitiveKind::kGltf) && !has_custom_override_tex && has_gltf_texture);
+        const bool pbr_tex_path  = (!is_gltf_prim && ent.is_pbr && ent.use_texture);
         const float tex_slot_val = static_cast<float>(std::max(1, ent.custom_texture_id));
         pp.fx_params[1] = pbr_tex_path ? tex_slot_val : (gltf_tex_path ? 1.0F : 0.0F);
-        if (ent.is_pbr)
+        if (ent.is_pbr && !is_gltf_prim)
         {
             pp.fx_params4[0] = ent.metallic;
             pp.fx_params4[1] = ent.roughness;
@@ -3355,7 +3466,11 @@ inline void draw_floor_and_entities(cd::rhi::IDrawRecorder& cmd,
 
         // Per-primitive material dispatch.
         // glTF models use prim_ranges for per-material texture/parameter switching.
-        const auto ranges = prim_ranges_for(ent.kind);
+        const bool skip_prim_ranges =
+            (ent.kind == PrimitiveKind::kGltf && ent.use_texture && ent.custom_texture_id >= 2);
+        const auto ranges = skip_prim_ranges
+            ? std::span<const cd_studio::GltfPrimRange> {}
+            : prim_ranges_for(ent.kind);
         if (!ranges.empty())
         {
             bool dirty_shared_prim_inst = false;
@@ -3563,6 +3678,10 @@ struct StudioApp::EngineState
     // array. Filled at bindless-slot build time below (right after
     // the fallback slot loop fills 255 with earth_albedo).
     std::vector<cd_studio::W8BEGeomMeta>     pbr_sphere_textured_meta;
+    std::vector<GpuTexture2D>                custom_disk_textures;
+    std::unordered_map<std::string, int>     custom_disk_tex_slots;
+    GpuMesh                                  custom_gltf_mesh {};
+    cd::rhi::AccelStructureHandle            blas_custom_gltf {};
 
     // World / scene / history
     cd::ecs::World                           ecs_world;
@@ -3778,11 +3897,6 @@ cd::core::Result<void> StudioApp::on_boot()
 {
     state_ = std::make_unique<EngineState>();
     auto& s = *state_;
-    s.pie_playing = g_studio_start_pie;
-    if (s.pie_playing)
-    {
-        s.gizmo_state.visible = false;
-    }
 
     // Window + Vulkan device + Renderer + ImGui
     cd::platform::WindowDesc wd {};
@@ -3807,9 +3921,9 @@ cd::core::Result<void> StudioApp::on_boot()
     rd.swapchain.display_handle  = window.native_display_handle();
     rd.swapchain.extent          = { window.width(), window.height() };
     rd.swapchain.format          = cd::rhi::Format::kBGRA8Unorm;
-    rd.swapchain.image_count     = 4;
-    rd.swapchain.vsync           = false;
-    rd.frames_in_flight          = 3;
+    rd.swapchain.image_count     = 3;
+    rd.swapchain.vsync           = (cd::core::compat::read_env_var("CD_VSYNC") == "1");
+    rd.frames_in_flight          = 1;
     auto renderer_r = cd::render::Renderer::create(rd);
     if (!renderer_r.has_value()) return std::unexpected(renderer_r.error());
     s.renderer = std::move(*renderer_r);
@@ -3818,7 +3932,7 @@ cd::core::Result<void> StudioApp::on_boot()
     imgui_id.window           = &window;
     imgui_id.device           = &device;
     imgui_id.color_format     = cd::rhi::Format::kBGRA8Unorm;
-    imgui_id.frames_in_flight = 3;
+    imgui_id.frames_in_flight = 1;
     auto ctx_r = cd::imgui::Context::create(imgui_id);
     if (!ctx_r.has_value()) return std::unexpected(ctx_r.error());
     s.imgui_ctx = std::move(*ctx_r);
@@ -4159,79 +4273,10 @@ cd::core::Result<void> StudioApp::on_boot()
     cd_studio::register_boot_palette_commands(s, log_push_fn);
 
     constexpr const char* kSavePath = "studio_scene.cdscene.json";
-    auto kind_name_fn = [](PrimitiveKind k) -> const char*
-    {
-        switch (k)
-        {
-            case PrimitiveKind::kSphere:   return "Sphere";
-            case PrimitiveKind::kCone:     return "Cone";
-            case PrimitiveKind::kCylinder: return "Cylinder";
-            case PrimitiveKind::kTorus:    return "Torus";
-            case PrimitiveKind::kGltf:     return "Gltf";
-            case PrimitiveKind::kSponza:   return "Sponza";
-            case PrimitiveKind::kCube:     return "Cube";
-        }
-        return "Cube";
-    };
     s.palette.register_command(80, "Scene: Save",
-        [&s, log_push_fn, kind_name_fn]() mutable
+        [&s, log_push_fn]() mutable
         {
-            auto fe = [&s](cd::ecs::Entity e) -> const SceneEntity*
-            {
-                for (const auto& en : s.entities) if (en.handle.id == e.id) return &en;
-                return nullptr;
-            };
-            auto root = cd::scene::serialize_scene_with(s.scene,
-                [&](cd::ecs::Entity e, cd::asset::json::Object& obj)
-                {
-                    const auto* en = fe(e); if (!en) return;
-                    obj["name"] = cd::asset::json::Value { en->name };
-                    obj["kind"] = cd::asset::json::Value { std::string { kind_name_fn(en->kind) } };
-                    cd::asset::json::Array tint;
-                    tint.emplace_back(static_cast<double>(en->tint.x));
-                    tint.emplace_back(static_cast<double>(en->tint.y));
-                    tint.emplace_back(static_cast<double>(en->tint.z));
-                    obj["tint"] = cd::asset::json::Value { std::move(tint) };
-                });
-            {
-                cd::asset::json::Array la;
-                for (const auto& l : s.lights)
-                {
-                    cd::asset::json::Object lo;
-                    lo["name"]      = cd::asset::json::Value { l.name };
-                    lo["enabled"]   = cd::asset::json::Value { l.enabled };
-                    lo["type"]      = cd::asset::json::Value { static_cast<int>(l.light.type) };
-                    lo["kelvin"]    = cd::asset::json::Value { static_cast<double>(l.kelvin) };
-                    lo["intensity"] = cd::asset::json::Value { static_cast<double>(l.light.intensity) };
-                    lo["range"]     = cd::asset::json::Value { static_cast<double>(l.light.range) };
-                    cd::asset::json::Array pos;
-                    cd::asset::json::Array col;
-                    cd::asset::json::Array dir;
-                    pos.emplace_back(static_cast<double>(l.light.position.x));
-                    pos.emplace_back(static_cast<double>(l.light.position.y));
-                    pos.emplace_back(static_cast<double>(l.light.position.z));
-                    lo["position"] = cd::asset::json::Value { std::move(pos) };
-                    col.emplace_back(static_cast<double>(l.light.color.x));
-                    col.emplace_back(static_cast<double>(l.light.color.y));
-                    col.emplace_back(static_cast<double>(l.light.color.z));
-                    lo["color"]    = cd::asset::json::Value { std::move(col) };
-                    dir.emplace_back(static_cast<double>(l.light.direction.x));
-                    dir.emplace_back(static_cast<double>(l.light.direction.y));
-                    dir.emplace_back(static_cast<double>(l.light.direction.z));
-                    lo["direction"] = cd::asset::json::Value { std::move(dir) };
-                    la.emplace_back(std::move(lo));
-                }
-                root.as_object_mut()["lights"] = cd::asset::json::Value { std::move(la) };
-            }
-            const auto txt = cd::asset::json::serialize(root, true);
-            std::ofstream f { kSavePath, std::ios::binary | std::ios::trunc };
-            if (f)
-            {
-                f.write(txt.data(), static_cast<std::streamsize>(txt.size()));
-                log_push_fn("[scene] Saved " + std::to_string(s.entities.size()) +
-                    " entities + " + std::to_string(s.lights.size()) + " lights to " + kSavePath);
-            }
-            else log_push_fn("[scene] Save failed (ofstream)");
+            (void)cd::studio::save_full_studio_scene(s, kSavePath, log_push_fn);
         });
     s.palette.register_command(95, "Gizmo: Toggle Visibility",
         [&s, log_push_fn]() mutable
@@ -4270,88 +4315,10 @@ cd::core::Result<void> StudioApp::on_boot()
     s.palette.register_command(81, "Scene: Load (replace world)",
         [&s, log_push_fn]() mutable
         {
-            auto r = cd::asset::json::load(kSavePath);
-            if (!r.has_value())
+            if (cd::studio::load_full_studio_scene(s, kSavePath, log_push_fn))
             {
-                log_push_fn("[scene] Load failed: " + std::string { r.error().message });
-                return;
+                s.history.clear();
             }
-            for (auto& en : s.entities) if (en.handle.is_valid()) s.scene.destroy_node(en.handle);
-            s.entities.clear();
-            std::vector<SceneEntity> loaded;
-            (void)cd::scene::deserialize_scene_with(s.scene, *r,
-                [&](cd::ecs::Entity e, const cd::asset::json::Object& obj)
-                {
-                    SceneEntity en; en.handle = e;
-                    en.kind = PrimitiveKind::kCube; en.tint = { 1,1,1 };
-                    if (auto it = obj.find("name"); it != obj.end() && it->second.is_string())
-                        en.name = it->second.as_string();
-                    if (auto it = obj.find("kind"); it != obj.end() && it->second.is_string())
-                        en.kind = kind_from_name(it->second.as_string());
-                    if (auto it = obj.find("tint"); it != obj.end() && it->second.is_array()
-                        && it->second.as_array().size() == 3)
-                    {
-                        const auto& a = it->second.as_array();
-                        if (a[0].is_number() && a[1].is_number() && a[2].is_number())
-                            en.tint = { static_cast<float>(a[0].as_number()),
-                                        static_cast<float>(a[1].as_number()),
-                                        static_cast<float>(a[2].as_number()) };
-                    }
-                    loaded.push_back(std::move(en));
-                });
-            s.entities = std::move(loaded);
-            if (r->is_object())
-            {
-                const auto& ro = r->as_object();
-                if (auto it = ro.find("lights");
-                    it != ro.end() && it->second.is_array())
-                {
-                    std::vector<LightRow> nl;
-                    for (const auto& lv : it->second.as_array())
-                    {
-                        if (!lv.is_object()) continue;
-                        const auto& lo = lv.as_object();
-                        LightRow row {};
-                        if (auto n = lo.find("name"); n != lo.end() && n->second.is_string())
-                            row.name = n->second.as_string();
-                        if (auto en2 = lo.find("enabled"); en2 != lo.end() && en2->second.is_bool())
-                            row.enabled = en2->second.as_bool();
-                        if (auto t = lo.find("type"); t != lo.end() && t->second.is_number())
-                            row.light.type = static_cast<cd::light::LightType>(
-                                static_cast<int>(t->second.as_number()));
-                        if (auto k = lo.find("kelvin"); k != lo.end() && k->second.is_number())
-                            row.kelvin = static_cast<float>(k->second.as_number());
-                        if (auto in = lo.find("intensity"); in != lo.end() && in->second.is_number())
-                            row.light.intensity = static_cast<float>(in->second.as_number());
-                        if (auto rg = lo.find("range"); rg != lo.end() && rg->second.is_number())
-                            row.light.range = static_cast<float>(rg->second.as_number());
-                        auto load3 = [&lo](const char* key, cd::math::Vec3f& out)
-                        {
-                            if (auto it2 = lo.find(key); it2 != lo.end() && it2->second.is_array()
-                                && it2->second.as_array().size() == 3)
-                            {
-                                const auto& a = it2->second.as_array();
-                                if (a[0].is_number() && a[1].is_number() && a[2].is_number())
-                                    out = { static_cast<float>(a[0].as_number()),
-                                            static_cast<float>(a[1].as_number()),
-                                            static_cast<float>(a[2].as_number()) };
-                            }
-                        };
-                        load3("position",  row.light.position);
-                        load3("direction", row.light.direction);
-                        load3("color",     row.light.color);
-                        if (row.light.color.x == 0 && row.light.color.y == 0 &&
-                            row.light.color.z == 0 && row.kelvin > 0.0F)
-                            row.light.color = cd::light::cct_to_linear_rgb(row.kelvin);
-                        nl.push_back(std::move(row));
-                    }
-                    if (!nl.empty()) s.lights = std::move(nl);
-                }
-            }
-            s.selected = s.entities.empty() ? -1 : 0;
-            s.history.clear();
-            log_push_fn("[scene] Loaded " + std::to_string(s.entities.size()) +
-                " entities + " + std::to_string(s.lights.size()) + " lights from " + kSavePath);
         });
 
     return {};
@@ -4382,28 +4349,34 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
     {
         switch (k)
         {
-            case PrimitiveKind::kSphere:   return s.meshes.sphere;
-            case PrimitiveKind::kCone:     return s.meshes.cone;
-            case PrimitiveKind::kCylinder: return s.meshes.cyl;
-            case PrimitiveKind::kTorus:    return s.meshes.torus;
+            case PrimitiveKind::kSphere:    return s.meshes.sphere;
+            case PrimitiveKind::kCone:      return s.meshes.cone;
+            case PrimitiveKind::kCylinder:  return s.meshes.cyl;
+            case PrimitiveKind::kTorus:     return s.meshes.torus;
+            case PrimitiveKind::kTorusKnot: return s.meshes.knot;
+            case PrimitiveKind::kCustomGltf:
+                return s.custom_gltf_mesh.vb.is_valid() ? s.custom_gltf_mesh : s.meshes.knot;
             case PrimitiveKind::kSponza:
                 return s.meshes.gltf.vb.is_valid() ? s.meshes.gltf : s.meshes.knot;
             case PrimitiveKind::kGltf:
                 return s.meshes.gltf_cesium.vb.is_valid() ? s.meshes.gltf_cesium : s.meshes.knot;
-            default:                       return s.meshes.cube;
+            default:                        return s.meshes.cube;
         }
     };
     auto blas_for_kind = [&s](PrimitiveKind k) -> cd::rhi::AccelStructureHandle
     {
         switch (k)
         {
-            case PrimitiveKind::kSphere:   return s.meshes.blas_sphere;
-            case PrimitiveKind::kCone:     return s.meshes.blas_cone;
-            case PrimitiveKind::kCylinder: return s.meshes.blas_cyl;
-            case PrimitiveKind::kTorus:    return s.meshes.blas_torus;
-            case PrimitiveKind::kSponza:   return s.meshes.blas_gltf;
-            case PrimitiveKind::kGltf:     return s.meshes.blas_cesium;
-            default:                       return s.meshes.blas_cube;
+            case PrimitiveKind::kSphere:     return s.meshes.blas_sphere;
+            case PrimitiveKind::kCone:       return s.meshes.blas_cone;
+            case PrimitiveKind::kCylinder:   return s.meshes.blas_cyl;
+            case PrimitiveKind::kTorus:      return s.meshes.blas_torus;
+            case PrimitiveKind::kTorusKnot:  return s.meshes.blas_knot;
+            case PrimitiveKind::kCustomGltf:
+                return s.blas_custom_gltf.is_valid() ? s.blas_custom_gltf : s.meshes.blas_knot;
+            case PrimitiveKind::kSponza:     return s.meshes.blas_gltf;
+            case PrimitiveKind::kGltf:       return s.meshes.blas_cesium;
+            default:                         return s.meshes.blas_cube;
         }
     };
 
@@ -4421,10 +4394,6 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
             std::make_unique<cd::studio::FogModifier>());
         (void)cd::studio::export_standalone_game_package(
             s, "build/export/ChromodynamicGame", log_push_fn);
-    }
-    if (g_studio_start_pie)
-    {
-        s.pie_playing = true;
     }
 
     while (true)
@@ -4444,7 +4413,7 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                 ev.key == cd::platform::KeyCode::kEscape)
             {
                 if (s.pie_playing)
-                { s.pie_playing = false; log_push_fn("[studio] Stopped Play-In-Editor (ESC)"); }
+                { cd::studio::exit_pie_play_mode(s, log_push_fn); }
                 else if (s.gizmo.is_dragging())
                 { (void)s.gizmo.end_drag(); log_push_fn("[esc] gizmo drag cancelled"); }
                 else if (s.palette_visible)
@@ -4452,18 +4421,6 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                   log_push_fn("[esc] palette closed"); }
                 else if (s.selected >= 0)
                 { s.selected = -1; log_push_fn("[esc] selection cleared"); }
-            }
-            else if (ev.kind == cd::platform::OSEventKind::kKeyDown &&
-                     ev.key == cd::platform::KeyCode::kF5)
-            {
-                s.pie_playing = true;
-                log_push_fn("[studio] Play-In-Editor started (F5)");
-            }
-            else if (ev.kind == cd::platform::OSEventKind::kKeyDown &&
-                     ev.key == cd::platform::KeyCode::kF8)
-            {
-                s.pie_playing = false;
-                log_push_fn("[studio] Play-In-Editor stopped (F8)");
             }
             else if (ev.kind == cd::platform::OSEventKind::kResize)
             { s.needs_rebuild = true; }
@@ -4493,8 +4450,13 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
 
             const bool key_dn = (ev.kind == cd::platform::OSEventKind::kKeyDown);
             const bool key_up = (ev.kind == cd::platform::OSEventKind::kKeyUp);
+            const bool ui_captures_kb = ImGui::GetIO().WantCaptureKeyboard;
             auto& fl = s.app_state.free_look;
-            if (key_dn || key_up)
+            if (ui_captures_kb || s.pie_playing)
+            {
+                fl.key_w = fl.key_a = fl.key_s = fl.key_d = fl.key_q = fl.key_e = false;
+            }
+            else if (key_dn || key_up)
             {
                 const bool v = key_dn;
                 if (ev.key == cd::platform::KeyCode::kW)  fl.key_w = v;
@@ -4516,6 +4478,7 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                 { fl.manual_mode = true; s.scene_cam.set_auto_spin(false); }
             }
             if (key_dn && ev.key == cd::platform::KeyCode::kF &&
+                !ui_captures_kb && !s.pie_playing &&
                 s.selected >= 0 && std::cmp_less(s.selected, s.entities.size()))
             {
                 if (auto* lt = s.scene.local(
@@ -4528,7 +4491,7 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                 }
             }
             if (key_dn && ev.key == cd::platform::KeyCode::kSpace &&
-                !ImGui::GetIO().WantCaptureKeyboard)
+                !ui_captures_kb && !s.pie_playing)
             {
                 s.gizmo_state.mode = static_cast<GizmoMode>(
                     (static_cast<std::uint8_t>(s.gizmo_state.mode) + 1u) % 3u);
@@ -4540,27 +4503,9 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                 log_push_fn(std::string { "[gizmo] mode: " } + ms);
             }
             if (key_dn && ev.key == cd::platform::KeyCode::kDelete &&
-                !ImGui::GetIO().WantCaptureKeyboard && s.selected >= 0)
+                !ui_captures_kb && !s.pie_playing && s.selected >= 0)
             {
-                if (s.selected_kind == SelKind::kEntity &&
-                    std::cmp_less(s.selected, s.entities.size()))
-                {
-                    const std::string nm =
-                        s.entities[static_cast<std::size_t>(s.selected)].name;
-                    s.scene.destroy_node(
-                        s.entities[static_cast<std::size_t>(s.selected)].handle);
-                    s.entities.erase(s.entities.begin() + s.selected);
-                    log_push_fn("[edit] entity deleted: " + nm);
-                }
-                else if (s.selected_kind == SelKind::kLight &&
-                         std::cmp_less(s.selected, s.lights.size()))
-                {
-                    const std::string nm =
-                        s.lights[static_cast<std::size_t>(s.selected)].name;
-                    s.lights.erase(s.lights.begin() + s.selected);
-                    log_push_fn("[edit] light deleted: " + nm);
-                }
-                s.selected = -1;
+                cd::studio::delete_selected(s, log_push_fn);
             }
             if (ev.kind == cd::platform::OSEventKind::kMouseButtonDown)
             {
@@ -4617,17 +4562,29 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                 s.ui_mouse_y = ev.mouse_y;
             }
             if (ev.kind == cd::platform::OSEventKind::kMouseWheel &&
-                !ImGui::GetIO().WantCaptureMouse)
+                !ImGui::GetIO().WantCaptureMouse && !s.pie_playing)
             {
                 fl.dist *= (ev.wheel > 0.0F) ? 0.9F : 1.1F;
                 fl.dist = std::max(fl.dist, 1.0F);
                 fl.dist = std::min(fl.dist, 100.0F);
+                const float dx = s.cam.eye.x - s.cam.target.x;
+                const float dy = s.cam.eye.y - s.cam.target.y;
+                const float dz = s.cam.eye.z - s.cam.target.z;
+                const float cur_d = std::sqrt(dx * dx + dy * dy + dz * dz);
+                if (cur_d > 1e-4F)
+                {
+                    const float scale = fl.dist / cur_d;
+                    s.cam.eye.x = s.cam.target.x + dx * scale;
+                    s.cam.eye.y = s.cam.target.y + dy * scale;
+                    s.cam.eye.z = s.cam.target.z + dz * scale;
+                }
             }
         }  // end event loop
 
         if (s.needs_rebuild)
         {
             if (window.width() == 0 || window.height() == 0) continue;
+            device.wait_idle();
             if (!s.renderer.recreate_swapchain({ window.width(), window.height() }).has_value())
                 continue;
             s.rts.destroy(device);
@@ -4753,59 +4710,71 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
             s.next_random_refresh = s.frame_idx + 120;
         }
 
-        if (g_studio_initial_template >= 0 && s.frame_idx == 1u)
+        if (s.frame_idx == 0u)
         {
-            cd::studio::init_clean_studio_workspace(s, log_push_fn);
-            cd::studio::load_studio_interactive_template(s, g_studio_initial_template, log_push_fn);
-            g_studio_initial_template = -1;
-        }
-
-        // CPU-LBS/DQS skinning for CesiumMan (animated character — kGltf entity).
-        // Sponza (kSponza) has no skin data; its mesh lives in s.meshes.gltf.
-        // CesiumMan skin data lives in s.meshes.cesium_skinned; VB is gltf_cesium.
-        bool has_gltf_entity   = false;
-        bool has_sponza_entity = false;
-        for (const auto& ent : s.entities)
-        {
-            if (ent.kind == PrimitiveKind::kGltf)   has_gltf_entity   = true;
-            if (ent.kind == PrimitiveKind::kSponza) has_sponza_entity = true;
-        }
-        const float anim_dt = s.anim_paused ? 0.0F : (std::max(dt, 1.0F / 120.0F) * s.anim_speed);
-        if (has_gltf_entity &&
-            !cd_studio::update_skinned_animation(s.meshes.cesium_skinned, device,
-                                                  s.meshes.gltf_cesium.vb, anim_dt))
-        {
-            // W4-F fallback turntable: only for kGltf (CesiumMan) when it has
-            // no animation data (e.g. non-animated fallback mesh loaded).
-            // kSponza is always static — never rotated here.
-            static float cesium_yaw_t = 0.0F;
-            cesium_yaw_t += dt * 0.5F;
-            for (auto& ent : s.entities)
+            const bool had_cli_template = (g_studio_initial_template >= 0);
+            const bool had_cli_scene    = !g_studio_initial_scene.empty();
+            if (g_studio_autopilot_e2e)
             {
-                if (ent.kind != PrimitiveKind::kGltf) continue;
-                auto* lt = s.scene.local(ent.handle);
-                if (!lt) continue;
-                const float half = cesium_yaw_t * 0.5F;
-                const float sy = std::sin(half);
-                const float cy = std::cos(half);
-                const float qx1 = 0.0F;
-                const float qy1 = sy;
-                const float qz1 = 0.0F;
-                const float qw1 = cy;
-                const float qx2 = -0.7071068F;
-                const float qy2 = 0.0F;
-                const float qz2 = 0.0F;
-                const float qw2 = 0.7071068F;
-                lt->value.rotation = {
-                    qw1*qx2+qx1*qw2+qy1*qz2-qz1*qy2,
-                    qw1*qy2-qx1*qz2+qy1*qw2+qz1*qx2,
-                    qw1*qz2+qx1*qy2-qy1*qx2+qz1*qw2,
-                    qw1*qw2-qx1*qx2-qy1*qy2-qz1*qz2 };
-                break;
+                cd::studio::init_clean_studio_workspace(s, log_push_fn);
+                cd::studio::build_and_save_custom_game_level(s, log_push_fn);
+                if (g_studio_capture_gameplay_dir.empty())
+                {
+                    cd::studio::enter_pie_play_mode(s, log_push_fn);
+                    cd::studio::studio_world().autopilot_play_active = true;
+                }
             }
+            else if (had_cli_template)
+            {
+                cd::studio::init_clean_studio_workspace(s, log_push_fn);
+                cd::studio::load_studio_interactive_template(s, g_studio_initial_template, log_push_fn);
+                g_studio_initial_template = -1;
+            }
+            if (had_cli_scene)
+            {
+                cd::studio::init_clean_studio_workspace(s, log_push_fn);
+                (void)cd::studio::load_full_studio_scene(s, g_studio_initial_scene.c_str(), log_push_fn);
+                g_studio_initial_scene.clear();
+            }
+            if (!g_studio_autopilot_e2e && !had_cli_template && !had_cli_scene && !cd::studio_rt::golden::enabled())
+            {
+                cd::studio::init_clean_studio_workspace(s, log_push_fn);
+                if (const auto* active_lvl = s.cd_world.active_level_ptr();
+                    active_lvl != nullptr)
+                {
+                    cd::studio::load_studio_interactive_template(
+                        s, static_cast<int>(active_lvl->template_id()), log_push_fn);
+                }
+            }
+            if (g_studio_start_pie && !s.pie_playing)
+            {
+                cd::studio::init_clean_studio_workspace(s, log_push_fn);
+                cd::studio::enter_pie_play_mode(s, log_push_fn);
+            }
+            if (g_studio_has_cli_cam_eye)
+                s.cam.eye = g_studio_cli_cam_eye;
+            if (g_studio_has_cli_cam_target)
+                s.cam.target = g_studio_cli_cam_target;
+            if (g_studio_has_cli_cam_eye || g_studio_has_cli_cam_target)
+                cd::studio::sync_camera_and_invalidate_frame_history(s);
+        }
+        if (g_studio_autopilot_e2e && !g_studio_capture_gameplay_dir.empty() && s.frame_idx == 13u)
+        {
+            cd::studio::enter_pie_play_mode(s, log_push_fn);
+            cd::studio::studio_world().autopilot_play_active = true;
         }
 
-        cd_studio::update_free_look_camera(s.app_state.free_look, s.cam, s.scene_cam, dt);
+        // Tick Object-Oriented Modifiers + 3D RigidBody & Narrowphase Collider Physics +
+        // 3rd-Person Spring Camera BEFORE building TLAS and recording the HDR 3D scene pass!
+        if (!cd::studio_rt::golden::enabled())
+        {
+            cd::studio::tick_studio_modifiers_and_physics(s, dt, log_push_fn);
+        }
+
+        if (!s.pie_playing)
+        {
+            cd_studio::update_free_look_camera(s.app_state.free_look, s.cam, s.scene_cam, dt);
+        }
 
         if (s.app_state.pick.pending && s.gizmo_state.was_hovered)
             s.app_state.pick.pending = false;
@@ -4822,7 +4791,13 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                     s.app_state.free_look.key_q || s.app_state.free_look.key_e;
                 std::vector<cd_studio::EntityHit> ehits;
                 ehits.reserve(s.entities.size());
-                for (const auto& ent : s.entities) ehits.push_back({ ent.handle, ent.name });
+                for (const auto& ent : s.entities)
+                {
+                    const bool skip_pick =
+                        !ent.visible || ent.locked ||
+                        ent.name.find("Ground_Floor") != std::string::npos;
+                    ehits.push_back({ skip_pick ? cd::ecs::Entity {} : ent.name == "Ocean_Surface_Plane" ? cd::ecs::Entity {} : ent.handle, ent.name });
+                }
                 std::vector<cd_studio::LightHit> lhits;
                 lhits.reserve(s.lights.size());
                 for (const auto& l : s.lights)
@@ -4860,6 +4835,135 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
         auto& frame = *frame_r;
         auto& cmd   = *frame.command_buffer;
 
+        // Build ImGui/ChromaUI panels, gizmo manipulation, level switching, and
+        // Content Browser mesh/texture assignment BEFORE TLAS/Shadow/HDR pass
+        // recording so every scene or camera mutation takes effect atomically
+        // across all passes in the same frame with zero mid-frame desync!
+        ctx.new_frame();
+        const bool kHideEditorUiForGolden = cd::studio_rt::golden::enabled();
+
+        if (!kHideEditorUiForGolden &&
+            (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_P) ||
+             ImGui::IsKeyChordPressed(ImGuiKey_F2) ||
+             ImGui::IsKeyChordPressed(ImGuiKey_GraveAccent)))
+        {
+            s.palette_visible = !s.palette_visible;
+            if (s.palette_visible) s.palette_query.clear();
+        }
+
+        if (!kHideEditorUiForGolden)
+        {
+            cd::studio::draw_studio_main_menu_bar(s, dt, log_push_fn);
+
+            if (!s.pie_playing)
+            {
+                const ImGuiViewport* mv = ImGui::GetMainViewport();
+                ImGui::SetNextWindowPos(mv->WorkPos);
+                ImGui::SetNextWindowSize(mv->WorkSize);
+                ImGui::SetNextWindowViewport(mv->ID);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2 { 0, 0 });
+                ImGui::Begin("##cd_dockhost", nullptr,
+                    ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
+                    ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                    ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBackground);
+                ImGui::PopStyleVar(3);
+                const ImGuiID dock_id = ImGui::GetID("cd_engine_dock");
+                if (!s.dock_initialised && ImGui::DockBuilderGetNode(dock_id) == nullptr)
+                {
+                    ImGui::DockBuilderRemoveNode(dock_id);
+                    const int flags =
+                        static_cast<int>(ImGuiDockNodeFlags_DockSpace) |
+                        static_cast<int>(ImGuiDockNodeFlags_PassthruCentralNode);
+                    ImGui::DockBuilderAddNode(dock_id, static_cast<ImGuiDockNodeFlags>(flags));
+                    ImGui::DockBuilderSetNodeSize(dock_id, mv->WorkSize);
+                    ImGuiID m = dock_id;
+                    ImGuiID dl     = ImGui::DockBuilderSplitNode(m,  ImGuiDir_Left,  0.22F, nullptr, &m);
+                    ImGuiID dr     = ImGui::DockBuilderSplitNode(m,  ImGuiDir_Right, 0.25F, nullptr, &m);
+                    ImGuiID db     = ImGui::DockBuilderSplitNode(m,  ImGuiDir_Down,  0.19F, nullptr, &m);
+                    ImGuiID dl_bot = ImGui::DockBuilderSplitNode(dl, ImGuiDir_Down,  0.30F, nullptr, &dl);
+                    ImGui::DockBuilderDockWindow("Studio Workbench", dl);
+                    ImGui::DockBuilderDockWindow("Scene",            dl_bot);
+                    ImGui::DockBuilderDockWindow("Inspector",        dr);
+                    ImGui::DockBuilderDockWindow("History",          db);
+                    ImGui::DockBuilderFinish(dock_id);
+                    s.dock_initialised = true;
+                }
+                if (cd::ui::chroma::state().workspace_mode == 0)
+                {
+                    ImGui::DockSpace(dock_id, ImVec2 { 0, 0 },
+                                     ImGuiDockNodeFlags_PassthruCentralNode);
+                }
+                ImGui::End();
+            }
+
+            const HdrSceneFrame ui_hdr_frame =
+                make_hdr_frame(s.frame_idx, frame.extent, s.cam, s.fx.taa_amount);
+            cd::studio::draw_clean_studio_workspace_panels(
+                s, dt, ui_hdr_frame.vp, frame.extent.width, frame.extent.height, log_push_fn);
+            const HdrSceneFrame post_panel_hdr_frame =
+                make_hdr_frame(s.frame_idx, frame.extent, s.cam, s.fx.taa_amount);
+            if (!s.pie_playing && cd::ui::chroma::state().workspace_mode == 0)
+            {
+                draw_selection_outline_overlay(s.entities, s.selected, s.selected_kind,
+                                               s.outline, s.scene, post_panel_hdr_frame.vp, frame.extent);
+                draw_light_markers_overlay(s.lights, s.selected, s.selected_kind, post_panel_hdr_frame.vp, frame.extent);
+                update_and_draw_gizmo(s.gizmo, s.gizmo_state,
+                                      s.app_state.pick.pending, s.selected, s.selected_kind,
+                                      s.entities, s.lights, s.scene, s.history, log_push_fn,
+                                      post_panel_hdr_frame.vp, s.cam, window, frame.extent);
+            }
+            draw_command_palette_popup(s.palette, s.palette_visible, s.palette_query,
+                                       frame.extent);
+        }
+
+        // CPU-LBS/DQS skinning for CesiumMan (animated character — kGltf entity).
+        bool has_gltf_entity   = false;
+        bool has_sponza_entity = false;
+        for (const auto& ent : s.entities)
+        {
+            if (ent.kind == PrimitiveKind::kGltf)   has_gltf_entity   = true;
+            if (ent.kind == PrimitiveKind::kSponza) has_sponza_entity = true;
+        }
+        const float pie_speed_scale = s.pie_playing
+            ? std::clamp(cd::studio::studio_world().player_horiz_speed / 3.2F, 0.14F, 1.55F)
+            : 1.0F;
+        const float anim_dt = s.anim_paused
+            ? 0.0F
+            : (std::max(dt, 1.0F / 120.0F) * s.anim_speed * pie_speed_scale);
+        if (has_gltf_entity &&
+            !cd_studio::update_skinned_animation(s.meshes.cesium_skinned, device,
+                                                  s.meshes.gltf_cesium.vb, anim_dt))
+        {
+            static float cesium_yaw_t = 0.0F;
+            cesium_yaw_t += dt * 0.5F;
+            for (auto& ent : s.entities)
+            {
+                if (ent.kind != PrimitiveKind::kGltf) continue;
+                auto* lt = s.scene.local(ent.handle);
+                if (!lt) continue;
+                const float half = cesium_yaw_t * 0.5F;
+                const float sy = std::sin(half);
+                const float cy = std::cos(half);
+                const float qx1 = 0.0F;
+                const float qy1 = sy;
+                const float qz1 = 0.0F;
+                const float qw1 = cy;
+                const float qx2 = -0.7071068F;
+                const float qy2 = 0.0F;
+                const float qz2 = 0.0F;
+                const float qw2 = 0.7071068F;
+                lt->value.rotation = {
+                    qw1*qx2+qx1*qw2+qy1*qz2-qz1*qy2,
+                    qw1*qy2-qx1*qz2+qy1*qw2+qz1*qx2,
+                    qw1*qz2+qx1*qy2-qy1*qx2+qz1*qw2,
+                    qw1*qw2-qx1*qx2-qy1*qy2-qz1*qz2 };
+                break;
+            }
+        }
+
         // Compute lightweight FNV-1a scene hash over entity transforms/materials
         // so static frames skip TLAS recreation, 512 KB SSBO heap allocation,
         // and 100+ vkUpdateDescriptorSets calls.
@@ -4873,8 +4977,12 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
         {
             hash_mix(static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(f)));
         };
+        const float effective_floor_y =
+            (cd::studio_rt::golden::enabled() || !s.show_editor_floor) ? kFloorY : -0.002F;
         const SunLight sun = resolve_sun_light(s.lights);
         hash_mix(s.entities.size());
+        hash_mix(s.show_editor_floor ? 1u : 0u);
+        hash_f32(effective_floor_y);
         hash_mix(sun.has_sun ? 1u : 0u);
         hash_f32(sun.dir.x); hash_f32(sun.dir.y); hash_f32(sun.dir.z);
         if (has_gltf_entity && !s.anim_paused)
@@ -4888,6 +4996,7 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
             hash_mix(ent.visible ? 1u : 0u);
             hash_mix(ent.is_pbr ? 1u : 0u);
             hash_mix(ent.use_texture ? 1u : 0u);
+            hash_mix(static_cast<std::uint64_t>(ent.custom_texture_id));
             hash_f32(ent.tint.x); hash_f32(ent.tint.y); hash_f32(ent.tint.z);
             hash_f32(ent.metallic); hash_f32(ent.roughness);
             hash_f32(ent.multiscatter_comp); hash_f32(ent.iridescence_nm);
@@ -4941,13 +5050,14 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                     return { s.pbr_sphere_textured_meta };
                 return {};
             },
-            s.meshes.blas_floor, s.meshes.blas_cesium,
+            s.show_editor_floor ? s.meshes.blas_floor : cd::rhi::AccelStructureHandle {}, s.meshes.blas_cesium,
             has_gltf_entity && s.meshes.cesium_skinned.valid, s.inst_mat_ssbo,
             s.rts.depth.image, s.depth_initialised_on_gpu,
             [](const SceneEntity& e) -> bool {
                 return e.kind == PrimitiveKind::kSphere;
             },
-            tlas_dirty);
+            tlas_dirty,
+            effective_floor_y);
 
         // phase-descriptor-sync: propagate per-frame TLAS + inst_mat SSBO
         // writes to active per-prim descriptor sets (binding 2 + 10) when dirty.
@@ -4969,13 +5079,6 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
             }
         }
 
-        // phase1146 (P2/P3): boot + bind the DDGI GPU pipeline lazily. Boot
-        // once after the first TLAS exists (the trace pass needs ray-query);
-        // bind the sample pass to HDR (output, ADD) + depth (world-pos
-        // reconstruct) + G-buffer normal whenever the bound viewport extent
-        // changes (boot + window resize). This is pure resource setup — no
-        // dispatch is recorded here, so the golden fixture (ddgi OFF) path
-        // stays byte-identical regardless of whether the pipeline is booted.
         const bool ddgi_wanted = (s.fx.ddgi_on || cd_studio::g_ddgi_force_on)
                                  && s.current_tlas.is_valid()
                                  && device.features().ray_query;
@@ -4999,16 +5102,6 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                              kShadowMapSize, s.entities, s.scene, mesh_for,
                              tlas_dirty);
 
-        // phase1121 (X1-FU-F step 3): HDR pass over parallel lanes behind
-        // the fx toggle. Lane plan (CONTIGUOUS blocks; lane-order merge ==
-        // original serial order, so pixel parity holds by construction):
-        //   lane0  sky + prim state + floor/entities + planar shadows
-        //   lane1  prim state + 3D viewport overlays
-        //   lane2  debug-line flush
-        // v1 records lanes SEQUENTIALLY on the main thread: the GPU side
-        // (secondaries + vkCmdExecuteCommands) is fully exercised while
-        // s.counters / UBO uploads stay race-free. Worker-thread dispatch
-        // follows once the shared-state audit clears it (ADR-20260612).
         constexpr std::uint32_t kHdrLaneCount = 3;
         std::unique_ptr<cd::rhi::IParallelPassRecorder> hdr_rec;
         HdrSceneFrame hdr_frame {};
@@ -5020,9 +5113,6 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                 kHdrLaneCount);
             hdr_frame = opened.first;
             hdr_rec   = std::move(opened.second);
-            // Engagement evidence (parity captures + user logs): emitted
-            // once so a silent serial fallback is distinguishable from a
-            // real lane run.
             static bool lanes_logged = false;
             if (!lanes_logged)
             {
@@ -5055,13 +5145,10 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
         upload_multi_light_ubo(device, s.lights_ubo, s.lights, s.counters);
         s.materials.prim.apply(hdr_lane0);
         s.prim_inst.bind(hdr_lane0, 0);
-        // phase864-bindless-dedicated-set: bind the dedicated bindless
-        // descriptor set at set index 1 alongside the per-prim set 0.
-        // The shader reads cd_bindless_albedo from (set=1, binding=0).
         if (s.prim_bindless_set.is_valid())
             hdr_lane0.bind_descriptor_set(1, s.prim_bindless_set);
 
-        draw_floor_and_entities(hdr_lane0, s.meshes.floor, kFloorY, vp, s.fx, sun, s.cam,
+        draw_floor_and_entities(hdr_lane0, s.meshes.floor, effective_floor_y, vp, s.fx, sun, s.cam,
                                 s.entities, s.scene, s.has_gltf_texture,
                                 s.materials.prim, s.counters, mesh_for,
                                 [&s](PrimitiveKind k) -> std::span<const cd_studio::GltfPrimRange> {
@@ -5072,9 +5159,9 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                                 s.albedo_sampler, device, s.albedo_tex.view,
                                 s.normal_tex.view, s.mr_tex.view,  // phase456: per-prim restore
                                 s.show_editor_floor);  // phase435-vis8
-        if (s.entities.size() > 1U)
+        if (cd::studio_rt::golden::enabled() && s.show_editor_floor && s.entities.size() > 1U)
         {
-            draw_planar_shadows(hdr_lane0, sun, kFloorY, kShadowLift, s.entities,
+            draw_planar_shadows(hdr_lane0, sun, effective_floor_y, kShadowLift, s.entities,
                                 s.scene, vp, s.materials.prim, s.counters, mesh_for);
         }
         // phase1121: lane1 owns the 3D overlays — re-establish dynamic
@@ -5106,24 +5193,7 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
         cd_studio::draw_camera_basis_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
         cd_studio::draw_cct_sweep_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
         cd_studio::draw_attenuation_rail_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
-        // phase1031-debug-line-gpu: flush the per-frame
-        // cd::debug_line::LineBatch through the kLineList material.
-        // Runs LAST in the HDR pass (after every overlay that may
-        // append lines) so a single upload + draw covers all line
-        // consumers. VB is host-visible (kCpuToGpu) and grows by
-        // doubling when a frame outgrows it; upload_buffer handles
-        // host->device sync per the IDevice contract.
-        // phase1044-overlay-extract: the 7 pure-line overlays
-        // (phase-function polar / audio waveform / RNG histogram /
-        // BRDF LUT surface / BRDF lobes / SSS falloff / shafts ring,
-        // phases 1035-1041) moved to StudioDiagnosticOverlays.hpp -- they
-        // are pure functions of (fx, LineBatch), so the render loop
-        // shrinks to one umbrella call before the flush below.
         cd_studio::append_pure_line_overlays(s.fx, s.debug_lines);
-        // phase1053-3d-viewport-vt-atlas: apply the panel's pending
-        // page request (one allocate per button press, serial-gated),
-        // mirror the lookup results back for the panel text, and
-        // draw the atlas grid overlay.
         {
             cd::virtual_textures::PageId q {};
             q.x   = static_cast<std::uint16_t>(s.fx.vt_req[0]);
@@ -5146,118 +5216,12 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
         }
         if (s.fx.ms_show_meshlets_3d)
             cd_studio::append_meshlet_overlay(s.fx, s.debug_lines);
-        // phase1058: the whole upload/grow/park/draw dance is one
-        // library call now (cd::debug_draw::Renderer::flush).
         if (!s.debug_lines.empty())
             s.counters.increment("draws_debug_lines");
         if (hdr_rec)
             prep_hdr_lane(hdr_lane2, frame.extent);
         s.debug_draw.flush(device, hdr_lane2, s.debug_lines, vp, s.frame_idx);
         s.debug_lines.clear();
-
-        ctx.new_frame();
-
-        // phase797-rt-chrome-sponza-probe: in --golden-fixture capture mode
-        // we skip every editor panel + overlay + gizmo. The captured PNG
-        // shows the raw rendered scene, which is what the iteration loop
-        // needs in order to see the chrome reflection unobstructed by
-        // ImGui draw commands. The new_frame()/render() pair still runs so
-        // the ImGui per-frame state (font atlas, viewport setup) stays
-        // intact; only the panel-drawing block is gated.
-        const bool kHideEditorUiForGolden =
-            cd::studio_rt::golden::enabled();
-
-        if (!kHideEditorUiForGolden &&
-            (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_P) ||
-             ImGui::IsKeyChordPressed(ImGuiKey_F2) ||
-             ImGui::IsKeyChordPressed(ImGuiKey_GraveAccent)))
-        {
-            s.palette_visible = !s.palette_visible;
-            if (s.palette_visible) s.palette_query.clear();
-        }
-
-        if (!kHideEditorUiForGolden)
-        {
-        cd::studio::draw_studio_main_menu_bar(s, dt, log_push_fn);
-
-        if (s.pie_playing)
-        {
-            ImGui::SetNextWindowPos(ImVec2(18.0F, 36.0F), ImGuiCond_Always);
-            ImGui::SetNextWindowBgAlpha(0.72F);
-            if (ImGui::Begin("##pie_hud", nullptr,
-                    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-                    ImGuiWindowFlags_NoNav))
-            {
-                ImGui::TextColored(ImVec4(0.35F, 1.0F, 0.45F, 1.0F),
-                                   "[>] PLAY-IN-EDITOR (PIE) LIVE  --  Press F8 or ESC to Return to Editor");
-                ImGui::TextUnformatted("WASD + Q/E: Move Camera | Right-Mouse Drag: Look | Scroll: Zoom");
-                ImGui::TextDisabled("Sponza Atrium + Skinned CesiumMan + Clustered PBR + CSM Shadows");
-            }
-            ImGui::End();
-        }
-        else
-        {
-        // DockSpace
-        {
-            const ImGuiViewport* mv = ImGui::GetMainViewport();
-            ImGui::SetNextWindowPos(mv->WorkPos);
-            ImGui::SetNextWindowSize(mv->WorkSize);
-            ImGui::SetNextWindowViewport(mv->ID);
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2 { 0, 0 });
-            ImGui::Begin("##cd_dockhost", nullptr,
-                ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
-                ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
-                ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBackground);
-            ImGui::PopStyleVar(3);
-            const ImGuiID dock_id = ImGui::GetID("cd_engine_dock");
-            if (!s.dock_initialised && ImGui::DockBuilderGetNode(dock_id) == nullptr)
-            {
-                ImGui::DockBuilderRemoveNode(dock_id);
-                const int flags =
-                    static_cast<int>(ImGuiDockNodeFlags_DockSpace) |
-                    static_cast<int>(ImGuiDockNodeFlags_PassthruCentralNode);
-                ImGui::DockBuilderAddNode(dock_id, static_cast<ImGuiDockNodeFlags>(flags));
-                ImGui::DockBuilderSetNodeSize(dock_id, mv->WorkSize);
-                ImGuiID m = dock_id;
-                ImGuiID dl     = ImGui::DockBuilderSplitNode(m,  ImGuiDir_Left,  0.22F, nullptr, &m);
-                ImGuiID dr     = ImGui::DockBuilderSplitNode(m,  ImGuiDir_Right, 0.25F, nullptr, &m);
-                ImGuiID db     = ImGui::DockBuilderSplitNode(m,  ImGuiDir_Down,  0.19F, nullptr, &m);
-                ImGuiID dl_bot = ImGui::DockBuilderSplitNode(dl, ImGuiDir_Down,  0.32F, nullptr, &dl);
-                ImGui::DockBuilderDockWindow("Studio Workbench", dl);
-                ImGui::DockBuilderDockWindow("Scene",            dl_bot);
-                ImGui::DockBuilderDockWindow("Inspector",        dr);
-                ImGui::DockBuilderDockWindow("History",          db);
-                ImGui::DockBuilderFinish(dock_id);
-                s.dock_initialised = true;
-            }
-            if (cd::ui::chroma::state().workspace_mode == 0)
-            {
-                ImGui::DockSpace(dock_id, ImVec2 { 0, 0 },
-                                 ImGuiDockNodeFlags_PassthruCentralNode);
-            }
-            ImGui::End();
-        }
-
-        cd::studio::draw_clean_studio_workspace_panels(
-            s, dt, vp, frame.extent.width, frame.extent.height, log_push_fn);
-        if (cd::ui::chroma::state().workspace_mode == 0)
-        {
-            draw_selection_outline_overlay(s.entities, s.selected, s.selected_kind,
-                                           s.outline, s.scene, vp, frame.extent);
-            draw_light_markers_overlay(s.lights, s.selected, s.selected_kind, vp, frame.extent);
-            update_and_draw_gizmo(s.gizmo, s.gizmo_state,
-                                  s.app_state.pick.pending, s.selected, s.selected_kind,
-                                  s.entities, s.lights, s.scene, s.history, log_push_fn,
-                                  vp, s.cam, window, frame.extent);
-        }
-        draw_command_palette_popup(s.palette, s.palette_visible, s.palette_query,
-                                   frame.extent);
-        }  // else (!s.pie_playing)
-        }  // if (!kHideEditorUiForGolden) — phase797 golden capture gate
 
         // phase1121: lanes join IN LANE ORDER (== serial order) and the
         // pass closes inside finish(); the serial path closes as before.
@@ -5489,9 +5453,28 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
         const bool golden_active = cd::studio_rt::golden::enabled()
             && !cd::studio_rt::golden::options().out_png_path.empty();
         const bool studio_capture_active = !g_studio_capture_png.empty();
+        std::string gameplay_seq_path {};
+        bool        gameplay_seq_final = false;
+        if (!g_studio_capture_gameplay_dir.empty())
+        {
+            std::error_code ec {};
+            std::filesystem::create_directories(g_studio_capture_gameplay_dir, ec);
+            if (s.frame_idx == 12u)
+                gameplay_seq_path = g_studio_capture_gameplay_dir + "/01_editor_built_and_loaded_scene.png";
+            else if (s.frame_idx == 32u)
+                gameplay_seq_path = g_studio_capture_gameplay_dir + "/02_pie_combat_and_jumppad.png";
+            else if (s.frame_idx == 58u)
+                gameplay_seq_path = g_studio_capture_gameplay_dir + "/03_pie_moving_platforms_and_cores.png";
+            else if (s.frame_idx == 95u)
+            {
+                gameplay_seq_path  = g_studio_capture_gameplay_dir + "/04_pie_victory_goal_complete.png";
+                gameplay_seq_final = true;
+            }
+        }
         const bool capture_this_frame =
             (golden_active && s.frame_idx == cd::studio_rt::golden::options().capture_at_frame)
-            || (studio_capture_active && s.frame_idx >= g_studio_capture_frame);
+            || (studio_capture_active && s.frame_idx >= g_studio_capture_frame)
+            || !gameplay_seq_path.empty();
         cd::rhi::BufferHandle golden_staging {};
         std::uint32_t golden_w = 0;
         std::uint32_t golden_h = 0;
@@ -5559,7 +5542,7 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
         }
 
         // After end_frame: GPU has finished writing the staging buffer.
-        // Download bytes, BGRA->RGBA swap, write PNG, request shutdown.
+        // Download bytes, BGRA->RGBA swap, write PNG, request shutdown (if single capture or final stage).
         if (capture_this_frame && golden_staging.is_valid())
         {
             s.renderer.wait_idle();  // belt-and-braces; end_frame already waited
@@ -5586,9 +5569,11 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                 rgba[i + 2] = static_cast<std::uint8_t>(raw[i + 0]);
                 rgba[i + 3] = static_cast<std::uint8_t>(raw[i + 3]);
             }
-            const auto& out_path = studio_capture_active
-                ? g_studio_capture_png
-                : cd::studio_rt::golden::options().out_png_path;
+            const auto& out_path = !gameplay_seq_path.empty()
+                ? gameplay_seq_path
+                : (studio_capture_active
+                    ? g_studio_capture_png
+                    : cd::studio_rt::golden::options().out_png_path);
             auto wr = cd::asset::image::write_png_rgba(
                 out_path, rgba.data(), golden_w, golden_h);
             if (!wr.has_value())
@@ -5598,11 +5583,17 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                 request_shutdown();
                 break;
             }
+            const auto& w = cd::studio::studio_world();
             std::fprintf(stdout,
-                "[studio] captured swapchain PNG -> %s (%ux%u)\n",
-                out_path.c_str(), golden_w, golden_h);
-            request_shutdown();
-            break;
+                "[studio] captured swapchain PNG -> %s (%ux%u | frame=%u | PIE=%d | Score=%d | Cores=%d/%d | Bots=%d | Victory=%d)\n",
+                out_path.c_str(), golden_w, golden_h, s.frame_idx,
+                s.pie_playing ? 1 : 0, w.game_score, w.collected_cores,
+                w.total_cores_in_level, w.defeated_enemies, w.level_goal_reached ? 1 : 0);
+            if (gameplay_seq_path.empty() || gameplay_seq_final)
+            {
+                request_shutdown();
+                break;
+            }
         }
 
         // phase1178 — advance LMB edge-detection state for next frame's
@@ -5635,6 +5626,23 @@ void StudioApp::on_shutdown() noexcept
     // destroy_ingest_result's contract the ECS entities are NOT destroyed
     // here -- the surrounding World destruction handles that moments later.
     cd_studio::destroy_generic_ingests(device, s.generic_ingests);
+    for (auto& dt : s.custom_disk_textures)
+    {
+        if (dt.view.is_valid())  device.destroy_texture_view(dt.view);
+        if (dt.image.is_valid()) device.destroy_texture(dt.image);
+    }
+    s.custom_disk_textures.clear();
+    s.custom_disk_tex_slots.clear();
+    if (s.blas_custom_gltf.is_valid())
+    {
+        device.destroy_acceleration_structure(s.blas_custom_gltf);
+        s.blas_custom_gltf = {};
+    }
+    if (s.custom_gltf_mesh.vb.is_valid())
+    {
+        destroy_mesh(device, s.custom_gltf_mesh);
+        s.custom_gltf_mesh = {};
+    }
 
     destroy_mesh(device, s.meshes.floor);
     s.rts.destroy(device);
@@ -5715,6 +5723,16 @@ int main(int argc, char** argv)
         {
             g_studio_start_pie = true;
         }
+        else if (arg == "--autopilot" || arg == "--auto-play" || arg == "--play-game")
+        {
+            g_studio_autopilot_e2e = true;
+        }
+        else if (arg == "--capture-gameplay-dir" && i + 1 < argc && argv[i + 1] != nullptr)
+        {
+            g_studio_autopilot_e2e        = true;
+            g_studio_capture_gameplay_dir = argv[++i];
+            if (g_studio_max_frames == 0U) g_studio_max_frames = 110U;
+        }
         else if (arg == "--demo-all-phases")
         {
             g_studio_demo_all_phases = true;
@@ -5746,17 +5764,40 @@ int main(int argc, char** argv)
             const int t = std::atoi(argv[++i]);
             ImGui::ApplyTheme(t);
         }
-        else if ((arg == "--template" || arg == "--studio-template" || arg == "--level") &&
+        else if ((arg == "--template" || arg == "--studio-template" ||
+                  arg == "--level" || arg == "--studio-level") &&
                  i + 1 < argc && argv[i + 1] != nullptr)
         {
-            g_studio_initial_template = std::clamp(std::atoi(argv[++i]), 0, 12);
+            g_studio_initial_template = std::clamp(std::atoi(argv[++i]), 0, 20);
+        }
+        else if ((arg == "--scene" || arg == "--load-scene") &&
+                 i + 1 < argc && argv[i + 1] != nullptr)
+        {
+            g_studio_initial_scene = argv[++i];
+        }
+        else if (arg == "--cam-eye" && i + 3 < argc &&
+                 argv[i + 1] != nullptr && argv[i + 2] != nullptr && argv[i + 3] != nullptr)
+        {
+            g_studio_has_cli_cam_eye = true;
+            g_studio_cli_cam_eye.x   = static_cast<float>(std::atof(argv[++i]));
+            g_studio_cli_cam_eye.y   = static_cast<float>(std::atof(argv[++i]));
+            g_studio_cli_cam_eye.z   = static_cast<float>(std::atof(argv[++i]));
+        }
+        else if (arg == "--cam-target" && i + 3 < argc &&
+                 argv[i + 1] != nullptr && argv[i + 2] != nullptr && argv[i + 3] != nullptr)
+        {
+            g_studio_has_cli_cam_target = true;
+            g_studio_cli_cam_target.x   = static_cast<float>(std::atof(argv[++i]));
+            g_studio_cli_cam_target.y   = static_cast<float>(std::atof(argv[++i]));
+            g_studio_cli_cam_target.z   = static_cast<float>(std::atof(argv[++i]));
         }
         else if (arg == "--headless" || arg == "--null")
         {
             headless_smoke = true;
         }
     }
-    if (headless_smoke && g_studio_capture_png.empty() && !cd::studio_rt::golden::enabled())
+    if (headless_smoke && g_studio_capture_png.empty() &&
+        g_studio_capture_gameplay_dir.empty() && !cd::studio_rt::golden::enabled())
     {
         std::printf("chromodynamic_studio: headless smoke pass (PIE=%d)\n",
                     g_studio_start_pie ? 1 : 0);

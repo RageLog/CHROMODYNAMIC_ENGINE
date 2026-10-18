@@ -125,13 +125,10 @@ const uint kBindlessAlbedoSlotNone = 0xFFFFFFFFu;
 //        index varies per-pixel across the chrome surface.
 // (#extension GL_EXT_nonuniform_qualifier moved to the file head in
 // phase847 for compiler strictness.)
-struct PrimitiveVertexGpu {
-  vec4 pos_x_y_z_nx;     // pos.xyz + normal.x   (std430 packs 3-float as vec3 alignment)
-  vec4 ny_nz_u_v;        // normal.yz + uv.xy
-  vec4 col_r_g_b_pad;    // color.rgb + 4-byte pad to round to 48 B
-};
+// Mirrors cd::asset::PrimitiveVertex (3×float pos + 3×float normal +
+// 2×float uv + 3×float color = 11 floats = 44 B packed with 4-byte alignment).
 layout(set = 0, binding = 11, std430) readonly buffer SponzaVB {
-  PrimitiveVertexGpu verts[];
+  float data[];
 } cd_sponza_vb;
 layout(set = 0, binding = 12, std430) readonly buffer SponzaIB {
   uint idx[];
@@ -141,11 +138,32 @@ layout(set = 0, binding = 12, std430) readonly buffer SponzaIB {
 // selects this pair instead of sponza_vb/ib for the chrome
 // reflection UV interpolation.
 layout(set = 0, binding = 14, std430) readonly buffer CesiumVB {
-  PrimitiveVertexGpu verts[];
+  float data[];
 } cd_cesium_vb;
 layout(set = 0, binding = 15, std430) readonly buffer CesiumIB {
   uint idx[];
 } cd_cesium_ib;
+
+vec2 sponza_vert_uv(uint vi) {
+  uint b = vi * 11u;
+  return vec2(cd_sponza_vb.data[b + 6u], cd_sponza_vb.data[b + 7u]);
+}
+vec3 sponza_vert_normal(uint vi) {
+  uint b = vi * 11u;
+  return vec3(cd_sponza_vb.data[b + 3u], cd_sponza_vb.data[b + 4u], cd_sponza_vb.data[b + 5u]);
+}
+vec2 cesium_vert_uv(uint vi) {
+  uint b = vi * 11u;
+  return vec2(cd_cesium_vb.data[b + 6u], cd_cesium_vb.data[b + 7u]);
+}
+vec3 cesium_vert_normal(uint vi) {
+  uint b = vi * 11u;
+  return vec3(cd_cesium_vb.data[b + 3u], cd_cesium_vb.data[b + 5u], -cd_cesium_vb.data[b + 4u]);
+}
+uint cesium_read_index(uint k) {
+  uint word = cd_cesium_ib.idx[k >> 1u];
+  return (word >> ((k & 1u) * 16u)) & 0xFFFFu;
+}
 // phase864-bindless-dedicated-set: bindless sampler2D array moved
 // onto its own descriptor set at index 1. The shared per-prim set 0
 // no longer carries binding 13 — phase 851 + 860 proved NVIDIA
@@ -272,125 +290,181 @@ float reflection_hit_id(vec3 origin, vec3 N, vec3 dir, float tmax,
   return 1.0;
 }
 
-// phase866-2-bounce-sphere-normal: t-returning variant of
-// reflection_hit_id. Same logic but also exposes the hit-t so the
-// caller can recover the hit world position via origin + dir * t.
-float reflection_hit_id_t(vec3 origin, vec3 N, vec3 dir, float tmax,
-                          out int  out_inst, out int  out_geom,
-                          out int  out_prim, out vec2 out_bary,
-                          out float out_t) {
-  rayQueryEXT rq;
-  rayQueryInitializeEXT(
-      rq, cd_tlas,
-      gl_RayFlagsOpaqueEXT,
-      0xFFu,
-      origin + N * 0.01,
-      0.01, dir, tmax);
-  while (rayQueryProceedEXT(rq)) {}
-  if (rayQueryGetIntersectionTypeEXT(rq, true) ==
-      gl_RayQueryCommittedIntersectionNoneEXT) {
-    out_inst = -1; out_geom = -1; out_prim = -1;
-    out_bary = vec2(0.0); out_t = 0.0;
-    return 0.0;
-  }
-  out_inst = rayQueryGetIntersectionInstanceIdEXT(rq, true);
-  out_geom = rayQueryGetIntersectionGeometryIndexEXT(rq, true);
-  out_prim = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
-  out_bary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
-  out_t    = rayQueryGetIntersectionTEXT(rq, true);
-  return 1.0;
-}
-
-// phase1020-second-bounce-bindless-sampling (Run 28 item #2): shared
-// hit-albedo resolver. Same UV recovery + bindless sample the PRIMARY
-// reflection path runs inline in main() (lines below, phase 842c/888/
-// 1000) but callable from the second-bounce helper too. Returns
-// `fallback` (per-instance avg colour) when the prim has no texture
-// slot or no recoverable UV — i.e. exactly the pre-phase-1020
-// behaviour. mesh_id semantics: 0 = Sponza VB/IB, 1 = CesiumMan
-// VB/IB, 2 = analytical sphere (equirectangular UV from hit point).
-vec3 sample_hit_albedo(int slot, int prim, vec2 bary, vec3 hit_pos,
-                       vec3 fallback) {
+// Shared UV + RGBA bindless texture resolver with 5-tap footprint filter.
+// Returns alpha = 0.0 when the ray hits a transparent cutout texel (a < 0.5)
+// so reflection_hit_id_t and reflection_hit_color can step past alpha-masked
+// foliage/chain quads (e.g., Sponza Prim 53 ivy, Prim 4 chains, Prim 20 flowers).
+vec4 sample_hit_albedo_rgba(int slot, int prim, vec2 bary, vec3 hit_pos,
+                            float hit_t, vec3 fallback) {
   uint tex_slot   = cd_instance_mats.data[slot].albedo_tex_slot;
   uint idx_offset = cd_instance_mats.data[slot].index_offset;
   if (tex_slot == kBindlessAlbedoSlotNone || tex_slot >= 256u)
-    return fallback;
+    return vec4(fallback, 1.0);
   uint mesh_id = cd_instance_mats.data[slot].mesh_id;
   vec2 uv = vec2(0.0);
   bool uv_ok = false;
   if (mesh_id == 2u) {
     vec4 sphc = cd_instance_mats.data[slot].sphere_center_radius;
-    vec3 obj_radial = normalize(hit_pos - sphc.xyz);
+    vec3 d_sp = hit_pos - sphc.xyz;
+    vec3 obj_radial = (dot(d_sp, d_sp) > 1e-8) ? normalize(d_sp) : vec3(0.0, 1.0, 0.0);
     const float kInv2Pi = 0.15915494;  // 1 / (2 * pi)
     const float kInvPi  = 0.31830989;  // 1 / pi
-    uv = vec2(atan(obj_radial.z, obj_radial.x) * kInv2Pi + 0.5,
-              asin(clamp(obj_radial.y, -1.0, 1.0)) * kInvPi + 0.5);
+    float u_sp = (abs(obj_radial.x) > 1e-6 || abs(obj_radial.z) > 1e-6)
+                 ? (atan(obj_radial.z, obj_radial.x) * kInv2Pi + 0.5)
+                 : 0.5;
+    uv = vec2(u_sp, asin(clamp(obj_radial.y, -1.0, 1.0)) * kInvPi + 0.5);
     uv_ok = true;
   } else if (prim >= 0) {
     uint i0, i1, i2;
     vec2 uv0, uv1, uv2;
     if (mesh_id == 1u) {
-      i0 = cd_cesium_ib.idx[idx_offset + uint(prim) * 3u + 0u];
-      i1 = cd_cesium_ib.idx[idx_offset + uint(prim) * 3u + 1u];
-      i2 = cd_cesium_ib.idx[idx_offset + uint(prim) * 3u + 2u];
-      uv0 = cd_cesium_vb.verts[i0].ny_nz_u_v.zw;
-      uv1 = cd_cesium_vb.verts[i1].ny_nz_u_v.zw;
-      uv2 = cd_cesium_vb.verts[i2].ny_nz_u_v.zw;
+      i0 = cesium_read_index(idx_offset + uint(prim) * 3u + 0u);
+      i1 = cesium_read_index(idx_offset + uint(prim) * 3u + 1u);
+      i2 = cesium_read_index(idx_offset + uint(prim) * 3u + 2u);
+      uv0 = cesium_vert_uv(i0);
+      uv1 = cesium_vert_uv(i1);
+      uv2 = cesium_vert_uv(i2);
     } else {
       i0 = cd_sponza_ib.idx[idx_offset + uint(prim) * 3u + 0u];
       i1 = cd_sponza_ib.idx[idx_offset + uint(prim) * 3u + 1u];
       i2 = cd_sponza_ib.idx[idx_offset + uint(prim) * 3u + 2u];
-      uv0 = cd_sponza_vb.verts[i0].ny_nz_u_v.zw;
-      uv1 = cd_sponza_vb.verts[i1].ny_nz_u_v.zw;
-      uv2 = cd_sponza_vb.verts[i2].ny_nz_u_v.zw;
+      uv0 = sponza_vert_uv(i0);
+      uv1 = sponza_vert_uv(i1);
+      uv2 = sponza_vert_uv(i2);
     }
     float w0 = 1.0 - bary.x - bary.y;
     uv = uv0 * w0 + uv1 * bary.x + uv2 * bary.y;
     uv_ok = true;
   }
-  if (!uv_ok) return fallback;
-  return texture(cd_bindless_albedo[nonuniformEXT(tex_slot)], uv).rgb;
+  if (!uv_ok) return vec4(fallback, 1.0);
+  vec4 c0 = texture(cd_bindless_albedo[nonuniformEXT(tex_slot)], uv);
+  if (c0.a < 0.5) return vec4(fallback, 0.0);
+  if (mesh_id == 1u) return vec4(c0.rgb, 1.0);
+
+  // 5-tap rotated-grid prefilter to suppress Mip-0 minification aliasing
+  // (salt-and-pepper mortar speckles & floor crack Moire on curved reflections).
+  float r_uv = clamp(hit_t * 0.0015, 0.0015, 0.012);
+  vec2 o1 = vec2( r_uv,  r_uv * 0.5);
+  vec2 o2 = vec2(-r_uv * 0.5,  r_uv);
+  vec3 accum = c0.rgb * 2.0;
+  float w_sum = 2.0;
+  vec4 c1 = texture(cd_bindless_albedo[nonuniformEXT(tex_slot)], uv + o1);
+  if (c1.a >= 0.5) { accum += c1.rgb; w_sum += 1.0; }
+  vec4 c2 = texture(cd_bindless_albedo[nonuniformEXT(tex_slot)], uv - o1);
+  if (c2.a >= 0.5) { accum += c2.rgb; w_sum += 1.0; }
+  vec4 c3 = texture(cd_bindless_albedo[nonuniformEXT(tex_slot)], uv + o2);
+  if (c3.a >= 0.5) { accum += c3.rgb; w_sum += 1.0; }
+  vec4 c4 = texture(cd_bindless_albedo[nonuniformEXT(tex_slot)], uv - o2);
+  if (c4.a >= 0.5) { accum += c4.rgb; w_sum += 1.0; }
+  vec3 filtered = accum / w_sum;
+
+  // Prevent sub-texel black mortar/crack pits from creating dark speckles,
+  // and blend smoothly toward the prim's representative albedo with distance.
+  filtered = max(filtered, fallback * 0.55);
+  float dist_blend = clamp(hit_t * 0.025, 0.15, 0.45);
+  return vec4(mix(filtered, fallback, dist_blend), 1.0);
 }
 
-// phase866-2-bounce-sphere-normal: lightweight second-bounce query.
-// Reads the hit instance's avg-colour from the SSBO and returns it
-// — used by the 2-bounce path when the first hit's analytical normal
-// (from is_sphere data) gives a meaningful second-ray direction.
-// phase1020-second-bounce-bindless-sampling: upgraded to recover the
-// hit triangle's UV (or the analytical sphere UV) and sample the
-// bindless albedo array, so the REFLECTION OF A REFLECTION now shows
-// curtain damask / CesiumMan texture instead of flat avg colour
-// (user report: "yansimanin uzerindeki perdenin deseni gozukmuyor").
+vec3 sample_hit_albedo(int slot, int prim, vec2 bary, vec3 hit_pos,
+                       vec3 fallback) {
+  return sample_hit_albedo_rgba(slot, prim, bary, hit_pos, 3.0, fallback).rgb;
+}
+
+// phase866-2-bounce-sphere-normal: t-returning variant of
+// reflection_hit_id with alpha-cutout step-through so transparent
+// foliage/chain quads (alphaMode = MASK) do not paint black cutouts
+// onto chrome reflections.
+float reflection_hit_id_t(vec3 origin, vec3 N, vec3 dir, float tmax,
+                          out int  out_inst, out int  out_geom,
+                          out int  out_prim, out vec2 out_bary,
+                          out float out_t) {
+  vec3 ray_orig = origin + N * 0.01;
+  float tmin = 0.01;
+  for (int step = 0; step < 5; ++step) {
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(
+        rq, cd_tlas,
+        gl_RayFlagsOpaqueEXT,
+        0xFFu,
+        ray_orig,
+        tmin, dir, tmax);
+    while (rayQueryProceedEXT(rq)) {}
+    if (rayQueryGetIntersectionTypeEXT(rq, true) ==
+        gl_RayQueryCommittedIntersectionNoneEXT) {
+      break;
+    }
+    int inst = rayQueryGetIntersectionInstanceIdEXT(rq, true);
+    int geom = rayQueryGetIntersectionGeometryIndexEXT(rq, true);
+    int prim = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
+    vec2 bary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+    float t   = rayQueryGetIntersectionTEXT(rq, true);
+    int g = (geom < 0) ? 0 : min(geom, kMaxGeomsPerInst - 1);
+    int slot = inst * kMaxGeomsPerInst + g;
+    if (slot >= 0 && slot < kMaxInstMatSlots) {
+      uint tex_slot = cd_instance_mats.data[slot].albedo_tex_slot;
+      if (tex_slot != kBindlessAlbedoSlotNone && tex_slot < 256u) {
+        vec4 s_rgba = sample_hit_albedo_rgba(
+            slot, prim, bary, ray_orig + dir * t, t,
+            cd_instance_mats.data[slot].albedo.rgb);
+        if (s_rgba.a < 0.5) {
+          tmin = t + 0.008;
+          if (tmin < tmax) continue;
+        }
+      }
+    }
+    out_inst = inst;
+    out_geom = geom;
+    out_prim = prim;
+    out_bary = bary;
+    out_t    = t;
+    return 1.0;
+  }
+  out_inst = -1; out_geom = -1; out_prim = -1;
+  out_bary = vec2(0.0); out_t = 0.0;
+  return 0.0;
+}
+
 float reflection_hit_color(vec3 origin, vec3 dir, float tmax,
                            out vec3 out_color) {
-  rayQueryEXT rq;
-  rayQueryInitializeEXT(
-      rq, cd_tlas,
-      gl_RayFlagsOpaqueEXT,
-      0xFFu,
-      origin,
-      0.01, dir, tmax);
-  while (rayQueryProceedEXT(rq)) {}
-  if (rayQueryGetIntersectionTypeEXT(rq, true) ==
-      gl_RayQueryCommittedIntersectionNoneEXT) {
-    out_color = vec3(0.0);
-    return 0.0;
+  float tmin = 0.01;
+  for (int step = 0; step < 4; ++step) {
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(
+        rq, cd_tlas,
+        gl_RayFlagsOpaqueEXT,
+        0xFFu,
+        origin,
+        tmin, dir, tmax);
+    while (rayQueryProceedEXT(rq)) {}
+    if (rayQueryGetIntersectionTypeEXT(rq, true) ==
+        gl_RayQueryCommittedIntersectionNoneEXT) {
+      out_color = vec3(0.0);
+      return 0.0;
+    }
+    int inst2 = rayQueryGetIntersectionInstanceIdEXT(rq, true);
+    int geom2 = rayQueryGetIntersectionGeometryIndexEXT(rq, true);
+    if (geom2 < 0) geom2 = 0;
+    if (geom2 >= kMaxGeomsPerInst) geom2 = kMaxGeomsPerInst - 1;
+    int slot2 = inst2 * kMaxGeomsPerInst + geom2;
+    if (slot2 < 0 || slot2 >= kMaxInstMatSlots) {
+      out_color = vec3(0.0);
+      return 0.0;
+    }
+    int   prim2 = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
+    vec2  bary2 = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+    float t2    = rayQueryGetIntersectionTEXT(rq, true);
+    vec4 s_rgba = sample_hit_albedo_rgba(
+        slot2, prim2, bary2, origin + dir * t2, t2,
+        cd_instance_mats.data[slot2].albedo.rgb);
+    if (s_rgba.a < 0.5) {
+      tmin = t2 + 0.008;
+      if (tmin < tmax) continue;
+    }
+    out_color = s_rgba.rgb;
+    return 1.0;
   }
-  int inst2 = rayQueryGetIntersectionInstanceIdEXT(rq, true);
-  int geom2 = rayQueryGetIntersectionGeometryIndexEXT(rq, true);
-  if (geom2 < 0) geom2 = 0;
-  if (geom2 >= kMaxGeomsPerInst) geom2 = kMaxGeomsPerInst - 1;
-  int slot2 = inst2 * kMaxGeomsPerInst + geom2;
-  if (slot2 < 0 || slot2 >= kMaxInstMatSlots) {
-    out_color = vec3(0.0);
-    return 0.0;
-  }
-  int  prim2 = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
-  vec2 bary2 = rayQueryGetIntersectionBarycentricsEXT(rq, true);
-  float t2   = rayQueryGetIntersectionTEXT(rq, true);
-  out_color = sample_hit_albedo(slot2, prim2, bary2, origin + dir * t2,
-                                cd_instance_mats.data[slot2].albedo.rgb);
-  return 1.0;
+  out_color = vec3(0.0);
+  return 0.0;
 }
 
 // 3?-3 PCF shadow sampling. Returns 1.0 = fully lit, 0.0 = fully
@@ -518,6 +592,9 @@ void main() {
       vec3 m_base = vec3(0.92, 0.91, 0.89);
       vec3 m_vein = vec3(0.32, 0.36, 0.42);
       albedo = mix(m_base, m_vein, vein * 0.75) * pc.tint.rgb;
+    } else if (tex_mode >= 10 && tex_mode < 256) {
+      vec3 s_col = texture(cd_bindless_albedo[nonuniformEXT(uint(tex_mode))], uv_p).rgb;
+      albedo = s_col * pc.tint.rgb;
     } else {
       // Slot 6: Warm Oak Wood Planks
       vec2 wuv = uv_p * vec2(4.0, 1.5);
@@ -559,11 +636,11 @@ void main() {
   out_albedo = vec4(clamp(albedo, vec3(0.0), vec3(1.0)), 1.0);
   out_mr     = vec2(metallic, roughness);
 
-  // Override surface_flag for non-metallic glTF prims: disable SSR so
-  // curtains, stone, and vegetation don't get screen-space reflections
-  // (which was causing the metallic sheen bug). Only metallic glTF prims
-  // (if any) keep the 0.6 bucket for SSR enhancement.
-  if (is_gltf_prim && metallic < 0.25)
+  // Override surface_flag for non-metallic surfaces and hardware-RT PBR spheres:
+  // disable coarse 8-step SSR so dielectrics don't get a metallic sheen and
+  // curved RT mirror probes (is_pbr_w) don't get concentric screen-space depth
+  // march contour bands smeared over their exact ray-traced reflections.
+  if (metallic < 0.25 || is_pbr_w)
     surface_flag = 0.0;
   out_normal = vec4(safe_N, surface_flag);
 
@@ -851,83 +928,18 @@ void main() {
   }
   if (scene_hit > 0.5 && hit_slot >= 0) {
     vec3 hit_alb = cd_instance_mats.data[hit_slot].albedo.rgb;
-    // phase842c-W8-BE-rt-bindless-texture-sampling:
-    // When the per-prim metadata exposes a texture slot (!= sentinel),
-    // recover the per-vertex UV at the hit point via barycentric
-    // interpolation from the Sponza VB/IB SSBOs and sample the bindless
-    // sampler2D array. Falls back to the W8-BD avg-colour for prims
-    // without textures (CesiumMan, PBR grid, procedural seeds).
     uint tex_slot   = cd_instance_mats.data[hit_slot].albedo_tex_slot;
     uint idx_offset = cd_instance_mats.data[hit_slot].index_offset;
-    // phase865-bindless-revive-via-dedicated-set: with binding moved
-    // off set 0 (phase 864 API + boot wiring), the dynamic-index
-    // crash phase 851 + 860 reproduced should no longer fire. If
-    // stability holds, chrome reflections finally show real Sponza
-    // texture detail (curtain damask, leaf veins, sandstone grain).
+    vec3 hit_pos1   = (v_world_pos + safe_N * 0.01) + Ri * hit_t;
     if (tex_slot != kBindlessAlbedoSlotNone && tex_slot < 256u) {
-      // phase888-non-sponza-bindless-shader: mesh_id selects which
-      // VB/IB pair to read for the UV interp. 0 = Sponza (bindings
-      // 11/12), 1 = CesiumMan (bindings 14/15), 2 = analytical
-      // sphere (no VB/IB; spherical UV from hit-pos vs centre,
-      // phase1000-pbr-sphere-rt-texture). Same bindless slot array
-      // is shared.
-      uint mesh_id = cd_instance_mats.data[hit_slot].mesh_id;
-      vec2 uv = vec2(0.0);
-      bool uv_ok = false;
-      if (mesh_id == 2u) {
-        // phase1000-pbr-sphere-rt-texture: analytical spherical UV
-        // for sphere hits. Required because sphere primitives don't
-        // expose VB/IB UVs -- the shader has to derive them from the
-        // hit point itself. Standard spherical equirectangular
-        // mapping: u = atan2(z, x) / (2 pi) + 0.5, v = asin(y) / pi +
-        // 0.5. Object-space radial direction = normalize(hit_pos -
-        // sphere_center) (the analytical normal added in phase 866).
-        vec4  sphc       = cd_instance_mats.data[hit_slot].sphere_center_radius;
-        vec3  hit_pos    = (v_world_pos + safe_N * 0.01) + Ri * hit_t;
-        vec3  obj_radial = normalize(hit_pos - sphc.xyz);
-        const float kInv2Pi = 0.15915494;  // 1 / (2 * pi)
-        const float kInvPi  = 0.31830989;  // 1 / pi
-        uv = vec2(atan(obj_radial.z, obj_radial.x) * kInv2Pi + 0.5,
-                  asin(clamp(obj_radial.y, -1.0, 1.0)) * kInvPi + 0.5);
-        uv_ok = true;
-      } else if (hit_prim >= 0) {
-        uint i0, i1, i2;
-        vec2 uv0, uv1, uv2;
-        if (mesh_id == 1u) {
-          i0 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
-          i1 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
-          i2 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
-          uv0 = cd_cesium_vb.verts[i0].ny_nz_u_v.zw;
-          uv1 = cd_cesium_vb.verts[i1].ny_nz_u_v.zw;
-          uv2 = cd_cesium_vb.verts[i2].ny_nz_u_v.zw;
-        } else {
-          i0 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
-          i1 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
-          i2 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
-          uv0 = cd_sponza_vb.verts[i0].ny_nz_u_v.zw;
-          uv1 = cd_sponza_vb.verts[i1].ny_nz_u_v.zw;
-          uv2 = cd_sponza_vb.verts[i2].ny_nz_u_v.zw;
-        }
-        float w0 = 1.0 - hit_bary.x - hit_bary.y;
-        uv = uv0 * w0 + uv1 * hit_bary.x + uv2 * hit_bary.y;
-        uv_ok = true;
-      }
-      if (uv_ok) {
-        hit_alb = texture(cd_bindless_albedo[nonuniformEXT(tex_slot)], uv).rgb;
-      }
+      hit_alb = sample_hit_albedo_rgba(
+          hit_slot, hit_prim, hit_bary, hit_pos1, hit_t, hit_alb).rgb;
     }
-    // phase866-2-bounce-sphere-normal: when the first-hit instance is
-    // an analytical sphere (`is_sphere == 1`), compute the surface
-    // normal at the hit point analytically (radial from centre) and
-    // fire a SECOND reflection ray — this is the genuine "yansımanın
-    // yansıması" (reflection of reflection) the user asked for.
-    // For non-sphere hits, fall back to the cheap IBL-shine stand-in
-    // (phase 852b).
     uint  hit_is_sphere = cd_instance_mats.data[hit_slot].is_sphere;
     vec4  hit_sc        = cd_instance_mats.data[hit_slot].sphere_center_radius;
     if (hit_is_sphere == 1u) {
-        vec3 hit_pos1 = (v_world_pos + safe_N * 0.01) + Ri * hit_t;
-        vec3 N1       = normalize(hit_pos1 - hit_sc.xyz);
+        vec3 d_sp1    = hit_pos1 - hit_sc.xyz;
+        vec3 N1       = (dot(d_sp1, d_sp1) > 1e-8) ? normalize(d_sp1) : -Ri;
         vec3 Ri2      = reflect(Ri, N1);
         vec3 bounce_color = vec3(0.0);
         float bounce_hit  = reflection_hit_color(
@@ -935,59 +947,46 @@ void main() {
                               Ri2, 60.0,
                               bounce_color);
         if (bounce_hit > 0.5) {
-            // Mix in the second-bounce colour — chrome-on-chrome now
-            // shows what the second sphere itself is reflecting.
             hit_alb = mix(hit_alb, hit_alb * (bounce_color + 0.2), 0.55);
         } else {
-            // Second ray missed the scene → returned IBL would be
-            // direct sky; use that as the bounce contribution.
             vec3 miss_ibl = textureLod(cd_ibl_spec, Ri2, 0.0).rgb;
             hit_alb = mix(hit_alb, hit_alb * miss_ibl * 1.2, 0.35);
         }
-    } else if (tex_slot != kBindlessAlbedoSlotNone && hit_prim >= 0) {
-        // phase871-2-bounce-sponza-vb-normal: when the first-hit is
-        // on Sponza (we have tex_slot + idx_offset = valid per-prim
-        // metadata + hit_prim from rayQuery), interpolate the per-
-        // vertex normals from SponzaVB at the barycentric hit point
-        // to obtain a REAL surface normal. Fire the second ray with
-        // reflect(Ri, N_sponza). Sponza reflecting itself now shows
-        // a genuine recursive scene tint instead of the IBL-shine
-        // stand-in.
-        uint i0 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
-        uint i1 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
-        uint i2 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
-        // SponzaVB packs normal as (.pos_x_y_z_nx.w, .ny_nz_u_v.x, .ny_nz_u_v.y)
-        vec3 n0 = vec3(cd_sponza_vb.verts[i0].pos_x_y_z_nx.w,
-                       cd_sponza_vb.verts[i0].ny_nz_u_v.x,
-                       cd_sponza_vb.verts[i0].ny_nz_u_v.y);
-        vec3 n1 = vec3(cd_sponza_vb.verts[i1].pos_x_y_z_nx.w,
-                       cd_sponza_vb.verts[i1].ny_nz_u_v.x,
-                       cd_sponza_vb.verts[i1].ny_nz_u_v.y);
-        vec3 n2 = vec3(cd_sponza_vb.verts[i2].pos_x_y_z_nx.w,
-                       cd_sponza_vb.verts[i2].ny_nz_u_v.x,
-                       cd_sponza_vb.verts[i2].ny_nz_u_v.y);
-        float w0 = 1.0 - hit_bary.x - hit_bary.y;
-        vec3 N_sponza = normalize(n0 * w0 + n1 * hit_bary.x + n2 * hit_bary.y);
-        vec3 hit_pos1 = (v_world_pos + safe_N * 0.01) + Ri * hit_t;
-        vec3 Ri2 = reflect(Ri, N_sponza);
-        vec3 bounce_color = vec3(0.0);
-        float bounce_hit = reflection_hit_color(
-                             hit_pos1 + N_sponza * 0.02,
-                             Ri2, 60.0,
-                             bounce_color);
-        if (bounce_hit > 0.5) {
-            hit_alb = mix(hit_alb, hit_alb * (bounce_color + 0.25), 0.40);
+    } else if ((cd_instance_mats.data[hit_slot].mesh_id == 0u ||
+                cd_instance_mats.data[hit_slot].mesh_id == 1u) &&
+               tex_slot != kBindlessAlbedoSlotNone && hit_prim >= 0) {
+        // Interpolate the true vertex normal from SponzaVB / CesiumVB at the barycentric
+        // hit point to shade 3D relief/columns/arches/avatars naturally without
+        // turning diffuse surfaces into secondary mirrors.
+        vec3 n0, n1, n2;
+        if (cd_instance_mats.data[hit_slot].mesh_id == 1u) {
+            uint i0 = cesium_read_index(idx_offset + uint(hit_prim) * 3u + 0u);
+            uint i1 = cesium_read_index(idx_offset + uint(hit_prim) * 3u + 1u);
+            uint i2 = cesium_read_index(idx_offset + uint(hit_prim) * 3u + 2u);
+            n0 = cesium_vert_normal(i0);
+            n1 = cesium_vert_normal(i1);
+            n2 = cesium_vert_normal(i2);
         } else {
-            vec3 miss_ibl = textureLod(cd_ibl_spec, Ri2, 0.0).rgb;
-            hit_alb = mix(hit_alb, hit_alb * miss_ibl * 1.15, 0.30);
+            uint i0 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
+            uint i1 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
+            uint i2 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
+            n0 = sponza_vert_normal(i0);
+            n1 = sponza_vert_normal(i1);
+            n2 = sponza_vert_normal(i2);
         }
+        float w0 = 1.0 - hit_bary.x - hit_bary.y;
+        vec3 n_raw = n0 * w0 + n1 * hit_bary.x + n2 * hit_bary.y;
+        vec3 N_sponza = (dot(n_raw, n_raw) > 1e-8) ? normalize(n_raw) : -Ri;
+        if (dot(N_sponza, Ri) > 0.0) N_sponza = -N_sponza;
+        vec3 L_sun = normalize(-pc.sun_dir.xyz);
+        float n_hemi = N_sponza.y * 0.5 + 0.5;
+        float n_sun  = max(dot(N_sponza, L_sun), 0.0);
+        float n_shade = 0.85 + 0.18 * n_hemi + 0.15 * n_sun;
+        hit_alb *= n_shade;
     } else {
-        // phase852b-rt-chrome-second-bounce-ibl-shine: cheap stand-in
-        // for hits without any normal source (CesiumMan, floor —
-        // not sphere AND not Sponza-textured).
         vec3 second_bounce_ibl = textureLod(cd_ibl_spec, Ri,
                                             roughness * kIblMaxMipLod).rgb;
-        hit_alb = mix(hit_alb, hit_alb + second_bounce_ibl * 0.5, 0.4);
+        hit_alb = mix(hit_alb, hit_alb + second_bounce_ibl * 0.35, 0.25);
     }
     // phase795-rt-chrome-sponza-brightness:
     // OLD: refl_color = hit_alb * (0.3 + 0.7 * NoL_hit) * sun_color * 3.0

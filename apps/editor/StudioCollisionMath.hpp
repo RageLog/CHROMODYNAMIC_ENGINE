@@ -95,6 +95,15 @@ namespace cd::studio
 {
     const cd::math::Vec3f half   = compute_collider_local_half_extents(tr, col);
     const cd::math::Vec3f offset = (col != nullptr) ? col->center_offset : cd::math::Vec3f { 0.0F, 0.0F, 0.0F };
+    if (col != nullptr && (col->shape_kind() == ColliderShapeKind::kSphere ||
+                           col->shape_kind() == ColliderShapeKind::kCapsule))
+    {
+        const cd::math::Vec3f center = tr.position + offset;
+        return cd::physics::Aabb {
+            .min = { center.x - half.x, center.y - half.y, center.z - half.z },
+            .max = { center.x + half.x, center.y + half.y, center.z + half.z },
+        };
+    }
     const cd::math::Quatf q      = cd::math::normalize(tr.rotation);
     const cd::math::Vec3f center = tr.position + cd::math::rotate(q, offset);
 
@@ -223,10 +232,12 @@ namespace cd::studio
                                      box_tr, box_col, out_cp, a_is_sphere);
     }
 
-    // 3. If one of the two Boxes is rotated (e.g. a tilted Ramp) and the other is an upright dynamic Box/Capsule,
-    // test the dynamic box as a bounding sphere against the tilted OBB ramp so cubes also slide down ramps!
-    const bool rot_a = (std::abs(tr_a.rotation.x) + std::abs(tr_a.rotation.z)) > 0.04F;
-    const bool rot_b = (std::abs(tr_b.rotation.x) + std::abs(tr_b.rotation.z)) > 0.04F;
+    // 3. If one of the two colliders is a rotated Box (e.g. a tilted Ramp) and the other is an upright dynamic Box/Capsule,
+    // test the dynamic Box/Capsule against the tilted OBB ramp so cubes and character capsules climb/slide on ramps!
+    const bool rot_a = (col_a.shape_kind() == ColliderShapeKind::kBox) &&
+                       ((std::abs(tr_a.rotation.x) + std::abs(tr_a.rotation.z)) > 0.04F);
+    const bool rot_b = (col_b.shape_kind() == ColliderShapeKind::kBox) &&
+                       ((std::abs(tr_b.rotation.x) + std::abs(tr_b.rotation.z)) > 0.04F);
     if (rot_a != rot_b)
     {
         const bool a_is_ramp = rot_a;
@@ -236,8 +247,12 @@ namespace cd::studio
         const auto& ramp_col = a_is_ramp ? col_a : col_b;
         const cd::math::Vec3f dyn_half = compute_collider_local_half_extents(dyn_tr, &dyn_col);
         const float eff_r = std::min({ dyn_half.x, dyn_half.y, dyn_half.z });
-        return collide_sphere_vs_obb(dyn_tr.position + dyn_col.center_offset, eff_r,
-                                     ramp_tr, ramp_col, out_cp, !a_is_ramp);
+        cd::math::Vec3f sph_pt = dyn_tr.position + dyn_col.center_offset;
+        if (dyn_col.shape_kind() == ColliderShapeKind::kCapsule && dyn_half.y > eff_r)
+        {
+            sph_pt.y -= (dyn_half.y - eff_r);
+        }
+        return collide_sphere_vs_obb(sph_pt, eff_r, ramp_tr, ramp_col, out_cp, !a_is_ramp);
     }
 
     // 4. General AABB vs AABB (Box-Box / Capsule-Box) SAT minimum translation axis
@@ -295,6 +310,27 @@ template <typename StateT, typename LogFn>
 inline void reset_physics_to_home_positions(StateT& s, LogFn&& log_push)
 {
     auto& w = studio_world();
+    // 1. Remove runtime-spawned projectiles (CannonBall_*)
+    for (std::size_t i = s.entities.size(); i > 0; --i)
+    {
+        const std::size_t idx = i - 1;
+        if (s.entities[idx].name.find("CannonBall_") == 0)
+        {
+            const auto hid = s.entities[idx].handle;
+            w.entity_modifiers.erase(hid.id);
+            w.home_transforms.erase(hid.id);
+            w.euler_cache_deg.erase(hid.id);
+            s.scene.destroy_node(hid);
+            s.entities.erase(s.entities.begin() + static_cast<std::ptrdiff_t>(idx));
+            if (std::cmp_equal(s.selected, idx))
+                s.selected = s.entities.empty() ? -1 : 0;
+            else if (std::cmp_greater(s.selected, idx))
+                --s.selected;
+        }
+    }
+
+    // 2. Restore authored home transforms, velocities, and trigger/collectible visibility
+    int total_cores = 0;
     for (auto& ent : s.entities)
     {
         if (auto* lt = s.scene.local(ent.handle))
@@ -310,10 +346,77 @@ inline void reset_physics_to_home_positions(StateT& s, LogFn&& log_push)
             rb->linear_velocity = { 0.0F, 0.0F, 0.0F };
             rb->is_grounded     = false;
         }
+        if (auto* km = ms.template find<KinematicMoverModifier>())
+        {
+            km->last_frame_delta = { 0.0F, 0.0F, 0.0F };
+        }
+        if (auto* pat = ms.template find<PatrolWaypointModifier>())
+        {
+            pat->enabled        = true;
+            pat->direction_sign = 1.0F;
+            ent.visible         = true;
+        }
+        if (auto* trg = ms.template find<TriggerVolumeModifier>())
+        {
+            trg->enabled      = true;
+            trg->triggered    = false;
+            trg->cooldown_sec = 0.0F;
+            ent.visible       = true;
+            if (trg->action == TriggerActionKind::kCollectibleScore)
+                ++total_cores;
+        }
     }
+    w.sim_time_accum          = 0.0F;
+    w.player_hp               = w.player_max_hp;
+    w.player_shield           = 100.0F;
+    w.player_energy           = 100.0F;
+    w.game_score              = 0;
+    w.collected_cores         = 0;
+    w.total_cores_in_level    = total_cores;
+    w.defeated_enemies        = 0;
+    w.player_horiz_speed      = 0.0F;
+    w.autopilot_fire_cooldown = 0.0F;
+    w.level_goal_reached      = false;
     w.live_contacts.clear();
     s.scene.update_transforms();
-    log_push("[physics] Restored all dynamic entities to their authored start positions");
+    log_push("[physics] Restored all entities, triggers, and gameplay state to authored snapshot");
+}
+
+template <typename StateT, typename LogFn>
+inline void enter_pie_play_mode(StateT& s, LogFn&& log_push)
+{
+    auto& w = studio_world();
+    for (auto& ent : s.entities)
+    {
+        if (ent.name.find("CannonBall_") != 0)
+        {
+            if (!w.simulate_physics_in_edit || !w.home_transforms.contains(ent.handle.id))
+            {
+                record_entity_home_transform(s, ent.handle);
+            }
+        }
+    }
+    reset_physics_to_home_positions(s, log_push);
+    w.player_max_hp        = 100.0F;
+    w.player_hp            = 100.0F;
+    w.player_shield        = 100.0F;
+    w.player_energy        = 100.0F;
+    w.hud_toast_message    = "PLAY MODE ACTIVE - WASD/Arrows=Move, Space=Jump, B/LMB=Shoot, P=Autopilot!";
+    w.hud_toast_timer      = 4.0F;
+    s.pie_playing          = true;
+    s.gizmo_state.visible  = false;
+    log_push("[PIE] Play-In-Editor started (Clean authored snapshot active)");
+}
+
+template <typename StateT, typename LogFn>
+inline void exit_pie_play_mode(StateT& s, LogFn&& log_push)
+{
+    auto& w                 = studio_world();
+    w.autopilot_play_active = false;
+    s.pie_playing           = false;
+    s.gizmo_state.visible   = true;
+    reset_physics_to_home_positions(s, log_push);
+    log_push("[PIE] Play-In-Editor stopped (Pre-PIE scene snapshot restored)");
 }
 
 template <typename StateT, typename LogFn>
@@ -347,6 +450,8 @@ inline void duplicate_entity_with_modifiers(StateT& s, int src_idx, LogFn&& log_
     SceneEntity copy      = src;
     copy.handle           = s.scene.create_node();
     copy.name             = src.name + "_Copy";
+    cd::world_container::assign_layer(s.ecs_world, copy.handle,
+                                      cd::world_container::layer_of(s.ecs_world, src.handle));
     if (const auto* src_lt = s.scene.local(src.handle))
     {
         if (auto* dst_lt = s.scene.local(copy.handle))
