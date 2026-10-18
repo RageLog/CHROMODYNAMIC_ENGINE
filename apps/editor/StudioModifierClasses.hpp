@@ -52,6 +52,7 @@
 #include <cd/physics/Capsule.hpp>
 #include <cd/physics/ContactPoint.hpp>
 #include <cd/physics/IPhysicsWorld.hpp>
+#include <cd/physics/RockstarPhysicsWorldAdapter.hpp>
 #include <cd/physics/Sphere.hpp>
 #include <cd/physics/UnifiedPhysicsEngine.hpp>
 #include <cd/scene/Scene.hpp>

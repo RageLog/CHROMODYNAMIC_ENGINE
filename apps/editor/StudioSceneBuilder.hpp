@@ -47,7 +47,7 @@ inline void populate_master_showcase_project(cd::world_container::World& cd_worl
 {
     if (cd_world.project() != nullptr &&
         cd_world.project()->name() != "Sample Project" &&
-        cd_world.project()->level_count() >= 15U)
+        cd_world.project()->level_count() >= 16U)
     {
         return;
     }
@@ -68,7 +68,7 @@ inline void populate_master_showcase_project(cd::world_container::World& cd_worl
         const char* desc;
         int         template_id;
     };
-    constexpr std::array<LevelSpec, 15> kSpecs {{
+    constexpr std::array<LevelSpec, 16> kSpecs {{
         { "1.1 Clean Empty Sandbox (Ultra-FPS)", "World 1: Ultra-FPS & Physics",
           "Minimal static floor & sun for 500-2000+ FPS baseline telemetry", 0 },
         { "1.2 OBB Ramp & 5x Crate Tower", "World 1: Ultra-FPS & Physics",
@@ -104,6 +104,8 @@ inline void populate_master_showcase_project(cd::world_container::World& cd_worl
           "Playable 3D Game: Avatar + Moving Platforms + JumpPads + Energy Cores + AI Bot + Goal", 13 },
         { "6.2 Universal 250-Node Showcase (Godot 219 + SOTA 31)", "World 6: Playable Games & Interactive Templates",
           "250-Node Universal Showcase: CharacterBody3D+SpringArm3D, VehicleBody3D, SoftBody3D/XPBD, CSG/SDF, VoxelGI/DDGI, GPUParticlesAttractor3D & TurquinMultiScatterPBR3D", 14 },
+        { "6.3 Rockstar 2D+3D Physics & Euphoria/Pacejka Arena", "World 6: Playable Games & Interactive Templates",
+          "32-Module Rockstar Physics Showcase: Euphoria Active Ragdoll + Pacejka 4-Wheel Vehicle + Voronoi Stress Fracture + Archimedes Buoyancy + XPBD Cloth", 15 },
     }};
 
     for (const auto& sp : kSpecs)
@@ -159,10 +161,10 @@ inline void init_clean_studio_workspace(StateT& s, LogFn&& log_push)
     auto& w = studio_world();
     if (w.initialized) return;
     w.initialized   = true;
-    w.physics_world = cd::physics::make_builtin_physics_world();
+    w.physics_world = cd::physics::make_rockstar_physics_world();
 
     if (s.cd_world.project() == nullptr ||
-        s.cd_world.project()->level_count() < 15U ||
+        s.cd_world.project()->level_count() < 16U ||
         s.cd_world.project()->name() == "Sample Project")
     {
         populate_master_showcase_project(s.cd_world);
@@ -2014,6 +2016,156 @@ inline void load_studio_interactive_template(StateT& s, int template_id, LogFn&&
         w.hud_toast_message = "6.2 Universal 250-Node Catalog Active (219 Godot + 31 SOTA)!";
         w.hud_toast_timer   = 4.5F;
         log_push("[level] Loaded '6.2 Universal 250-Node Showcase (Godot 219 + SOTA 31)'");
+    }
+    else if (template_id == 15)
+    {
+        // Level 6.3: Rockstar 2D+3D Physics & Euphoria/Pacejka Arena (32-Module Unified Physics Engine)
+        w.show_all_collider_wires  = true;
+        w.simulate_physics_in_edit = true;
+        cd::ui::chroma::state().tab_map[ImGui::GetID("BottomDockTabBar")] = 2; // Focus "Console & Physics" tab
+
+        // Initialize the 32-Module Rockstar UnifiedPhysicsEngine with active 2D + 3D + Euphoria + Pacejka + Fracture + XPBD
+        w.rockstar_physics_engine.clear();
+        w.rockstar_engine_seeded      = true;
+        const auto rag_id  = w.rockstar_physics_engine.create_euphoria_ragdoll({ -2.40F, 1.05F, 0.45F }, 78.0F);
+        const auto veh_id  = w.rockstar_physics_engine.create_pacejka_vehicle();
+        const auto frac_id = w.rockstar_physics_engine.create_fracture_system();
+        if (auto* frac = w.rockstar_physics_engine.get_fracture_system(frac_id))
+        {
+            frac->generate_grid_fracture_object(2u, 3u, 2u, { 1.45F, 0.75F, -0.35F }, { 0.25F, 0.25F, 0.25F }, 5.0F, 65.0F);
+            (void)frac->apply_impact_impulse({ 1.45F, 0.95F, -0.35F }, 1.15F, 220.0F);
+        }
+        const auto xpbd_id = w.rockstar_physics_engine.create_xpbd_solver();
+        if (auto* xpbd = w.rockstar_physics_engine.get_xpbd_solver(xpbd_id))
+        {
+            xpbd->create_cloth_grid(6u, 6u, 0.16F, { -0.45F, 2.25F, -1.25F });
+            xpbd->set_wind_velocity({ 3.8F, 0.4F, 1.2F });
+        }
+        if (auto* rag = w.rockstar_physics_engine.get_euphoria_ragdoll(rag_id))
+        {
+            rag->apply_ballistic_hit_impulse(
+                cd::physics::rockstar::RagdollBoneId::kChest,
+                { 95.0F, 18.0F, -25.0F },
+                { -2.40F, 1.35F, 0.45F });
+        }
+        if (auto* veh = w.rockstar_physics_engine.get_pacejka_vehicle(veh_id))
+        {
+            cd::physics::rockstar::VehicleInputState vin {};
+            vin.throttle        = 0.85F;
+            vin.steer_angle_rad = 0.10F;
+            veh->step(vin, 1.0F / 60.0F);
+        }
+        // Populate 2D & 3D worlds in UnifiedPhysicsEngine
+        (void)w.rockstar_physics_engine.world_2d().create_body(
+            cd::physics::core::BodyMotionType::kStatic,
+            cd::physics::core::Transform2D { { 0.0F, -1.0F }, 0.0F },
+            cd::physics::v2d::BoxShape2D { { 20.0F, 1.0F } });
+        (void)w.rockstar_physics_engine.world_2d().create_body(
+            cd::physics::core::BodyMotionType::kDynamic,
+            cd::physics::core::Transform2D { { 0.0F, 1.8F }, 0.15F },
+            cd::physics::v2d::BoxShape2D { { 0.5F, 0.5F } });
+        (void)w.rockstar_physics_engine.world_2d().create_body(
+            cd::physics::core::BodyMotionType::kDynamic,
+            cd::physics::core::Transform2D { { 0.4F, 3.1F }, 0.0F },
+            cd::physics::v2d::CircleShape2D { 0.45F });
+        {
+            cd::physics::v3d::RigidBody3D f3d {};
+            f3d.motion_type        = cd::physics::core::BodyMotionType::kStatic;
+            f3d.transform.position = { 0.0F, -0.5F, 0.0F };
+            f3d.shape              = cd::physics::v3d::BoxShape3D { { 30.0F, 0.5F, 30.0F } };
+            (void)w.rockstar_physics_engine.world_3d().create_body(f3d);
+
+            cd::physics::v3d::RigidBody3D b3d {};
+            b3d.motion_type        = cd::physics::core::BodyMotionType::kDynamic;
+            b3d.transform.position = { 0.0F, 1.5F, 0.0F };
+            b3d.mass               = 4.0F;
+            b3d.shape              = cd::physics::v3d::BoxShape3D { { 0.5F, 0.5F, 0.5F } };
+            (void)w.rockstar_physics_engine.world_3d().create_body(b3d);
+        }
+
+        // 1. Euphoria Active Ragdoll Avatar (AvatarVessel3D #117 + ActiveRagdollMotor3D #245)
+        const int euph_idx = spawn_or_compose_studio_catalog_node(
+            s, 117, CatalogComposeMode::SpawnRootElement, { -2.45F, 0.02F, 0.55F }, log_push);
+        if (euph_idx >= 0 && std::cmp_less(euph_idx, s.entities.size()))
+        {
+            s.entities[static_cast<std::size_t>(euph_idx)].name = "Euphoria_ActiveRagdoll_Avatar";
+            s.selected = euph_idx;
+            (void)spawn_or_compose_studio_catalog_node(
+                s, 245, CatalogComposeMode::FoldAsInlineCapsule, { -2.45F, 0.02F, 0.55F }, log_push);
+        }
+
+        // 2. Pacejka 4-Wheel Vehicle (RoverVessel3D #121 + SuspensionWheelCapsule3D #122)
+        const int rover_idx = spawn_or_compose_studio_catalog_node(
+            s, 121, CatalogComposeMode::SpawnRootElement, { -0.55F, 0.05F, 0.85F }, log_push);
+        if (rover_idx >= 0 && std::cmp_less(rover_idx, s.entities.size()))
+        {
+            s.entities[static_cast<std::size_t>(rover_idx)].name = "Pacejka_Vehicle_Rover3D";
+            (void)assign_texture_asset_to_entity(s, rover_idx, "assets/textures/Carbon_Fiber_Twill.tex", log_push);
+            s.selected = rover_idx;
+            (void)spawn_or_compose_studio_catalog_node(
+                s, 122, CatalogComposeMode::NestAsChildElement, { -0.55F, 0.25F, 1.25F }, log_push);
+        }
+
+        // 3. OBB Ramp + Rolling Metallic Striker Sphere + 3x Voronoi Fracture Crate Stack
+        (void)spawn_entity_with_modifiers(s, "Static_Ramp", { -1.65F, 0.0F, -1.10F }, log_push);
+        const int striker_idx = spawn_entity_with_modifiers(s, "Dynamic_Sphere", { -2.35F, 2.05F, -1.10F }, log_push);
+        if (striker_idx >= 0 && std::cmp_less(striker_idx, s.entities.size()))
+        {
+            s.entities[static_cast<std::size_t>(striker_idx)].name = "CCD_Striker_Sphere3D";
+            const auto h = s.entities[static_cast<std::size_t>(striker_idx)].handle;
+            if (auto* lt = s.scene.local(h)) lt->value.position = { -2.35F, 2.05F, -1.10F };
+            if (auto* rb = w.entity_modifiers[h.id].template find<RigidBodyModifier>())
+                rb->linear_velocity = { 4.2F, 0.0F, 0.0F };
+            record_entity_home_transform(s, h);
+        }
+
+        for (int row = 0; row < 3; ++row)
+        {
+            const int c_idx = spawn_entity_with_modifiers(
+                s, "Dynamic_Cube", { 1.45F, 0.0F, -0.35F }, log_push);
+            if (c_idx >= 0 && std::cmp_less(c_idx, s.entities.size()))
+            {
+                auto& cent = s.entities[static_cast<std::size_t>(c_idx)];
+                cent.name = "Voronoi_Fracture_Chunk_" + std::to_string(row + 1);
+                if (auto* lt = s.scene.local(cent.handle))
+                {
+                    lt->value.position = { 1.45F, 0.44F + static_cast<float>(row) * 0.88F, -0.35F };
+                    lt->value.scale    = { 0.82F, 0.82F, 0.82F };
+                }
+                (void)assign_texture_asset_to_entity(s, c_idx, "assets/samples/Sponza/textures/sponza_brick_a_diff.jpg", log_push);
+                record_entity_home_transform(s, cent.handle);
+            }
+        }
+
+        // 4. XPBD Cloth & Soft-Body Banner (#224) + Buoyancy Fluid Crate (#225)
+        const int xpbd_idx = spawn_or_compose_studio_catalog_node(
+            s, 224, CatalogComposeMode::SpawnRootElement, { 0.35F, 0.35F, -1.35F }, log_push);
+        if (xpbd_idx >= 0 && std::cmp_less(xpbd_idx, s.entities.size()))
+        {
+            s.entities[static_cast<std::size_t>(xpbd_idx)].name = "XPBD_ClothSoftBody_Banner3D";
+        }
+        const int buoy_idx = spawn_or_compose_studio_catalog_node(
+            s, 225, CatalogComposeMode::SpawnRootElement, { 2.55F, 0.25F, 0.85F }, log_push);
+        if (buoy_idx >= 0 && std::cmp_less(buoy_idx, s.entities.size()))
+        {
+            s.entities[static_cast<std::size_t>(buoy_idx)].name = "Archimedes_Buoyancy_Vessel3D";
+        }
+
+        s.lights.push_back({ "Rockstar Arena Key Cyan (6500K)",
+            cd::light::point({ 2.35F, 3.55F, 2.35F }, { 0.30F, 0.92F, 1.00F }, 900.0F, 14.0F),
+            true, 6500.0F });
+        s.lights.push_back({ "Rockstar Arena Warm Fill (3400K)",
+            cd::light::point({ -2.15F, 3.25F, 2.55F }, { 1.00F, 0.75F, 0.34F }, 700.0F, 12.0F),
+            true, 3400.0F });
+
+        s.selected          = (euph_idx >= 0) ? euph_idx : 0;
+        s.cam.eye           = { -4.15F, 3.40F, 5.55F };
+        s.cam.target        = {  0.10F, 0.85F, 0.00F };
+        w.active_world_name = "World 6: Playable Games & Interactive Templates";
+        w.active_level_name = "6.3 Rockstar 2D+3D Physics & Euphoria/Pacejka Arena";
+        w.hud_toast_message = "6.3 Rockstar 32-Module 2D+3D Physics Engine Active (Euphoria + Pacejka + Voronoi + XPBD)!";
+        w.hud_toast_timer   = 4.5F;
+        log_push("[level] Loaded '6.3 Rockstar 2D+3D Physics & Euphoria/Pacejka Arena'");
     }
     s.scene.update_transforms();
     sync_camera_and_invalidate_frame_history(s);

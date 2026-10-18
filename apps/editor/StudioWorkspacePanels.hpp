@@ -1974,7 +1974,7 @@ inline void draw_clean_studio_workspace_panels(
                 if (const auto* rag = w.rockstar_physics_engine.get_euphoria_ragdoll(0u))
                     rag_err = rag->balance_state().balance_error_m;
                 ImGui::TextColored(ImVec4(0.56F, 0.86F, 1.0F, 1.0F),
-                                   "Rockstar 2D+3D Engine (32 Modules): 2D Bodies=%u | 3D Bodies=%u | Euphoria Ragdolls=%u (ZMP Err=%.2fm) | Pacejka Vehicles=%u | Fracture=%u | XPBD=%u",
+                                   "Rockstar 2D+3D (33 Mod): 2D=%u | 3D=%u | Euphoria=%u (ZMP=%.2fm) | Pacejka=%u | Fracture=%u | XPBD=%u",
                                    rtel.bodies_2d, rtel.bodies_3d, rtel.active_ragdolls,
                                    static_cast<double>(rag_err),
                                    rtel.active_vehicles, rtel.fracture_systems, rtel.xpbd_soft_bodies);

@@ -1100,7 +1100,40 @@ TEST(ObbSat, IntersectIsSymmetric)
 // =============================================================================
 // 32-Module Rockstar 2D + 3D Unified Physics Engine Verification Suite
 // =============================================================================
+#include <cd/physics/RockstarPhysicsWorldAdapter.hpp>
 #include <cd/physics/UnifiedPhysicsEngine.hpp>
+
+TEST(RockstarPhysicsWorldAdapter, IPhysicsWorldInterfaceBackedByUnifiedEngine)
+{
+    auto world = cd::physics::make_rockstar_physics_world();
+    ASSERT_NE(world, nullptr);
+    world->set_gravity({ 0.0F, -9.81F, 0.0F });
+    EXPECT_FLOAT_EQ(world->gravity().y, -9.81F);
+
+    cd::physics::BodyDesc bad_dyn {};
+    bad_dyn.type = cd::physics::BodyType::kDynamic;
+    bad_dyn.mass = 0.0F;
+    EXPECT_FALSE(world->create_body(bad_dyn).has_value());
+
+    cd::physics::BodyDesc dyn {};
+    dyn.type     = cd::physics::BodyType::kDynamic;
+    dyn.position = { 0.0F, 4.0F, 0.0F };
+    dyn.mass     = 2.0F;
+    auto h = world->create_body(dyn);
+    ASSERT_TRUE(h.has_value());
+    EXPECT_EQ(world->body_count(), 1u);
+    EXPECT_EQ(world->body_type(*h), cd::physics::BodyType::kDynamic);
+
+    world->apply_impulse(*h, { 4.0F, 0.0F, 0.0F });
+    EXPECT_NEAR(world->linear_velocity(*h).x, 2.0F, 1e-4F);
+
+    world->step(1.0F / 60.0F);
+    EXPECT_LT(world->position(*h).y, 4.0F);
+    EXPECT_GT(world->position(*h).x, 0.0F);
+
+    world->destroy_body(*h);
+    EXPECT_EQ(world->body_count(), 0u);
+}
 
 TEST(RockstarPhysicsCore, FilterMatrixAndDynamicBvh2D3DAndIslands)
 {

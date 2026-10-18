@@ -438,3 +438,48 @@
   - Alt Dock (`History` -> `"250-Node Catalog (Godot+SOTA)"` sekmesi), `Node & App Lab` çalışma alanı, `Create 3D Object` üst menüsü ve `Scene -> Hierarchy & Entities` (`[+ Node (250)]` düğmesi + `[CAPSULE]` / `[CAPxN]` rozeti) bağlantılarının kurulması.
   - 15. Seviye olarak `6.2 Universal 250-Node Showcase (Godot 219 + SOTA 31)` (`template_id = 14`) sahnesinin ve `cd_test_splash_audio_cue` içindeki 250 düğüm birim testlerinin (`HasExact219GodotAnd31SotaMaking250Total`, `FindsAllIconicGodot219AndNextGenSota31Nodes`, `SpawnsNestsFoldsAndSurvivesJsonRoundTripForAll250Nodes`) tamamlanması.
 
+---
+
+# BÖLÜM XI — 250 SOMUT C++23 SINIF HİYERARŞİSİ, ZAMANSIZ SOURCE 2 / UE5 / GODOT 4 / BLENDER 4 / HAZEL UI/UX DEVRİMİ & 33-MODÜLLÜ ROCKSTAR 2D+3D BİRLEŞİK FİZİK MOTORU (FAZ 29–32)
+
+## FAZ 29 — 250 Ayrı Somut C++23 Sınıfı (`cd::scene::constructs`) ve `ElementCapsuleTree` Nested/Fold/Unfold Mimarisi
+
+- [x] **Wave 29.1 — `Element / Vessel / Pilot / Nested Trait Capsule` Mimarisi (`ADR-20261018` & `ElementCapsuleTree.hpp`)**:
+  - [`docs/ADR/ADR-20261018-element-vessel-nested-capsule-architecture.md`](ADR/ADR-20261018-element-vessel-nested-capsule-architecture.md) ve `engine/world/scene/include/cd/scene/ElementCapsuleTree.hpp` içinde döngü-korumalı `nest_child`, `add_inline_capsule`, `unfold_capsule_to_nested_child`, `fold_nested_child_into_capsule`, `embark_pilot` ve `propagate_hierarchy` fonksiyonlarının gerçeklenmesi.
+- [x] **Wave 29.2 — 250 Somut, Örneklendirilebilir C++23 Sınıfı (`engine/world/scene/include/cd/scene/constructs/*.hpp`)**:
+  - `IChromaConstruct.hpp`, `CoreAndPlanar2DConstructs.hpp` (71 `class ... final`), `Spatial3DVisualAndCsgConstructs.hpp` (44 `class ... final`), `Spatial3DVesselPhysicsAndGiConstructs.hpp` (44 `class ... final`), `ControlUiAndNextGenSotaConstructs.hpp` (91 `class ... final`) ve `ChromaConstructRegistry.hpp` (`instantiate_chroma_construct(id)` + `instantiate_chroma_construct_by_name(name)`) ile 250 sınıfın polimorfik olarak örneklendirilmesi ve `cd_test_scene` ile %100 doğrulanması.
+
+## FAZ 30 — Zamansız (Timeless) Source 2 + UE 5.4 + Godot 4.3 + Blender 4.2 + Hazel Engine UI/UX Modernizasyonu
+
+- [x] **Wave 30.1 — 7 Motorlu UI/UX Benchmark Raporu (`docs/UX_UI_MASTER_BENCHMARK_AND_DESIGN.md`) ve `ChromaUi` Modernizasyonu**:
+  - Valve Source / Source 2 (Hammer 5), Unreal Engine 5.4, Godot 4.3, Blender 4.2, Hazel Engine, Unity 6 ve Remedy Northlight özellik matrisinin çıkarılması.
+  - `engine/ui/widgets/include/cd/ui/ChromaUi.hpp` içinde yüksek kontrastlı `Chroma Carbon Slate` teması, birleşik menü + şerit araç çubuğu (`Unified Header`), aktif sekme/düğme alt-vurgu çizgileri (accent underlines) ve en altta Blender 4.2 / Source 2 tarzı bağlamsal **Status Bar** şeridi (`22px`).
+- [x] **Wave 30.2 — Sol `Outliner | Place | Stages` Paneli, 3D Viewport İçi Source 2 / Blender Overlay Kontrolleri ve Temiz Hiyerarşi Satırları**:
+  - Sol paneldeki ikiye bölünmüş sıkışık gökkuşağı düğmelerinin kaldırılarak tam boy `Outliner (Scene) | Place & Toolbox | Worlds & Stages` sekmeli yapıya geçilmesi.
+  - 3D Viewport üst-sol köşesine Source 2 Hammer / Blender tarzı `[Stage: ...] [Lit | Colliders | Focus] [+ Quick Add]` yarı-saydam haplarının ve üst-sağ köşesine interaktif **3D Eksen Gülü (`+X / +Y / +Z` Orientation Gizmo)** + `[Persp | Top | Front | Right]` kamera düğmelerinin eklenmesi.
+  - Alt `250 Constructs` sekmesinde aksiyon düğmelerinin (`[+ Spawn Root]`, `[+ Nest Child]`, `[+ Fold Capsule]`) sağ kartın en üstüne sabitlenerek metin kırpılmalarının %100 giderilmesi.
+
+## FAZ 31 — 32-Modüllü Rockstar (RAGE / Euphoria + Jolt + Source 2 Rubikon + Box2D v3 + XPBD) 2D & 3D Birleşik Fizik Motoru
+
+- [x] **Wave 31.1 — Fizik Motoru Mimari Karar Kaydı (`ADR-20261018`) ve `core/` Katmanı (7 Modül)**:
+  - [`docs/ADR/ADR-20261018-rockstar-2d-3d-modular-physics-engine.md`](ADR/ADR-20261018-rockstar-2d-3d-modular-physics-engine.md) ve `engine/world/physics/include/cd/physics/core/` altında 7 bağımsız modül: `PhysicsTypes.hpp`, `CollisionFilterMatrix.hpp`, `SpatialAabb2D.hpp`, `SpatialAabb3D.hpp`, `DynamicBvh2D.hpp`, `DynamicBvh3D.hpp`, `IslandBuilder.hpp`.
+- [x] **Wave 31.2 — `v2d/` Box2D v3 /Erin Catto Soft-Step 2D Fizik Motoru Katmanı (9 Modül)**:
+  - `engine/world/physics/include/cd/physics/v2d/` altında 9 bağımsız modül: `Shapes2D.hpp`, `ContactManifold2D.hpp`, `Narrowphase2D.hpp` (SAT + 2-point incident clipping), `SweepCcd2D.hpp` (bilateral TOI CCD), `RigidBody2D.hpp`, `SoftStepSolver2D.hpp`, `Joints2D.hpp` (`Distance`, `Revolute`, `Prismatic`, `Weld`, `Wheel`), `CharacterController2D.hpp` (`move_and_slide` + coyote time), `PhysicsWorld2D.hpp`.
+- [x] **Wave 31.3 — `v3d/` Jolt / Source 2 Rubikon 6-DOF 3D Fizik Motoru Katmanı (10 Modül)**:
+  - `engine/world/physics/include/cd/physics/v3d/` altında 10 bağımsız modül: `Shapes3D.hpp`, `ContactManifold3D.hpp`, `GjkEpa3D.hpp` (3D GJK + Expanding Polytope Algorithm), `Narrowphase3D.hpp` (15-axis OBB SAT + analytic primitives + GJK/EPA fallback), `SweepCcd3D.hpp`, `RigidBody3D.hpp` (6-DOF world inertia tensor + gyroscopic torque), `TgsContactSolver3D.hpp` (Temporal Gauss-Seidel + 2-tangent friction cone), `Joints3D.hpp` (`Fixed`, `BallSocket`, `Hinge`, `Slider`, `ConeTwist`, `SixDofSpring`), `CharacterMover3D.hpp`, `PhysicsWorld3D.hpp`.
+- [x] **Wave 31.4 — `rockstar/` İleri Simülasyon Katmanı (5 Modül) ve `UnifiedPhysicsEngine.hpp` (#32)**:
+  - `engine/world/physics/include/cd/physics/rockstar/` altında 5 ileri simülasyon modülü:
+    1. `ActiveRagdollEuphoria3D.hpp`: NaturalMotion Euphoria tarzı 14-kemikli aktif ragdoll, PD kas sürücüleri, balistik darbe sersemlemesi (`stagger`), Capture Point ($\mathbf{r}_{\text{cp}} = \mathbf{r}_{\text{com}} + \dot{\mathbf{r}}_{\text{com}}\sqrt{h/g}$) denge kurtarma adımı ve düşerken kolları uzatma (`brace_for_impact`) refleksi.
+    2. `PacejkaVehicleDynamics3D.hpp`: Pacejka Magic Formula lastik modeli, sürtünme elipsi, 4 tekerlekli süspansiyon + ön/arka anti-roll bar, 6-ileri şanzıman + LSD diferansiyel ve 4x3x2 **Şasi Çarpışma Deformasyonu (`Chassis Deformation Grid`)**.
+    3. `FractureDestruction3D.hpp`: Voronoi / Gerilme Çizgesi (`StructuralBond3D`) kırılma ve temel bağlantısını kaybeden adaların (`detached`) serbest enkaz parçalarına ayrılması.
+    4. `BuoyancyFluid3D.hpp`: Gerstner dalga yüzeyi + çoklu-prob Archimedes kaldırma kuvveti ve kuadratik hidrodinamik sürükleme.
+    5. `XpbdClothSoftBody3D.hpp`: Macklin et al. XPBD kumaş, halat ve basınçlı yumuşak gövde çözücüsü.
+  - `UnifiedPhysicsEngine.hpp` (#32) şemsiye orkestratörü ve `cd_test_physics` (106 test) + `cd_test_physics_vehicle` (18 test) + `cd_test_physics_soft_body` (29 test) = **153 fizik birim testinin** %100 yeşil doğrulanması.
+
+## FAZ 32 — `RockstarPhysicsWorldAdapter` (#33) `IPhysicsWorld` Köprüsü ve Etkileşimli Seviye `6.3 Rockstar 2D+3D Physics & Euphoria/Pacejka Arena` (`template_id = 15`)
+
+- [x] **Wave 32.1 — `RockstarPhysicsWorldAdapter.hpp` (#33) ve `StudioSceneBuilder` Entegrasyonu**:
+  - `engine/world/physics/include/cd/physics/RockstarPhysicsWorldAdapter.hpp` içinde `cd::physics::IPhysicsWorld` arayüzünün `UnifiedPhysicsEngine` / `v3d::PhysicsWorld3D` üzerinde gerçeklenmesi (`make_rockstar_physics_world()`) ve `init_clean_studio_workspace` içine bağlanması.
+- [x] **Wave 32.2 — 16. Vitrin Seviyesi: `6.3 Rockstar 2D+3D Physics & Euphoria/Pacejka Arena` (`template_id = 15`) ve Canlı GPU Doğrulaması**:
+  - `World 6: Playable Games & Interactive Templates` altına 16. Seviye olarak `6.3 Rockstar 2D+3D Physics & Euphoria/Pacejka Arena` (`template_id = 15`) eklenmesi: `Euphoria_ActiveRagdoll_Avatar`, `Pacejka_Vehicle_Rover3D`, `Voronoi_Fracture_Chunk_1..3`, `XPBD_ClothSoftBody_Banner3D`, `Archimedes_Buoyancy_Vessel3D` ve alt `Console & Physics` panelinde canlı `[Impulse Euphoria]` / `[Shatter Voronoi]` kontrolleri.
+

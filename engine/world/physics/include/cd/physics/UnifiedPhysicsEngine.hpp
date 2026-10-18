@@ -102,6 +102,18 @@ public:
     [[nodiscard]] rockstar::BuoyancyFluidField3D& fluid_field_3d() noexcept { return fluid_field_3d_; }
     [[nodiscard]] const rockstar::BuoyancyFluidField3D& fluid_field_3d() const noexcept { return fluid_field_3d_; }
 
+    void clear()
+    {
+        world_2d_            = v2d::PhysicsWorld2D {};
+        world_3d_            = v3d::PhysicsWorld3D {};
+        fluid_field_3d_      = rockstar::BuoyancyFluidField3D {};
+        ragdolls_3d_.clear();
+        vehicles_3d_.clear();
+        fracture_systems_3d_.clear();
+        xpbd_solvers_3d_.clear();
+        total_steps_         = 0u;
+    }
+
     // ---- Rockstar Subsystem Registration ------------------------------------
 
     [[nodiscard]] std::uint32_t create_euphoria_ragdoll(

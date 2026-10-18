@@ -99,6 +99,26 @@
         },
         {
           "color_tag": [
+            0.23999999463558197,
+            0.86000001430511475,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Gameplay",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
             1,
             0.87999999523162842,
             0.31999999284744263
@@ -228,6 +248,26 @@
           "draw_order": 0,
           "locked": false,
           "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.23999999463558197,
+            0.86000001430511475,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Gameplay",
           "persistent": true,
           "postfx": {
             "enable_bloom": false,
@@ -383,6 +423,26 @@
         },
         {
           "color_tag": [
+            0.23999999463558197,
+            0.86000001430511475,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Gameplay",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
             1,
             0.87999999523162842,
             0.31999999284744263
@@ -512,6 +572,26 @@
           "draw_order": 0,
           "locked": false,
           "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.23999999463558197,
+            0.86000001430511475,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Gameplay",
           "persistent": true,
           "postfx": {
             "enable_bloom": false,
@@ -667,6 +747,26 @@
         },
         {
           "color_tag": [
+            0.23999999463558197,
+            0.86000001430511475,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Gameplay",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
             1,
             0.87999999523162842,
             0.31999999284744263
@@ -796,6 +896,26 @@
           "draw_order": 0,
           "locked": false,
           "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.23999999463558197,
+            0.86000001430511475,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Gameplay",
           "persistent": true,
           "postfx": {
             "enable_bloom": false,
@@ -951,6 +1071,26 @@
         },
         {
           "color_tag": [
+            0.23999999463558197,
+            0.86000001430511475,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Gameplay",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
             1,
             0.87999999523162842,
             0.31999999284744263
@@ -1080,6 +1220,26 @@
           "draw_order": 0,
           "locked": false,
           "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.23999999463558197,
+            0.86000001430511475,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Gameplay",
           "persistent": true,
           "postfx": {
             "enable_bloom": false,
@@ -1235,6 +1395,26 @@
         },
         {
           "color_tag": [
+            0.23999999463558197,
+            0.86000001430511475,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Gameplay",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
             1,
             0.87999999523162842,
             0.31999999284744263
@@ -1364,6 +1544,26 @@
           "draw_order": 0,
           "locked": false,
           "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.23999999463558197,
+            0.86000001430511475,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Gameplay",
           "persistent": true,
           "postfx": {
             "enable_bloom": false,
@@ -1519,6 +1719,26 @@
         },
         {
           "color_tag": [
+            0.23999999463558197,
+            0.86000001430511475,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Gameplay",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
             1,
             0.87999999523162842,
             0.31999999284744263
@@ -1648,6 +1868,26 @@
           "draw_order": 0,
           "locked": false,
           "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.23999999463558197,
+            0.86000001430511475,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Gameplay",
           "persistent": true,
           "postfx": {
             "enable_bloom": false,
@@ -1803,6 +2043,26 @@
         },
         {
           "color_tag": [
+            0.23999999463558197,
+            0.86000001430511475,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Gameplay",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
             1,
             0.87999999523162842,
             0.31999999284744263
@@ -1932,6 +2192,26 @@
           "draw_order": 0,
           "locked": false,
           "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.23999999463558197,
+            0.86000001430511475,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Gameplay",
           "persistent": true,
           "postfx": {
             "enable_bloom": false,
@@ -2087,6 +2367,26 @@
         },
         {
           "color_tag": [
+            0.23999999463558197,
+            0.86000001430511475,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Gameplay",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
             1,
             0.87999999523162842,
             0.31999999284744263
@@ -2129,6 +2429,168 @@
       "name": "6.2 Universal 250-Node Showcase (Godot 219 + SOTA 31)",
       "scene_path": "",
       "template_id": 14,
+      "world_name": "World 6: Playable Games & Interactive Templates"
+    },
+    {
+      "active_layer": 0,
+      "bounds": {
+        "max": [
+          60,
+          30,
+          60
+        ],
+        "min": [
+          -60,
+          -5,
+          -60
+        ]
+      },
+      "description": "32-Module Rockstar Physics Showcase: Euphoria Active Ragdoll + Pacejka 4-Wheel Vehicle + Voronoi Stress Fracture + Archimedes Buoyancy + XPBD Cloth",
+      "layers": [
+        {
+          "color_tag": [
+            0.69999998807907104,
+            0.69999998807907104,
+            0.75
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Default",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.34999999403953552,
+            0.77999997138977051,
+            0.94999998807907104
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Geometry",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.94999998807907104,
+            0.62000000476837158,
+            0.23999999463558197
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Physics",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.31999999284744263,
+            0.92000001668930054,
+            0.51999998092651367
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Characters",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.23999999463558197,
+            0.86000001430511475,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Gameplay",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            1,
+            0.87999999523162842,
+            0.31999999284744263
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "Lights",
+          "persistent": false,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        },
+        {
+          "color_tag": [
+            0.77999997138977051,
+            0.44999998807907104,
+            0.95999997854232788
+          ],
+          "draw_order": 0,
+          "locked": false,
+          "name": "UI",
+          "persistent": true,
+          "postfx": {
+            "enable_bloom": false,
+            "enable_gtao": false,
+            "enable_ssr": false,
+            "override_bloom": false,
+            "override_gtao": false,
+            "override_ssr": false
+          },
+          "visible": true
+        }
+      ],
+      "name": "6.3 Rockstar 2D+3D Physics & Euphoria/Pacejka Arena",
+      "scene_path": "",
+      "template_id": 15,
       "world_name": "World 6: Playable Games & Interactive Templates"
     }
   ],
