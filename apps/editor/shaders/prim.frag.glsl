@@ -640,7 +640,7 @@ void main() {
   // disable coarse 8-step SSR so dielectrics don't get a metallic sheen and
   // curved RT mirror probes (is_pbr_w) don't get concentric screen-space depth
   // march contour bands smeared over their exact ray-traced reflections.
-  if (metallic < 0.25 || is_pbr_w)
+  if (metallic < 0.72 || roughness > 0.14 || is_pbr_w)
     surface_flag = 0.0;
   out_normal = vec4(safe_N, surface_flag);
 
@@ -923,7 +923,7 @@ void main() {
   // mirroring scene objects like chrome.
   float scene_hit  = 0.0;
   float hit_t      = 0.0;
-  if (metallic > 0.1)
+  if (metallic > 0.72 && roughness < 0.14)
     scene_hit = reflection_hit_id_t(v_world_pos, safe_N, Ri, 80.0,
                                     hit_inst, hit_geom, hit_prim, hit_bary,
                                     hit_t);
@@ -948,6 +948,9 @@ void main() {
     }
     uint  hit_is_sphere = cd_instance_mats.data[hit_slot].is_sphere;
     vec4  hit_sc        = cd_instance_mats.data[hit_slot].sphere_center_radius;
+    bool  is_sponza     = ((cd_instance_mats.data[hit_slot].mesh_id == 0u ||
+                            cd_instance_mats.data[hit_slot].mesh_id == 1u) &&
+                           tex_slot != kBindlessAlbedoSlotNone && hit_prim >= 0);
     if (hit_is_sphere == 1u) {
         vec3 d_sp1    = hit_pos1 - hit_sc.xyz;
         vec3 N1       = (dot(d_sp1, d_sp1) > 1e-8) ? normalize(d_sp1) : -Ri;
@@ -963,9 +966,7 @@ void main() {
             vec3 miss_ibl = textureLod(cd_ibl_spec, Ri2, 0.0).rgb;
             hit_alb = mix(hit_alb, hit_alb * miss_ibl * 1.2, 0.35);
         }
-    } else if ((cd_instance_mats.data[hit_slot].mesh_id == 0u ||
-                cd_instance_mats.data[hit_slot].mesh_id == 1u) &&
-               tex_slot != kBindlessAlbedoSlotNone && hit_prim >= 0) {
+    } else if (is_sponza) {
         // Interpolate the true vertex normal from SponzaVB / CesiumVB at the barycentric
         // hit point to shade 3D relief/columns/arches/avatars naturally without
         // turning diffuse surfaces into secondary mirrors.
@@ -999,64 +1000,14 @@ void main() {
                                             roughness * kIblMaxMipLod).rgb;
         hit_alb = mix(hit_alb, hit_alb + second_bounce_ibl * 0.35, 0.25);
     }
-    // phase795-rt-chrome-sponza-brightness:
-    // OLD: refl_color = hit_alb * (0.3 + 0.7 * NoL_hit) * sun_color * 3.0
-    //
-    // The OLD math used a pseudo_N = -Ri "fake normal" dotted with the
-    // sun direction. For typical chrome reflection rays this dot ends up
-    // close to zero (or even negative — clamped to zero), so refl_color
-    // ended up at the 0.3 floor: ~0.9 * hit_alb * sun_color. After the
-    // brdf_term * blend the surviving signal was so dim that chrome
-    // mostly fell back to the IBL term, painting the spheres in the
-    // outdoor sky colour even when the RT ray DID land on Sponza
-    // geometry. The user-reported bug ("spheres look like they're in a
-    // different universe than Sponza") was driven by this energy loss
-    // — not by an actual RT miss.
-    //
-    // NEW: emit hit_alb at a flat HDR-bright level (5x sun_color). No
-    // pseudo-normal cosine term. The intent is "this surface returns
-    // its full diffuse albedo at the IBL energy range" — appropriate
-    // for the indirect GI-ish role this branch is playing, and matches
-    // how the cubemap encodes interior brightness. Saturated per-prim
-    // colours (red curtain, green curtain, sandstone wall) now actually
-    // make it into the mirror image.
-    // phase835-rt-chrome-sponza-tame-whitewash:
-    // After phase833 fixed the BLAS cap (Sponza was silently truncated
-    // to 32/103 prims), ray hits land on the FULL 103 prims. With the
-    // 8x sun-strength boost set when most hits were missing, the white
-    // sandstone walls now blow out post-ACES into a flat white wash —
-    // visible curtain colours got drowned out and prim-edge detail
-    // softened. 4x compromises between:
-    //   * dimmer overall (white sandstone walls render as bright but
-    //     not clipping the ACES knee),
-    //   * coloured curtain prims (R 0.85/0.12/0.08, G 0.15/0.6/0.1)
-    //     keep their saturation post-tonemap,
-    //   * chrome still reads as bright-mirror, not low-contrast plastic.
-    //
-    // The per-prim "average colour" return remains a known limit —
-    // prim-internal detail (curtain damask pattern, leaf texture)
-    // requires ray-side texture sampling (queued strand L-rt-tex,
-    // see ADR W8-BD rejected alternative #1).
-    vec3 refl_tint = is_pbr_w ? (F_ibl * 1.55) : vec3(4.0);
-    vec3 refl_color = hit_alb * pc.sun_color.rgb * refl_tint;
-    float rough_blend = clamp(is_pbr_w ? (roughness * 2.2) : (roughness * roughness), 0.0, 1.0);
-    float metal_gate  = clamp(metallic, 0.0, 1.0);
-    float blend_t     = mix(1.0, rough_blend, metal_gate);
-    // Mirror-direction RT branch: hit colour direct (no brdf_term).
-    // IBL fallback: with brdf_term (the existing prefilter path).
-    ibl_spec_blended = mix(refl_color, ibl_spec_p, blend_t);
+    vec3 refl_tint = F_ibl * (is_sponza ? 1.8 : 1.05);
+    vec3 refl_color = hit_alb * pc.sun_color.rgb;
+    float rt_weight = scene_hit * smoothstep(0.72, 0.95, metallic) * (1.0 - smoothstep(0.02, 0.14, roughness));
+    ibl_spec_p = mix(ibl_spec_p, refl_color * refl_tint, clamp(rt_weight, 0.0, 0.85));
+    ibl_spec_blended = ibl_spec_p;
   }
 
-  // phase831-rt-chrome-sponza-bypass-ambient-gates:
-  // A perfect mirror reflection is direct specular — it should NOT be
-  // attenuated by `ao_factor` (the mirror surface itself is not
-  // shadowed by ambient occlusion at the reflection direction) or
-  // `ibl_gate` (which fades the IBL term when the sun is low, but the
-  // RT scene reflection is independent of sun strength). Split the
-  // ambient contribution so the diffuse + IBL-spec path keeps its
-  // existing ao*gate attenuation while the smooth-metallic RT-hit
-  // mirror path is added at full energy.
-  bool is_rt_mirror = (scene_hit > 0.5) && (metallic > 0.5) && (roughness < 0.3);
+  bool is_rt_mirror = (scene_hit > 0.5) && (metallic > 0.72) && (roughness < 0.14);
   vec3 ibl_spec_for_ambient = is_rt_mirror ? vec3(0.0) : ibl_spec_blended;
   vec3 ibl_contrib =
       (ibl_kD * diff_e * albedo + ibl_spec_for_ambient) * ao_factor * ibl_gate;

@@ -19,8 +19,50 @@
 #include <fstream>
 #include <sstream>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <commdlg.h>
+#pragma comment(lib, "comdlg32.lib")
+#endif
+
 namespace cd::studio
 {
+inline bool open_native_os_file_dialog(
+    const char*  filter,
+    std::string& out_path,
+    const char*  title = "Select File from OS Disk")
+{
+#ifdef _WIN32
+    char file_buf[1024] {};
+    OPENFILENAMEA ofn {};
+    ofn.lStructSize     = sizeof(ofn);
+    ofn.hwndOwner       = nullptr;
+    ofn.lpstrFile       = file_buf;
+    ofn.nMaxFile        = sizeof(file_buf);
+    ofn.lpstrFilter     = filter;
+    ofn.nFilterIndex    = 1;
+    ofn.lpstrTitle      = title;
+    ofn.Flags           = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+    if (GetOpenFileNameA(&ofn) == TRUE)
+    {
+        out_path = file_buf;
+        std::replace(out_path.begin(), out_path.end(), '\\', '/');
+        return !out_path.empty();
+    }
+#else
+    (void)filter;
+    (void)out_path;
+    (void)title;
+#endif
+    return false;
+}
+
 inline void populate_standard_level_layers(cd::world_container::Level& lvl)
 {
     auto add_tagged = [&](const char* nm, cd::math::Vec3f col, bool persist = false)
@@ -368,8 +410,8 @@ inline int spawn_entity_with_modifiers(
         e.kind      = PrimitiveKind::kSphere;
         e.name      = "Sphere_" + std::to_string(s.entities.size());
         e.tint      = { 0.24F, 0.72F, 0.98F };
-        e.metallic  = 0.85F;
-        e.roughness = 0.12F;
+        e.metallic  = 0.08F;
+        e.roughness = 0.35F;
         if (auto* lt = s.scene.local(h))
         {
             lt->value.position = { world_pos.x, std::max(0.52F, world_pos.y), world_pos.z };
@@ -1474,9 +1516,17 @@ inline bool assign_texture_asset_to_entity(StateT& s, int target_idx, std::strin
         else
         {
             // Default Slot 1: Earth / Disk Image Texture
-            slot = 1;
-            ent.tint = { 1.0F, 1.0F, 1.0F };
+            slot          = 1;
+            ent.tint      = { 1.0F, 1.0F, 1.0F };
+            ent.metallic  = std::min(ent.metallic, 0.08F);
+            ent.roughness = std::max(ent.roughness, 0.32F);
         }
+    }
+
+    if (slot > 0 && slot != 4)
+    {
+        ent.metallic  = std::min(ent.metallic, 0.08F);
+        ent.roughness = std::max(ent.roughness, 0.32F);
     }
 
     ent.use_texture         = (slot > 0);
@@ -1510,6 +1560,12 @@ inline bool assign_texture_asset_to_entity(StateT& s, int target_idx, std::strin
     log_push("[asset] " + w.last_asset_status_msg);
     return true;
 }
+
+template <typename StateT, typename LogFn>
+inline int spawn_volumetric_clouds_entity(StateT& s, LogFn&& log_push);
+
+template <typename StateT, typename LogFn>
+inline int spawn_scene_camera_entity(StateT& s, bool is_2d, LogFn&& log_push);
 
 /// 1-Click Interactive Multi-World & Multi-Level Templates (0..13)
 template <typename StateT, typename LogFn>
@@ -1597,13 +1653,15 @@ inline void load_studio_interactive_template(StateT& s, int template_id, LogFn&&
 
     if (template_id == 0)
     {
-        // Level 1.1 / Empty_Stage: True Clean Empty Sandbox (0 pre-spawned objects, only Ground_Floor)
+        // Level 1.1 / Empty_Stage: Clean Empty Sandbox with selectable/deletable Volumetric_Clouds & Camera_Main
         (void)place_static_grounded;
+        (void)spawn_volumetric_clouds_entity(s, log_push);
+        (void)spawn_scene_camera_entity(s, false, log_push);
         s.selected   = -1;
         s.cam.eye    = { -5.8F, 3.8F, 6.2F };
         s.cam.target = {  0.0F, 0.8F, 0.0F };
         w.active_level_name = "Empty_Stage";
-        log_push("[level] Opened Clean Empty Stage ('Empty_Stage' — 0 pre-spawned objects)");
+        log_push("[level] Opened Clean Empty Stage ('Empty_Stage' with Volumetric_Clouds & Camera_Main)");
     }
     else if (template_id == 1)
     {
@@ -2338,7 +2396,7 @@ inline constexpr std::array<ShowcaseProjectEntry, 12> kShowcaseCatalog {{
       "World 1: Ultra-FPS & Physics", 2 },
     { "12_planar_2d_platformer_net",   "12. Planar 2D Platformer & Net",
       "showcases/12_planar_2d_platformer_net/12_planar_2d_platformer_net.cdproj",
-      "World 1: Ultra-FPS & Physics", 0 },
+      "World 1: Ultra-FPS & Physics", 12 },
 }};
 
 template <typename StateT, typename LogFn>
@@ -3237,23 +3295,467 @@ inline void build_and_save_custom_game_level(StateT& s, LogFn&& log_push)
     w.hud_toast_timer   = 4.0F;
 }
 
-template <class StateT, class LogFn>
-void reset_to_clean_empty_project(StateT& s, LogFn&& log_push)
+template <typename StateT, typename LogFn>
+inline int spawn_volumetric_clouds_entity(StateT& s, LogFn&& log_push)
 {
     auto& w = studio_world();
+    const cd::ecs::Entity h = s.scene.create_node();
+    if (auto* lt = s.scene.local(h))
+    {
+        lt->value.position = { 0.0F, 12.0F, 0.0F };
+        lt->value.rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
+        lt->value.scale    = { 0.01F, 0.01F, 0.01F };
+    }
+    SceneEntity e {};
+    e.handle    = h;
+    e.name      = "Volumetric_Clouds";
+    e.kind      = PrimitiveKind::kSphere;
+    e.tint      = { 0.92F, 0.96F, 1.00F };
+    e.is_pbr    = true;
+    e.metallic  = 0.0F;
+    e.roughness = 0.95F;
+    e.visible   = true;
+    cd::world_container::assign_layer(s.ecs_world, h, "Environment");
+
+    auto& ms = w.entity_modifiers[h.id];
+    auto cld = std::make_unique<CloudLayerModifier>();
+    cld->clouds_coverage = 0.45F;
+    ms.add_or_replace(std::move(cld));
+
+    if (auto* sky = w.environment_modifiers.template find<SkyAtmosphereModifier>())
+    {
+        sky->enabled         = true;
+        sky->clouds_coverage = 0.45F;
+    }
+    else
+    {
+        auto nsky = std::make_unique<SkyAtmosphereModifier>();
+        nsky->clouds_coverage = 0.45F;
+        w.environment_modifiers.add_or_replace(std::move(nsky));
+    }
+    s.fx.clouds_coverage = 0.45F;
+
+    record_entity_home_transform(s, h);
+    s.entities.push_back(std::move(e));
+    s.scene.update_transforms();
+    const int idx   = static_cast<int>(s.entities.size()) - 1;
+    s.selected      = idx;
+    s.selected_kind = SelKind::kEntity;
+    s.last_tlas_scene_hash = 0;
+    log_push("[studio] Spawned Volumetric_Clouds entity");
+    return idx;
+}
+
+template <typename StateT, typename LogFn>
+inline int spawn_scene_camera_entity(StateT& s, bool is_2d, LogFn&& log_push)
+{
+    auto& w = studio_world();
+    const cd::ecs::Entity h = s.scene.create_node();
+    if (auto* lt = s.scene.local(h))
+    {
+        lt->value.position = is_2d
+            ? cd::math::Vec3f { 0.0F, 1.4F, 8.0F }
+            : cd::math::Vec3f { 0.0F, 1.8F, 5.2F };
+        lt->value.rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
+        lt->value.scale    = { 0.28F, 0.28F, 0.42F };
+    }
+    SceneEntity e {};
+    e.handle    = h;
+    e.name      = is_2d ? "Camera_2D" : "Camera_Main";
+    e.kind      = PrimitiveKind::kCone;
+    e.tint      = is_2d ? cd::math::Vec3f { 0.35F, 0.92F, 0.78F } : cd::math::Vec3f { 0.35F, 0.78F, 1.00F };
+    e.is_pbr    = true;
+    e.metallic  = 0.25F;
+    e.roughness = 0.35F;
+    e.visible   = true;
+    cd::world_container::assign_layer(s.ecs_world, h, "Environment");
+
+    auto& ms = w.entity_modifiers[h.id];
+    ms.add_or_replace(std::make_unique<PbrMaterialModifier>(e.tint, e.metallic, e.roughness));
+    auto cam_mod = std::make_unique<CameraLensModifier>();
+    cam_mod->is_orthographic_2d   = is_2d;
+    cam_mod->fov_deg              = is_2d ? 35.0F : 60.0F;
+    cam_mod->follow_player_in_pie = true;
+    cam_mod->follow_offset        = is_2d ? cd::math::Vec3f { 0.0F, 1.2F, 8.0F } : cd::math::Vec3f { 0.0F, 2.2F, 5.2F };
+    ms.add_or_replace(std::move(cam_mod));
+
+    record_entity_home_transform(s, h);
+    s.entities.push_back(std::move(e));
+    s.scene.update_transforms();
+    const int idx   = static_cast<int>(s.entities.size()) - 1;
+    s.selected      = idx;
+    s.selected_kind = SelKind::kEntity;
+    s.last_tlas_scene_hash = 0;
+    log_push(std::string("[studio] Spawned scene camera: ") + s.entities.back().name);
+    return idx;
+}
+
+template <typename StateT, typename LogFn>
+inline int spawn_empty_character_vessel(StateT& s, bool is_2d, LogFn&& log_push)
+{
+    auto& w = studio_world();
+    const cd::ecs::Entity h = s.scene.create_node();
+    if (auto* lt = s.scene.local(h))
+    {
+        lt->value.position = { 0.0F, 0.55F, 0.0F };
+        lt->value.rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
+        lt->value.scale    = is_2d
+            ? cd::math::Vec3f { 0.75F, 1.05F, 0.14F }
+            : cd::math::Vec3f { 0.72F, 1.10F, 0.72F };
+    }
+    SceneEntity e {};
+    e.handle    = h;
+    e.name      = is_2d ? ("Character_2D_" + std::to_string(s.entities.size()))
+                        : ("Character_3D_" + std::to_string(s.entities.size()));
+    e.kind      = is_2d ? PrimitiveKind::kCube : PrimitiveKind::kCylinder;
+    e.tint      = is_2d ? cd::math::Vec3f { 0.28F, 0.92F, 0.68F } : cd::math::Vec3f { 0.25F, 0.78F, 0.98F };
+    e.is_pbr    = true;
+    e.metallic  = 0.12F;
+    e.roughness = 0.36F;
+    cd::world_container::assign_layer(s.ecs_world, h, "Characters");
+
+    auto& ms = w.entity_modifiers[h.id];
+    ms.add_or_replace(std::make_unique<PbrMaterialModifier>(e.tint, e.metallic, e.roughness));
+    auto cc = std::make_unique<CharacterControllerModifier>();
+    cc->move_speed   = 4.8F;
+    cc->jump_impulse = 6.8F;
+    ms.add_or_replace(std::move(cc));
+
+    auto rb = std::make_unique<RigidBodyModifier>(cd::physics::BodyType::kDynamic, 1.8F, 0.08F);
+    rb->friction = 0.65F;
+    ms.add_or_replace(std::move(rb));
+
+    if (is_2d)
+        ms.add_or_replace(std::make_unique<BoxColliderModifier>(cd::math::Vec3f { 0.45F, 0.52F, 0.18F }));
+    else
+        ms.add_or_replace(std::make_unique<CapsuleColliderModifier>(0.38F, 0.55F));
+
+    auto anim = std::make_unique<AnimatorStateMachineModifier>();
+    anim->is_2d_character           = is_2d;
+    anim->auto_stateful_transitions = true;
+    anim->set_state(0);
+    ms.add_or_replace(std::move(anim));
+
+    record_entity_home_transform(s, h);
+    s.entities.push_back(std::move(e));
+    s.scene.update_transforms();
+    const int idx   = static_cast<int>(s.entities.size()) - 1;
+    s.selected      = idx;
+    s.selected_kind = SelKind::kEntity;
+    s.last_tlas_scene_hash = 0;
+    log_push(std::string("[character] Spawned empty character vessel: ") + s.entities.back().name);
+    return idx;
+}
+
+template <typename StateT, typename LogFn>
+inline int attach_empty_character_model_child(
+    StateT&     s,
+    std::size_t parent_char_idx,
+    bool        is_2d,
+    LogFn&&     log_push)
+{
+    if (parent_char_idx >= s.entities.size()) return -1;
+    auto& w = studio_world();
+    const cd::ecs::Entity parent_h = s.entities[parent_char_idx].handle;
+    const cd::ecs::Entity child_h  = s.scene.create_node();
+    (void)s.scene.attach(child_h, parent_h);
+
+    if (auto* lt = s.scene.local(child_h))
+    {
+        lt->value.position = { 0.0F, 0.05F, 0.0F };
+        lt->value.rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
+        lt->value.scale    = is_2d
+            ? cd::math::Vec3f { 0.92F, 0.96F, 0.20F }
+            : cd::math::Vec3f { 0.88F, 0.95F, 0.88F };
+    }
+    SceneEntity child {};
+    child.handle    = child_h;
+    child.name      = is_2d ? (s.entities[parent_char_idx].name + "_Sprite2D_Model")
+                            : (s.entities[parent_char_idx].name + "_Mesh3D_Model");
+    child.kind      = is_2d ? PrimitiveKind::kCube : PrimitiveKind::kGltf;
+    if (!is_2d)
+    {
+        if (auto* lt = s.scene.local(child_h))
+        {
+            lt->value.scale    = { 1.65F, 1.65F, 1.65F };
+            lt->value.rotation = { -0.7071068F, 0.0F, 0.0F, 0.7071068F };
+        }
+    }
+    child.tint      = { 0.95F, 0.96F, 1.00F };
+    child.is_pbr    = true;
+    child.metallic  = 0.06F;
+    child.roughness = 0.38F;
+    cd::world_container::assign_layer(s.ecs_world, child_h, "Characters");
+
+    auto& cms = w.entity_modifiers[child_h.id];
+    cms.add_or_replace(std::make_unique<PbrMaterialModifier>(child.tint, child.metallic, child.roughness));
+    auto anim = std::make_unique<AnimatorStateMachineModifier>();
+    anim->is_2d_character           = is_2d;
+    anim->auto_stateful_transitions = true;
+    cms.add_or_replace(std::move(anim));
+
+    // Also ensure parent character has AnimatorStateMachineModifier
+    auto& pms = w.entity_modifiers[parent_h.id];
+    if (pms.template find<AnimatorStateMachineModifier>() == nullptr)
+    {
+        auto panim = std::make_unique<AnimatorStateMachineModifier>();
+        panim->is_2d_character           = is_2d;
+        panim->auto_stateful_transitions = true;
+        pms.add_or_replace(std::move(panim));
+    }
+
+    record_entity_home_transform(s, child_h);
+    s.entities.push_back(std::move(child));
+    s.scene.update_transforms();
+    const int child_idx = static_cast<int>(s.entities.size()) - 1;
+    s.selected          = child_idx;
+    s.selected_kind     = SelKind::kEntity;
+    s.last_tlas_scene_hash = 0;
+    log_push(std::string("[character] Attached child model '") + s.entities.back().name +
+             "' to '" + s.entities[parent_char_idx].name + "'");
+    return child_idx;
+}
+
+template <class StateT, class LogFn>
+bool load_project_or_scene_from_disk_path(StateT& s, std::string_view disk_path, LogFn&& log_push);
+
+template <typename StateT, typename LogFn>
+inline bool import_or_assign_os_file(
+    StateT&            s,
+    const std::string& os_path,
+    bool               assign_to_selected,
+    LogFn&&            log_push)
+{
+    if (os_path.empty()) return false;
+    auto& w = studio_world();
+    std::string norm_path = os_path;
+    std::replace(norm_path.begin(), norm_path.end(), '\\', '/');
+
+    std::filesystem::path fp(norm_path);
+    const std::string stem = fp.stem().string().empty() ? "OS_Asset" : fp.stem().string();
+    std::string ext = fp.extension().string();
+    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+    if (norm_path.find(".cdscene.json") != std::string::npos ||
+        ext == ".cdproj" || ext == ".cdproject" || ext == ".json")
+    {
+        return load_project_or_scene_from_disk_path(s, norm_path, log_push);
+    }
+
+    if (ext == ".obj" || ext == ".gltf" || ext == ".glb" || ext == ".mesh")
+    {
+        ContextAssetItem item {};
+        item.name       = stem;
+        item.path       = norm_path;
+        item.kind       = 1;
+        item.icon       = cd::ui::chroma::IconKind::kMesh3D;
+        item.accent_col = 0xFFFFB446U;
+        (void)w.load_asset_into_context(item);
+        w.selected_content_asset = norm_path;
+        if (assign_to_selected && s.selected >= 0 && std::cmp_less(s.selected, s.entities.size()))
+        {
+            (void)assign_mesh_asset_to_entity(s, s.selected, norm_path, log_push);
+        }
+        w.hud_toast_message = "Imported 3D Model from OS Disk: " + stem;
+        w.hud_toast_timer   = 3.0F;
+        log_push("[os-import] Imported mesh asset: " + norm_path);
+        return true;
+    }
+
+    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tga" || ext == ".tex")
+    {
+        ContextAssetItem item {};
+        item.name       = stem;
+        item.path       = norm_path;
+        item.kind       = 2;
+        item.icon       = cd::ui::chroma::IconKind::kTexture2D;
+        item.accent_col = 0xFF64E696U;
+        (void)w.load_asset_into_context(item);
+        w.selected_content_asset = norm_path;
+        if (assign_to_selected && s.selected >= 0 && std::cmp_less(s.selected, s.entities.size()))
+        {
+            (void)assign_texture_asset_to_entity(s, s.selected, norm_path, log_push);
+        }
+        w.hud_toast_message = "Imported Texture from OS Disk: " + stem;
+        w.hud_toast_timer   = 3.0F;
+        log_push("[os-import] Imported texture asset: " + norm_path);
+        return true;
+    }
+
+    if (ext == ".anim" || ext == ".bvh" || ext == ".fbx")
+    {
+        ContextAssetItem item {};
+        item.name       = stem;
+        item.path       = norm_path;
+        item.kind       = 3;
+        item.icon       = cd::ui::chroma::IconKind::kSparkles;
+        item.accent_col = 0xFFFF9632U;
+        (void)w.load_asset_into_context(item);
+        if (assign_to_selected && s.selected >= 0 && std::cmp_less(s.selected, s.entities.size()))
+        {
+            const auto hid = s.entities[static_cast<std::size_t>(s.selected)].handle;
+            auto& ms = w.entity_modifiers[hid.id];
+            auto* anim = ms.template find<AnimatorStateMachineModifier>();
+            if (!anim)
+            {
+                anim = static_cast<AnimatorStateMachineModifier*>(
+                    ms.add_or_replace(std::make_unique<AnimatorStateMachineModifier>()));
+            }
+            if (anim)
+            {
+                const int st = std::clamp(anim->current_state_idx, 0, 5);
+                anim->state_clip_paths[static_cast<std::size_t>(st)] = norm_path;
+            }
+        }
+        w.hud_toast_message = "Imported Animation Clip from OS Disk: " + stem;
+        w.hud_toast_timer   = 3.0F;
+        log_push("[os-import] Imported animation clip: " + norm_path);
+        return true;
+    }
+
+    // Fallback: register as generic mesh/object in context
+    (void)w.load_asset_into_context(stem, norm_path, 1U);
+    log_push("[os-import] Added OS file to context: " + norm_path);
+    return true;
+}
+
+template <class StateT, class LogFn>
+void reset_to_clean_empty_project(StateT& s, LogFn&& log_push, bool completely_blank = false)
+{
+    auto& w = studio_world();
+    s.pie_playing = false;
+    w.autopilot_play_active    = false;
+    w.pilot_scene_camera_idx   = -1;
+    w.inline_rename_entity_idx = -1;
+    w.inline_rename_light_idx  = -1;
     w.loaded_context_assets.clear();
-    w.active_project_name    = "Empty_Project";
+    w.active_project_name    = completely_blank ? "Blank_Project" : "Empty_Project";
     w.active_world_name      = "Default_World";
-    w.active_level_name      = "Empty_Stage";
+    w.active_level_name      = completely_blank ? "Blank_3D_Stage" : "Empty_3D_Stage";
     w.current_content_folder = "assets/meshes";
     w.selected_content_asset = "assets/meshes/Sphere.mesh";
     if (auto* active_lvl = s.cd_world.active_level_ptr(); active_lvl != nullptr)
     {
         active_lvl->set_template_id(0U);
     }
+
+    // Completely wipe all previous entities, ECS nodes, lights, and modifiers
     init_clean_studio_workspace(s, log_push);
-    w.hud_toast_message = "New Empty Project ready — Click or Drag 3D Objects to Spawn at (0, 0, 0)";
-    w.hud_toast_timer   = 3.5F;
+    for (auto& en : s.entities)
+    {
+        if (en.handle.is_valid())
+        {
+            cd::world_container::clear_layer(s.ecs_world, en.handle);
+            s.scene.destroy_node(en.handle);
+        }
+    }
+    s.entities.clear();
+    s.lights.clear();
+    w.entity_modifiers.clear();
+    w.home_transforms.clear();
+    w.euler_cache_deg.clear();
+    w.live_contacts.clear();
+    s.history.clear();
+
+    // 1. Spawn protected Ground_Floor
+    {
+        const cd::ecs::Entity floor_h = s.scene.create_node();
+        if (auto* lt = s.scene.local(floor_h))
+        {
+            lt->value.position = { 0.0F, -0.25F, 0.0F };
+            lt->value.rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
+            lt->value.scale    = { 24.0F, 0.50F, 24.0F };
+        }
+        SceneEntity fl {};
+        fl.handle    = floor_h;
+        fl.name      = "Ground_Floor";
+        fl.kind      = PrimitiveKind::kCube;
+        fl.tint      = { 0.22F, 0.24F, 0.28F };
+        fl.is_pbr    = true;
+        fl.metallic  = 0.04F;
+        fl.roughness = 0.82F;
+        fl.locked    = true;
+        s.entities.push_back(fl);
+        cd::world_container::assign_layer(s.ecs_world, floor_h, "Environment");
+
+        auto& fms = w.entity_modifiers[floor_h.id];
+        fms.add_or_replace(std::make_unique<PbrMaterialModifier>(fl.tint, fl.metallic, fl.roughness));
+        fms.add_or_replace(std::make_unique<RigidBodyModifier>(cd::physics::BodyType::kStatic, 0.0F, 0.50F));
+        fms.add_or_replace(std::make_unique<BoxColliderModifier>(cd::math::Vec3f { 0.5F, 0.5F, 0.5F }));
+        record_entity_home_transform(s, floor_h);
+    }
+
+    // 2. Spawn 1 clean Studio Sun directional light
+    s.lights.push_back({
+        "Studio Sun (5800K)",
+        cd::light::directional({ -0.42F, -0.82F, -0.38F }, { 1.0F, 0.98F, 0.94F }, 5.2F),
+        true,
+        5800.0F
+    });
+
+    if (!completely_blank)
+    {
+        // Standard Empty 3D Stage: Floor + Hero_Cube + Volumetric_Clouds + Camera_Main + Sun
+        const cd::ecs::Entity cube_h = s.scene.create_node();
+        if (auto* lt = s.scene.local(cube_h))
+        {
+            lt->value.position = { 0.0F, 0.50F, 0.0F };
+            lt->value.rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
+            lt->value.scale    = { 1.0F, 1.0F, 1.0F };
+        }
+        SceneEntity hc {};
+        hc.handle    = cube_h;
+        hc.name      = "Hero_Cube";
+        hc.kind      = PrimitiveKind::kCube;
+        hc.tint      = { 0.86F, 0.88F, 0.92F };
+        hc.is_pbr    = true;
+        hc.metallic  = 0.05F;
+        hc.roughness = 0.35F;
+        s.entities.push_back(hc);
+        cd::world_container::assign_layer(s.ecs_world, cube_h, "Default");
+
+        auto& cms = w.entity_modifiers[cube_h.id];
+        cms.add_or_replace(std::make_unique<PbrMaterialModifier>(hc.tint, hc.metallic, hc.roughness));
+        cms.add_or_replace(std::make_unique<BoxColliderModifier>(cd::math::Vec3f { 0.5F, 0.5F, 0.5F }));
+        record_entity_home_transform(s, cube_h);
+
+        (void)spawn_volumetric_clouds_entity(s, log_push);
+        (void)spawn_scene_camera_entity(s, false, log_push);
+        s.selected = 1; // Select Hero_Cube by default
+    }
+    else
+    {
+        // Completely Blank Stage: disable clouds so only Floor + Sun remain
+        s.fx.clouds_coverage = 0.0F;
+        if (auto* sky = w.environment_modifiers.template find<SkyAtmosphereModifier>())
+        {
+            sky->clouds_coverage = 0.0F;
+        }
+        s.selected = 0;
+    }
+
+    // Seed standard starter meshes & textures in Active Context
+    (void)w.load_asset_into_context("Sphere",       "assets/meshes/Sphere.mesh", 0U);
+    (void)w.load_asset_into_context("Cube",         "assets/meshes/Cube.mesh", 0U);
+    (void)w.load_asset_into_context("Cylinder",     "assets/meshes/Cylinder.mesh", 0U);
+    (void)w.load_asset_into_context("Cone",         "assets/meshes/Cone.mesh", 0U);
+    (void)w.load_asset_into_context("Torus",        "assets/meshes/Torus.mesh", 0U);
+    (void)w.load_asset_into_context("Gold_24K",     "assets/textures/Gold_Leaf_24K.tex", 1U);
+    (void)w.load_asset_into_context("Checker_2K",   "assets/textures/UV_Checkerboard_2K.tex", 1U);
+    (void)w.load_asset_into_context("Carbon_Fiber", "assets/textures/Carbon_Fiber_Twill.tex", 1U);
+
+    s.selected_kind        = SelKind::kEntity;
+    s.show_editor_floor    = true;
+    s.last_tlas_scene_hash = 0;
+    s.cam.eye              = { 0.0F, 2.4F, 6.8F };
+    s.cam.target           = { 0.0F, 0.8F, 0.0F };
+    s.scene.update_transforms();
+    sync_camera_and_invalidate_frame_history(s);
+
+    w.hud_toast_message = completely_blank
+        ? "Blank Stage ready (Floor + Sun only)"
+        : "Empty 3D Stage ready (Floor + Hero_Cube + Volumetric_Clouds + Camera_Main + Sun)";
+    w.hud_toast_timer = 3.5F;
 }
 
 template <class StateT, class LogFn>

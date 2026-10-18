@@ -115,6 +115,7 @@ template <typename StateT, typename LogFn>
 inline void delete_selected(StateT& s, LogFn&& log_push)
 {
     if (s.selected < 0) return;
+    auto& w = studio_world();
     if (s.selected_kind == SelKind::kEntity &&
         std::cmp_less(s.selected, s.entities.size()))
     {
@@ -126,14 +127,31 @@ inline void delete_selected(StateT& s, LogFn&& log_push)
             return;
         }
         const auto hid = ent.handle;
+        const bool is_clouds = (nm.find("Volumetric_Clouds") != std::string::npos) ||
+                               (nm.find("Cloud") != std::string::npos) ||
+                               (w.entity_modifiers[hid.id].template find<CloudLayerModifier>() != nullptr) ||
+                               (w.entity_modifiers[hid.id].template find<SkyAtmosphereModifier>() != nullptr);
+        if (is_clouds)
+        {
+            s.fx.clouds_coverage = 0.0F;
+            if (auto* sky = w.environment_modifiers.template find<SkyAtmosphereModifier>())
+                sky->clouds_coverage = 0.0F;
+            if (auto* cld = w.environment_modifiers.template find<CloudLayerModifier>())
+                cld->enabled = false;
+        }
+        if (w.pilot_scene_camera_idx == s.selected)
+            w.pilot_scene_camera_idx = -1;
+        else if (w.pilot_scene_camera_idx > s.selected)
+            --w.pilot_scene_camera_idx;
+
         cd::world_container::clear_layer(s.ecs_world, hid);
-        auto& w = studio_world();
         w.entity_modifiers.erase(hid.id);
         w.home_transforms.erase(hid.id);
         w.euler_cache_deg.erase(hid.id);
         s.scene.destroy_node(hid);
         s.entities.erase(s.entities.begin() + s.selected);
         s.selected = s.entities.empty() ? -1 : std::min(s.selected, static_cast<int>(s.entities.size()) - 1);
+        s.last_tlas_scene_hash = 0;
         log_push("[studio] deleted entity: " + nm);
     }
     else if (s.selected_kind == SelKind::kLight &&
@@ -141,7 +159,23 @@ inline void delete_selected(StateT& s, LogFn&& log_push)
     {
         const std::string nm = s.lights[static_cast<std::size_t>(s.selected)].name;
         s.lights.erase(s.lights.begin() + s.selected);
+        if (s.lights.empty())
+        {
+            s.fx.clouds_coverage   = 0.0F;
+            s.fx.volumetric_fog_on = false;
+            if (auto* sky = w.environment_modifiers.template find<SkyAtmosphereModifier>())
+            {
+                sky->enabled         = false;
+                sky->clouds_coverage = 0.0F;
+            }
+        }
         s.selected = s.lights.empty() ? -1 : std::min(s.selected, static_cast<int>(s.lights.size()) - 1);
+        if (s.selected < 0 && !s.entities.empty())
+        {
+            s.selected      = 0;
+            s.selected_kind = SelKind::kEntity;
+        }
+        s.last_tlas_scene_hash = 0;
         log_push("[studio] deleted light: " + nm);
     }
 }
@@ -280,11 +314,64 @@ inline void draw_studio_main_menu_bar(StateT& s, float dt, LogFn&& log_push)
     if (!ImGui::BeginMainMenuBar())
         return;
 
+    if (studio_world().show_project_manager)
+    {
+        const auto& w = studio_world();
+        const double fps = (w.smoothed_fps > 1.0F)
+            ? static_cast<double>(w.smoothed_fps)
+            : ((dt > 1e-5F) ? (1.0 / static_cast<double>(dt)) : 60.0);
+        ImGui::TextColored(ImVec4(0.35F, 0.85F, 1.0F, 1.0F), "CHROMODYNAMIC ENGINE  |  STUDIO HUB");
+        char hub_telem[128]{};
+        std::snprintf(hub_telem, sizeof(hub_telem), "Vulkan 1.3  •  C++23  |  %5.0f FPS", fps);
+        const float telem_w = ImGui::CalcTextSize(hub_telem).x + 95.0F;
+        ImGui::SameLine(std::max(320.0F, ImGui::GetWindowWidth() - telem_w));
+        ImGui::TextColored(ImVec4(0.45F, 0.95F, 0.65F, 1.0F), "%s", hub_telem);
+        ImGui::EndMainMenuBar();
+        return;
+    }
+
     ImGui::TextColored(ImVec4(0.35F, 0.85F, 1.0F, 1.0F), "CHROMODYNAMIC STUDIO");
     ImGui::Separator();
 
     if (ImGui::BeginMenu("File"))
     {
+        if (ImGui::MenuItem("New Empty 3D Stage (Floor + Cube + Clouds + Camera + Sun)"))
+        {
+            reset_to_clean_empty_project(s, log_push, false);
+        }
+        if (ImGui::MenuItem("New Blank 3D Stage (Floor + Sun Only)"))
+        {
+            reset_to_clean_empty_project(s, log_push, true);
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Import Asset from OS Disk... (Mesh / Texture / Anim)"))
+        {
+            std::string picked_path {};
+            const char* kAssetFilter =
+                "All Studio Assets (*.obj;*.gltf;*.glb;*.mesh;*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.tex;*.anim;*.bvh)\0"
+                "*.obj;*.gltf;*.glb;*.mesh;*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.tex;*.anim;*.bvh\0"
+                "3D Models (*.obj;*.gltf;*.glb;*.mesh)\0*.obj;*.gltf;*.glb;*.mesh\0"
+                "Textures (*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.tex)\0*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.tex\0"
+                "Animations (*.anim;*.bvh;*.fbx)\0*.anim;*.bvh;*.fbx\0"
+                "All Files (*.*)\0*.*\0";
+            if (open_native_os_file_dialog(kAssetFilter, picked_path, "Import 3D Model, Texture or Animation from OS Disk"))
+            {
+                (void)import_or_assign_os_file(s, picked_path, true, log_push);
+            }
+        }
+        if (ImGui::MenuItem("Open Scene or Project from OS Disk..."))
+        {
+            std::string picked_scene {};
+            const char* kSceneFilter =
+                "CHROMODYNAMIC Scenes & Projects (*.cdscene.json;*.cdproj;*.cdproject;*.json)\0"
+                "*.cdscene.json;*.cdproj;*.cdproject;*.json\0"
+                "All Files (*.*)\0*.*\0";
+            if (open_native_os_file_dialog(kSceneFilter, picked_scene, "Open CHROMODYNAMIC Scene or Project"))
+            {
+                (void)load_project_or_scene_from_disk_path(s, picked_scene, log_push);
+            }
+        }
+        ImGui::Separator();
         if (ImGui::MenuItem("Save Scene (Full PBR + Node3D + Lights)", "Ctrl+S"))
         {
             (void)save_full_studio_scene(s, "studio_scene.cdscene.json", log_push);
@@ -350,15 +437,26 @@ inline void draw_studio_main_menu_bar(StateT& s, float dt, LogFn&& log_push)
     if (ImGui::BeginMenu("Create 3D Object"))
     {
         if (ImGui::MenuItem("+ Cube (Mesh)"))
-            spawn_studio_entity(s, "Cube", PrimitiveKind::kCube, { 0.90F, 0.35F, 0.25F }, true, 0.1F, 0.45F, log_push);
+            spawn_studio_entity(s, "Cube", PrimitiveKind::kCube, { 0.90F, 0.35F, 0.25F }, true, 0.08F, 0.40F, log_push);
         if (ImGui::MenuItem("+ Sphere (Mesh)"))
-            spawn_studio_entity(s, "Sphere", PrimitiveKind::kSphere, { 0.25F, 0.80F, 0.45F }, true, 0.1F, 0.35F, log_push);
+            spawn_studio_entity(s, "Sphere", PrimitiveKind::kSphere, { 0.25F, 0.80F, 0.45F }, true, 0.08F, 0.35F, log_push);
         if (ImGui::MenuItem("+ Cylinder (Mesh)"))
-            spawn_studio_entity(s, "Cylinder", PrimitiveKind::kCylinder, { 0.95F, 0.75F, 0.20F }, true, 0.2F, 0.40F, log_push);
+            spawn_studio_entity(s, "Cylinder", PrimitiveKind::kCylinder, { 0.95F, 0.75F, 0.20F }, true, 0.12F, 0.38F, log_push);
         if (ImGui::MenuItem("+ Cone (Mesh)"))
-            spawn_studio_entity(s, "Cone", PrimitiveKind::kCone, { 0.25F, 0.55F, 0.95F }, true, 0.1F, 0.40F, log_push);
+            spawn_studio_entity(s, "Cone", PrimitiveKind::kCone, { 0.25F, 0.55F, 0.95F }, true, 0.08F, 0.40F, log_push);
         if (ImGui::MenuItem("+ Torus (Mesh)"))
-            spawn_studio_entity(s, "Torus", PrimitiveKind::kTorus, { 0.85F, 0.30F, 0.85F }, true, 0.3F, 0.30F, log_push);
+            spawn_studio_entity(s, "Torus", PrimitiveKind::kTorus, { 0.85F, 0.30F, 0.85F }, true, 0.15F, 0.32F, log_push);
+        ImGui::Separator();
+        if (ImGui::MenuItem("+ Empty 3D Character Vessel (Playable WASD/Space + 6-State Animator)"))
+            (void)spawn_empty_character_vessel(s, false, log_push);
+        if (ImGui::MenuItem("+ Empty 2D Character Vessel (Planar 2D + 6-State Animator)"))
+            (void)spawn_empty_character_vessel(s, true, log_push);
+        if (ImGui::MenuItem("+ Scene Camera (3D Perspective)"))
+            (void)spawn_scene_camera_entity(s, false, log_push);
+        if (ImGui::MenuItem("+ Scene Camera (2D Orthographic)"))
+            (void)spawn_scene_camera_entity(s, true, log_push);
+        if (ImGui::MenuItem("+ Volumetric Clouds (Environment Layer)"))
+            (void)spawn_volumetric_clouds_entity(s, log_push);
         ImGui::Separator();
         if (ImGui::MenuItem("+ PBR Chrome Mirror Sphere"))
             spawn_studio_entity(s, "PBR Chrome", PrimitiveKind::kSphere, { 0.95F, 0.93F, 0.88F }, true, 1.0F, 0.04F, log_push);

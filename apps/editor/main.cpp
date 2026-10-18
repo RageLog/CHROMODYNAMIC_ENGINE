@@ -1341,7 +1341,7 @@ inline SunLight resolve_sun_light(const std::vector<LightRow>& lights)
     SunLight s {};
     for (const auto& lrow : lights)
     {
-        if (!lrow.enabled)
+        if (!lrow.enabled || lrow.light.intensity <= 0.001F)
             continue;
         if (lrow.light.type != cd::light::LightType::kDirectional)
             continue;
@@ -1445,7 +1445,7 @@ inline void draw_sky_pass(cd::rhi::IDrawRecorder& cmd,
     spush.sun_color[0] = sun.col.x;
     spush.sun_color[1] = sun.col.y;
     spush.sun_color[2] = sun.col.z;
-    spush.sun_color[3] = 1.0F;  // full sky-tint blend
+    spush.sun_color[3] = (!cd::studio_rt::golden::enabled() && !sun.has_sun) ? 0.0F : 1.0F;
     sky_material.apply(cmd);
     cmd.push_constants(
         sky_material.pipeline_layout(),
@@ -3527,12 +3527,22 @@ inline void draw_floor_and_entities(cd::rhi::IDrawRecorder& cmd,
         if (ent.name.find("Ground_Floor") != std::string::npos &&
             !ent.use_texture && ent.custom_texture_id == 0)
             return;
+        if (ent.name.find("Volumetric_Clouds") != std::string::npos)
+            return;
         const auto& mesh = mesh_for(ent.kind);
         if (!mesh.vb.is_valid())
             return;
         auto* lt = scene.local(ent.handle);
         if (lt == nullptr)
             return;
+        if (ent.name.find("Camera_") != std::string::npos)
+        {
+            const float cdx = lt->value.position.x - cam.eye.x;
+            const float cdy = lt->value.position.y - cam.eye.y;
+            const float cdz = lt->value.position.z - cam.eye.z;
+            if (!show_editor_floor || (cdx * cdx + cdy * cdy + cdz * cdz) < 0.25F)
+                return;
+        }
         const auto model = cd::math::to_mat4(lt->value);
         const auto mvp = vp * model;
         PrimPush& pp = ent_push_scratch[i];
@@ -4633,7 +4643,10 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                 log_push_fn(std::string { "[gizmo] mode: " } + ms);
             }
             if (key_dn && ev.key == cd::platform::KeyCode::kDelete &&
-                !ui_captures_kb && !s.pie_playing && s.selected >= 0)
+                !ui_captures_kb && !s.pie_playing && s.selected >= 0 &&
+                cd::studio::studio_world().inline_rename_entity_idx < 0 &&
+                cd::studio::studio_world().inline_rename_light_idx < 0 &&
+                (s.selected_kind == SelKind::kEntity || s.selected_kind == SelKind::kLight))
             {
                 cd::studio::delete_selected(s, log_push_fn);
             }
@@ -4975,6 +4988,161 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
         if (!s.pie_playing)
         {
             cd_studio::update_free_look_camera(s.app_state.free_look, s.cam, s.scene_cam, dt);
+        }
+
+        if (!cd::studio_rt::golden::enabled())
+        {
+            auto&       w_rt               = cd::studio::studio_world();
+            std::size_t active_light_count = 0u;
+            bool        has_active_sun     = false;
+            for (const auto& lrow : s.lights)
+            {
+                if (lrow.enabled && lrow.light.intensity > 0.001F)
+                {
+                    ++active_light_count;
+                    if (lrow.light.type == cd::light::LightType::kDirectional)
+                        has_active_sun = true;
+                }
+            }
+
+            bool  has_cloud_entity     = false;
+            float entity_cloud_cov     = s.fx.clouds_coverage;
+            int   scene_cam_entity_idx = -1;
+            bool  has_player_vessel    = false;
+
+            for (std::size_t ei = 0u; ei < s.entities.size(); ++ei)
+            {
+                const auto& ent     = s.entities[ei];
+                auto&       ems     = w_rt.entity_modifiers[ent.handle.id];
+                const auto* cld_mod = ems.find<cd::studio::CloudLayerModifier>();
+                const auto* sky_mod = ems.find<cd::studio::SkyAtmosphereModifier>();
+                const bool  is_cloud_ent =
+                    (cld_mod != nullptr) || (sky_mod != nullptr) ||
+                    (ent.name.find("Cloud") != std::string::npos) ||
+                    (ent.name.find("cloud") != std::string::npos);
+                if (is_cloud_ent && ent.visible)
+                {
+                    if (cld_mod != nullptr)
+                    {
+                        if (cld_mod->enabled)
+                        {
+                            has_cloud_entity = true;
+                            entity_cloud_cov = cld_mod->clouds_coverage;
+                        }
+                    }
+                    else if (sky_mod != nullptr)
+                    {
+                        if (sky_mod->enabled)
+                        {
+                            has_cloud_entity = true;
+                            entity_cloud_cov = sky_mod->clouds_coverage;
+                        }
+                    }
+                    else
+                    {
+                        has_cloud_entity = true;
+                        if (entity_cloud_cov <= 0.001F)
+                            entity_cloud_cov = 0.45F;
+                    }
+                }
+
+                if (!ent.visible)
+                    continue;
+
+                if (const auto* le_mod = ems.find<cd::studio::LightEmitterModifier>();
+                    le_mod && le_mod->enabled && le_mod->intensity > 0.001F)
+                {
+                    ++active_light_count;
+                    if (le_mod->light_type == cd::light::LightType::kDirectional)
+                        has_active_sun = true;
+                }
+
+                if (const auto* chr_mod = ems.find<cd::studio::CharacterControllerModifier>();
+                    chr_mod && chr_mod->enabled)
+                {
+                    has_player_vessel = true;
+                }
+
+                const auto* cam_mod = ems.find<cd::studio::CameraLensModifier>();
+                const bool  is_cam_ent =
+                    (cam_mod != nullptr && cam_mod->enabled) ||
+                    (ent.name.find("Camera") != std::string::npos) ||
+                    (ent.name.find("camera") != std::string::npos);
+                if (is_cam_ent)
+                {
+                    if (scene_cam_entity_idx < 0 || std::cmp_equal(s.selected, ei))
+                        scene_cam_entity_idx = static_cast<int>(ei);
+                }
+            }
+
+            // Sync clouds & sky shafts with active lights and spawnable/deletable cloud entities
+            if (active_light_count == 0u || !has_active_sun)
+            {
+                s.fx.clouds_coverage    = 0.0F;
+                s.fx.shafts_strength    = 0.0F;
+                s.fx.light_shafts       = 0.0F;
+                s.fx.aerial_perspective = 0.0F;
+            }
+            else if (has_cloud_entity)
+            {
+                s.fx.clouds_coverage = entity_cloud_cov;
+            }
+            else
+            {
+                s.fx.clouds_coverage = 0.0F;
+            }
+
+            // Sync active/piloted Scene Camera entity (Camera_Main / Camera_2D) -> s.cam
+            if (w_rt.pilot_scene_camera_idx >= 0 &&
+                (!std::cmp_less(w_rt.pilot_scene_camera_idx, s.entities.size()) ||
+                 !s.entities[static_cast<std::size_t>(w_rt.pilot_scene_camera_idx)].visible))
+            {
+                w_rt.pilot_scene_camera_idx = -1;
+            }
+            const int active_cam_idx =
+                (w_rt.pilot_scene_camera_idx >= 0)
+                    ? w_rt.pilot_scene_camera_idx
+                    : (s.pie_playing ? scene_cam_entity_idx : -1);
+            if (active_cam_idx >= 0 && std::cmp_less(active_cam_idx, s.entities.size()))
+            {
+                auto&       cam_ent = s.entities[static_cast<std::size_t>(active_cam_idx)];
+                auto&       cam_ems = w_rt.entity_modifiers[cam_ent.handle.id];
+                const auto* cam_mod = cam_ems.find<cd::studio::CameraLensModifier>();
+                if (auto* cam_lt = s.scene.local(cam_ent.handle))
+                {
+                    if (cam_mod != nullptr && cam_mod->enabled)
+                    {
+                        s.cam.fov_y = std::clamp(cam_mod->fov_deg, 15.0F, 120.0F) *
+                                      (3.1415926535F / 180.0F);
+                    }
+                    const bool follow_player_active =
+                        s.pie_playing && has_player_vessel &&
+                        (cam_mod == nullptr || cam_mod->follow_player_in_pie) &&
+                        (w_rt.pilot_scene_camera_idx < 0);
+                    if (!follow_player_active)
+                    {
+                        if (!s.pie_playing &&
+                            (s.app_state.free_look.right_drag || s.app_state.free_look.middle_drag))
+                        {
+                            cam_lt->value.position = s.cam.eye;
+                            s.scene.update_transforms();
+                        }
+                        else
+                        {
+                            const cd::math::Vec3f cam_pos = cam_lt->value.position;
+                            cd::math::Vec3f cam_fwd = cd::math::rotate(
+                                cam_lt->value.rotation, cd::math::Vec3f { 0.0F, 0.0F, -1.0F });
+                            const float fwd_len = cd::math::length(cam_fwd);
+                            if (fwd_len > 1e-4F)
+                                cam_fwd = cam_fwd * (1.0F / fwd_len);
+                            else
+                                cam_fwd = { 0.0F, 0.0F, -1.0F };
+                            s.cam.eye    = cam_pos;
+                            s.cam.target = cam_pos + cam_fwd * 5.0F;
+                        }
+                    }
+                }
+            }
         }
 
         if (s.app_state.pick.pending && s.gizmo_state.was_hovered)
@@ -5396,7 +5564,7 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                                 }, s.prim_inst,
                                 s.albedo_sampler, device, s.albedo_tex.view,
                                 s.normal_tex.view, s.mr_tex.view,  // phase456: per-prim restore
-                                s.show_editor_floor);  // phase435-vis8
+                                s.show_editor_floor && !s.pie_playing);  // phase435-vis8: hide floor grid in Play mode
         if (cd::studio_rt::golden::enabled() && s.show_editor_floor && s.entities.size() > 1U)
         {
             draw_planar_shadows(hdr_lane0, sun, effective_floor_y, kShadowLift, s.entities,

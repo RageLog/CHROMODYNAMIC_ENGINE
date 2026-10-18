@@ -796,6 +796,179 @@ public:
     }
 };
 
+class AnimatorStateMachineModifier final : public IStudioModifier
+{
+public:
+    static constexpr std::array<const char*, 6> kStateLabels {
+        "Idle", "Walk", "Run", "Jump", "Fall", "Attack"
+    };
+
+    std::array<std::string, 6> state_clip_paths {
+        "anim://idle.anim",
+        "anim://walk.anim",
+        "anim://run.anim",
+        "anim://jump.anim",
+        "anim://fall.anim",
+        "anim://attack.anim"
+    };
+    std::array<float, 6> state_speeds { 1.0F, 1.15F, 1.65F, 1.2F, 1.0F, 1.8F };
+    std::array<bool, 6>  state_loop   { true, true, true, false, true, false };
+    int                  current_state_idx         { 0 };
+    std::string          state_name                { "Idle" };
+    bool                 auto_stateful_transitions { true };
+    bool                 is_2d_character           { false };
+    float                attack_timer              { 0.0F };
+
+    [[nodiscard]] std::string_view class_name() const noexcept override
+    {
+        return "AnimatorStateMachineModifier";
+    }
+    [[nodiscard]] std::string_view display_name() const noexcept override
+    {
+        return "Animator State Machine (6-State)";
+    }
+    [[nodiscard]] ModifierCategory category() const noexcept override
+    {
+        return ModifierCategory::kGameplay;
+    }
+    [[nodiscard]] ImVec4 header_color() const noexcept
+    {
+        return { 0.95F, 0.55F, 0.22F, 1.0F };
+    }
+    [[nodiscard]] std::unique_ptr<IStudioModifier> clone() const override
+    {
+        return std::make_unique<AnimatorStateMachineModifier>(*this);
+    }
+
+    void set_state(int idx)
+    {
+        current_state_idx = std::clamp(idx, 0, 5);
+        state_name        = kStateLabels[static_cast<std::size_t>(current_state_idx)];
+    }
+
+    void draw_inspector_ui() override
+    {
+        current_state_idx = std::clamp(current_state_idx, 0, 5);
+        state_name        = kStateLabels[static_cast<std::size_t>(current_state_idx)];
+        ImGui::TextColored(ImVec4(0.35F, 0.95F, 0.65F, 1.0F),
+                           "Active State: [%d] %s  (%s)",
+                           current_state_idx,
+                           state_name.c_str(),
+                           state_clip_paths[static_cast<std::size_t>(current_state_idx)].c_str());
+        ImGui::Checkbox("Auto Stateful Transitions (PIE Velocity/Grounded)", &auto_stateful_transitions);
+        ImGui::SameLine();
+        ImGui::Checkbox("2D Planar Character", &is_2d_character);
+        if (ImGui::Combo("Preview / Override State", &current_state_idx,
+                         kStateLabels.data(), static_cast<int>(kStateLabels.size())))
+        {
+            state_name = kStateLabels[static_cast<std::size_t>(current_state_idx)];
+        }
+        ImGui::Separator();
+        for (std::size_t i = 0; i < 6; ++i)
+        {
+            ImGui::PushID(static_cast<int>(i));
+            const bool is_active = (static_cast<int>(i) == current_state_idx);
+            if (is_active)
+                ImGui::TextColored(ImVec4(1.0F, 0.82F, 0.28F, 1.0F), ">> [%zu] %-6s : %s",
+                                   i, kStateLabels[i], state_clip_paths[i].c_str());
+            else
+                ImGui::TextDisabled("   [%zu] %-6s : %s",
+                                    i, kStateLabels[i], state_clip_paths[i].c_str());
+            ImGui::SameLine(std::max(220.0F, ImGui::GetContentRegionAvail().x - 135.0F));
+            ImGui::SetNextItemWidth(70.0F);
+            ImGui::SliderFloat("##spd", &state_speeds[i], 0.1F, 3.0F, "%.2fx");
+            ImGui::SameLine();
+            ImGui::Checkbox("Loop##lp", &state_loop[i]);
+            ImGui::PopID();
+        }
+    }
+};
+
+class CloudLayerModifier final : public IStudioModifier
+{
+public:
+    float clouds_coverage { 0.45F };
+    float altitude_km     { 2.4F };
+    float wind_speed      { 1.0F };
+    float density_scale   { 1.0F };
+
+    [[nodiscard]] std::string_view class_name() const noexcept override
+    {
+        return "CloudLayerModifier";
+    }
+    [[nodiscard]] std::string_view display_name() const noexcept override
+    {
+        return "Volumetric Cloud Layer";
+    }
+    [[nodiscard]] ModifierCategory category() const noexcept override
+    {
+        return ModifierCategory::kEnvironment;
+    }
+    [[nodiscard]] ImVec4 header_color() const noexcept
+    {
+        return { 0.42F, 0.78F, 0.98F, 1.0F };
+    }
+    [[nodiscard]] std::unique_ptr<IStudioModifier> clone() const override
+    {
+        return std::make_unique<CloudLayerModifier>(*this);
+    }
+
+    void draw_inspector_ui() override
+    {
+        ImGui::SliderFloat("Cloud Coverage", &clouds_coverage, 0.0F, 1.0F, "%.2f");
+        ImGui::SliderFloat("Altitude (km)", &altitude_km, 0.5F, 12.0F, "%.1f km");
+        ImGui::SliderFloat("Wind Speed", &wind_speed, 0.0F, 5.0F, "%.2f");
+        ImGui::SliderFloat("Density Scale", &density_scale, 0.1F, 3.0F, "%.2f");
+    }
+};
+
+class CameraLensModifier final : public IStudioModifier
+{
+public:
+    float           fov_deg             { 60.0F };
+    float           near_plane          { 0.1F };
+    float           far_plane           { 500.0F };
+    float           ortho_size          { 6.0F };
+    bool            is_orthographic_2d  { false };
+    bool            follow_player_in_pie{ true };
+    cd::math::Vec3f follow_offset       { 0.0F, 2.2F, 5.2F };
+
+    [[nodiscard]] std::string_view class_name() const noexcept override
+    {
+        return "CameraLensModifier";
+    }
+    [[nodiscard]] std::string_view display_name() const noexcept override
+    {
+        return "Camera Lens & Projection";
+    }
+    [[nodiscard]] ModifierCategory category() const noexcept override
+    {
+        return ModifierCategory::kEnvironment;
+    }
+    [[nodiscard]] ImVec4 header_color() const noexcept
+    {
+        return { 0.38F, 0.88F, 0.78F, 1.0F };
+    }
+    [[nodiscard]] std::unique_ptr<IStudioModifier> clone() const override
+    {
+        return std::make_unique<CameraLensModifier>(*this);
+    }
+
+    void draw_inspector_ui() override
+    {
+        ImGui::Checkbox("2D Orthographic Projection", &is_orthographic_2d);
+        if (is_orthographic_2d)
+            ImGui::SliderFloat("Ortho Half-Height", &ortho_size, 1.0F, 40.0F, "%.1f m");
+        else
+            ImGui::SliderFloat("Vertical FOV (deg)", &fov_deg, 20.0F, 110.0F, "%.1f deg");
+        ImGui::SliderFloat("Near Clip", &near_plane, 0.01F, 2.0F, "%.2f m");
+        ImGui::SliderFloat("Far Clip", &far_plane, 20.0F, 2000.0F, "%.0f m");
+        ImGui::Checkbox("Follow Player in PIE", &follow_player_in_pie);
+        if (follow_player_in_pie)
+            ImGui::DragFloat3("PIE Follow Offset", &follow_offset.x, 0.1F, -25.0F, 25.0F, "%.2f");
+    }
+};
+
 // =============================================================================
 // 3. Modifier Factory & Registry (Instantiate any Modifier Class by Name)
 // =============================================================================
@@ -808,57 +981,66 @@ struct ModifierDescriptor
     const char*      tooltip     {};
 };
 
-inline constexpr std::array<ModifierDescriptor, 15> kModifierCatalog {{
-    { "RigidBodyModifier",           "RigidBody 3D",   "RB",   ModifierCategory::kPhysics,
+inline constexpr std::array<ModifierDescriptor, 18> kModifierCatalog {{
+    { "RigidBodyModifier",            "RigidBody 3D",   "RB",   ModifierCategory::kPhysics,
       "Adds mass, gravity (-9.81 m/s^2), velocity, bounce restitution, and friction." },
-    { "BoxColliderModifier",         "Box Collider",   "BOX",  ModifierCategory::kCollision,
+    { "BoxColliderModifier",          "Box Collider",   "BOX",  ModifierCategory::kCollision,
       "Adds an Oriented 3D Box collision volume (OBB) with live wireframe and contact solver." },
-    { "SphereColliderModifier",      "Sphere Col",     "SPH",  ModifierCategory::kCollision,
+    { "SphereColliderModifier",       "Sphere Col",     "SPH",  ModifierCategory::kCollision,
       "Adds a 3D Sphere collision volume with live wireframe and bounce contacts." },
-    { "CapsuleColliderModifier",     "Capsule Col",    "CAP",  ModifierCategory::kCollision,
+    { "CapsuleColliderModifier",      "Capsule Col",    "CAP",  ModifierCategory::kCollision,
       "Adds a 3D Capsule collision volume for characters and pillars." },
-    { "PbrMaterialModifier",         "PBR Material",   "PBR",  ModifierCategory::kMaterial,
+    { "PbrMaterialModifier",          "PBR Material",   "PBR",  ModifierCategory::kMaterial,
       "Cook-Torrance metallic/roughness/albedo material modifier." },
-    { "LightEmitterModifier",        "Light Emitter",  "LGT",  ModifierCategory::kLighting,
+    { "LightEmitterModifier",         "Light Emitter",  "LGT",  ModifierCategory::kLighting,
       "Attaches a real-time clustered Point/Spot/Area light to this entity." },
-    { "CharacterControllerModifier", "Char Control",   "CHR",  ModifierCategory::kGameplay,
-      "Drive this entity with Arrow Keys and jump with physics." },
-    { "KinematicMoverModifier",      "Mover Platform", "MOV",  ModifierCategory::kGameplay,
+    { "CharacterControllerModifier",  "Char Control",   "CHR",  ModifierCategory::kGameplay,
+      "Drive this entity with WASD/Arrow Keys and jump with physics." },
+    { "AnimatorStateMachineModifier", "Animator 6-St",  "ANM",  ModifierCategory::kGameplay,
+      "6-State Character Animator (Idle, Walk, Run, Jump, Fall, Attack) with clip bindings." },
+    { "KinematicMoverModifier",       "Mover Platform", "MOV",  ModifierCategory::kGameplay,
       "Oscillating/rotating kinematic platform, elevator, or obstacle that carries riders." },
-    { "TriggerVolumeModifier",       "Trigger Zone",   "TRG",  ModifierCategory::kGameplay,
+    { "TriggerVolumeModifier",        "Trigger Zone",   "TRG",  ModifierCategory::kGameplay,
       "Overlap sensor for Collectibles (+Score), JumpPads (+Y Boost), Hazards (-HP), or Goal Beacons." },
-    { "PatrolWaypointModifier",      "AI Patrol Bot",  "AI",   ModifierCategory::kGameplay,
+    { "PatrolWaypointModifier",       "AI Patrol Bot",  "AI",   ModifierCategory::kGameplay,
       "Autonomous waypoint patrol & player-pursuit AI behavior for enemies and synth bots." },
-    { "UniversalNodeModifier",       "Chroma Capsule", "CAP+", ModifierCategory::kGameplay,
+    { "UniversalNodeModifier",        "Chroma Capsule", "CAP+", ModifierCategory::kGameplay,
       "Any of the 250 Universal Catalog Constructs (219 Standard Constructs + 31 Next-Gen SOTA) folded inline." },
-    { "FogModifier",                 "Volumetric Fog", "FOG",  ModifierCategory::kEnvironment,
+    { "FogModifier",                  "Volumetric Fog", "FOG",  ModifierCategory::kEnvironment,
       "Instantiates volumetric fog, height falloff, and sun god-ray light shafts." },
-    { "BloomLensModifier",           "Bloom & Lens",   "BLM",  ModifierCategory::kEnvironment,
+    { "BloomLensModifier",            "Bloom & Lens",   "BLM",  ModifierCategory::kEnvironment,
       "Instantiates multi-mip HDR bloom, DoF, chromatic aberration, and vignette." },
-    { "TonemapCameraModifier",       "Tonemap & Exp",  "TMP",  ModifierCategory::kEnvironment,
+    { "TonemapCameraModifier",        "Tonemap & Exp",  "TMP",  ModifierCategory::kEnvironment,
       "Instantiates exposure, saturation, ACES/Hable/AgX tonemapper, and TAA." },
-    { "SkyAtmosphereModifier",       "Sky & DDGI GI",  "SKY",  ModifierCategory::kEnvironment,
+    { "SkyAtmosphereModifier",        "Sky & DDGI GI",  "SKY",  ModifierCategory::kEnvironment,
       "Instantiates volumetric clouds, GTAO, SSR, and Ray-Traced DDGI GI." },
+    { "CloudLayerModifier",           "Cloud Layer",    "CLD",  ModifierCategory::kEnvironment,
+      "Spawnable/deletable volumetric cloud layer controller." },
+    { "CameraLensModifier",           "Camera Lens",    "CAM",  ModifierCategory::kEnvironment,
+      "3D Perspective / 2D Orthographic scene camera lens & PIE follow rig." },
 }};
 
 [[nodiscard]] inline std::unique_ptr<IStudioModifier> instantiate_modifier_by_class(
     std::string_view class_id)
 {
-    if (class_id == "FogModifier")                 return std::make_unique<FogModifier>();
-    if (class_id == "BloomLensModifier")           return std::make_unique<BloomLensModifier>();
-    if (class_id == "TonemapCameraModifier")       return std::make_unique<TonemapCameraModifier>();
-    if (class_id == "SkyAtmosphereModifier")       return std::make_unique<SkyAtmosphereModifier>();
-    if (class_id == "PbrMaterialModifier")         return std::make_unique<PbrMaterialModifier>();
-    if (class_id == "RigidBodyModifier")           return std::make_unique<RigidBodyModifier>();
-    if (class_id == "BoxColliderModifier")         return std::make_unique<BoxColliderModifier>();
-    if (class_id == "SphereColliderModifier")      return std::make_unique<SphereColliderModifier>();
-    if (class_id == "CapsuleColliderModifier")     return std::make_unique<CapsuleColliderModifier>();
-    if (class_id == "LightEmitterModifier")        return std::make_unique<LightEmitterModifier>();
-    if (class_id == "CharacterControllerModifier") return std::make_unique<CharacterControllerModifier>();
-    if (class_id == "KinematicMoverModifier")      return std::make_unique<KinematicMoverModifier>();
-    if (class_id == "TriggerVolumeModifier")       return std::make_unique<TriggerVolumeModifier>();
-    if (class_id == "PatrolWaypointModifier")      return std::make_unique<PatrolWaypointModifier>();
-    if (class_id == "UniversalNodeModifier")       return std::make_unique<UniversalNodeModifier>();
+    if (class_id == "FogModifier")                  return std::make_unique<FogModifier>();
+    if (class_id == "BloomLensModifier")            return std::make_unique<BloomLensModifier>();
+    if (class_id == "TonemapCameraModifier")        return std::make_unique<TonemapCameraModifier>();
+    if (class_id == "SkyAtmosphereModifier")        return std::make_unique<SkyAtmosphereModifier>();
+    if (class_id == "CloudLayerModifier")           return std::make_unique<CloudLayerModifier>();
+    if (class_id == "CameraLensModifier")           return std::make_unique<CameraLensModifier>();
+    if (class_id == "PbrMaterialModifier")          return std::make_unique<PbrMaterialModifier>();
+    if (class_id == "RigidBodyModifier")            return std::make_unique<RigidBodyModifier>();
+    if (class_id == "BoxColliderModifier")          return std::make_unique<BoxColliderModifier>();
+    if (class_id == "SphereColliderModifier")       return std::make_unique<SphereColliderModifier>();
+    if (class_id == "CapsuleColliderModifier")      return std::make_unique<CapsuleColliderModifier>();
+    if (class_id == "LightEmitterModifier")         return std::make_unique<LightEmitterModifier>();
+    if (class_id == "CharacterControllerModifier")  return std::make_unique<CharacterControllerModifier>();
+    if (class_id == "AnimatorStateMachineModifier") return std::make_unique<AnimatorStateMachineModifier>();
+    if (class_id == "KinematicMoverModifier")       return std::make_unique<KinematicMoverModifier>();
+    if (class_id == "TriggerVolumeModifier")        return std::make_unique<TriggerVolumeModifier>();
+    if (class_id == "PatrolWaypointModifier")       return std::make_unique<PatrolWaypointModifier>();
+    if (class_id == "UniversalNodeModifier")        return std::make_unique<UniversalNodeModifier>();
     return nullptr;
 }
 
@@ -1063,6 +1245,11 @@ struct StudioRuntimeWorld
     char                                                  pm_filter_buf[64]         {};
     char                                                  pm_new_project_buf[64]    { "My_Chroma_Project" };
     bool                                                  pm_creating_new           { false };
+    // Camera Preview & Scene Outliner Inline Rename state
+    int                                                   pilot_scene_camera_idx    { -1 };
+    int                                                   inline_rename_entity_idx  { -1 };
+    int                                                   inline_rename_light_idx   { -1 };
+    char                                                  inline_rename_buf[64]     {};
 
     [[nodiscard]] bool is_asset_in_context(std::string_view path) const noexcept
     {

@@ -9,6 +9,9 @@
 
 #include "StudioPhysicsSolver.hpp"
 #include <filesystem>
+#if defined(_WIN32)
+#include <commdlg.h>
+#endif
 
 namespace cd::studio
 {
@@ -26,7 +29,10 @@ inline void draw_studio_modifier_stack_ui(
                        stack_owner_label, stack.items.size());
 
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16F, 0.24F, 0.34F, 0.90F));
-    ImGui::Button("[+] DROP MODIFIER CLASS HERE (or click + Add below)", ImVec2(-1.0F, 24.0F));
+    if (ImGui::Button("[+] DROP MODIFIER CLASS HERE (or click to browse)", ImVec2(-1.0F, 24.0F)))
+    {
+        ImGui::OpenPopup("add_modifier_class_popup");
+    }
     ImGui::PopStyleColor();
     if (ImGui::BeginDragDropTarget())
     {
@@ -42,6 +48,25 @@ inline void draw_studio_modifier_stack_ui(
         }
         ImGui::EndDragDropTarget();
     }
+
+    // Quick single-click modifier add buttons
+    auto try_quick_add = [&](const char* cid) {
+        if (auto mod = instantiate_modifier_by_class(cid))
+        {
+            stack.add_or_replace(std::move(mod));
+            log_push(std::string("[modifier] Quick-Added ") + cid + " to " + stack_owner_label);
+        }
+    };
+    if (ImGui::SmallButton("+ RigidBody")) try_quick_add("RigidBodyModifier");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+ Collider"))  try_quick_add("BoxColliderModifier");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+ Character")) try_quick_add("CharacterControllerModifier");
+    if (ImGui::SmallButton("+ Animator"))  try_quick_add("AnimatorStateMachineModifier");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+ Camera Lens")) try_quick_add("CameraLensModifier");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+ Cloud Layer")) try_quick_add("CloudLayerModifier");
 
     int remove_idx  = -1;
     int move_up_idx = -1;
@@ -59,6 +84,27 @@ inline void draw_studio_modifier_stack_ui(
         const bool open = ImGui::CollapsingHeader(
             std::string(mod->display_name()).c_str(),
             ImGuiTreeNodeFlags_DefaultOpen);
+
+        // Right-click context menu on Modifier Header
+        if (ImGui::BeginPopupContextItem())
+        {
+            if (ImGui::MenuItem(mod->enabled ? "Disable Modifier" : "Enable Modifier"))
+            {
+                mod->enabled = !mod->enabled;
+            }
+            if (ImGui::MenuItem("Reset to Defaults"))
+            {
+                if (auto fresh = instantiate_modifier_by_class(mod->class_name()))
+                {
+                    mod = std::move(fresh);
+                }
+            }
+            if (ImGui::MenuItem("Remove Modifier"))
+            {
+                remove_idx = static_cast<int>(i);
+            }
+            ImGui::EndPopup();
+        }
 
         if (open && mod->enabled)
         {
@@ -106,6 +152,39 @@ inline void draw_studio_modifier_stack_ui(
     }
 }
 
+struct HubShowcaseMeta
+{
+    const char* badge;
+    ImVec4      badge_color;
+    int         category_group; // 1 = 3D Rendering & World, 2 = Physics & Simulation, 3 = Gameplay, Audio & UI
+};
+
+[[nodiscard]] inline constexpr HubShowcaseMeta get_hub_showcase_meta(std::size_t idx) noexcept
+{
+    switch (idx)
+    {
+        case 0:  return { "[RENDER]",   ImVec4(0.35F, 0.85F, 1.0F, 1.0F), 1 };
+        case 1:  return { "[WORLD]",    ImVec4(0.40F, 0.90F, 0.70F, 1.0F), 1 };
+        case 2:  return { "[RENDER]",   ImVec4(0.35F, 0.85F, 1.0F, 1.0F), 1 };
+        case 3:  return { "[RENDER]",   ImVec4(0.35F, 0.85F, 1.0F, 1.0F), 1 };
+        case 4:  return { "[GAMEPLAY]", ImVec4(1.0F, 0.65F, 0.35F, 1.0F), 3 };
+        case 5:  return { "[PHYSICS]",  ImVec4(0.95F, 0.50F, 0.50F, 1.0F), 2 };
+        case 6:  return { "[WORLD]",    ImVec4(0.40F, 0.90F, 0.70F, 1.0F), 1 };
+        case 7:  return { "[GAMEPLAY]", ImVec4(1.0F, 0.65F, 0.35F, 1.0F), 3 };
+        case 8:  return { "[PHYSICS]",  ImVec4(0.95F, 0.50F, 0.50F, 1.0F), 2 };
+        case 9:  return { "[PHYSICS]",  ImVec4(0.95F, 0.50F, 0.50F, 1.0F), 2 };
+        case 10: return { "[UI / 2D]",  ImVec4(0.85F, 0.60F, 1.0F, 1.0F), 3 };
+        case 11: return { "[GAMEPLAY]", ImVec4(1.0F, 0.65F, 0.35F, 1.0F), 3 };
+        default: return { "[PROJECT]",  ImVec4(0.70F, 0.70F, 0.70F, 1.0F), 0 };
+    }
+}
+
+[[nodiscard]] inline bool matches_hub_category(const HubShowcaseMeta& meta, int tab) noexcept
+{
+    if (tab <= 0) return true;
+    return meta.category_group == tab;
+}
+
 template <typename StateT, typename LogFn>
 inline void draw_project_manager_screen(
     StateT&       s,
@@ -126,444 +205,323 @@ inline void draw_project_manager_screen(
                                  ImGuiWindowFlags_NoCollapse |
                                  ImGuiWindowFlags_NoBringToFrontOnFocus;
 
-    if (!ImGui::Begin("ProjectManagerMainWindow", nullptr, win_flags))
+    if (!ImGui::Begin("StudioHubMainWindow", nullptr, win_flags))
     {
         ImGui::End();
         return;
     }
 
+    // =========================================================================
+    // CHROMODYNAMIC Studio Hub — Native Card-Grid Architecture
+    // =========================================================================
+
     // -------------------------------------------------------------------------
-    // Top Header Row: Logo/Title (Left), Tab Buttons (Center), Settings/Theme (Right)
+    // 1. Left Sidebar Column (240px width)
     // -------------------------------------------------------------------------
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0F, 6.0F));
+    ImGui::BeginChild("hub_sidebar", ImVec2(240.0F, sh - 45.0F), true);
+
     ImGui::TextColored(ImVec4(0.35F, 0.85F, 1.0F, 1.0F), "CHROMODYNAMIC");
     ImGui::SameLine();
-    ImGui::TextDisabled("— Project Manager");
-
-    ImGui::SameLine(sw * 0.5F - 130.0F);
-    const bool is_proj_tab = (w.project_manager_tab == 0);
-    if (is_proj_tab) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20F, 0.48F, 0.80F, 1.0F));
-    if (ImGui::Button("  Projects  ", ImVec2(110.0F, 26.0F)))
-    {
-        w.project_manager_tab = 0;
-    }
-    if (is_proj_tab) ImGui::PopStyleColor();
-
-    ImGui::SameLine();
-    const bool is_tpl_tab = (w.project_manager_tab == 1);
-    if (is_tpl_tab) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20F, 0.48F, 0.80F, 1.0F));
-    if (ImGui::Button("Templates & Showcases", ImVec2(165.0F, 26.0F)))
-    {
-        w.project_manager_tab = 1;
-    }
-    if (is_tpl_tab) ImGui::PopStyleColor();
-
-    ImGui::SameLine(sw - 140.0F);
-    if (ImGui::Button("Settings / Theme", ImVec2(125.0F, 26.0F)))
-    {
-        ImGui::OpenPopup("pm_theme_popup");
-    }
-    if (ImGui::BeginPopup("pm_theme_popup"))
-    {
-        ImGui::TextDisabled("Select Studio Theme:");
-        ImGui::Separator();
-        if (ImGui::MenuItem("Chroma Dark (Default)")) ImGui::ApplyTheme(0);
-        if (ImGui::MenuItem("Modern Slate"))          ImGui::ApplyTheme(1);
-        if (ImGui::MenuItem("High Contrast"))         ImGui::ApplyTheme(2);
-        ImGui::EndPopup();
-    }
-    ImGui::PopStyleVar();
-
+    ImGui::TextDisabled("Studio Hub • v1.0");
     ImGui::Separator();
 
-    // -------------------------------------------------------------------------
-    // Toolbar & Search Row: [+ Create] [Import] [Scan] | Filter Projects... | Sort: Last Edited
-    // -------------------------------------------------------------------------
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0F, 4.0F));
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18F, 0.58F, 0.38F, 1.0F));
-    if (ImGui::Button("+ Create", ImVec2(78.0F, 24.0F)))
+    // Primary Action Button (Large Green): New Empty 3D Stage
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18F, 0.54F, 0.34F, 1.0F));
+    if (ImGui::Button("+ New Empty 3D Stage", ImVec2(-1.0F, 32.0F)))
     {
-        w.pm_creating_new = !w.pm_creating_new;
+        reset_to_clean_empty_project(s, log_push, false);
+        w.show_project_manager = false;
+        log_push("[hub] Launched new clean empty 3D stage");
     }
     ImGui::PopStyleColor();
-    ImGui::SameLine();
 
-    if (ImGui::Button("Import", ImVec2(68.0F, 24.0F)))
+    // Secondary Action Button: Open Context Demo Stage
+    if (ImGui::Button("Open Context Demo Stage", ImVec2(-1.0F, 26.0F)))
     {
-        w.hud_toast_message = "Select a .cdproj or .cdscene.json file from disk";
-        w.hud_toast_timer   = 3.0F;
+        seed_demo_context_and_scene(s, log_push);
+        w.show_project_manager = false;
+        log_push("[hub] Loaded context demo stage");
     }
-    ImGui::SameLine();
 
-    if (ImGui::Button("Scan", ImVec2(60.0F, 24.0F)))
+    // Tertiary Action Button: Load Saved Scene (.cdscene)
+    if (ImGui::Button("Load Saved Scene (.cdscene)", ImVec2(-1.0F, 26.0F)))
     {
-        w.hud_toast_message = "Scanned workspace projects directory";
-        w.hud_toast_timer   = 2.0F;
+        (void)load_full_studio_scene(s, "studio_scene.cdscene.json", log_push);
+        w.show_project_manager = false;
+        log_push("[hub] Loaded saved studio scene");
     }
-    ImGui::SameLine(240.0F);
 
-    ImGui::SetNextItemWidth(std::max(180.0F, sw - 560.0F));
-    ImGui::InputTextWithHint("##pm_filter", "Filter Projects...", w.pm_filter_buf, sizeof(w.pm_filter_buf));
+    ImGui::Separator();
+    ImGui::TextDisabled("WORKSPACES & FILTERS");
 
-    ImGui::SameLine(sw - 290.0F);
-    ImGui::TextDisabled("Sort:");
-    ImGui::SameLine();
-    ImGui::Text("Last Edited v");
+    constexpr std::array<const char*, 4> kHubCategories {{
+        "All Workspaces (12)",
+        "3D Rendering & World",
+        "Physics & Simulation",
+        "Gameplay, Audio & UI"
+    }};
 
-    ImGui::PopStyleVar();
-
-    // Optional New Project inline bar
-    if (w.pm_creating_new)
+    for (int ci = 0; ci < 4; ++ci)
     {
-        ImGui::Separator();
-        ImGui::TextColored(ImVec4(0.40F, 0.90F, 0.60F, 1.0F), "New Project:");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(260.0F);
-        ImGui::InputText("##pm_new_proj_name", w.pm_new_project_buf, sizeof(w.pm_new_project_buf));
-        ImGui::SameLine();
-        if (ImGui::Button("Create & Edit", ImVec2(110.0F, 24.0F)))
+        const bool is_sel = (w.project_manager_tab == ci);
+        if (is_sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18F, 0.38F, 0.62F, 1.0F));
+        if (ImGui::Button(kHubCategories[static_cast<std::size_t>(ci)], ImVec2(-1.0F, 24.0F)))
         {
-            reset_to_clean_empty_project(s, log_push);
+            w.project_manager_tab = ci;
+        }
+        if (is_sel) ImGui::PopStyleColor();
+    }
+
+    ImGui::Separator();
+    ImGui::TextDisabled("New Project Name:");
+    ImGui::SetNextItemWidth(-1.0F);
+    ImGui::InputText("##pm_new_proj_name", w.pm_new_project_buf, sizeof(w.pm_new_project_buf));
+    if (ImGui::Button("Create Named Project", ImVec2(-1.0F, 24.0F)))
+    {
+        reset_to_clean_empty_project(s, log_push, false);
+        if (w.pm_new_project_buf[0] != '\0')
             w.active_project_name = w.pm_new_project_buf;
-            w.show_project_manager = false;
-            w.pm_creating_new = false;
-            log_push("[project] Created new project: " + w.active_project_name);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(70.0F, 24.0F)))
+        w.show_project_manager = false;
+        log_push("[project] Created named project: " + w.active_project_name);
+    }
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Theme:");
+    if (ImGui::SmallButton("Chroma Slate"))    ImGui::ApplyTheme(0);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Obsidian"))        ImGui::ApplyTheme(1);
+    if (ImGui::SmallButton("Graphite"))        ImGui::ApplyTheme(2);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Light"))           ImGui::ApplyTheme(3);
+
+    ImGui::EndChild();
+
+    ImGui::SameLine(0.0F, 10.0F);
+
+    // -------------------------------------------------------------------------
+    // 2. Right Main Area (Search bar, Quick-Start Hero cards, 3-column Workspaces grid)
+    // -------------------------------------------------------------------------
+    ImGui::BeginChild("hub_main", ImVec2(sw - 265.0F, sh - 45.0F), false);
+
+    // Upper Search & Fast Transition Bar
+    ImGui::SetNextItemWidth(std::max(180.0F, (sw - 265.0F) - 340.0F));
+    ImGui::InputTextWithHint("##hub_search", "Search workspaces...", w.pm_filter_buf, sizeof(w.pm_filter_buf));
+    ImGui::SameLine(0.0F, 8.0F);
+
+    // Open Selected Project button
+    if (ImGui::Button("Open Selected", ImVec2(110.0F, 24.0F)))
+    {
+        if (w.selected_pm_project_idx >= 0 && std::cmp_less(w.selected_pm_project_idx, kShowcaseCatalog.size()))
         {
-            w.pm_creating_new = false;
+            load_showcase_project_by_index(s, static_cast<std::size_t>(w.selected_pm_project_idx), log_push);
+            w.show_project_manager = false;
         }
     }
+    ImGui::SameLine(0.0F, 8.0F);
+
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20F, 0.35F, 0.52F, 1.0F));
+    if (ImGui::Button("Skip to 3D Editor ->", ImVec2(160.0F, 24.0F)))
+    {
+        w.show_project_manager = false;
+    }
+    ImGui::PopStyleColor();
 
     ImGui::Separator();
 
     // -------------------------------------------------------------------------
-    // Project item catalog
+    // Quick Start Hero Card Row (3 columns, height 92px)
     // -------------------------------------------------------------------------
-    struct PMItem
+    const float main_avail_w = ImGui::GetContentRegionAvail().x;
+    const float hero_col_w   = (main_avail_w - 16.0F) / 3.0F;
+
+    // Hero Card 1: Blank 3D Stage (Cyan)
+    ImGui::BeginChild("hero_blank_stage", ImVec2(hero_col_w, 92.0F), true);
+    ImGui::TextColored(ImVec4(0.35F, 0.85F, 1.0F, 1.0F), "Blank 3D Stage");
+    ImGui::TextDisabled("Clean 3D scene with transparent 1m/5m floor grid & directional sun.");
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18F, 0.45F, 0.65F, 1.0F));
+    if (ImGui::Button("Launch Blank Stage##hero1", ImVec2(-1.0F, 24.0F)))
     {
-        std::string              name;
-        std::string              path;
-        std::string              version;
-        std::string              date;
-        cd::ui::chroma::IconKind icon;
-        int                      action_type; // 0 = empty, 1 = project hope, 2 = scene file, 3 = showcase
-        std::size_t              showcase_idx;
-        bool                     favorite;
+        reset_to_clean_empty_project(s, log_push, true);
+        w.show_project_manager = false;
+        log_push("[hub] Launched blank 3D stage");
+    }
+    ImGui::PopStyleColor();
+    ImGui::EndChild();
+
+    ImGui::SameLine(0.0F, 8.0F);
+
+    // Hero Card 2: Asset & Context Sandbox (Amber)
+    ImGui::BeginChild("hero_context_sandbox", ImVec2(hero_col_w, 92.0F), true);
+    ImGui::TextColored(ImVec4(1.0F, 0.78F, 0.35F, 1.0F), "Asset & Context Sandbox");
+    ImGui::TextDisabled("Pre-loaded PBR meshes & textures ready for Context Browser testing.");
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55F, 0.42F, 0.18F, 1.0F));
+    if (ImGui::Button("Open Sandbox##hero2", ImVec2(-1.0F, 24.0F)))
+    {
+        seed_demo_context_and_scene(s, log_push);
+        w.show_project_manager = false;
+        log_push("[hub] Opened asset & context sandbox");
+    }
+    ImGui::PopStyleColor();
+    ImGui::EndChild();
+
+    ImGui::SameLine(0.0F, 8.0F);
+
+    // Hero Card 3: Saved Scene (Emerald)
+    std::error_code secc{};
+    const bool has_saved = std::filesystem::exists("studio_scene.cdscene.json", secc);
+    ImGui::BeginChild("hero_saved_scene", ImVec2(hero_col_w, 92.0F), true);
+    ImGui::TextColored(ImVec4(0.40F, 0.95F, 0.65F, 1.0F), "Saved Scene (.cdscene)");
+    if (has_saved)
+        ImGui::TextDisabled("studio_scene.cdscene.json available on disk.");
+    else
+        ImGui::TextDisabled("No saved scene yet. Start fresh & save anytime.");
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18F, 0.50F, 0.35F, 1.0F));
+    const char* saved_btn_lbl = has_saved ? "Resume Saved Scene##hero3" : "Start & Save New##hero3";
+    if (ImGui::Button(saved_btn_lbl, ImVec2(-1.0F, 24.0F)))
+    {
+        if (has_saved)
+            (void)load_full_studio_scene(s, "studio_scene.cdscene.json", log_push);
+        else
+            reset_to_clean_empty_project(s, log_push, false);
+        w.show_project_manager = false;
+        log_push("[hub] Activated studio scene");
+    }
+    ImGui::PopStyleColor();
+    ImGui::EndChild();
+
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.68F, 0.74F, 0.82F, 1.0F), "SHOWCASE & TEMPLATE WORKSPACES");
+
+    // -------------------------------------------------------------------------
+    // Showcase & Template Workspaces Card Grid (3 Columns)
+    // -------------------------------------------------------------------------
+    const std::string filter_str(w.pm_filter_buf);
+    auto to_lower = [](std::string str) {
+        for (char& c : str) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return str;
     };
+    const std::string needle = to_lower(filter_str);
 
-    static std::array<bool, 32> s_pm_favorites {};
-
-    std::vector<PMItem> items;
-    items.reserve(24);
-
-    if (w.project_manager_tab == 0)
+    std::vector<std::size_t> matched_indices;
+    matched_indices.reserve(kShowcaseCatalog.size());
+    for (std::size_t i = 0; i < kShowcaseCatalog.size(); ++i)
     {
-        items.push_back({
-            "Empty Project (New 3D Stage)",
-            "c:/UserFiles/Project/CHROMODYNAMIC_ENGINE/workspace/empty_project",
-            "1.0",
-            "2026-10-18 22:00",
-            cd::ui::chroma::IconKind::kFileScene,
-            0, 0, s_pm_favorites[0]
-        });
+        const auto& sc   = kShowcaseCatalog[i];
+        const auto  meta = get_hub_showcase_meta(i);
 
-        items.push_back({
-            "Project Hope",
-            "c:/UserFiles/Project/CHROMODYNAMIC_ENGINE/workspace/project_hope",
-            "1.0",
-            "2026-10-18 22:00",
-            cd::ui::chroma::IconKind::kWorld,
-            1, 0, s_pm_favorites[1]
-        });
+        if (!matches_hub_category(meta, w.project_manager_tab)) continue;
 
-        if (std::filesystem::exists("studio_scene.cdscene.json") ||
-            std::filesystem::exists("chromodynamic_studio_scene.cdscene.json"))
+        if (!needle.empty())
         {
-            items.push_back({
-                "Saved Studio Workspace",
-                "c:/UserFiles/Project/CHROMODYNAMIC_ENGINE/studio_scene.cdscene.json",
-                "1.0",
-                "2026-10-18 21:30",
-                cd::ui::chroma::IconKind::kFileScene,
-                2, 0, s_pm_favorites[2]
-            });
+            const bool match_title = to_lower(sc.title).find(needle) != std::string::npos;
+            const bool match_world = to_lower(sc.world_group).find(needle) != std::string::npos;
+            const bool match_id    = to_lower(sc.id).find(needle) != std::string::npos;
+            const bool match_badge = to_lower(meta.badge).find(needle) != std::string::npos;
+            if (!match_title && !match_world && !match_id && !match_badge)
+            {
+                continue;
+            }
         }
+        matched_indices.push_back(i);
+    }
 
-        constexpr std::array<const char*, 12> kShowcaseCleanTitles {{
-            "PBR Materials & Surface Scatter",
-            "Realtime GI & Raytracing Lab",
-            "Atmosphere, Clouds & Ocean World",
-            "GPU Geometry & Textures",
-            "Physics Destruction & Fluids",
-            "PostFX Optics & Camera Pipeline",
-            "VFX Particles & Foliage",
-            "Procedural Asset Synthesis",
-            "Studio Tools & Observability",
-            "Gameplay, Animation & Networking",
-            "Universal Node Constructs",
-            "Next-Gen SOTA Engine Showcase"
-        }};
+    const float grid_avail_w = ImGui::GetContentRegionAvail().x;
+    const float card_w       = (grid_avail_w - 16.0F) / 3.0F;
+    constexpr float kCardH   = 96.0F;
 
-        for (std::size_t i = 0; i < kShowcaseCatalog.size(); ++i)
+    ImGui::BeginChild("hub_workspace_grid", ImVec2(0.0F, 0.0F), false);
+
+    if (matched_indices.empty())
+    {
+        ImGui::TextDisabled("No showcase workspaces found matching filter: \"%s\"", w.pm_filter_buf);
+        if (ImGui::Button("Reset Filter", ImVec2(120.0F, 24.0F)))
         {
-            const auto& sc = kShowcaseCatalog[i];
-            const char* title = (i < kShowcaseCleanTitles.size()) ? kShowcaseCleanTitles[i] : sc.title;
-            const std::size_t fav_idx = 3 + i;
-            const bool fav = (fav_idx < s_pm_favorites.size()) ? s_pm_favorites[fav_idx] : false;
-            items.push_back({
-                title,
-                std::string("c:/UserFiles/Project/CHROMODYNAMIC_ENGINE/") + sc.cdproj_path,
-                "1.0",
-                "2026-10-18 20:00",
-                cd::ui::chroma::IconKind::kWorld,
-                3, i, fav
-            });
+            w.pm_filter_buf[0] = '\0';
+            w.project_manager_tab = 0;
         }
     }
     else
     {
-        // Templates tab
-        items.push_back({
-            "Clean 3D Stage (Blank Canvas)",
-            "templates/clean_3d_stage",
-            "1.0", "Template",
-            cd::ui::chroma::IconKind::kFileScene,
-            0, 0, false
-        });
-        items.push_back({
-            "Third-Person Action Arena",
-            "templates/action_arena",
-            "1.0", "Template",
-            cd::ui::chroma::IconKind::kAvatar,
-            1, 0, false
-        });
-        items.push_back({
-            "Physics Simulation Playground",
-            "templates/physics_playground",
-            "1.0", "Template",
-            cd::ui::chroma::IconKind::kPhysics,
-            3, 4, false
-        });
-        items.push_back({
-            "Atmospheric Ocean & Sky",
-            "templates/outdoor_ocean_sky",
-            "1.0", "Template",
-            cd::ui::chroma::IconKind::kSparkles,
-            3, 2, false
-        });
-    }
+        for (std::size_t k = 0; k < matched_indices.size(); ++k)
+        {
+            const std::size_t sc_idx = matched_indices[k];
+            const auto&       sc     = kShowcaseCatalog[sc_idx];
+            const auto        meta   = get_hub_showcase_meta(sc_idx);
 
-    // Filter items
-    const std::string filter_str(w.pm_filter_buf);
-    std::vector<std::size_t> visible_indices;
-    visible_indices.reserve(items.size());
-    for (std::size_t i = 0; i < items.size(); ++i)
-    {
-        if (filter_str.empty())
-        {
-            visible_indices.push_back(i);
-        }
-        else
-        {
-            auto to_lower = [](std::string str) {
-                for (char& c : str) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-                return str;
-            };
-            const std::string needle = to_lower(filter_str);
-            if (to_lower(items[i].name).find(needle) != std::string::npos ||
-                to_lower(items[i].path).find(needle) != std::string::npos)
+            if ((k % 3) != 0)
             {
-                visible_indices.push_back(i);
+                ImGui::SameLine(0.0F, 8.0F);
             }
+
+            const bool is_sel_card = (w.selected_pm_project_idx == static_cast<int>(sc_idx));
+            if (is_sel_card)
+            {
+                ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.35F, 0.85F, 1.0F, 1.0F));
+            }
+
+            const std::string card_id = "sc_card_" + std::to_string(sc_idx);
+            ImGui::BeginChild(card_id.c_str(), ImVec2(card_w, kCardH), true);
+
+            if (is_sel_card)
+            {
+                ImGui::PopStyleColor();
+            }
+
+            // Click to select card, double click to open
+            if (ImGui::IsItemHovered())
+            {
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                {
+                    w.selected_pm_project_idx = static_cast<int>(sc_idx);
+                }
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                {
+                    load_showcase_project_by_index(s, sc_idx, log_push);
+                    w.show_project_manager = false;
+                }
+            }
+
+            // Category Badge & Title
+            ImGui::TextColored(meta.badge_color, "%s", meta.badge);
+            ImGui::SameLine();
+            ImGui::TextColored(is_sel_card ? ImVec4(0.40F, 0.95F, 1.0F, 1.0F) : ImVec4(0.92F, 0.95F, 1.0F, 1.0F),
+                               "%s", sc.title);
+
+            // World Group
+            ImGui::TextDisabled("%s", sc.world_group);
+
+            // Action Buttons: [ Open Project ] [ > Play ]
+            const float inner_w    = ImGui::GetContentRegionAvail().x;
+            const float open_btn_w = (inner_w - 6.0F) * 0.62F;
+            const float play_btn_w = inner_w - open_btn_w - 6.0F;
+
+            ImGui::PushStyleColor(ImGuiCol_Button, is_sel_card ? ImVec4(0.24F, 0.55F, 0.88F, 1.0F) : ImVec4(0.18F, 0.44F, 0.74F, 1.0F));
+            if (ImGui::Button(("Open Project##" + card_id).c_str(), ImVec2(open_btn_w, 24.0F)))
+            {
+                w.selected_pm_project_idx = static_cast<int>(sc_idx);
+                load_showcase_project_by_index(s, sc_idx, log_push);
+                w.show_project_manager = false;
+            }
+            ImGui::PopStyleColor();
+
+            ImGui::SameLine(0.0F, 6.0F);
+
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20F, 0.52F, 0.32F, 1.0F));
+            if (ImGui::Button(("> Play##" + card_id).c_str(), ImVec2(play_btn_w, 24.0F)))
+            {
+                w.selected_pm_project_idx = static_cast<int>(sc_idx);
+                load_showcase_project_by_index(s, sc_idx, log_push);
+                enter_pie_play_mode(s, log_push);
+                w.show_project_manager = false;
+            }
+            ImGui::PopStyleColor();
+
+            ImGui::EndChild();
         }
     }
 
-    if (w.selected_pm_project_idx >= static_cast<int>(visible_indices.size()))
-    {
-        w.selected_pm_project_idx = 0;
-    }
-
-    auto load_project_item = [&](const PMItem& itm) {
-        if (itm.action_type == 0)
-        {
-            reset_to_clean_empty_project(s, log_push);
-            w.active_project_name = itm.name;
-        }
-        else if (itm.action_type == 1)
-        {
-            reset_to_clean_empty_project(s, log_push);
-            w.active_project_name = "Project Hope";
-            load_studio_interactive_template(s, 0, log_push);
-        }
-        else if (itm.action_type == 2)
-        {
-            const char* path = std::filesystem::exists("studio_scene.cdscene.json")
-                ? "studio_scene.cdscene.json" : "chromodynamic_studio_scene.cdscene.json";
-            (void)load_full_studio_scene(s, path, log_push);
-            w.active_project_name = "Saved Studio Workspace";
-        }
-        else if (itm.action_type == 3)
-        {
-            load_showcase_project_by_index(s, itm.showcase_idx, log_push);
-        }
-        w.show_project_manager = false;
-    };
-
-    // -------------------------------------------------------------------------
-    // Main Projects List (Left-Center) + Actions Column (Right)
-    // -------------------------------------------------------------------------
-    const float list_w   = std::max(200.0F, sw - 215.0F);
-    const float remain_h = std::max(120.0F, sh - 145.0F);
-
-    ImGui::BeginChild("pm_project_list", ImVec2(list_w, remain_h), true);
-    for (std::size_t vi = 0; vi < visible_indices.size(); ++vi)
-    {
-        const std::size_t orig_idx = visible_indices[vi];
-        const auto& itm = items[orig_idx];
-        const bool is_sel = (w.selected_pm_project_idx == static_cast<int>(vi));
-
-        ImGui::PushID(static_cast<int>(vi));
-
-        if (is_sel)
-        {
-            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.18F, 0.32F, 0.48F, 0.85F));
-        }
-        else
-        {
-            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.12F, 0.14F, 0.18F, 0.50F));
-        }
-
-        const ImVec2 row_sz(ImGui::GetContentRegionAvail().x, 48.0F);
-        if (ImGui::Selectable("##pm_row", is_sel, 0, row_sz))
-        {
-            w.selected_pm_project_idx = static_cast<int>(vi);
-        }
-        ImGui::PopStyleColor();
-
-        // Double click detection
-        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-        {
-            load_project_item(itm);
-        }
-
-        // Overlay row details
-        const ImVec2 item_min = cd::ui::chroma::state().last_item_min;
-        const ImVec2 item_max = cd::ui::chroma::state().last_item_max;
-
-        ImGui::SetCursorScreenPos(ImVec2(item_min.x + 8.0F, item_min.y + 6.0F));
-
-        // Favorite star toggle
-        const char* star_sym = itm.favorite ? "[*]" : "[ ]";
-        if (ImGui::SmallButton(star_sym))
-        {
-            if (orig_idx < s_pm_favorites.size())
-                s_pm_favorites[orig_idx] = !s_pm_favorites[orig_idx];
-        }
-        ImGui::SameLine();
-
-        // Project Name
-        ImGui::TextColored(is_sel ? ImVec4(0.45F, 0.95F, 1.0F, 1.0F) : ImVec4(0.92F, 0.92F, 0.92F, 1.0F),
-                           "%s", itm.name.c_str());
-
-        // Path & Metadata
-        ImGui::SetCursorScreenPos(ImVec2(item_min.x + 42.0F, item_min.y + 26.0F));
-        ImGui::TextDisabled("%s", itm.path.c_str());
-
-        // Right side: Version & Date
-        ImGui::SetCursorScreenPos(ImVec2(item_max.x - 170.0F, item_min.y + 14.0F));
-        ImGui::TextDisabled("v%s  %s", itm.version.c_str(), itm.date.c_str());
-
-        ImGui::SetCursorScreenPos(ImVec2(item_min.x, item_max.y));
-
-        ImGui::PopID();
-    }
-    ImGui::EndChild();
-
-    ImGui::SameLine();
-
-    // -------------------------------------------------------------------------
-    // Right Action Column (Edit, Run, Rename, Duplicate, Manage Tags, Remove)
-    // -------------------------------------------------------------------------
-    ImGui::BeginChild("pm_actions", ImVec2(185.0F, remain_h), false);
-
-    const bool has_sel = (!visible_indices.empty() &&
-                          w.selected_pm_project_idx >= 0 &&
-                          w.selected_pm_project_idx < static_cast<int>(visible_indices.size()));
-
-    const PMItem* sel_item = has_sel ? &items[visible_indices[static_cast<std::size_t>(w.selected_pm_project_idx)]] : nullptr;
-
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0F, 6.0F));
-
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18F, 0.44F, 0.74F, 1.0F));
-    if (ImGui::Button("Edit", ImVec2(-1.0F, 30.0F)))
-    {
-        if (sel_item) load_project_item(*sel_item);
-    }
-    ImGui::PopStyleColor();
-
-    if (ImGui::Button("Run", ImVec2(-1.0F, 28.0F)))
-    {
-        if (sel_item)
-        {
-            load_project_item(*sel_item);
-            enter_pie_play_mode(s, log_push);
-        }
-    }
-
-    if (ImGui::Button("Rename", ImVec2(-1.0F, 26.0F)))
-    {
-        ImGui::OpenPopup("pm_rename_popup");
-    }
-    if (ImGui::BeginPopup("pm_rename_popup"))
-    {
-        static char s_rename_buf[64] = "Renamed_Project";
-        ImGui::Text("Rename Project:");
-        ImGui::InputText("##rename_val", s_rename_buf, sizeof(s_rename_buf));
-        if (ImGui::Button("Apply"))
-        {
-            w.active_project_name = s_rename_buf;
-            cd::ui::chroma::state().open_popup_id = 0U;
-        }
-        ImGui::EndPopup();
-    }
-
-    if (ImGui::Button("Duplicate", ImVec2(-1.0F, 26.0F)))
-    {
-        w.hud_toast_message = "Project duplicated to workspace directory";
-        w.hud_toast_timer   = 2.5F;
-    }
-
-    if (ImGui::Button("Manage Tags", ImVec2(-1.0F, 26.0F)))
-    {
-        w.hud_toast_message = "Tags: [3D, PBR, Active]";
-        w.hud_toast_timer   = 2.0F;
-    }
-
-    if (ImGui::Button("Remove", ImVec2(-1.0F, 26.0F)))
-    {
-        w.hud_toast_message = "Removed project from recents list";
-        w.hud_toast_timer   = 2.0F;
-    }
-
-    if (ImGui::Button("Remove Missing", ImVec2(-1.0F, 26.0F)))
-    {
-        w.hud_toast_message = "Missing projects purged";
-        w.hud_toast_timer   = 2.0F;
-    }
-
-    ImGui::Separator();
-    ImGui::TextDisabled("v1.0.0-stable");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("<3 Donate"))
-    {
-        w.hud_toast_message = "Thank you for supporting CHROMODYNAMIC Engine!";
-        w.hud_toast_timer   = 3.0F;
-    }
-
-    ImGui::PopStyleVar();
-    ImGui::EndChild();
+    ImGui::EndChild(); // hub_workspace_grid
+    ImGui::EndChild(); // hub_main
 
     ImGui::End();
 }
@@ -1126,6 +1084,147 @@ inline void draw_node_and_app_lab_workspace(StateT& s, std::uint32_t frame_w, st
 }
 
 template <typename StateT, typename LogFn>
+inline void draw_camera_preview_overlay(
+    StateT&                s,
+    std::uint32_t          frame_w,
+    std::uint32_t          frame_h,
+    LogFn&&                log_push)
+{
+    auto& w = studio_world();
+
+    // Check if a camera is piloted or selected
+    int target_cam_idx = w.pilot_scene_camera_idx;
+    if (target_cam_idx < 0)
+    {
+        if (s.selected_kind == SelKind::kEntity && s.selected >= 0 && std::cmp_less(s.selected, s.entities.size()))
+        {
+            auto& ent = s.entities[static_cast<std::size_t>(s.selected)];
+            if (ent.name.find("Camera") != std::string::npos ||
+                w.entity_modifiers[ent.handle.id].template find<CameraLensModifier>() != nullptr)
+            {
+                target_cam_idx = s.selected;
+            }
+        }
+    }
+
+    if (target_cam_idx < 0 || !std::cmp_less(target_cam_idx, s.entities.size())) return;
+
+    auto& cam_ent = s.entities[static_cast<std::size_t>(target_cam_idx)];
+    if (!cam_ent.visible) return;
+
+    auto& cam_ems = w.entity_modifiers[cam_ent.handle.id];
+    auto* cam_mod = cam_ems.template find<CameraLensModifier>();
+    auto* cam_lt  = s.scene.local(cam_ent.handle);
+
+    const float preview_w = 260.0F;
+    const float preview_h = 205.0F;
+    const float px = std::max(290.0F, static_cast<float>(frame_w) - 340.0F - preview_w - 12.0F);
+    const float py = std::max(48.0F, static_cast<float>(frame_h) - 230.0F - preview_h - 12.0F);
+
+    ImGui::SetNextWindowPos(ImVec2(px, py));
+    ImGui::SetNextWindowSize(ImVec2(preview_w, preview_h));
+    ImGui::SetNextWindowBgAlpha(0.92F);
+
+    const std::string win_title = std::string("Camera: ") + cam_ent.name + " (16:9)##cam_prev_overlay";
+    if (ImGui::Begin(win_title.c_str(), nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse))
+    {
+        const bool is_piloting = (w.pilot_scene_camera_idx == target_cam_idx);
+        if (is_piloting)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0F, 0.4F, 0.4F, 1.0F));
+            if (ImGui::SmallButton("Exit Pilot##exit_pilot"))
+            {
+                w.pilot_scene_camera_idx = -1;
+                log_push("[camera] Exited camera piloting");
+            }
+            ImGui::PopStyleColor();
+        }
+        else
+        {
+            if (ImGui::SmallButton("Pilot View##pilot_btn"))
+            {
+                w.pilot_scene_camera_idx = target_cam_idx;
+                log_push(std::string("[camera] Piloting ") + cam_ent.name);
+            }
+        }
+
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Align to View##align_cam"))
+        {
+            if (cam_lt != nullptr)
+            {
+                cam_lt->value.position = s.cam.eye;
+                record_entity_home_transform(s, cam_ent.handle);
+                s.scene.update_transforms();
+                log_push("[camera] Aligned '" + cam_ent.name + "' to editor view");
+            }
+        }
+
+        if (cam_mod != nullptr)
+        {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.42F, 0.95F, 0.65F, 1.0F), "FOV: %.0f deg", static_cast<double>(cam_mod->fov_deg));
+        }
+
+        // Draw 16:9 Horizon & Crosshair canvas
+        const ImVec2 cpos = ImGui::GetCursorScreenPos();
+        const float canvas_w = preview_w - 20.0F;
+        const float canvas_h = canvas_w * (9.0F / 16.0F); // 16:9 aspect ratio
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        if (dl != nullptr)
+        {
+            const ImVec2 cmax(cpos.x + canvas_w, cpos.y + canvas_h);
+            // Background fill
+            dl->AddRectFilled(cpos, cmax, IM_COL32(18, 22, 28, 240), 4.0F);
+            // Border
+            dl->AddRect(cpos, cmax, is_piloting ? IM_COL32(255, 185, 65, 255) : IM_COL32(75, 140, 210, 220), 4.0F, 0, 1.5F);
+
+            // Horizon line
+            const float mid_y = cpos.y + canvas_h * 0.5F;
+            const float mid_x = cpos.x + canvas_w * 0.5F;
+            dl->AddLine(ImVec2(cpos.x + 8.0F, mid_y), ImVec2(cmax.x - 8.0F, mid_y), IM_COL32(120, 160, 200, 120), 1.0F);
+
+            // Crosshair
+            dl->AddLine(ImVec2(mid_x - 14.0F, mid_y), ImVec2(mid_x + 14.0F, mid_y), IM_COL32(255, 255, 255, 200), 1.0F);
+            dl->AddLine(ImVec2(mid_x, mid_y - 10.0F), ImVec2(mid_x, mid_y + 10.0F), IM_COL32(255, 255, 255, 200), 1.0F);
+
+            // 16:9 Safe Title Frame
+            const float safe_inset_x = canvas_w * 0.10F;
+            const float safe_inset_y = canvas_h * 0.10F;
+            dl->AddRect(ImVec2(cpos.x + safe_inset_x, cpos.y + safe_inset_y),
+                        ImVec2(cmax.x - safe_inset_x, cmax.y - safe_inset_y),
+                        IM_COL32(100, 200, 255, 70), 2.0F, 0, 1.0F);
+
+            // Overlay watermark text
+            const char* tag = is_piloting ? "PILOTING CAMERA (ACTIVE)" : "16:9 PREVIEW";
+            dl->AddText(ImVec2(cpos.x + 8.0F, cpos.y + 6.0F),
+                        is_piloting ? IM_COL32(255, 200, 80, 230) : IM_COL32(160, 200, 240, 180),
+                        tag);
+
+            // Advance cursor below canvas
+            ImGui::SetCursorScreenPos(ImVec2(cpos.x, cmax.y + 6.0F));
+        }
+
+        if (cam_mod != nullptr)
+        {
+            ImGui::PushItemWidth(110.0F);
+            (void)ImGui::SliderFloat("FOV##prev_fov", &cam_mod->fov_deg, 20.0F, 110.0F, "%.0f deg");
+            ImGui::SameLine();
+            (void)ImGui::SliderFloat("Near##prev_nr", &cam_mod->near_plane, 0.05F, 5.0F, "%.2fm");
+            ImGui::PopItemWidth();
+        }
+        else if (cam_lt != nullptr)
+        {
+            ImGui::TextDisabled("Pos: (%.1f, %.1f, %.1f)",
+                                static_cast<double>(cam_lt->value.position.x),
+                                static_cast<double>(cam_lt->value.position.y),
+                                static_cast<double>(cam_lt->value.position.z));
+        }
+    }
+    ImGui::End();
+}
+
+template <typename StateT, typename LogFn>
 inline void draw_clean_studio_workspace_panels(
     StateT&                s,
     float                  dt,
@@ -1145,6 +1244,9 @@ inline void draw_clean_studio_workspace_panels(
 
     // Draw 3D Collider wireframes + full-width Ribbon Toolbar + right-click context menu
     draw_studio_viewport_overlays_and_drop_targets(s, vp, frame_w, frame_h, log_push);
+
+    // Pinned 16:9 Camera Preview overlay (active when Camera selected or piloted)
+    draw_camera_preview_overlay(s, frame_w, frame_h, log_push);
 
     if (s.pie_playing || cst.workspace_mode == 1)
     {
@@ -1208,6 +1310,30 @@ inline void draw_clean_studio_workspace_panels(
                 {
                     const cd::math::Vec3f pt = camera_spawn_point(s, 3.8F);
                     (void)spawn_entity_with_modifiers(s, "Character_CesiumMan", { pt.x, 0.0F, pt.z }, log_push);
+                }
+                ImGui::SameLine();
+                if (ImGui::IconButton("+ 3D Char##out_3dchar", cd::ui::chroma::IconKind::kAvatar,
+                                      IM_COL32(85, 245, 165, 255), false, ImVec2(72.0F, 20.0F)))
+                {
+                    (void)spawn_empty_character_vessel(s, false, log_push);
+                }
+                ImGui::SameLine();
+                if (ImGui::IconButton("+ 2D Char##out_2dchar", cd::ui::chroma::IconKind::kAvatar,
+                                      IM_COL32(95, 235, 210, 255), false, ImVec2(72.0F, 20.0F)))
+                {
+                    (void)spawn_empty_character_vessel(s, true, log_push);
+                }
+                ImGui::SameLine();
+                if (ImGui::IconButton("+ Cam 3D##out_cam3d", cd::ui::chroma::IconKind::kCamera,
+                                      IM_COL32(200, 155, 255, 255), false, ImVec2(72.0F, 20.0F)))
+                {
+                    (void)spawn_scene_camera_entity(s, false, log_push);
+                }
+                ImGui::SameLine();
+                if (ImGui::IconButton("+ Clouds##out_cld", cd::ui::chroma::IconKind::kWorld,
+                                      IM_COL32(185, 215, 255, 255), false, ImVec2(68.0F, 20.0F)))
+                {
+                    (void)spawn_volumetric_clouds_entity(s, log_push);
                 }
 
                 // Row 2: Search Filter + Save / Load
@@ -1290,6 +1416,23 @@ inline void draw_clean_studio_workspace_panels(
                     }
                     const bool has_parent = (hierarchy_depth > 0U);
 
+                    // Clean entity name (strip any legacy "[VSL]" / "[ELM]" prefix or parenthetical tag)
+                    std::string clean_name = ent.name;
+                    bool is_vessel_ent     = false;
+                    if (clean_name.rfind("[VSL]", 0) == 0)
+                    {
+                        is_vessel_ent = true;
+                        clean_name    = clean_name.substr(5);
+                    }
+                    else if (clean_name.rfind("[ELM]", 0) == 0)
+                    {
+                        clean_name = clean_name.substr(5);
+                    }
+                    if (!clean_name.empty() && clean_name.front() == ' ')
+                        clean_name.erase(0, clean_name.find_first_not_of(' '));
+                    if (const auto paren = clean_name.find(" ("); paren != std::string::npos)
+                        clean_name = clean_name.substr(0, paren);
+
                     // Visual Eye & Lock Icon Toggles
                     const std::string vis_btn = "##vis_" + std::to_string(i);
                     if (ImGui::IconButton(vis_btn.c_str(),
@@ -1313,24 +1456,19 @@ inline void draw_clean_studio_workspace_panels(
                     }
                     if (ImGui::IsItemHovered())
                         ImGui::SetTooltip("Selection Lock: %s", ent.locked ? "Locked" : "Unlocked");
-                    ImGui::SameLine();
 
-                    // Clean entity name (strip any legacy "[VSL]" / "[ELM]" prefix or parenthetical tag)
-                    std::string clean_name = ent.name;
-                    bool is_vessel_ent     = false;
-                    if (clean_name.rfind("[VSL]", 0) == 0)
+                    ImGui::SameLine();
+                    // Fast Delete [X] button
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0F, 0.35F, 0.35F, 1.0F));
+                    const std::string del_btn = "[X]##del_ent_" + std::to_string(i);
+                    if (ImGui::SmallButton(del_btn.c_str()))
                     {
-                        is_vessel_ent = true;
-                        clean_name    = clean_name.substr(5);
+                        deferred_del_idx = static_cast<int>(i);
                     }
-                    else if (clean_name.rfind("[ELM]", 0) == 0)
-                    {
-                        clean_name = clean_name.substr(5);
-                    }
-                    if (!clean_name.empty() && clean_name.front() == ' ')
-                        clean_name.erase(0, clean_name.find_first_not_of(' '));
-                    if (const auto paren = clean_name.find(" ("); paren != std::string::npos)
-                        clean_name = clean_name.substr(0, paren);
+                    ImGui::PopStyleColor();
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Delete entity '%s'", clean_name.c_str());
+                    ImGui::SameLine();
 
                     // Choose visual icon + color by entity geometry & attached modifiers
                     cd::ui::chroma::IconKind ent_icon = cd::ui::chroma::IconKind::kCube;
@@ -1349,7 +1487,7 @@ inline void draw_clean_studio_workspace_panels(
                     }
                     if (is_vessel_ent || clean_name.find("Avatar") != std::string::npos ||
                         clean_name.find("Hero") != std::string::npos || clean_name.find("CesiumMan") != std::string::npos ||
-                        clean_name.find("Ragdoll") != std::string::npos)
+                        clean_name.find("Ragdoll") != std::string::npos || clean_name.find("Character") != std::string::npos)
                     {
                         ent_icon = cd::ui::chroma::IconKind::kAvatar;
                         ent_col  = IM_COL32(85, 240, 165, 255);
@@ -1366,6 +1504,11 @@ inline void draw_clean_studio_workspace_panels(
                     {
                         ent_icon = cd::ui::chroma::IconKind::kCamera;
                         ent_col  = IM_COL32(200, 155, 255, 255);
+                    }
+                    else if (clean_name.find("Clouds") != std::string::npos)
+                    {
+                        ent_icon = cd::ui::chroma::IconKind::kWorld;
+                        ent_col  = IM_COL32(185, 215, 255, 255);
                     }
                     else if (clean_name.find("Ground_Floor") != std::string::npos)
                     {
@@ -1402,6 +1545,16 @@ inline void draw_clean_studio_workspace_panels(
                                 ent_icon = cd::ui::chroma::IconKind::kLight;
                                 ent_col  = IM_COL32(255, 224, 96, 255);
                             }
+                            else if (m->class_name() == "CameraLensModifier")
+                            {
+                                ent_icon = cd::ui::chroma::IconKind::kCamera;
+                                ent_col  = IM_COL32(200, 155, 255, 255);
+                            }
+                            else if (m->class_name() == "CloudLayerModifier")
+                            {
+                                ent_icon = cd::ui::chroma::IconKind::kWorld;
+                                ent_col  = IM_COL32(185, 215, 255, 255);
+                            }
                         }
                         if (!tooltip_mods.empty()) tooltip_mods += ", ";
                         tooltip_mods += m->display_name();
@@ -1428,10 +1581,40 @@ inline void draw_clean_studio_workspace_panels(
 
                     const std::string row_id_label = display_row_name + "##node_" + std::to_string(i);
                     const bool is_sel = (s.selected_kind == SelKind::kEntity && std::cmp_equal(s.selected, i));
-                    if (ImGui::IconSelectable(row_id_label.c_str(), ent_icon, ent_col, is_sel, pill_txt))
+
+                    if (w.inline_rename_entity_idx == static_cast<int>(i))
                     {
-                        s.selected      = static_cast<int>(i);
-                        s.selected_kind = SelKind::kEntity;
+                        ImGui::PushItemWidth(130.0F);
+                        (void)ImGui::InputText("##inline_rename_ent", w.inline_rename_buf, sizeof(w.inline_rename_buf));
+                        ImGui::PopItemWidth();
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("OK##ok_rent"))
+                        {
+                            if (w.inline_rename_buf[0] != '\0')
+                            {
+                                ent.name = w.inline_rename_buf;
+                                log_push("[hierarchy] Renamed entity to '" + ent.name + "'");
+                            }
+                            w.inline_rename_entity_idx = -1;
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("X##cnc_rent"))
+                        {
+                            w.inline_rename_entity_idx = -1;
+                        }
+                    }
+                    else
+                    {
+                        if (ImGui::IconSelectable(row_id_label.c_str(), ent_icon, ent_col, is_sel, pill_txt))
+                        {
+                            s.selected      = static_cast<int>(i);
+                            s.selected_kind = SelKind::kEntity;
+                        }
+                        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                        {
+                            w.inline_rename_entity_idx = static_cast<int>(i);
+                            std::snprintf(w.inline_rename_buf, sizeof(w.inline_rename_buf), "%s", clean_name.c_str());
+                        }
                     }
 
                     const std::string_view ent_lyr = cd::world_container::layer_of(s.ecs_world, ent.handle);
@@ -1450,12 +1633,55 @@ inline void draw_clean_studio_workspace_panels(
                         s.selected_kind = SelKind::kEntity;
                         ImGui::TextColored(ImVec4(0.45F, 0.95F, 0.65F, 1.0F), "%s", clean_name.c_str());
                         ImGui::Separator();
+                        if (ImGui::MenuItem("Rename (Double-Click)"))
+                        {
+                            w.inline_rename_entity_idx = static_cast<int>(i);
+                            std::snprintf(w.inline_rename_buf, sizeof(w.inline_rename_buf), "%s", clean_name.c_str());
+                        }
+                        if (ImGui::MenuItem("Duplicate Object (Ctrl+D)"))
+                            deferred_dup_idx = static_cast<int>(i);
+                        if (ImGui::MenuItem("Delete Object [X] (Del)"))
+                            deferred_del_idx = static_cast<int>(i);
+                        ImGui::Separator();
                         if (ImGui::MenuItem("Focus Camera (F)"))
                             focus_selected(s, log_push);
-                        if (ImGui::MenuItem("Duplicate with Modifiers (Ctrl+D)"))
-                            deferred_dup_idx = static_cast<int>(i);
                         if (ImGui::MenuItem("Snap to Ground Floor (G)"))
                             snap_selected_entity_to_ground(s, log_push);
+                        if (ImGui::MenuItem("Attach Child Model 3D"))
+                            (void)attach_empty_character_model_child(s, i, false, log_push);
+                        if (ImGui::MenuItem("Attach Child Sprite 2D"))
+                            (void)attach_empty_character_model_child(s, i, true, log_push);
+                        if (ImGui::MenuItem("Assign Mesh from OS Disk..."))
+                        {
+                            std::string picked;
+                            if (open_native_os_file_dialog("3D Mesh / glTF Files (*.obj;*.gltf;*.glb;*.mesh)\0*.obj;*.gltf;*.glb;*.mesh\0All Files (*.*)\0*.*\0", picked, "Select 3D Mesh to Assign"))
+                            {
+                                (void)import_or_assign_os_file(s, picked, true, log_push);
+                            }
+                        }
+                        if (ImGui::MenuItem("Assign Texture from OS Disk..."))
+                        {
+                            std::string picked;
+                            if (open_native_os_file_dialog("Texture Files (*.png;*.jpg;*.jpeg;*.tex;*.bmp)\0*.png;*.jpg;*.jpeg;*.tex;*.bmp\0All Files (*.*)\0*.*\0", picked, "Select Texture to Assign"))
+                            {
+                                (void)import_or_assign_os_file(s, picked, true, log_push);
+                            }
+                        }
+                        if (ImGui::BeginMenu("+ Add Modifier"))
+                        {
+                            for (const auto& mc : kModifierCatalog)
+                            {
+                                if (mc.category != ModifierCategory::kEnvironment && ImGui::MenuItem(mc.title))
+                                {
+                                    if (auto mod = instantiate_modifier_by_class(mc.class_id))
+                                    {
+                                        ms.add_or_replace(std::move(mod));
+                                        log_push(std::string("[modifier] Added ") + mc.class_id + " to '" + ent.name + "'");
+                                    }
+                                }
+                            }
+                            ImGui::EndMenu();
+                        }
                         if (has_parent && ImGui::MenuItem("Unparent to Root"))
                         {
                             s.scene.detach(ent.handle);
@@ -1480,8 +1706,6 @@ inline void draw_clean_studio_workspace_panels(
                                 ImGui::EndMenu();
                             }
                         }
-                        if (ImGui::MenuItem("Delete Object (Del)"))
-                            deferred_del_idx = static_cast<int>(i);
                         ImGui::EndPopup();
                     }
 
@@ -1546,21 +1770,193 @@ inline void draw_clean_studio_workspace_panels(
                     delete_selected(s, log_push);
                 }
 
-                // Scene Lights in the Outliner (Visual Light Icon + Clean Name)
+                // Scene Lights in the Outliner (Visual Light Icon + Clean Name + [X] + Rename + Context)
                 ImGui::SeparatorText("Scene Lights");
+                int deferred_del_light_idx = -1;
                 for (std::size_t li = 0; li < s.lights.size(); ++li)
                 {
-                    const bool is_lsel = (s.selected_kind == SelKind::kLight && std::cmp_equal(s.selected, li));
-                    const std::string l_lbl = s.lights[li].name + "##scene_l_" + std::to_string(li);
-                    char k_buf[24] {};
-                    std::snprintf(k_buf, sizeof(k_buf), "%.0fK", static_cast<double>(s.lights[li].kelvin));
-                    if (ImGui::IconSelectable(l_lbl.c_str(), cd::ui::chroma::IconKind::kLight,
-                                              IM_COL32(255, 224, 96, 255), is_lsel, k_buf))
+                    // Eye toggle
+                    const std::string lvis_btn = "##lvis_" + std::to_string(li);
+                    if (ImGui::IconButton(lvis_btn.c_str(),
+                                          s.lights[li].enabled ? cd::ui::chroma::IconKind::kEyeOpen : cd::ui::chroma::IconKind::kEyeClosed,
+                                          s.lights[li].enabled ? IM_COL32(255, 224, 96, 255) : IM_COL32(150, 110, 110, 185),
+                                          false, ImVec2(20.0F, 18.0F)))
+                    {
+                        s.lights[li].enabled = !s.lights[li].enabled;
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Light: %s", s.lights[li].enabled ? "Enabled" : "Disabled");
+                    ImGui::SameLine();
+
+                    // Red [X] button
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0F, 0.35F, 0.35F, 1.0F));
+                    const std::string ldel_btn = "[X]##ldel_" + std::to_string(li);
+                    if (ImGui::SmallButton(ldel_btn.c_str()))
+                    {
+                        deferred_del_light_idx = static_cast<int>(li);
+                    }
+                    ImGui::PopStyleColor();
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Delete Light '%s'", s.lights[li].name.c_str());
+                    ImGui::SameLine();
+
+                    if (w.inline_rename_light_idx == static_cast<int>(li))
+                    {
+                        ImGui::PushItemWidth(130.0F);
+                        (void)ImGui::InputText("##inline_rename_lgt", w.inline_rename_buf, sizeof(w.inline_rename_buf));
+                        ImGui::PopItemWidth();
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("OK##ok_rlgt"))
+                        {
+                            if (w.inline_rename_buf[0] != '\0')
+                            {
+                                s.lights[li].name = w.inline_rename_buf;
+                                log_push("[light] Renamed light to '" + s.lights[li].name + "'");
+                            }
+                            w.inline_rename_light_idx = -1;
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("X##cnc_rlgt"))
+                        {
+                            w.inline_rename_light_idx = -1;
+                        }
+                    }
+                    else
+                    {
+                        const bool is_lsel = (s.selected_kind == SelKind::kLight && std::cmp_equal(s.selected, li));
+                        const std::string l_lbl = s.lights[li].name + "##scene_l_" + std::to_string(li);
+                        char k_buf[24] {};
+                        std::snprintf(k_buf, sizeof(k_buf), "%.0fK", static_cast<double>(s.lights[li].kelvin));
+                        if (ImGui::IconSelectable(l_lbl.c_str(), cd::ui::chroma::IconKind::kLight,
+                                                  IM_COL32(255, 224, 96, 255), is_lsel, k_buf))
+                        {
+                            s.selected      = static_cast<int>(li);
+                            s.selected_kind = SelKind::kLight;
+                        }
+                        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                        {
+                            w.inline_rename_light_idx = static_cast<int>(li);
+                            std::snprintf(w.inline_rename_buf, sizeof(w.inline_rename_buf), "%s", s.lights[li].name.c_str());
+                        }
+                    }
+
+                    if (ImGui::BeginPopupContextItem())
                     {
                         s.selected      = static_cast<int>(li);
                         s.selected_kind = SelKind::kLight;
+                        ImGui::TextColored(ImVec4(1.0F, 0.88F, 0.35F, 1.0F), "%s", s.lights[li].name.c_str());
+                        ImGui::Separator();
+                        if (ImGui::MenuItem("Rename Light (Double-Click)"))
+                        {
+                            w.inline_rename_light_idx = static_cast<int>(li);
+                            std::snprintf(w.inline_rename_buf, sizeof(w.inline_rename_buf), "%s", s.lights[li].name.c_str());
+                        }
+                        if (ImGui::MenuItem(s.lights[li].enabled ? "Turn Off Light" : "Turn On Light"))
+                        {
+                            s.lights[li].enabled = !s.lights[li].enabled;
+                        }
+                        if (ImGui::MenuItem("Duplicate Light"))
+                        {
+                            auto cpy = s.lights[li];
+                            cpy.name += "_Copy";
+                            cpy.light.position.x += 1.0F;
+                            s.lights.push_back(cpy);
+                            s.selected = static_cast<int>(s.lights.size()) - 1;
+                            s.selected_kind = SelKind::kLight;
+                            log_push("[light] Duplicated light: " + cpy.name);
+                        }
+                        if (ImGui::MenuItem("Delete Light [X]"))
+                        {
+                            deferred_del_light_idx = static_cast<int>(li);
+                        }
+                        ImGui::Separator();
+                        if (ImGui::MenuItem("Set Warm Sunlight (2700K)"))
+                        {
+                            s.lights[li].kelvin = 2700.0F;
+                            s.lights[li].light.color = cd::light::cct_to_linear_rgb(2700.0F);
+                            s.lights[li].light.intensity = 12000.0F;
+                        }
+                        if (ImGui::MenuItem("Set Cool Sky Fill (6500K)"))
+                        {
+                            s.lights[li].kelvin = 6500.0F;
+                            s.lights[li].light.color = cd::light::cct_to_linear_rgb(6500.0F);
+                            s.lights[li].light.intensity = 4500.0F;
+                        }
+                        ImGui::EndPopup();
                     }
                 }
+
+                if (deferred_del_light_idx >= 0 && std::cmp_less(deferred_del_light_idx, s.lights.size()))
+                {
+                    log_push("[light] Deleted light: " + s.lights[static_cast<std::size_t>(deferred_del_light_idx)].name);
+                    s.lights.erase(s.lights.begin() + deferred_del_light_idx);
+                    if (s.selected_kind == SelKind::kLight)
+                    {
+                        if (s.selected == deferred_del_light_idx)
+                        {
+                            s.selected = s.lights.empty() ? -1 : std::min(s.selected, static_cast<int>(s.lights.size()) - 1);
+                            if (s.selected < 0) s.selected_kind = SelKind::kEntity;
+                        }
+                        else if (s.selected > deferred_del_light_idx)
+                        {
+                            --s.selected;
+                        }
+                    }
+                    if (s.lights.empty())
+                    {
+                        s.fx.clouds_coverage    = 0.0F;
+                        s.fx.volumetric_fog_on  = false;
+                        s.fx.fog_density        = 0.0F;
+                        s.fx.shafts_strength    = 0.0F;
+                        s.fx.aerial_perspective = 0.0F;
+                    }
+                }
+
+                // Scene Empty Space catch-area for right-click context menu
+                const float avail_y = std::max(60.0F, ImGui::GetContentRegionAvail().y);
+                (void)ImGui::Selectable("##scene_empty_space_area", false, 0, ImVec2(-1.0F, avail_y));
+                if (ImGui::BeginPopupContextItem("scene_empty_ctx_popup"))
+                {
+                    ImGui::TextColored(ImVec4(0.45F, 0.95F, 0.65F, 1.0F), "Create in Scene");
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("+ Empty 3D Character"))
+                        (void)spawn_empty_character_vessel(s, false, log_push);
+                    if (ImGui::MenuItem("+ Empty 2D Character"))
+                        (void)spawn_empty_character_vessel(s, true, log_push);
+                    if (ImGui::MenuItem("+ Camera 3D"))
+                        (void)spawn_scene_camera_entity(s, false, log_push);
+                    if (ImGui::MenuItem("+ Volumetric Clouds"))
+                        (void)spawn_volumetric_clouds_entity(s, log_push);
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("+ Dynamic Cube"))
+                    {
+                        const cd::math::Vec3f pt = camera_spawn_point(s, 3.8F);
+                        (void)spawn_entity_with_modifiers(s, "Dynamic_Cube", { pt.x, 0.0F, pt.z }, log_push);
+                    }
+                    if (ImGui::MenuItem("+ Dynamic Sphere"))
+                    {
+                        const cd::math::Vec3f pt = camera_spawn_point(s, 3.8F);
+                        (void)spawn_entity_with_modifiers(s, "Dynamic_Sphere", { pt.x, 0.0F, pt.z }, log_push);
+                    }
+                    if (ImGui::MenuItem("+ Point Light"))
+                    {
+                        const auto pos = camera_spawn_point(s, 2.5F);
+                        s.lights.push_back({ "Point Light (2700K)",
+                            cd::light::point(pos, { 1.0F, 0.9F, 0.75F }, 2800.0F, 10.0F), true, 2700.0F });
+                        log_push("[studio] added Point Light");
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Import & Assign OS File..."))
+                    {
+                        std::string picked;
+                        if (open_native_os_file_dialog("Supported Files (*.obj;*.gltf;*.glb;*.png;*.jpg;*.cdscene.json)\0*.obj;*.gltf;*.glb;*.png;*.jpg;*.cdscene.json\0All Files (*.*)\0*.*\0", picked, "Import OS File"))
+                        {
+                            (void)import_or_assign_os_file(s, picked, false, log_push);
+                        }
+                    }
+                    ImGui::EndPopup();
+                }
+
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
@@ -1571,6 +1967,28 @@ inline void draw_clean_studio_workspace_panels(
             if (ImGui::BeginTabItem("Create"))
             {
                 ImGui::BeginChild("toolbox_scroll_child", ImVec2(0.0F, 0.0F), false);
+
+                ImGui::SeparatorText("0. Characters, Cameras & Environment");
+                if (ImGui::IconButton("+ Empty 3D Character Vessel##cr_3dchar", cd::ui::chroma::IconKind::kAvatar,
+                                      IM_COL32(85, 245, 165, 255), false, ImVec2(-1.0F, 22.0F)))
+                {
+                    (void)spawn_empty_character_vessel(s, false, log_push);
+                }
+                if (ImGui::IconButton("+ Empty 2D Character Vessel##cr_2dchar", cd::ui::chroma::IconKind::kAvatar,
+                                      IM_COL32(95, 235, 210, 255), false, ImVec2(-1.0F, 22.0F)))
+                {
+                    (void)spawn_empty_character_vessel(s, true, log_push);
+                }
+                if (ImGui::IconButton("+ Camera 3D##cr_cam3d", cd::ui::chroma::IconKind::kCamera,
+                                      IM_COL32(200, 155, 255, 255), false, ImVec2(-1.0F, 22.0F)))
+                {
+                    (void)spawn_scene_camera_entity(s, false, log_push);
+                }
+                if (ImGui::IconButton("+ Volumetric Clouds##cr_cld", cd::ui::chroma::IconKind::kWorld,
+                                      IM_COL32(185, 215, 255, 255), false, ImVec2(-1.0F, 22.0F)))
+                {
+                    (void)spawn_volumetric_clouds_entity(s, log_push);
+                }
 
                 ImGui::SeparatorText("1. Drag & Drop 3D Objects & Prefabs");
                 struct SpawnCard
@@ -1711,163 +2129,6 @@ inline void draw_clean_studio_workspace_panels(
                 ImGui::EndTabItem();
             }
 
-            // -----------------------------------------------------------------
-            // TAB 3: Stages & Layers (World, Level & Layer Hierarchy)
-            // -----------------------------------------------------------------
-            if (ImGui::BeginTabItem("Stages"))
-            {
-                if (ImGui::IconButton("New Empty Project##wl_empty", cd::ui::chroma::IconKind::kFileScene,
-                                      IM_COL32(130, 210, 255, 255), false, ImVec2(142.0F, 20.0F)))
-                {
-                    reset_to_clean_empty_project(s, log_push);
-                }
-                ImGui::SameLine();
-                if (ImGui::IconButton("Load 6-World Showcase##wl_master", cd::ui::chroma::IconKind::kFileProject,
-                                      IM_COL32(255, 195, 95, 255), false, ImVec2(-1.0F, 20.0F)))
-                {
-                    s.cd_world.set_project(nullptr);
-                    populate_master_showcase_project(s.cd_world);
-                    if (const auto* np = s.cd_world.project())
-                    {
-                        w.active_project_name = std::string(np->name());
-                        if (const auto* lvl0 = np->level(0))
-                            (void)switch_to_project_level(s, lvl0->name(), log_push);
-                    }
-                    log_push("[project] Loaded ChromodynamicMasterShowcase from disk");
-                }
-
-                if (auto* proj = s.cd_world.project())
-                {
-                    ImGui::TextColored(ImVec4(0.45F, 0.90F, 1.0F, 1.0F),
-                                       "Active Project: %s (%zu Stages)",
-                                       w.active_project_name.c_str(), proj->level_count());
-
-                    ImGui::BeginChild("worlds_levels_scroll", ImVec2(0.0F, 345.0F), true);
-                    std::string deferred_switch_level {};
-                    if (const auto* cur_proj = s.cd_world.project())
-                    {
-                        const auto worlds = cur_proj->world_names();
-                        for (const auto& wname : worlds)
-                        {
-                            ImGui::SeparatorText(wname.c_str());
-                            const auto lvl_indices = cur_proj->levels_in_world(wname);
-                            for (std::size_t li : lvl_indices)
-                            {
-                                const auto* lvl = cur_proj->level(li);
-                                if (!lvl) continue;
-                                const std::string lvl_nm   { lvl->name() };
-                                const std::string wn_str   { lvl->world_name() };
-                                const std::string desc_str { lvl->description() };
-                                const bool is_active = (cur_proj->active_level() == li);
-                                const std::string btn_lbl = lvl_nm + "##wl_" + lvl_nm;
-                                if (ImGui::IconSelectable(btn_lbl.c_str(),
-                                                          cd::ui::chroma::IconKind::kFileScene,
-                                                          is_active ? IM_COL32(85, 245, 165, 255) : IM_COL32(115, 195, 255, 255),
-                                                          is_active,
-                                                          is_active ? "Active" : ""))
-                                {
-                                    deferred_switch_level = lvl_nm;
-                                }
-                                if (!desc_str.empty() && ImGui::IsItemHovered())
-                                {
-                                    ImGui::SetTooltip("World: %s\nStage: %s\n%s",
-                                                      wn_str.c_str(), lvl_nm.c_str(), desc_str.c_str());
-                                }
-                            }
-                        }
-                    }
-                    ImGui::EndChild();
-                    if (!deferred_switch_level.empty())
-                    {
-                        (void)switch_to_project_level(s, deferred_switch_level, log_push);
-                    }
-
-                    ImGui::SetNextItemWidth(165.0F);
-                    ImGui::InputTextWithHint("##new_lvl_nm", "New stage name...", w.new_level_name_buf, sizeof(w.new_level_name_buf));
-                    ImGui::SameLine();
-                    if (ImGui::SmallButton("+ Add Stage") && w.new_level_name_buf[0] != '\0')
-                    {
-                        if (auto* mut_proj = s.cd_world.project())
-                        {
-                            auto* nl = mut_proj->add_level(w.new_level_name_buf);
-                            nl->set_world_name(w.active_world_name.empty() ? "Default_World" : w.active_world_name);
-                            nl->set_description("User-created custom stage");
-                            nl->set_template_id(0);
-                            populate_standard_level_layers(*nl);
-                            (void)switch_to_project_level(s, w.new_level_name_buf, log_push);
-                        }
-                    }
-                }
-
-                ImGui::SeparatorText("Active Stage Semantic Layers");
-                if (auto* active_lvl = s.cd_world.active_level_ptr())
-                {
-                    for (std::size_t li = 0; li < active_lvl->layer_count(); ++li)
-                    {
-                        auto* lyr = active_lvl->layer(li);
-                        if (!lyr) continue;
-                        ImGui::PushID(static_cast<int>(li));
-                        const std::string lyr_nm { lyr->name() };
-                        bool vis = lyr->visible();
-                        if (ImGui::IconButton("##lyr_vis",
-                                              vis ? cd::ui::chroma::IconKind::kEyeOpen : cd::ui::chroma::IconKind::kEyeClosed,
-                                              vis ? IM_COL32(115, 215, 255, 255) : IM_COL32(150, 110, 110, 185),
-                                              false, ImVec2(20.0F, 18.0F)))
-                        {
-                            vis = !vis;
-                            lyr->set_visible(vis);
-                            for (auto& e : s.entities)
-                            {
-                                if (cd::world_container::layer_of(s.ecs_world, e.handle) == lyr_nm)
-                                {
-                                    e.visible = vis;
-                                }
-                            }
-                        }
-                        ImGui::SameLine();
-                        bool lck = lyr->locked();
-                        if (ImGui::IconButton("##lyr_lck",
-                                              lck ? cd::ui::chroma::IconKind::kLockClosed : cd::ui::chroma::IconKind::kLockOpen,
-                                              lck ? IM_COL32(255, 185, 85, 255) : IM_COL32(135, 150, 175, 180),
-                                              lck, ImVec2(20.0F, 18.0F)))
-                        {
-                            lck = !lck;
-                            lyr->set_locked(lck);
-                            for (auto& e : s.entities)
-                            {
-                                if (cd::world_container::layer_of(s.ecs_world, e.handle) == lyr_nm)
-                                {
-                                    e.locked = lck;
-                                }
-                            }
-                        }
-                        ImGui::SameLine();
-                        const bool is_spawn_lyr = (w.active_layer_name == lyr_nm);
-                        if (ImGui::IconSelectable(lyr_nm.c_str(), cd::ui::chroma::IconKind::kLayers,
-                                                  IM_COL32(120, 200, 255, 255), is_spawn_lyr,
-                                                  is_spawn_lyr ? "Spawn" : ""))
-                        {
-                            w.active_layer_name = lyr_nm;
-                            log_push("[layer] Active spawn layer set to '" + lyr_nm + "'");
-                        }
-                        ImGui::PopID();
-                    }
-
-                    ImGui::SetNextItemWidth(165.0F);
-                    ImGui::InputTextWithHint("##new_lyr_nm", "New layer...", w.new_layer_name_buf, sizeof(w.new_layer_name_buf));
-                    ImGui::SameLine();
-                    if (ImGui::SmallButton("+ Add Layer") && w.new_layer_name_buf[0] != '\0')
-                    {
-                        if (active_lvl->find_layer(w.new_layer_name_buf) == nullptr)
-                        {
-                            (void)active_lvl->add_layer(w.new_layer_name_buf);
-                        }
-                        w.active_layer_name = w.new_layer_name_buf;
-                        log_push(std::string("[layer] Added layer '") + w.new_layer_name_buf + "'");
-                    }
-                }
-                ImGui::EndTabItem();
-            }
             ImGui::EndTabBar();
         }
     }
@@ -2134,6 +2395,123 @@ inline void draw_clean_studio_workspace_panels(
                         ImGui::EndPopup();
                     }
 
+                    if (ImGui::SmallButton("Browse Model OS Disk...##insp_br_mdl"))
+                    {
+                        std::string picked;
+                        if (open_native_os_file_dialog("3D Mesh / glTF Files (*.obj;*.gltf;*.glb;*.mesh)\0*.obj;*.gltf;*.glb;*.mesh\0All Files (*.*)\0*.*\0", picked, "Select 3D Mesh to Assign"))
+                        {
+                            (void)import_or_assign_os_file(s, picked, true, log_push);
+                        }
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Browse Texture OS Disk...##insp_br_tx"))
+                    {
+                        std::string picked;
+                        if (open_native_os_file_dialog("Texture Files (*.png;*.jpg;*.jpeg;*.tex;*.bmp)\0*.png;*.jpg;*.jpeg;*.tex;*.bmp\0All Files (*.*)\0*.*\0", picked, "Select Texture to Assign"))
+                        {
+                            (void)import_or_assign_os_file(s, picked, true, log_push);
+                        }
+                    }
+
+                    // ---- Character Vessel & Nested Model Setup (2D & 3D Character Pipeline) ----
+                    ImGui::SeparatorText("Character Vessel & Nested Model Setup");
+                    if (ImGui::IconButton("+ Attach Empty 3D Model Child##insp_att_3d",
+                                          cd::ui::chroma::IconKind::kAvatar,
+                                          IM_COL32(85, 245, 165, 255), false, ImVec2(-1.0F, 22.0F)))
+                    {
+                        (void)attach_empty_character_model_child(s, static_cast<std::size_t>(s.selected), false, log_push);
+                    }
+                    if (ImGui::IconButton("+ Attach Empty 2D Sprite Child##insp_att_2d",
+                                          cd::ui::chroma::IconKind::kAvatar,
+                                          IM_COL32(95, 235, 210, 255), false, ImVec2(-1.0F, 22.0F)))
+                    {
+                        (void)attach_empty_character_model_child(s, static_cast<std::size_t>(s.selected), true, log_push);
+                    }
+                    if (ImGui::IconButton("Assign External Model (.obj/.gltf) from OS Disk...##insp_os_mdl",
+                                          cd::ui::chroma::IconKind::kMesh3D,
+                                          IM_COL32(110, 205, 255, 255), false, ImVec2(-1.0F, 22.0F)))
+                    {
+                        std::string picked;
+                        if (open_native_os_file_dialog("3D Mesh / glTF Files (*.obj;*.gltf;*.glb;*.mesh)\0*.obj;*.gltf;*.glb;*.mesh\0All Files (*.*)\0*.*\0", picked, "Select 3D Model from OS Disk"))
+                        {
+                            (void)import_or_assign_os_file(s, picked, true, log_push);
+                        }
+                    }
+                    if (ImGui::IconButton("Assign External Texture (.png/.jpg) from OS Disk...##insp_os_tex",
+                                          cd::ui::chroma::IconKind::kTexture2D,
+                                          IM_COL32(255, 215, 110, 255), false, ImVec2(-1.0F, 22.0F)))
+                    {
+                        std::string picked;
+                        if (open_native_os_file_dialog("Texture Files (*.png;*.jpg;*.jpeg;*.tex;*.bmp)\0*.png;*.jpg;*.jpeg;*.tex;*.bmp\0All Files (*.*)\0*.*\0", picked, "Select Texture from OS Disk"))
+                        {
+                            (void)import_or_assign_os_file(s, picked, true, log_push);
+                        }
+                    }
+
+                    // 6-state Animator State Machine Controls
+                    auto* anim_mod = w.entity_modifiers[ent.handle.id].template find<AnimatorStateMachineModifier>();
+                    if (anim_mod != nullptr)
+                    {
+                        ImGui::Separator();
+                        ImGui::TextColored(ImVec4(0.40F, 0.96F, 0.65F, 1.0F),
+                                           "Animator State Machine (Active: [%d] %s)",
+                                           anim_mod->current_state_idx,
+                                           anim_mod->state_name.c_str());
+                        ImGui::Checkbox("Auto Transitions (Velocity)##insp_auto_tr", &anim_mod->auto_stateful_transitions);
+                        ImGui::SameLine();
+                        ImGui::Checkbox("2D Mode##insp_anim_2d", &anim_mod->is_2d_character);
+
+                        for (std::size_t si = 0; si < 6; ++si)
+                        {
+                            ImGui::PushID(static_cast<int>(si + 5000));
+                            const bool is_active_st = (static_cast<int>(si) == anim_mod->current_state_idx);
+                            if (is_active_st)
+                            {
+                                ImGui::TextColored(ImVec4(1.0F, 0.85F, 0.25F, 1.0F), "[ACTIVE]");
+                            }
+                            else
+                            {
+                                ImGui::TextDisabled(" [    ] ");
+                            }
+                            ImGui::SameLine();
+                            const std::string st_btn = std::string(AnimatorStateMachineModifier::kStateLabels[si]) + "##st_btn";
+                            if (ImGui::SmallButton(st_btn.c_str()))
+                            {
+                                anim_mod->set_state(static_cast<int>(si));
+                                log_push(std::string("[animator] Switched state to ") + anim_mod->state_name);
+                            }
+                            if (ImGui::IsItemHovered())
+                                ImGui::SetTooltip("Click to activate %s state", AnimatorStateMachineModifier::kStateLabels[si]);
+
+                            ImGui::SameLine();
+                            ImGui::SetNextItemWidth(65.0F);
+                            (void)ImGui::SliderFloat("##spd", &anim_mod->state_speeds[si], 0.1F, 3.0F, "%.1fx");
+                            ImGui::SameLine();
+                            ImGui::Checkbox("Loop##lp", &anim_mod->state_loop[si]);
+                            ImGui::SameLine();
+                            if (ImGui::SmallButton("Browse Clip...##br_clp"))
+                            {
+                                std::string picked;
+                                if (open_native_os_file_dialog("Animation Files (*.anim;*.bvh;*.fbx;*.gltf;*.glb)\0*.anim;*.bvh;*.fbx;*.gltf;*.glb\0All Files (*.*)\0*.*\0", picked, "Select Animation Clip"))
+                                {
+                                    anim_mod->state_clip_paths[si] = picked;
+                                    log_push("[animator] Assigned clip: " + picked);
+                                }
+                            }
+                            ImGui::PopID();
+                        }
+                    }
+                    else
+                    {
+                        if (ImGui::SmallButton("+ Add 6-State Animator State Machine##add_anim_sm"))
+                        {
+                            auto sm = std::make_unique<AnimatorStateMachineModifier>();
+                            sm->is_2d_character = (ent.name.find("2D") != std::string::npos);
+                            w.entity_modifiers[ent.handle.id].add_or_replace(std::move(sm));
+                            log_push("[modifier] Added AnimatorStateMachineModifier to " + ent.name);
+                        }
+                    }
+
                     ImGui::Separator();
                     draw_studio_modifier_stack_ui(
                         w.entity_modifiers[ent.handle.id],
@@ -2324,8 +2702,7 @@ inline void draw_clean_studio_workspace_panels(
                             });
                         }
                     }
-                    else if (folder == "assets" || folder == "assets/meshes" ||
-                             folder == "assets/samples/Generic" || folder == "assets/samples/Sponza")
+                    else if (folder == "assets/meshes" || folder == "primitives" || folder == "Primitives (Built-in)")
                     {
                         s_cached_entries.push_back({ "Sphere",       "assets/meshes/Sphere.mesh",               1, cd::ui::chroma::IconKind::kSphere,   IM_COL32(110, 220, 255, 255) });
                         s_cached_entries.push_back({ "Cube",         "assets/meshes/Cube.mesh",                 1, cd::ui::chroma::IconKind::kCube,     IM_COL32(95, 195, 255, 255) });
@@ -2333,31 +2710,15 @@ inline void draw_clean_studio_workspace_panels(
                         s_cached_entries.push_back({ "Cone",         "assets/meshes/Cone.mesh",                 1, cd::ui::chroma::IconKind::kCone,     IM_COL32(245, 185, 110, 255) });
                         s_cached_entries.push_back({ "Torus",        "assets/meshes/Torus.mesh",                1, cd::ui::chroma::IconKind::kTorus,    IM_COL32(205, 155, 255, 255) });
                         s_cached_entries.push_back({ "TorusKnot",    "assets/meshes/TorusKnot.mesh",            1, cd::ui::chroma::IconKind::kTorus,    IM_COL32(235, 155, 245, 255) });
-                        s_cached_entries.push_back({ "CesiumMan",    "assets/samples/Generic/CesiumMan.gltf",   1, cd::ui::chroma::IconKind::kAvatar,   IM_COL32(85, 245, 165, 255) });
-                        s_cached_entries.push_back({ "Star_Crystal", "assets/samples/Generic/Star_Crystal.obj", 1, cd::ui::chroma::IconKind::kMesh3D,   IM_COL32(130, 225, 255, 255) });
-                        s_cached_entries.push_back({ "Sponza_World", "assets/samples/Sponza/Sponza.gltf",       1, cd::ui::chroma::IconKind::kWorld,    IM_COL32(255, 210, 110, 255) });
-                        if (folder == "assets")
-                        {
-                            s_cached_entries.push_back({ "Gold_24K",      "assets/textures/Gold_Leaf_24K.tex",                    2, cd::ui::chroma::IconKind::kTexture2D, IM_COL32(255, 215, 85, 255) });
-                            s_cached_entries.push_back({ "Checker_2K",    "assets/textures/UV_Checkerboard_2K.tex",               2, cd::ui::chroma::IconKind::kTexture2D, IM_COL32(95, 235, 175, 255) });
-                            s_cached_entries.push_back({ "Sponza_Brick",  "assets/samples/Sponza/textures/sponza_brick_a_diff.jpg",2, cd::ui::chroma::IconKind::kTexture2D, IM_COL32(235, 145, 105, 255) });
-                            s_cached_entries.push_back({ "Carbon_Fiber",  "assets/textures/Carbon_Fiber_Twill.tex",               2, cd::ui::chroma::IconKind::kTexture2D, IM_COL32(150, 185, 225, 255) });
-                            s_cached_entries.push_back({ "Marble_White",  "assets/textures/Carrara_Marble.tex",                   2, cd::ui::chroma::IconKind::kTexture2D, IM_COL32(220, 230, 245, 255) });
-                            s_cached_entries.push_back({ "Oak_Planks",    "assets/textures/Oak_Wood_Planks.tex",                  2, cd::ui::chroma::IconKind::kTexture2D, IM_COL32(225, 175, 110, 255) });
-                        }
                     }
-                    else if (folder == "assets/textures" || folder == "assets/samples/Sponza/textures")
+                    else if (folder == "assets/textures")
                     {
                         s_cached_entries.push_back({ "Checker_2K",    "assets/textures/UV_Checkerboard_2K.tex",                2, cd::ui::chroma::IconKind::kTexture2D, IM_COL32(95, 235, 175, 255) });
                         s_cached_entries.push_back({ "Gold_24K",      "assets/textures/Gold_Leaf_24K.tex",                     2, cd::ui::chroma::IconKind::kTexture2D, IM_COL32(255, 215, 85, 255) });
-                        s_cached_entries.push_back({ "Sponza_Brick",  "assets/samples/Sponza/textures/sponza_brick_a_diff.jpg",2, cd::ui::chroma::IconKind::kTexture2D, IM_COL32(235, 145, 105, 255) });
                         s_cached_entries.push_back({ "Carbon_Fiber",  "assets/textures/Carbon_Fiber_Twill.tex",                2, cd::ui::chroma::IconKind::kTexture2D, IM_COL32(150, 185, 225, 255) });
                         s_cached_entries.push_back({ "Marble_White",  "assets/textures/Carrara_Marble.tex",                    2, cd::ui::chroma::IconKind::kTexture2D, IM_COL32(220, 230, 245, 255) });
                         s_cached_entries.push_back({ "Oak_Planks",    "assets/textures/Oak_Wood_Planks.tex",                   2, cd::ui::chroma::IconKind::kTexture2D, IM_COL32(225, 175, 110, 255) });
                         s_cached_entries.push_back({ "Earth_Albedo",  "assets/textures/Earth_Albedo.png",                      2, cd::ui::chroma::IconKind::kTexture2D, IM_COL32(95, 195, 255, 255) });
-                        s_cached_entries.push_back({ "Lion_Relief",   "assets/samples/Sponza/textures/lion.jpg",               2, cd::ui::chroma::IconKind::kTexture2D, IM_COL32(240, 195, 115, 255) });
-                        s_cached_entries.push_back({ "Mat_Gold_PBR",  "assets/materials/Mat_Gold_24K.pbr",                     3, cd::ui::chroma::IconKind::kMaterial,  IM_COL32(255, 215, 90, 255) });
-                        s_cached_entries.push_back({ "Mat_Irid_440",  "assets/materials/Mat_Iridescent_440nm.pbr",             3, cd::ui::chroma::IconKind::kMaterial,  IM_COL32(210, 155, 255, 255) });
                     }
 
                     // Scan real disk directory via std::filesystem::directory_iterator
@@ -2506,6 +2867,16 @@ inline void draw_clean_studio_workspace_panels(
                     log_push("[context] " + w.last_asset_status_msg);
                 }
                 ImGui::SameLine(0.0F, 4.0F);
+                if (ImGui::IconButton("Browse OS Disk...##cb_browse_os", cd::ui::chroma::IconKind::kFolderOpen,
+                                      IM_COL32(115, 215, 255, 255), false, ImVec2(135.0F, 20.0F)))
+                {
+                    std::string picked;
+                    if (open_native_os_file_dialog("Supported Assets (*.obj;*.gltf;*.glb;*.png;*.jpg;*.cdscene.json)\0*.obj;*.gltf;*.glb;*.png;*.jpg;*.cdscene.json\0All Files (*.*)\0*.*\0", picked, "Select File from OS Disk"))
+                    {
+                        (void)import_or_assign_os_file(s, picked, false, log_push);
+                    }
+                }
+                ImGui::SameLine(0.0F, 4.0F);
                 ImGui::SetNextItemWidth(85.0F);
                 ImGui::InputTextWithHint("##asset_search", "Search...",
                                          w.content_search_filter, sizeof(w.content_search_filter));
@@ -2530,12 +2901,13 @@ inline void draw_clean_studio_workspace_panels(
                     const char* path;
                     const char* badge;
                 };
-                constexpr std::array<FolderNode, 5> kFolders {{
+                constexpr std::array<FolderNode, 6> kFolders {{
                     { "showcases",       "showcases",                       "Show" },
                     { "assets/meshes",   "assets/meshes",                   "3D" },
                     { "assets/textures", "assets/textures",                 "PBR" },
                     { "samples/Generic", "assets/samples/Generic",          "GLTF" },
                     { "samples/Sponza",  "assets/samples/Sponza",           "Atrium" },
+                    { "primitives",      "primitives",                      "Basic" },
                 }};
                 for (const auto& fn : kFolders)
                 {
@@ -2633,6 +3005,84 @@ inline void draw_clean_studio_workspace_panels(
                                                   item.name.c_str(), item.path.c_str(),
                                                   in_ctx ? "Loaded in Context (Ready)" : "On Disk (Not in Context)");
                             }
+                        }
+
+                        if (ImGui::BeginPopupContextItem())
+                        {
+                            w.selected_content_asset = item.path;
+                            ImGui::TextColored(ImVec4(0.45F, 0.95F, 0.65F, 1.0F), "%s", item.name.c_str());
+                            ImGui::Separator();
+                            if (item.kind == 1) // Mesh
+                            {
+                                if (ImGui::MenuItem("Spawn in Scene"))
+                                {
+                                    const cd::math::Vec3f pt = camera_spawn_point(s, 3.8F);
+                                    const int nidx = spawn_entity_with_modifiers(s, item.name.c_str(), { pt.x, 0.0F, pt.z }, log_push);
+                                    if (nidx >= 0 && std::cmp_less(nidx, s.entities.size()))
+                                    {
+                                        s.entities[static_cast<std::size_t>(nidx)].custom_mesh_path = item.path;
+                                    }
+                                }
+                                if (s.selected >= 0 && std::cmp_less(s.selected, s.entities.size()))
+                                {
+                                    if (ImGui::MenuItem("Assign to Selected Object"))
+                                    {
+                                        (void)assign_mesh_asset_to_entity(s, s.selected, item.path, log_push);
+                                    }
+                                }
+                            }
+                            else if (item.kind == 2) // Texture
+                            {
+                                if (s.selected >= 0 && std::cmp_less(s.selected, s.entities.size()))
+                                {
+                                    if (ImGui::MenuItem("Assign to Selected Object"))
+                                    {
+                                        (void)assign_texture_asset_to_entity(s, s.selected, item.path, log_push);
+                                    }
+                                }
+                            }
+                            else if (item.kind == 4) // Project / Scene
+                            {
+                                if (ImGui::MenuItem("Open Project / Scene"))
+                                {
+                                    (void)load_project_or_scene_from_disk_path(s, item.path, log_push);
+                                }
+                            }
+
+                            if (in_ctx)
+                            {
+                                if (ImGui::MenuItem("Remove from Context"))
+                                {
+                                    for (auto it = w.loaded_context_assets.begin(); it != w.loaded_context_assets.end(); ++it)
+                                    {
+                                        if (it->path == item.path)
+                                        {
+                                            w.loaded_context_assets.erase(it);
+                                            log_push("[context] Removed asset from context: " + item.name);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                if (ImGui::MenuItem("Load into Context"))
+                                {
+                                    const std::uint8_t ckind = (item.kind == 1) ? 0U : (item.kind == 2 ? 1U : 2U);
+                                    (void)w.load_asset_into_context(item.name, item.path, ckind);
+                                }
+                            }
+
+                            ImGui::Separator();
+                            if (ImGui::MenuItem("Browse & Import from OS Disk..."))
+                            {
+                                std::string picked;
+                                if (open_native_os_file_dialog("Supported Assets (*.obj;*.gltf;*.glb;*.png;*.jpg;*.cdscene.json)\0*.obj;*.gltf;*.glb;*.png;*.jpg;*.cdscene.json\0All Files (*.*)\0*.*\0", picked, "Import from OS Disk"))
+                                {
+                                    (void)import_or_assign_os_file(s, picked, false, log_push);
+                                }
+                            }
+                            ImGui::EndPopup();
                         }
                         ImGui::PopID();
                     }

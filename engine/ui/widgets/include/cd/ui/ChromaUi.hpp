@@ -35,6 +35,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdarg>
 #include <cstddef>
@@ -967,11 +968,11 @@ namespace cd::ui::chroma
 
 struct ThemePalette
 {
-    ImU32 window_bg       { IM_COL32(20, 23, 30, 248) };
+    ImU32 window_bg       { IM_COL32(20, 23, 30, 255) };
     ImU32 window_header0  { IM_COL32(29, 34, 44, 255) };
     ImU32 window_header1  { IM_COL32(22, 26, 34, 255) };
-    ImU32 window_border   { IM_COL32(44, 52, 68, 240) };
-    ImU32 child_bg        { IM_COL32(15, 18, 24, 238) };
+    ImU32 window_border   { IM_COL32(48, 58, 76, 255) };
+    ImU32 child_bg        { IM_COL32(15, 18, 24, 255) };
     ImU32 button          { IM_COL32(36, 43, 56, 255) };
     ImU32 button_hover    { IM_COL32(48, 86, 150, 255) };
     ImU32 button_active   { IM_COL32(37, 132, 232, 255) };
@@ -979,22 +980,22 @@ struct ThemePalette
     ImU32 frame_hover     { IM_COL32(26, 33, 46, 255) };
     ImU32 accent          { IM_COL32(37, 132, 232, 255) };
     ImU32 accent_bright   { IM_COL32(82, 184, 255, 255) };
-    ImU32 text            { IM_COL32(236, 240, 248, 255) };
-    ImU32 text_disabled   { IM_COL32(132, 144, 166, 255) };
-    ImU32 separator       { IM_COL32(40, 48, 62, 230) };
-    ImU32 popup_bg        { IM_COL32(22, 26, 35, 254) };
+    ImU32 text            { IM_COL32(245, 248, 255, 255) };
+    ImU32 text_disabled   { IM_COL32(175, 188, 208, 255) };
+    ImU32 separator       { IM_COL32(44, 52, 68, 255) };
+    ImU32 popup_bg        { IM_COL32(22, 26, 35, 255) };
 };
 
 [[nodiscard]] inline const char* theme_preset_name(int preset) noexcept
 {
-    switch (preset % 5)
+    switch (((preset % 5) + 5) % 5)
     {
-        case 0:  return "Chroma Obsidian";
-        case 1:  return "Cyber Neon Glass";
-        case 2:  return "Daylight CAD";
-        case 3:  return "Chroma Slate";
-        case 4:  return "Chroma Obsidian";
-        default: return "Chroma Obsidian";
+        case 0:  return "Chroma Slate";
+        case 1:  return "Chroma Obsidian";
+        case 2:  return "Chroma Graphite";
+        case 3:  return "Chroma Cobalt";
+        case 4:  return "Chroma Amber";
+        default: return "Chroma Slate";
     }
 }
 
@@ -1002,68 +1003,81 @@ struct ThemePalette
 {
     ThemePalette t {};
     const int p = ((preset % 5) + 5) % 5;
-    if (p == 1) // Cyber Neon Glass
+    if (p == 1) // Chroma Obsidian
     {
-        t.window_bg      = IM_COL32(11, 15, 26, 240);
-        t.window_header0 = IM_COL32(22, 32, 58, 255);
-        t.window_header1 = IM_COL32(14, 20, 38, 255);
-        t.window_border  = IM_COL32(0, 210, 255, 155);
-        t.button         = IM_COL32(24, 38, 68, 255);
-        t.button_hover   = IM_COL32(0, 165, 215, 255);
-        t.button_active  = IM_COL32(0, 220, 255, 255);
-        t.accent         = IM_COL32(0, 225, 255, 255);
-        t.accent_bright  = IM_COL32(130, 250, 255, 255);
+        t.window_bg      = IM_COL32(14, 16, 22, 255);
+        t.window_header0 = IM_COL32(24, 28, 38, 255);
+        t.window_header1 = IM_COL32(18, 21, 29, 255);
+        t.window_border  = IM_COL32(46, 56, 74, 255);
+        t.child_bg       = IM_COL32(10, 12, 17, 255);
+        t.button         = IM_COL32(30, 36, 48, 255);
+        t.button_hover   = IM_COL32(42, 92, 168, 255);
+        t.button_active  = IM_COL32(52, 138, 240, 255);
+        t.frame_bg       = IM_COL32(9, 11, 16, 255);
+        t.frame_hover    = IM_COL32(22, 28, 40, 255);
+        t.accent         = IM_COL32(48, 136, 240, 255);
+        t.accent_bright  = IM_COL32(96, 188, 255, 255);
+        t.text           = IM_COL32(245, 248, 255, 255);
+        t.text_disabled  = IM_COL32(175, 188, 208, 255);
+        t.separator      = IM_COL32(38, 46, 62, 255);
+        t.popup_bg       = IM_COL32(18, 21, 30, 255);
     }
-    else if (p == 2) // Daylight CAD
+    else if (p == 2) // Chroma Graphite
     {
-        t.window_bg      = IM_COL32(240, 243, 248, 252);
-        t.window_header0 = IM_COL32(222, 228, 238, 255);
-        t.window_header1 = IM_COL32(210, 217, 230, 255);
-        t.window_border  = IM_COL32(175, 186, 204, 255);
-        t.child_bg       = IM_COL32(248, 250, 253, 255);
-        t.button         = IM_COL32(216, 224, 238, 255);
-        t.button_hover   = IM_COL32(180, 205, 245, 255);
-        t.button_active  = IM_COL32(45, 125, 235, 255);
-        t.frame_bg       = IM_COL32(255, 255, 255, 255);
-        t.frame_hover    = IM_COL32(232, 240, 252, 255);
-        t.accent         = IM_COL32(25, 110, 220, 255);
-        t.accent_bright  = IM_COL32(55, 140, 245, 255);
-        t.text           = IM_COL32(24, 30, 42, 255);
-        t.text_disabled  = IM_COL32(105, 116, 136, 255);
-        t.separator      = IM_COL32(190, 200, 216, 255);
-        t.popup_bg       = IM_COL32(248, 250, 254, 255);
+        t.window_bg      = IM_COL32(24, 26, 30, 255);
+        t.window_header0 = IM_COL32(36, 39, 46, 255);
+        t.window_header1 = IM_COL32(28, 31, 36, 255);
+        t.window_border  = IM_COL32(62, 68, 80, 255);
+        t.child_bg       = IM_COL32(18, 20, 24, 255);
+        t.button         = IM_COL32(44, 48, 56, 255);
+        t.button_hover   = IM_COL32(58, 108, 182, 255);
+        t.button_active  = IM_COL32(68, 142, 238, 255);
+        t.frame_bg       = IM_COL32(15, 17, 20, 255);
+        t.frame_hover    = IM_COL32(32, 36, 44, 255);
+        t.accent         = IM_COL32(64, 144, 236, 255);
+        t.accent_bright  = IM_COL32(108, 192, 255, 255);
+        t.text           = IM_COL32(245, 248, 255, 255);
+        t.text_disabled  = IM_COL32(175, 188, 208, 255);
+        t.separator      = IM_COL32(52, 58, 68, 255);
+        t.popup_bg       = IM_COL32(28, 31, 37, 255);
     }
-    else if (p == 3) // Chroma Slate
+    else if (p == 3) // Chroma Cobalt
     {
-        t.window_bg      = IM_COL32(33, 38, 46, 248);
-        t.window_header0 = IM_COL32(44, 51, 63, 255);
-        t.window_header1 = IM_COL32(36, 42, 52, 255);
-        t.window_border  = IM_COL32(62, 72, 88, 240);
-        t.child_bg        = IM_COL32(26, 30, 37, 235);
-        t.button          = IM_COL32(49, 57, 70, 255);
-        t.button_hover    = IM_COL32(71, 138, 209, 255);
-        t.button_active   = IM_COL32(88, 165, 242, 255);
-        t.frame_bg        = IM_COL32(24, 28, 34, 255);
-        t.frame_hover     = IM_COL32(38, 45, 56, 255);
-        t.accent          = IM_COL32(71, 140, 191, 255);
-        t.accent_bright   = IM_COL32(112, 186, 250, 255);
-        t.popup_bg        = IM_COL32(37, 43, 52, 254);
+        t.window_bg      = IM_COL32(16, 22, 34, 255);
+        t.window_header0 = IM_COL32(26, 36, 56, 255);
+        t.window_header1 = IM_COL32(19, 27, 44, 255);
+        t.window_border  = IM_COL32(52, 76, 116, 255);
+        t.child_bg       = IM_COL32(12, 17, 27, 255);
+        t.button         = IM_COL32(32, 46, 72, 255);
+        t.button_hover   = IM_COL32(44, 112, 198, 255);
+        t.button_active  = IM_COL32(56, 152, 248, 255);
+        t.frame_bg       = IM_COL32(10, 15, 24, 255);
+        t.frame_hover    = IM_COL32(24, 36, 58, 255);
+        t.accent         = IM_COL32(48, 148, 245, 255);
+        t.accent_bright  = IM_COL32(98, 198, 255, 255);
+        t.text           = IM_COL32(245, 248, 255, 255);
+        t.text_disabled  = IM_COL32(175, 188, 208, 255);
+        t.separator      = IM_COL32(42, 60, 92, 255);
+        t.popup_bg       = IM_COL32(20, 28, 44, 255);
     }
-    else if (p == 4) // Chroma Obsidian
+    else if (p == 4) // Chroma Amber
     {
-        t.window_bg      = IM_COL32(20, 20, 22, 248);
-        t.window_header0 = IM_COL32(32, 32, 36, 255);
-        t.window_header1 = IM_COL32(24, 24, 27, 255);
-        t.window_border  = IM_COL32(52, 52, 58, 240);
-        t.child_bg       = IM_COL32(15, 15, 17, 235);
-        t.button         = IM_COL32(40, 40, 45, 255);
-        t.button_hover   = IM_COL32(22, 108, 215, 255);
-        t.button_active  = IM_COL32(40, 138, 255, 255);
-        t.frame_bg       = IM_COL32(12, 12, 14, 255);
-        t.frame_hover    = IM_COL32(30, 30, 35, 255);
-        t.accent         = IM_COL32(26, 125, 240, 255);
-        t.accent_bright  = IM_COL32(85, 172, 255, 255);
-        t.popup_bg       = IM_COL32(26, 26, 30, 254);
+        t.window_bg      = IM_COL32(22, 20, 18, 255);
+        t.window_header0 = IM_COL32(36, 32, 28, 255);
+        t.window_header1 = IM_COL32(27, 24, 21, 255);
+        t.window_border  = IM_COL32(78, 64, 48, 255);
+        t.child_bg       = IM_COL32(16, 15, 13, 255);
+        t.button         = IM_COL32(46, 40, 34, 255);
+        t.button_hover   = IM_COL32(168, 108, 36, 255);
+        t.button_active  = IM_COL32(218, 142, 44, 255);
+        t.frame_bg       = IM_COL32(13, 12, 10, 255);
+        t.frame_hover    = IM_COL32(34, 30, 25, 255);
+        t.accent         = IM_COL32(218, 142, 44, 255);
+        t.accent_bright  = IM_COL32(248, 182, 78, 255);
+        t.text           = IM_COL32(245, 248, 255, 255);
+        t.text_disabled  = IM_COL32(175, 188, 208, 255);
+        t.separator      = IM_COL32(62, 52, 42, 255);
+        t.popup_bg       = IM_COL32(28, 25, 22, 255);
     }
     return t;
 }
@@ -2167,12 +2181,19 @@ public:
                     st.mouse_clicked[b] = true;
                     if (b == 0)
                     {
+                        static auto s_prev_click_tp = std::chrono::steady_clock::time_point {};
+                        const auto  now_tp          = std::chrono::steady_clock::now();
+                        const float wall_dt         = (s_prev_click_tp.time_since_epoch().count() > 0)
+                            ? std::chrono::duration<float>(now_tp - s_prev_click_tp).count()
+                            : 999.0F;
                         const float dx = ev.mouse_x - st.last_click_pos.x;
                         const float dy = ev.mouse_y - st.last_click_pos.y;
-                        if ((st.anim_time - st.last_click_time) < 0.36F && (dx * dx + dy * dy) < 36.0F)
+                        if (((st.anim_time - st.last_click_time) < 0.36F || (wall_dt >= 0.0F && wall_dt < 0.48F)) &&
+                            (dx * dx + dy * dy) <= 64.0F)
                         {
                             st.mouse_double_clicked = true;
                         }
+                        s_prev_click_tp    = now_tp;
                         st.last_click_time = st.anim_time;
                         st.last_click_pos  = ImVec2 { ev.mouse_x, ev.mouse_y };
                     }
@@ -2480,8 +2501,8 @@ public:
         batcher_.begin_frame();
         st.bg_dl.replay_into(batcher_);
         st.win_dl.replay_into(batcher_);
-        st.popup_dl.replay_into(batcher_);
         st.fg_dl.replay_into(batcher_);
+        st.popup_dl.replay_into(batcher_);
 
         if (submitter_.is_valid() && submitter_.upload(batcher_))
         {
@@ -2970,9 +2991,7 @@ inline ImGuiID DockSpace(ImGuiID id, const ImVec2& /*size*/ = ImVec2(0, 0),
 
     const ImVec2 mp = st.io.MousePos;
     const bool has_left_split = !st.dock_slot_tabs[2].empty();
-    const bool popup_open = (!st.active_menu_name.empty() || st.open_popup_id != 0U) &&
-                            (mp.x >= st.last_popup_min.x && mp.x <= st.last_popup_max.x &&
-                             mp.y >= st.last_popup_min.y && mp.y <= st.last_popup_max.y);
+    const bool popup_open = (!st.active_menu_name.empty() || st.open_popup_id != 0U);
     const bool hover_l  = !popup_open && (mp.y >= top_y && std::fabs(mp.x - lx) <= 7.0F);
     const bool hover_r  = !popup_open && (mp.y >= top_y && std::fabs(mp.x - rx) <= 7.0F);
     const bool hover_b  = !popup_open && (mp.x >= lx && mp.x <= rx && std::fabs(mp.y - by) <= 7.0F);
@@ -3513,19 +3532,19 @@ inline bool BeginChild(const char* str_id, const ImVec2& size = ImVec2(0, 0), bo
     if (border)
     {
         child.draw_list->AddRectFilled(child.pos, ImVec2(child.pos.x + child.size.x, child.pos.y + child.size.y),
-                                       st.theme.child_bg, 0.0F);
-        child.draw_list->AddLine(ImVec2(child.pos.x + child.size.x - 0.5F, child.pos.y),
-                                 ImVec2(child.pos.x + child.size.x - 0.5F, child.pos.y + child.size.y),
-                                 IM_COL32(34, 42, 56, 255), 1.0F);
+                                       st.theme.child_bg, 3.0F);
+        child.draw_list->AddRect(child.pos, ImVec2(child.pos.x + child.size.x, child.pos.y + child.size.y),
+                                 IM_COL32(38, 48, 64, 255), 3.0F, 0, 1.0F);
     }
     child.draw_list->PushClipRect(child.pos, ImVec2(child.pos.x + child.size.x, child.pos.y + child.size.y));
-    child.cursor = ImVec2 { child.pos.x + 4.0F, child.pos.y + 4.0F - child.scroll_y };
+    child.cursor = ImVec2 { child.pos.x + 6.0F, child.pos.y + 5.0F - child.scroll_y };
     child.content_max_x = child.cursor.x;
     child.content_max_y = child.cursor.y;
 
     parent.prev_item_min = child.pos;
     parent.prev_item_max = ImVec2 { child.pos.x + child.size.x, child.pos.y + child.size.y };
-    parent.cursor.y      = child.pos.y + child.size.y + 2.0F;
+    parent.cursor.x      = parent.pos.x + (parent.is_child ? 4.0F : st.style_window_padding.x) + parent.indent;
+    parent.cursor.y      = child.pos.y + child.size.y + 6.0F;
     parent.content_max_x = std::max(parent.content_max_x, parent.prev_item_max.x);
     if (size.y > 0.0F)
     {

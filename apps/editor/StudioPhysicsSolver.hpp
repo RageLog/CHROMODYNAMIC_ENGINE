@@ -77,12 +77,26 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
         s.fx.taa_amount       = tmp->taa_amount;
         s.fx.motion_blur      = tmp->motion_blur;
     }
+    bool has_any_enabled_light = false;
+    for (const auto& lr : s.lights)
+    {
+        if (lr.enabled && lr.light.intensity > 0.001F)
+        {
+            has_any_enabled_light = true;
+            break;
+        }
+    }
     if (const auto* sky = w.environment_modifiers.find<SkyAtmosphereModifier>(); sky && sky->enabled)
     {
-        s.fx.clouds_coverage = sky->clouds_coverage;
+        s.fx.clouds_coverage = has_any_enabled_light ? sky->clouds_coverage : 0.0F;
         s.fx.ao_strength     = sky->ao_strength;
         s.fx.ssr_strength    = sky->ssr_strength;
         s.fx.ddgi_on         = sky->ddgi_gi_enabled;
+    }
+    if (!has_any_enabled_light)
+    {
+        s.fx.clouds_coverage   = 0.0F;
+        s.fx.volumetric_fog_on = false;
     }
 
     // ---- B. Evaluate Per-Entity Modifiers & Godot+ Gameplay Logic ----
@@ -172,7 +186,7 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
             has_active_dynamic_rb = true;
         }
 
-        if (const auto* efog = ms.template find<FogModifier>(); efog && efog->enabled)
+        if (const auto* efog = ms.template find<FogModifier>(); efog && efog->enabled && ent.visible && has_any_enabled_light)
         {
             s.fx.volumetric_fog_on  = efog->volumetric_scattering;
             s.fx.fog_density        = efog->fog_density;
@@ -180,37 +194,59 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
             s.fx.aerial_perspective = efog->aerial_perspective;
         }
 
+        if (const auto* cld = ms.template find<CloudLayerModifier>(); cld && ent.visible)
+        {
+            s.fx.clouds_coverage = (cld->enabled && has_any_enabled_light) ? cld->clouds_coverage : 0.0F;
+        }
+
         // 1. CharacterControllerModifier (WASD/Arrows + Space in PIE, or Autonomous E2E Autopilot Driver!)
         if (auto* cc = ms.template find<CharacterControllerModifier>(); cc && cc->enabled && ent.visible && !ent.locked)
         {
             player_entity_idx = static_cast<int>(idx);
+            auto* anim = ms.template find<AnimatorStateMachineModifier>();
+            const bool is_2d_char = (anim != nullptr && anim->is_2d_character);
+
             if (auto* lt = s.scene.local(ent.handle))
             {
                 cd::math::Vec3f horiz_move_delta { 0.0F, 0.0F, 0.0F };
                 bool want_jump = false;
+                bool is_sprinting = false;
 
                 if (!ImGui::GetIO().WantCaptureKeyboard)
                 {
                     float fwd = 0.0F;
                     float rgt = 0.0F;
-                    if (ImGui::IsKeyDown(ImGuiKey_UpArrow)    || (s.pie_playing && ImGui::IsKeyDown(ImGuiKey_W))) fwd += 1.0F;
-                    if (ImGui::IsKeyDown(ImGuiKey_DownArrow)  || (s.pie_playing && ImGui::IsKeyDown(ImGuiKey_S))) fwd -= 1.0F;
+                    if (!is_2d_char)
+                    {
+                        if (ImGui::IsKeyDown(ImGuiKey_UpArrow)   || (s.pie_playing && ImGui::IsKeyDown(ImGuiKey_W))) fwd += 1.0F;
+                        if (ImGui::IsKeyDown(ImGuiKey_DownArrow) || (s.pie_playing && ImGui::IsKeyDown(ImGuiKey_S))) fwd -= 1.0F;
+                    }
                     if (ImGui::IsKeyDown(ImGuiKey_RightArrow) || (s.pie_playing && ImGui::IsKeyDown(ImGuiKey_D))) rgt += 1.0F;
                     if (ImGui::IsKeyDown(ImGuiKey_LeftArrow)  || (s.pie_playing && ImGui::IsKeyDown(ImGuiKey_A))) rgt -= 1.0F;
+                    is_sprinting = s.mod_shift;
+                    const float speed_mult = is_sprinting ? 1.55F : 1.0F;
+
                     if (std::abs(fwd) > 0.01F || std::abs(rgt) > 0.01F)
                     {
                         // Human manual input overrides autopilot
                         w.autopilot_play_active = false;
-                        cd::math::Vec3f cam_fwd = s.cam.target - s.cam.eye;
-                        cam_fwd.y = 0.0F;
-                        const float fl = cd::math::length(cam_fwd);
-                        if (fl > 1e-4F) cam_fwd = cam_fwd * (1.0F / fl);
-                        else cam_fwd = { 0.0F, 0.0F, -1.0F };
-                        const cd::math::Vec3f cam_rgt { -cam_fwd.z, 0.0F, cam_fwd.x };
-                        cd::math::Vec3f wish_dir = cam_fwd * fwd + cam_rgt * rgt;
-                        const float wl = cd::math::length(wish_dir);
-                        if (wl > 1e-4F) wish_dir = wish_dir * (1.0F / wl);
-                        horiz_move_delta = wish_dir * (cc->move_speed * clamped_dt);
+                        if (is_2d_char)
+                        {
+                            horiz_move_delta = { rgt * cc->move_speed * speed_mult * clamped_dt, 0.0F, 0.0F };
+                        }
+                        else
+                        {
+                            cd::math::Vec3f cam_fwd = s.cam.target - s.cam.eye;
+                            cam_fwd.y = 0.0F;
+                            const float fl = cd::math::length(cam_fwd);
+                            if (fl > 1e-4F) cam_fwd = cam_fwd * (1.0F / fl);
+                            else cam_fwd = { 0.0F, 0.0F, -1.0F };
+                            const cd::math::Vec3f cam_rgt { -cam_fwd.z, 0.0F, cam_fwd.x };
+                            cd::math::Vec3f wish_dir = cam_fwd * fwd + cam_rgt * rgt;
+                            const float wl = cd::math::length(wish_dir);
+                            if (wl > 1e-4F) wish_dir = wish_dir * (1.0F / wl);
+                            horiz_move_delta = wish_dir * (cc->move_speed * speed_mult * clamped_dt);
+                        }
                     }
                     want_jump = ImGui::IsKeyPressed(ImGuiKey_PageUp, false) ||
                                 (s.pie_playing && ImGui::IsKeyPressed(ImGuiKey_Space, false));
@@ -296,10 +332,13 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
                 if (cd::math::length(horiz_move_delta) > 1e-5F)
                 {
                     lt->value.position   = lt->value.position + horiz_move_delta;
+                    if (is_2d_char) lt->value.position.z = 0.0F;
                     w.player_horiz_speed = cd::math::length(horiz_move_delta) / std::max(1e-4F, clamped_dt);
 
                     // Smoothly rotate character to face movement velocity direction
-                    const float target_yaw_deg = std::atan2(horiz_move_delta.x, horiz_move_delta.z) * 57.2957795F;
+                    const float target_yaw_deg = is_2d_char
+                        ? (horiz_move_delta.x >= 0.0F ? 0.0F : 180.0F)
+                        : (std::atan2(horiz_move_delta.x, horiz_move_delta.z) * 57.2957795F);
                     float diff = target_yaw_deg - w.player_heading_yaw_deg;
                     while (diff >  180.0F) diff -= 360.0F;
                     while (diff < -180.0F) diff += 360.0F;
@@ -326,6 +365,60 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
                         {
                             rb->linear_velocity.y = cc->jump_impulse;
                             rb->is_grounded       = false;
+                        }
+                    }
+                }
+
+                // Evaluate 6-State AnimatorStateMachineModifier (Idle/Walk/Run/Jump/Fall/Attack)
+                if (anim && anim->enabled)
+                {
+                    if (anim->attack_timer > 0.0F)
+                    {
+                        anim->attack_timer = std::max(0.0F, anim->attack_timer - clamped_dt);
+                    }
+                    if (anim->auto_stateful_transitions && sim_active)
+                    {
+                        const auto* rb = ms.template find<RigidBodyModifier>();
+                        const bool  grounded = (rb == nullptr) ? true : rb->is_grounded;
+                        const float vy       = (rb == nullptr) ? 0.0F : rb->linear_velocity.y;
+                        if (anim->attack_timer > 0.0F)
+                            anim->set_state(5); // Attack
+                        else if (!grounded && vy > 0.35F)
+                            anim->set_state(3); // Jump
+                        else if (!grounded && vy < -0.55F)
+                            anim->set_state(4); // Fall
+                        else if (w.player_horiz_speed > cc->move_speed * 1.15F)
+                            anim->set_state(2); // Run
+                        else if (w.player_horiz_speed > 0.12F)
+                            anim->set_state(1); // Walk
+                        else
+                            anim->set_state(0); // Idle
+                    }
+                    const int st_idx = std::clamp(anim->current_state_idx, 0, 5);
+                    s.anim_speed     = anim->state_speeds[static_cast<std::size_t>(st_idx)];
+
+                    // Sync any attached child model entities' AnimatorStateMachineModifier & procedural bob/swing
+                    for (std::size_t ci = 0; ci < s.entities.size(); ++ci)
+                    {
+                        if (ci == idx) continue;
+                        const auto& c_ent = s.entities[ci];
+                        if (s.scene.parent_of(c_ent.handle) == ent.handle)
+                        {
+                            if (auto* c_anim = w.entity_modifiers[c_ent.handle.id].template find<AnimatorStateMachineModifier>())
+                            {
+                                c_anim->set_state(st_idx);
+                                c_anim->attack_timer = anim->attack_timer;
+                            }
+                            if (sim_active)
+                            {
+                                if (auto* c_lt = s.scene.local(c_ent.handle))
+                                {
+                                    const float bob = (st_idx == 1 || st_idx == 2)
+                                        ? std::abs(std::sin(w.sim_time_accum * (st_idx == 2 ? 14.0F : 9.0F))) * 0.08F
+                                        : 0.0F;
+                                    c_lt->value.position.y = 0.05F + bob;
+                                }
+                            }
                         }
                     }
                 }
@@ -1060,7 +1153,26 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
     if (s.pie_playing && !ImGui::GetIO().WantCaptureMouse &&
         ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::GetMousePos().y > 64.0F)
     {
-        shoot_physics_ball_from_camera(s, log_push);
+        bool has_cannon_or_launcher = false;
+        for (std::size_t ei = 0; ei < s.entities.size(); ++ei)
+        {
+            const auto& en = s.entities[ei];
+            if (!en.visible) continue;
+            if (en.name.find("Cannon") != std::string::npos ||
+                en.name.find("ProjectileLauncher") != std::string::npos)
+            {
+                has_cannon_or_launcher = true;
+            }
+            if (auto* anim = w.entity_modifiers[en.handle.id].template find<AnimatorStateMachineModifier>())
+            {
+                anim->attack_timer = 0.45F;
+                anim->set_state(5);
+            }
+        }
+        if (has_cannon_or_launcher)
+        {
+            shoot_physics_ball_from_camera(s, log_push);
+        }
     }
 
     // 1. Draw 3D Collider Wireframes (OBB & Sphere) + Trigger Volume Sensor Radii + Contact Manifolds
@@ -1129,7 +1241,7 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
                 ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav))
         {
-            // Group 1 (Left): [Projects] + [+ Add Object] + [Stage: <active_level_name>]
+            // Group 1 (Left): [Projects] + [+ Add Object]
             if (ImGui::IconButton("Projects##rib_pm", cd::ui::chroma::IconKind::kFolder,
                                   IM_COL32(130, 210, 255, 255), w.show_project_manager, ImVec2(76.0F, 20.0F)))
             {
@@ -1148,75 +1260,6 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
             }
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Spawn 3D Object / Open Construct Library");
-
-            ImGui::SameLine();
-            std::string short_lvl = w.active_level_name;
-            if (const auto paren = short_lvl.find(" ("); paren != std::string::npos)
-                short_lvl = short_lvl.substr(0, paren);
-            if (short_lvl.size() > 18U)
-                short_lvl = short_lvl.substr(0, 16U) + "..";
-            const std::string lvl_btn = "Stage: " + short_lvl + "##ribbon_lvl";
-            if (ImGui::IconButton(lvl_btn.c_str(), cd::ui::chroma::IconKind::kWorld,
-                                  IM_COL32(105, 205, 255, 255), false, ImVec2(158.0F, 20.0F)))
-            {
-                ImGui::OpenPopup("ribbon_world_level_popup");
-            }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Active Project: %s | Stage: %s\n(Click to switch Stage or open Sample Projects)",
-                                  w.active_project_name.c_str(), w.active_level_name.c_str());
-            if (ImGui::BeginPopup("ribbon_world_level_popup"))
-            {
-                ImGui::TextColored(ImVec4(0.45F, 0.86F, 1.0F, 1.0F),
-                                   "Active Project: %s (%s)",
-                                   w.active_project_name.c_str(), w.active_level_name.c_str());
-                ImGui::Separator();
-                if (ImGui::MenuItem("Project Manager..."))
-                {
-                    w.show_project_manager = true;
-                }
-                if (ImGui::MenuItem("New Empty Project (Clean Stage)"))
-                {
-                    reset_to_clean_empty_project(s, log_push);
-                }
-                if (ImGui::BeginMenu("Open Sample Project from Disk (showcases/*.cdproj)"))
-                {
-                    for (std::size_t si = 0; si < kShowcaseCatalog.size(); ++si)
-                    {
-                        if (ImGui::MenuItem(kShowcaseCatalog[si].title))
-                            load_showcase_project_by_index(s, si, log_push);
-                    }
-                    ImGui::EndMenu();
-                }
-                ImGui::Separator();
-                const auto* proj = s.cd_world.project();
-                std::string deferred_popup_level {};
-                if (proj)
-                {
-                    for (const auto& wname : proj->world_names())
-                    {
-                        if (ImGui::BeginMenu(wname.c_str()))
-                        {
-                            for (std::size_t li : proj->levels_in_world(wname))
-                            {
-                                const auto* lvl = proj->level(li);
-                                if (!lvl) continue;
-                                const std::string lvl_nm { lvl->name() };
-                                const bool is_cur = (w.active_level_name == lvl_nm);
-                                if (ImGui::MenuItem(lvl_nm.c_str(), nullptr, is_cur))
-                                {
-                                    deferred_popup_level = lvl_nm;
-                                }
-                            }
-                            ImGui::EndMenu();
-                        }
-                    }
-                }
-                if (!deferred_popup_level.empty())
-                {
-                    (void)switch_to_project_level(s, deferred_popup_level, log_push);
-                }
-                ImGui::EndPopup();
-            }
 
             ImGui::SameLine();
             ImGui::TextDisabled("|");
