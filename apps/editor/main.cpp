@@ -365,6 +365,7 @@ struct GizmoState
     GizmoMode mode                      { GizmoMode::kTranslate };
     ImVec2    drag_anchor               { 0, 0 };
     cd::math::Vec3f drag_world_start    {};
+    cd::math::Vec3f drag_plane_hit_start {};
     cd::math::Vec3f drag_scale_start    { 1.0F, 1.0F, 1.0F };
     cd::math::Quatf drag_rot_start      {};
     cd::math::Vec3f light_drag_dir_start     { 0.0F, -1.0F, 0.0F };
@@ -404,6 +405,7 @@ std::uint32_t g_studio_capture_frame        { 8U };
 std::uint32_t g_studio_max_frames           { 0U };
 bool          g_studio_start_pie            { false };
 bool          g_studio_autopilot_e2e        { false };
+[[maybe_unused]] bool g_studio_force_project_manager { false };
 std::string   g_studio_capture_gameplay_dir {};
 bool          g_studio_demo_all_phases      { false };
 bool          g_studio_load_context_demo    { false };
@@ -1823,7 +1825,9 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
 
                 auto thick = [&](cd::editor::GizmoAxis a) -> float
                 {
-                    return (gizmo.hover() == a || gizmo.active_axis() == a) ? 5.0F : 3.0F;
+                    const bool all_active = (gizmo.hover() == cd::editor::GizmoAxis::kXYZ ||
+                                             gizmo.active_axis() == cd::editor::GizmoAxis::kXYZ);
+                    return (all_active || gizmo.hover() == a || gizmo.active_axis() == a) ? 5.0F : 3.0F;
                 };
 
                 if (gizmo_state.mode != GizmoMode::kRotate)
@@ -1835,7 +1839,16 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                     if (show_z)
                         dl->AddLine(p_org, p_z, cz, thick(cd::editor::GizmoAxis::kZ));
                 }
-                dl->AddCircleFilled(p_org, 4.5F, ImGui::ColorConvertFloat4ToU32(ImVec4(0.95F, 0.96F, 0.98F, 0.95F)));
+                const bool center_active = (gizmo.hover() == cd::editor::GizmoAxis::kXYZ ||
+                                            gizmo.active_axis() == cd::editor::GizmoAxis::kXYZ);
+                const ImU32 center_ring_col = ImGui::ColorConvertFloat4ToU32(
+                    center_active ? ImVec4(1.0F, 0.88F, 0.25F, 1.0F)
+                                  : ImVec4(0.35F, 0.92F, 0.98F, 0.90F));
+                const ImU32 center_fill_col = ImGui::ColorConvertFloat4ToU32(
+                    center_active ? ImVec4(1.0F, 0.88F, 0.25F, 1.0F)
+                                  : ImVec4(0.95F, 0.96F, 0.98F, 0.95F));
+                dl->AddCircle(p_org, 9.5F, center_ring_col, 24, center_active ? 2.5F : 1.8F);
+                dl->AddCircleFilled(p_org, 5.0F, center_fill_col);
 
                 // Arrowheads (filled triangles) + axis labels ("X", "Y", "Z").
                 auto arrowhead_and_label = [&](ImVec2 from, ImVec2 to, ImU32 col, const char* lbl)
@@ -1943,7 +1956,15 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                 };
                 cd::editor::GizmoAxis best = cd::editor::GizmoAxis::kNone;
                 float best_d = gizmo.hover_tolerance_pixels;
-                if (gizmo_state.mode == GizmoMode::kRotate)
+                const float center_dist_px = std::hypot(mp.x - p_org.x, mp.y - p_org.y);
+                if (center_dist_px <= 13.5F)
+                {
+                    // Center all-axis handle has strict priority over individual axis segments
+                    // (which all originate at p_org and would otherwise steal center clicks).
+                    best = cd::editor::GizmoAxis::kXYZ;
+                    best_d = center_dist_px;
+                }
+                else if (gizmo_state.mode == GizmoMode::kRotate)
                 {
                     constexpr int kHoverSeg = 48;
                     const float kHoverRad = kAxisLen;  // matches kRingRad above
@@ -2042,6 +2063,82 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                 {
                     pending_pick = false;
                 }
+                struct CamBasis3D
+                {
+                    cd::math::Vec3f fwd { 0.0F, 0.0F, -1.0F };
+                    cd::math::Vec3f rgt { 1.0F, 0.0F,  0.0F };
+                    cd::math::Vec3f up  { 0.0F, 1.0F,  0.0F };
+                    bool valid { false };
+                };
+                auto compute_cam_basis = [&]() -> CamBasis3D
+                {
+                    CamBasis3D b {};
+                    cd::math::Vec3f fwd { cam.target.x - cam.eye.x,
+                                          cam.target.y - cam.eye.y,
+                                          cam.target.z - cam.eye.z };
+                    const float fl = std::sqrt(fwd.x * fwd.x + fwd.y * fwd.y + fwd.z * fwd.z);
+                    if (fl < 1e-5F)
+                        return b;
+                    fwd.x /= fl;
+                    fwd.y /= fl;
+                    fwd.z /= fl;
+                    const cd::math::Vec3f wup { 0.0F, 1.0F, 0.0F };
+                    cd::math::Vec3f rgt { fwd.y * wup.z - fwd.z * wup.y,
+                                          fwd.z * wup.x - fwd.x * wup.z,
+                                          fwd.x * wup.y - fwd.y * wup.x };
+                    const float rl = std::sqrt(rgt.x * rgt.x + rgt.y * rgt.y + rgt.z * rgt.z);
+                    if (rl < 1e-5F)
+                        return b;
+                    rgt.x /= rl;
+                    rgt.y /= rl;
+                    rgt.z /= rl;
+                    const cd::math::Vec3f up_v { rgt.y * fwd.z - rgt.z * fwd.y,
+                                                 rgt.z * fwd.x - rgt.x * fwd.z,
+                                                 rgt.x * fwd.y - rgt.y * fwd.x };
+                    b.fwd   = fwd;
+                    b.rgt   = rgt;
+                    b.up    = up_v;
+                    b.valid = true;
+                    return b;
+                };
+                // Ray-plane projection onto the camera-facing view plane passing through `plane_org`.
+                // Used by the center all-axis handle (kXYZ) to move objects freely in 3D (X, Y, Z).
+                auto ray_view_plane_hit = [&](ImVec2 mouse_pixel,
+                                              cd::math::Vec3f plane_org) -> std::optional<cd::math::Vec3f>
+                {
+                    const auto vw_w = static_cast<float>(window.width());
+                    const auto vh_w = static_cast<float>(window.height());
+                    if (vw_w < 1.0F || vh_w < 1.0F)
+                        return std::nullopt;
+                    const auto cb = compute_cam_basis();
+                    if (!cb.valid)
+                        return std::nullopt;
+                    const float ndc_x = (2.0F * mouse_pixel.x / vw_w) - 1.0F;
+                    const float ndc_y = 1.0F - (2.0F * mouse_pixel.y / vh_w);
+                    const float tan_half = std::tan(cam.fov_y * 0.5F);
+                    const float sx = (vw_w / vh_w) * tan_half;
+                    const float sy = tan_half;
+                    cd::math::Vec3f rdir { cb.fwd.x + cb.rgt.x * ndc_x * sx + cb.up.x * ndc_y * sy,
+                                           cb.fwd.y + cb.rgt.y * ndc_x * sx + cb.up.y * ndc_y * sy,
+                                           cb.fwd.z + cb.rgt.z * ndc_x * sx + cb.up.z * ndc_y * sy };
+                    const float rdl = std::sqrt(rdir.x * rdir.x + rdir.y * rdir.y + rdir.z * rdir.z);
+                    if (rdl < 1e-5F)
+                        return std::nullopt;
+                    rdir.x /= rdl;
+                    rdir.y /= rdl;
+                    rdir.z /= rdl;
+                    const float denom = rdir.x * cb.fwd.x + rdir.y * cb.fwd.y + rdir.z * cb.fwd.z;
+                    if (std::fabs(denom) < 1e-4F)
+                        return std::nullopt;
+                    const float t = ((plane_org.x - cam.eye.x) * cb.fwd.x +
+                                     (plane_org.y - cam.eye.y) * cb.fwd.y +
+                                     (plane_org.z - cam.eye.z) * cb.fwd.z) / denom;
+                    if (t < 0.0F)
+                        return std::nullopt;
+                    return cd::math::Vec3f { cam.eye.x + rdir.x * t,
+                                             cam.eye.y + rdir.y * t,
+                                             cam.eye.z + rdir.z * t };
+                };
                 // Ray-plane projection of a screen pixel onto the
                 // active axis. Returns the signed distance along
                 // the axis from `world_start` to the hit point,
@@ -2057,41 +2154,21 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                                            ImVec2 mouse_pixel,
                                            cd::math::Vec3f world_start) -> std::optional<float>
                 {
-                    const auto vw = static_cast<float>(window.width());
-                    const auto vh = static_cast<float>(window.height());
-                    if (vw < 1 || vh < 1)
+                    const auto vw_w = static_cast<float>(window.width());
+                    const auto vh_w = static_cast<float>(window.height());
+                    if (vw_w < 1.0F || vh_w < 1.0F)
                         return std::nullopt;
-                    // Camera basis (same path as pick).
-                    cd::math::Vec3f fwd { cam.target.x - cam.eye.x,
-                                          cam.target.y - cam.eye.y,
-                                          cam.target.z - cam.eye.z };
-                    const float fl = std::sqrt(fwd.x * fwd.x + fwd.y * fwd.y + fwd.z * fwd.z);
-                    if (fl < 1e-5F)
+                    const auto cb = compute_cam_basis();
+                    if (!cb.valid)
                         return std::nullopt;
-                    fwd.x /= fl;
-                    fwd.y /= fl;
-                    fwd.z /= fl;
-                    cd::math::Vec3f wup { 0, 1, 0 };
-                    cd::math::Vec3f rgt { fwd.y * wup.z - fwd.z * wup.y,
-                                          fwd.z * wup.x - fwd.x * wup.z,
-                                          fwd.x * wup.y - fwd.y * wup.x };
-                    const float rl = std::sqrt(rgt.x * rgt.x + rgt.y * rgt.y + rgt.z * rgt.z);
-                    if (rl < 1e-5F)
-                        return std::nullopt;
-                    rgt.x /= rl;
-                    rgt.y /= rl;
-                    rgt.z /= rl;
-                    cd::math::Vec3f up_v { rgt.y * fwd.z - rgt.z * fwd.y,
-                                           rgt.z * fwd.x - rgt.x * fwd.z,
-                                           rgt.x * fwd.y - rgt.y * fwd.x };
-                    const float ndc_x = (2.0F * mouse_pixel.x / vw) - 1.0F;
-                    const float ndc_y = 1.0F - (2.0F * mouse_pixel.y / vh);
+                    const float ndc_x = (2.0F * mouse_pixel.x / vw_w) - 1.0F;
+                    const float ndc_y = 1.0F - (2.0F * mouse_pixel.y / vh_w);
                     const float tan_half = std::tan(cam.fov_y * 0.5F);
-                    const float sx = (vw / vh) * tan_half;
+                    const float sx = (vw_w / vh_w) * tan_half;
                     const float sy = tan_half;
-                    cd::math::Vec3f rdir { fwd.x + rgt.x * ndc_x * sx + up_v.x * ndc_y * sy,
-                                           fwd.y + rgt.y * ndc_x * sx + up_v.y * ndc_y * sy,
-                                           fwd.z + rgt.z * ndc_x * sx + up_v.z * ndc_y * sy };
+                    cd::math::Vec3f rdir { cb.fwd.x + cb.rgt.x * ndc_x * sx + cb.up.x * ndc_y * sy,
+                                           cb.fwd.y + cb.rgt.y * ndc_x * sx + cb.up.y * ndc_y * sy,
+                                           cb.fwd.z + cb.rgt.z * ndc_x * sx + cb.up.z * ndc_y * sy };
                     const float rdl = std::sqrt(rdir.x * rdir.x + rdir.y * rdir.y + rdir.z * rdir.z);
                     if (rdl < 1e-5F)
                         return std::nullopt;
@@ -2106,9 +2183,9 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                         a = { 0, 1, 0 };
                     else if (axis == cd::editor::GizmoAxis::kZ)
                         a = { 0, 0, 1 };
-                    cd::math::Vec3f c1 { fwd.y * a.z - fwd.z * a.y,
-                                         fwd.z * a.x - fwd.x * a.z,
-                                         fwd.x * a.y - fwd.y * a.x };
+                    cd::math::Vec3f c1 { cb.fwd.y * a.z - cb.fwd.z * a.y,
+                                         cb.fwd.z * a.x - cb.fwd.x * a.z,
+                                         cb.fwd.x * a.y - cb.fwd.y * a.x };
                     cd::math::Vec3f n { a.y * c1.z - a.z * c1.y, a.z * c1.x - a.x * c1.z, a.x * c1.y - a.y * c1.x };
                     const float nl = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
                     if (nl < 1e-5F)
@@ -2155,10 +2232,22 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                         gizmo_state.light_drag_area_w_start = L.area_width;
                         gizmo_state.light_drag_area_h_start = L.area_height;
                     }
-                    // Capture the initial ray-plane axis offset
-                    // so subsequent moves give delta = current -
-                    // initial (no jump at click).
-                    if (auto off = ray_axis_offset(best, mp, *target_pos); off.has_value())
+                    // Capture the initial ray-plane axis offset (or view-plane hit for kXYZ)
+                    // so subsequent moves give delta = current - initial (no jump at click).
+                    if (best == cd::editor::GizmoAxis::kXYZ)
+                    {
+                        if (auto hit = ray_view_plane_hit(mp, *target_pos); hit.has_value())
+                        {
+                            gizmo_state.drag_plane_hit_start = *hit;
+                            gizmo_state.drag_use_ray_plane = true;
+                        }
+                        else
+                        {
+                            gizmo_state.drag_plane_hit_start = *target_pos;
+                            gizmo_state.drag_use_ray_plane = false;
+                        }
+                    }
+                    else if (auto off = ray_axis_offset(best, mp, *target_pos); off.has_value())
                     {
                         gizmo_state.drag_initial_offset = *off;
                         gizmo_state.drag_use_ray_plane = true;
@@ -2170,6 +2259,7 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                 }
                 if (gizmo.is_dragging())
                 {
+                    const bool is_xyz = (gizmo.active_axis() == cd::editor::GizmoAxis::kXYZ);
                     ImVec2 axis_screen_end = p_x;
                     if (gizmo.active_axis() == cd::editor::GizmoAxis::kY)
                         axis_screen_end = p_y;
@@ -2182,7 +2272,7 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                     // screen-space dot (fallback for rotate/scale
                     // which use angular / exponential math).
                     float delta_world = 0.0F;
-                    if (gizmo_state.drag_use_ray_plane && gizmo_state.mode == GizmoMode::kTranslate)
+                    if (!is_xyz && gizmo_state.drag_use_ray_plane && gizmo_state.mode == GizmoMode::kTranslate)
                     {
                         if (auto off = ray_axis_offset(gizmo.active_axis(), mp, gizmo_state.drag_world_start);
                             off.has_value())
@@ -2190,7 +2280,13 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                             delta_world = *off - gizmo_state.drag_initial_offset;
                         }
                     }
-                    if (ax_len_px > 1.0F)
+                    if (is_xyz)
+                    {
+                        const float mouse_dx = mp.x - gizmo_state.drag_anchor.x;
+                        const float mouse_dy = mp.y - gizmo_state.drag_anchor.y;
+                        delta_world = (mouse_dx - mouse_dy) * 0.015F;
+                    }
+                    else if (ax_len_px > 1.0F)
                     {
                         // Screen-space path (rotate/scale, or
                         // ray-plane fallback). delta_world stays 0
@@ -2206,7 +2302,7 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                             delta_world = dot_px * world_per_px;
                         }
                     }
-                    if (ax_len_px > 1.0F || gizmo_state.drag_use_ray_plane)
+                    if (is_xyz || ax_len_px > 1.0F || gizmo_state.drag_use_ray_plane)
                     {
                         // Only translate works for both entities and
                         // lights; rotate/scale need a transform record
@@ -2227,6 +2323,32 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                                     case cd::editor::GizmoAxis::kZ:
                                         cur.z += delta_world;
                                         break;
+                                    case cd::editor::GizmoAxis::kXYZ:
+                                    {
+                                        bool applied = false;
+                                        if (gizmo_state.drag_use_ray_plane)
+                                        {
+                                            if (auto hit = ray_view_plane_hit(mp, gizmo_state.drag_world_start);
+                                                hit.has_value())
+                                            {
+                                                cur.x += hit->x - gizmo_state.drag_plane_hit_start.x;
+                                                cur.y += hit->y - gizmo_state.drag_plane_hit_start.y;
+                                                cur.z += hit->z - gizmo_state.drag_plane_hit_start.z;
+                                                applied = true;
+                                            }
+                                        }
+                                        if (!applied)
+                                        {
+                                            const auto cb = compute_cam_basis();
+                                            const float mouse_dx = mp.x - gizmo_state.drag_anchor.x;
+                                            const float mouse_dy = mp.y - gizmo_state.drag_anchor.y;
+                                            const float world_per_px = std::max(0.5F, cam_dist) * 0.0022F;
+                                            cur.x += (cb.rgt.x * mouse_dx - cb.up.x * mouse_dy) * world_per_px;
+                                            cur.y += (cb.rgt.y * mouse_dx - cb.up.y * mouse_dy) * world_per_px;
+                                            cur.z += (cb.rgt.z * mouse_dx - cb.up.z * mouse_dy) * world_per_px;
+                                        }
+                                        break;
+                                    }
                                     default:
                                         break;
                                 }
@@ -2249,6 +2371,11 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                                             cur.y *= factor;
                                             break;
                                         case cd::editor::GizmoAxis::kZ:
+                                            cur.z *= factor;
+                                            break;
+                                        case cd::editor::GizmoAxis::kXYZ:
+                                            cur.x *= factor;
+                                            cur.y *= factor;
                                             cur.z *= factor;
                                             break;
                                         default:
@@ -2281,9 +2408,11 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                                     {
                                         float w = gizmo_state.light_drag_area_w_start;
                                         float h = gizmo_state.light_drag_area_h_start;
-                                        if (axis == cd::editor::GizmoAxis::kX || axis == cd::editor::GizmoAxis::kZ)
+                                        if (axis == cd::editor::GizmoAxis::kX || axis == cd::editor::GizmoAxis::kZ ||
+                                            axis == cd::editor::GizmoAxis::kXYZ)
                                             w *= factor;
-                                        if (axis == cd::editor::GizmoAxis::kY || axis == cd::editor::GizmoAxis::kZ)
+                                        if (axis == cd::editor::GizmoAxis::kY || axis == cd::editor::GizmoAxis::kZ ||
+                                            axis == cd::editor::GizmoAxis::kXYZ)
                                             h *= factor;
                                         L.area_width = std::clamp(w, 0.05F, 50.0F);
                                         L.area_height = std::clamp(h, 0.05F, 50.0F);
@@ -2299,44 +2428,72 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                             }
                             case GizmoMode::kRotate:
                             {
-                                // Compute the angle the mouse has swept around the
-                                // gizmo center since drag start (atan2 difference).
-                                const float anchor_dx = gizmo_state.drag_anchor.x - p_org.x;
-                                const float anchor_dy = gizmo_state.drag_anchor.y - p_org.y;
-                                const float cur_dx = mp.x - p_org.x;
-                                const float cur_dy = mp.y - p_org.y;
-                                if (std::sqrt(anchor_dx * anchor_dx + anchor_dy * anchor_dy) < 5.0F)
-                                    break;  // too close to center, ignore
-                                const float a_anchor = std::atan2(anchor_dy, anchor_dx);
-                                const float a_now = std::atan2(cur_dy, cur_dx);
-                                // W7-C: mouse coords have Y-down so atan2
-                                // gives a screen-CCW reading; world-space
-                                // convention is right-hand (CCW about +axis
-                                // looking from +axis toward origin). The
-                                // sign was therefore inverted — drag CW in
-                                // screen was producing positive (CCW)
-                                // rotation. Negate to match user intent.
-                                float ang = a_anchor - a_now;
-                                while (ang > std::numbers::pi_v<float>)
-                                    ang -= 2.0F * std::numbers::pi_v<float>;
-                                while (ang < -std::numbers::pi_v<float>)
-                                    ang += 2.0F * std::numbers::pi_v<float>;
-                                const float ca = std::cos(ang * 0.5F);
-                                const float sa = std::sin(ang * 0.5F);
                                 cd::math::Quatf q { 0, 0, 0, 1 };
-                                switch (gizmo.active_axis())
+                                if (gizmo.active_axis() == cd::editor::GizmoAxis::kXYZ)
                                 {
-                                    case cd::editor::GizmoAxis::kX:
-                                        q = { sa, 0, 0, ca };
-                                        break;
-                                    case cd::editor::GizmoAxis::kY:
-                                        q = { 0, sa, 0, ca };
-                                        break;
-                                    case cd::editor::GizmoAxis::kZ:
-                                        q = { 0, 0, sa, ca };
-                                        break;
-                                    default:
-                                        break;
+                                    // Free 2-axis camera-aligned trackball rotation:
+                                    // horizontal mouse drag yaws around camera up,
+                                    // vertical mouse drag pitches around camera right.
+                                    const auto cb = compute_cam_basis();
+                                    const float mouse_dx = mp.x - gizmo_state.drag_anchor.x;
+                                    const float mouse_dy = mp.y - gizmo_state.drag_anchor.y;
+                                    const float yaw_ang   = mouse_dx * 0.012F;
+                                    const float pitch_ang = mouse_dy * 0.012F;
+                                    const float cos_y = std::cos(yaw_ang * 0.5F);
+                                    const float sin_y = std::sin(yaw_ang * 0.5F);
+                                    const cd::math::Quatf q_yaw {
+                                        cb.up.x * sin_y, cb.up.y * sin_y, cb.up.z * sin_y, cos_y };
+                                    const float cos_p = std::cos(pitch_ang * 0.5F);
+                                    const float sin_p = std::sin(pitch_ang * 0.5F);
+                                    const cd::math::Quatf q_pitch {
+                                        cb.rgt.x * sin_p, cb.rgt.y * sin_p, cb.rgt.z * sin_p, cos_p };
+                                    q = cd::math::Quatf {
+                                        q_yaw.w * q_pitch.x + q_yaw.x * q_pitch.w + q_yaw.y * q_pitch.z - q_yaw.z * q_pitch.y,
+                                        q_yaw.w * q_pitch.y - q_yaw.x * q_pitch.z + q_yaw.y * q_pitch.w + q_yaw.z * q_pitch.x,
+                                        q_yaw.w * q_pitch.z + q_yaw.x * q_pitch.y - q_yaw.y * q_pitch.x + q_yaw.z * q_pitch.w,
+                                        q_yaw.w * q_pitch.w - q_yaw.x * q_pitch.x - q_yaw.y * q_pitch.y - q_yaw.z * q_pitch.z
+                                    };
+                                }
+                                else
+                                {
+                                    // Compute the angle the mouse has swept around the
+                                    // gizmo center since drag start (atan2 difference).
+                                    const float anchor_dx = gizmo_state.drag_anchor.x - p_org.x;
+                                    const float anchor_dy = gizmo_state.drag_anchor.y - p_org.y;
+                                    const float cur_dx = mp.x - p_org.x;
+                                    const float cur_dy = mp.y - p_org.y;
+                                    if (std::sqrt(anchor_dx * anchor_dx + anchor_dy * anchor_dy) < 5.0F)
+                                        break;  // too close to center, ignore
+                                    const float a_anchor = std::atan2(anchor_dy, anchor_dx);
+                                    const float a_now = std::atan2(cur_dy, cur_dx);
+                                    // W7-C: mouse coords have Y-down so atan2
+                                    // gives a screen-CCW reading; world-space
+                                    // convention is right-hand (CCW about +axis
+                                    // looking from +axis toward origin). The
+                                    // sign was therefore inverted — drag CW in
+                                    // screen was producing positive (CCW)
+                                    // rotation. Negate to match user intent.
+                                    float ang = a_anchor - a_now;
+                                    while (ang > std::numbers::pi_v<float>)
+                                        ang -= 2.0F * std::numbers::pi_v<float>;
+                                    while (ang < -std::numbers::pi_v<float>)
+                                        ang += 2.0F * std::numbers::pi_v<float>;
+                                    const float ca = std::cos(ang * 0.5F);
+                                    const float sa = std::sin(ang * 0.5F);
+                                    switch (gizmo.active_axis())
+                                    {
+                                        case cd::editor::GizmoAxis::kX:
+                                            q = { sa, 0, 0, ca };
+                                            break;
+                                        case cd::editor::GizmoAxis::kY:
+                                            q = { 0, sa, 0, ca };
+                                            break;
+                                        case cd::editor::GizmoAxis::kZ:
+                                            q = { 0, 0, sa, ca };
+                                            break;
+                                        default:
+                                            break;
+                                    }
                                 }
                                 if (lt != nullptr)
                                 {
@@ -4494,7 +4651,24 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                     if (dist > 1e-3F)
                     {
                         fl.dist  = dist;
-                        fl.pitch = std::asin(dy / dist);
+                        fl.pitch = std::asin(std::clamp(dy / dist, -1.0F, 1.0F));
+                        fl.yaw   = std::atan2(dx, -dz);
+                    }
+                }
+                else if (ev.mouse_button == cd::platform::MouseButton::kMiddle &&
+                         !ImGui::GetIO().WantCaptureMouse)
+                {
+                    fl.middle_drag = true; fl.manual_mode = true;
+                    fl.has_last_mouse = false;
+                    s.scene_cam.set_auto_spin(false);
+                    const float dx = s.cam.target.x - s.cam.eye.x;
+                    const float dy = s.cam.target.y - s.cam.eye.y;
+                    const float dz = s.cam.target.z - s.cam.eye.z;
+                    const float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+                    if (dist > 1e-3F)
+                    {
+                        fl.dist  = dist;
+                        fl.pitch = std::asin(std::clamp(dy / dist, -1.0F, 1.0F));
                         fl.yaw   = std::atan2(dx, -dz);
                     }
                 }
@@ -4512,6 +4686,9 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
             if (ev.kind == cd::platform::OSEventKind::kMouseButtonUp &&
                 ev.mouse_button == cd::platform::MouseButton::kRight)
                 fl.right_drag = false;
+            if (ev.kind == cd::platform::OSEventKind::kMouseButtonUp &&
+                ev.mouse_button == cd::platform::MouseButton::kMiddle)
+                fl.middle_drag = false;
             // phase1178: track LMB up for cd::ui InputState flatten.
             if (ev.kind == cd::platform::OSEventKind::kMouseButtonUp &&
                 ev.mouse_button == cd::platform::MouseButton::kLeft)
@@ -4527,6 +4704,50 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                     constexpr float kHalfPi = 1.5707963F;
                     fl.pitch = std::min(fl.pitch, kHalfPi - 0.05F);
                     fl.pitch = std::max(fl.pitch, -kHalfPi + 0.05F);
+                }
+                if (fl.middle_drag && fl.has_last_mouse && !s.pie_playing)
+                {
+                    const float ddx = ev.mouse_x - fl.last_mouse_x;
+                    const float ddy = ev.mouse_y - fl.last_mouse_y;
+                    cd::math::Vec3f fwd { s.cam.target.x - s.cam.eye.x,
+                                          s.cam.target.y - s.cam.eye.y,
+                                          s.cam.target.z - s.cam.eye.z };
+                    const float flen = std::sqrt(fwd.x * fwd.x + fwd.y * fwd.y + fwd.z * fwd.z);
+                    if (flen > 1e-5F)
+                    {
+                        fwd.x /= flen;
+                        fwd.y /= flen;
+                        fwd.z /= flen;
+                        const cd::math::Vec3f wup { 0.0F, 1.0F, 0.0F };
+                        cd::math::Vec3f rgt { fwd.y * wup.z - fwd.z * wup.y,
+                                              fwd.z * wup.x - fwd.x * wup.z,
+                                              fwd.x * wup.y - fwd.y * wup.x };
+                        const float rlen = std::sqrt(rgt.x * rgt.x + rgt.y * rgt.y + rgt.z * rgt.z);
+                        if (rlen > 1e-5F)
+                        {
+                            rgt.x /= rlen;
+                            rgt.y /= rlen;
+                            rgt.z /= rlen;
+                        }
+                        else
+                        {
+                            rgt = { 1.0F, 0.0F, 0.0F };
+                        }
+                        const cd::math::Vec3f up_v { rgt.y * fwd.z - rgt.z * fwd.y,
+                                                     rgt.z * fwd.x - rgt.x * fwd.z,
+                                                     rgt.x * fwd.y - rgt.y * fwd.x };
+                        const float pan_speed = std::max(0.8F, fl.dist) * 0.0018F;
+                        const cd::math::Vec3f pan_delta {
+                            (-rgt.x * ddx + up_v.x * ddy) * pan_speed,
+                            (-rgt.y * ddx + up_v.y * ddy) * pan_speed,
+                            (-rgt.z * ddx + up_v.z * ddy) * pan_speed };
+                        s.cam.eye.x    += pan_delta.x;
+                        s.cam.eye.y    += pan_delta.y;
+                        s.cam.eye.z    += pan_delta.z;
+                        s.cam.target.x += pan_delta.x;
+                        s.cam.target.y += pan_delta.y;
+                        s.cam.target.z += pan_delta.z;
+                    }
                 }
                 fl.last_mouse_x = ev.mouse_x; fl.last_mouse_y = ev.mouse_y;
                 fl.has_last_mouse = true;
@@ -4685,8 +4906,9 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
 
         if (s.frame_idx == 0u)
         {
-            const bool had_cli_template = (g_studio_initial_template >= 0);
-            const bool had_cli_scene    = !g_studio_initial_scene.empty();
+            const bool had_cli_template     = (g_studio_initial_template >= 0);
+            const bool had_cli_scene        = !g_studio_initial_scene.empty();
+            const bool had_cli_context_demo = g_studio_load_context_demo;
             if (g_studio_autopilot_e2e)
             {
                 cd::studio::init_clean_studio_workspace(s, log_push_fn);
@@ -4729,6 +4951,13 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                 s.cam.target = g_studio_cli_cam_target;
             if (g_studio_has_cli_cam_eye || g_studio_has_cli_cam_target)
                 cd::studio::sync_camera_and_invalidate_frame_history(s);
+            if (g_studio_force_project_manager ||
+                (!g_studio_autopilot_e2e && !had_cli_template && !had_cli_scene &&
+                 !had_cli_context_demo && !g_studio_start_pie &&
+                 g_studio_capture_png.empty() && !cd::studio_rt::golden::enabled()))
+            {
+                cd::studio::studio_world().show_project_manager = true;
+            }
         }
         if (g_studio_autopilot_e2e && !g_studio_capture_gameplay_dir.empty() && s.frame_idx == 13u)
         {
@@ -4827,7 +5056,7 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
         {
             cd::studio::draw_studio_main_menu_bar(s, dt, log_push_fn);
 
-            if (!s.pie_playing)
+            if (!s.pie_playing && !cd::studio::studio_world().show_project_manager)
             {
                 const ImGuiViewport* mv = ImGui::GetMainViewport();
                 ImGui::SetNextWindowPos(mv->WorkPos);
@@ -4875,7 +5104,8 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                 s, dt, ui_hdr_frame.vp, frame.extent.width, frame.extent.height, log_push_fn);
             const HdrSceneFrame post_panel_hdr_frame =
                 make_hdr_frame(s.frame_idx, frame.extent, s.cam, s.fx.taa_amount);
-            if (!s.pie_playing && cd::ui::chroma::state().workspace_mode == 0)
+            if (!s.pie_playing && !cd::studio::studio_world().show_project_manager &&
+                cd::ui::chroma::state().workspace_mode == 0)
             {
                 draw_selection_outline_overlay(s.entities, s.selected, s.selected_kind,
                                                s.outline, s.scene, post_panel_hdr_frame.vp, frame.extent);
@@ -5748,6 +5978,10 @@ int main(int argc, char** argv)
         else if (arg == "--load-context-demo")
         {
             g_studio_load_context_demo = true;
+        }
+        else if (arg == "--project-manager")
+        {
+            g_studio_force_project_manager = true;
         }
         else if ((arg == "--capture-window-png" || arg == "--studio-capture-png" ||
                   arg == "--capture-png" || arg == "--screenshot") &&

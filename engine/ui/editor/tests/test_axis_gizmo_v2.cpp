@@ -203,3 +203,27 @@ TEST(AxisGizmoV2, SingleAxisDragStillSingleComponent)
     EXPECT_FLOAT_EQ(g.target().z, 0.0F);
     (void)g.end_drag();
 }
+
+TEST(AxisGizmoV2, CenterXYZDragAppliesAllThreeComponents)
+{
+    AxisGizmo g;
+    g.set_target({ 1.0F, 2.0F, 3.0F });
+    g.begin_drag(GizmoAxis::kXYZ, { 0.5F, 0.5F, 0.5F });
+    g.update_drag({ 2.0F, -1.0F, 4.5F });  // delta (1.5, -1.5, 4.0)
+
+    const auto& t = g.target();
+    EXPECT_FLOAT_EQ(t.x, 2.5F);
+    EXPECT_FLOAT_EQ(t.y, 0.5F);
+    EXPECT_FLOAT_EQ(t.z, 7.0F);
+
+    const auto total = g.end_drag();
+    EXPECT_FLOAT_EQ(total.x, 1.5F);
+    EXPECT_FLOAT_EQ(total.y, -1.5F);
+    EXPECT_FLOAT_EQ(total.z, 4.0F);
+
+    const auto c = cd::editor::axis_color(GizmoAxis::kXYZ);
+    EXPECT_FLOAT_EQ(c.x, 0.98F);
+    EXPECT_FLOAT_EQ(c.y, 0.88F);
+    EXPECT_FLOAT_EQ(c.z, 0.28F);
+}
+

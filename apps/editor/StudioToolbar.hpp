@@ -377,10 +377,10 @@ inline void draw_studio_main_menu_bar(StateT& s, float dt, LogFn&& log_push)
         if (ImGui::MenuItem("+ Prefab: 5x Physics Crate Tower"))
             (void)spawn_entity_with_modifiers(s, "Prefab_CrateStack", camera_spawn_point(s, 3.5F), log_push);
         ImGui::Separator();
-        if (ImGui::MenuItem("Open 250-Node Universal Catalog (219 Godot + 31 SOTA)..."))
+        if (ImGui::MenuItem("Open 250-Construct Library..."))
         {
             studio_world().focus_bottom_node_catalog_tab = true;
-            log_push("[catalog] Opened 250 Element & Vessel Catalog (219 Godot + 31 SOTA)");
+            log_push("[catalog] Opened 250-Construct Library");
         }
         if (ImGui::MenuItem("+ Vessel: CharacterBody3D (AvatarVessel3D #117)"))
             (void)spawn_or_compose_studio_catalog_node(s, 117, CatalogComposeMode::SpawnRootElement, camera_spawn_point(s, 3.5F), log_push);
@@ -440,15 +440,15 @@ inline void draw_studio_main_menu_bar(StateT& s, float dt, LogFn&& log_push)
 
     if (ImGui::BeginMenu("Camera & Bookmarks"))
     {
-        if (ImGui::MenuItem("1. Studio Overview (Sponza + Character + PBR Grid)"))
+        if (ImGui::MenuItem("1. Studio Overview (Atrium + Character + PBR Grid)"))
             apply_camera_bookmark(s, { -7.5F, 2.2F, 1.2F }, { 0.0F, 1.5F, -0.2F }, "Studio Overview", log_push);
-        if (ImGui::MenuItem("2. Sponza Main Entrance"))
-            apply_camera_bookmark(s, { -11.5F, 1.6F, 0.0F }, { 0.0F, 1.6F, 0.0F }, "Sponza Entrance", log_push);
+        if (ImGui::MenuItem("2. Atrium Main Entrance"))
+            apply_camera_bookmark(s, { -11.5F, 1.6F, 0.0F }, { 0.0F, 1.6F, 0.0F }, "Atrium Entrance", log_push);
         if (ImGui::MenuItem("3. PBR Metallic/Roughness Sphere Grid Close-Up"))
             apply_camera_bookmark(s, { 0.0F, 2.1F, 4.2F }, { 0.0F, 1.9F, 0.0F }, "PBR Grid Close-Up", log_push);
         if (ImGui::MenuItem("4. Animated Character (CesiumMan) Close-Up"))
             apply_camera_bookmark(s, { -6.4F, 1.5F, 0.2F }, { -4.0F, 1.1F, -1.5F }, "CesiumMan Close-Up", log_push);
-        if (ImGui::MenuItem("5. Sponza Upper Archway & Curtains"))
+        if (ImGui::MenuItem("5. Atrium Upper Archway & Curtains"))
             apply_camera_bookmark(s, { 0.0F, 4.8F, -2.5F }, { 0.0F, 1.2F, 4.5F }, "Upper Archway", log_push);
         ImGui::Separator();
         if (ImGui::MenuItem("Focus Selected Object", "F", false, s.selected >= 0))
@@ -483,9 +483,9 @@ inline void draw_studio_main_menu_bar(StateT& s, float dt, LogFn&& log_push)
         {
             if (ImGui::MenuItem("0: Chroma Carbon Dark (Default)", nullptr, cst.theme_index == 0))
                 ImGui::ApplyTheme(0);
-            if (ImGui::MenuItem("1: Unreal Slate Pro", nullptr, cst.theme_index == 1))
+            if (ImGui::MenuItem("1: Chroma Slate Pro", nullptr, cst.theme_index == 1))
                 ImGui::ApplyTheme(1);
-            if (ImGui::MenuItem("2: Blender Graphite", nullptr, cst.theme_index == 2))
+            if (ImGui::MenuItem("2: Chroma Graphite", nullptr, cst.theme_index == 2))
                 ImGui::ApplyTheme(2);
             if (ImGui::MenuItem("3: Cyberpunk Neon", nullptr, cst.theme_index == 3))
                 ImGui::ApplyTheme(3);
@@ -509,6 +509,11 @@ inline void draw_studio_main_menu_bar(StateT& s, float dt, LogFn&& log_push)
     if (ImGui::BeginMenu("Projects & Worlds"))
     {
         auto& w = studio_world();
+        if (ImGui::MenuItem("Project Manager..."))
+        {
+            w.show_project_manager = true;
+        }
+        ImGui::Separator();
         ImGui::TextColored(ImVec4(0.45F, 0.90F, 1.0F, 1.0F),
                            "Active Project: %s", w.active_project_name.c_str());
         ImGui::TextDisabled("World: %s", w.active_world_name.c_str());

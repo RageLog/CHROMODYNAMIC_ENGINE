@@ -1033,6 +1033,7 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
     LogFn&&                log_push)
 {
     auto& w  = studio_world();
+    if (w.show_project_manager) return;
     auto* dl = ImGui::GetBackgroundDrawList();
     const float sw = static_cast<float>(width);
     const float sh = static_cast<float>(height);
@@ -1128,41 +1129,40 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
                 ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav))
         {
-            // Group 1 (Left): [+ Create] + [New Empty] + Stage / Project Selector
-            if (ImGui::IconButton("Create##rib_create", cd::ui::chroma::IconKind::kPlus,
-                                  IM_COL32(95, 245, 175, 255), false, ImVec2(64.0F, 20.0F)))
+            // Group 1 (Left): [Projects] + [+ Add Object] + [Stage: <active_level_name>]
+            if (ImGui::IconButton("Projects##rib_pm", cd::ui::chroma::IconKind::kFolder,
+                                  IM_COL32(130, 210, 255, 255), w.show_project_manager, ImVec2(76.0F, 20.0F)))
+            {
+                w.show_project_manager = true;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Open Project Manager");
+
+            ImGui::SameLine();
+            if (ImGui::IconButton("+ Add Object##rib_create", cd::ui::chroma::IconKind::kPlus,
+                                  IM_COL32(95, 245, 175, 255), false, ImVec2(96.0F, 20.0F)))
             {
                 cst.workspace_mode = 0;
                 w.focus_bottom_node_catalog_tab = true;
                 ImGui::OpenPopup("studio_viewport_context_menu");
             }
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Spawn 3D Object / Open 250-Construct Catalog");
-
-            ImGui::SameLine();
-            if (ImGui::IconButton("New Empty##rib_empty", cd::ui::chroma::IconKind::kFileScene,
-                                  IM_COL32(130, 210, 255, 255),
-                                  w.active_project_name == "Empty_Project", ImVec2(82.0F, 20.0F)))
-            {
-                reset_to_clean_empty_project(s, log_push);
-            }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Reset to Clean Empty Project (Ground + Studio Lighting, 0 Demo Objects)");
+                ImGui::SetTooltip("Spawn 3D Object / Open Construct Library");
 
             ImGui::SameLine();
             std::string short_lvl = w.active_level_name;
             if (const auto paren = short_lvl.find(" ("); paren != std::string::npos)
                 short_lvl = short_lvl.substr(0, paren);
-            if (short_lvl.size() > 22U)
-                short_lvl = short_lvl.substr(0, 20U) + "..";
-            const std::string lvl_btn = short_lvl + "##ribbon_lvl";
+            if (short_lvl.size() > 18U)
+                short_lvl = short_lvl.substr(0, 16U) + "..";
+            const std::string lvl_btn = "Stage: " + short_lvl + "##ribbon_lvl";
             if (ImGui::IconButton(lvl_btn.c_str(), cd::ui::chroma::IconKind::kWorld,
-                                  IM_COL32(105, 205, 255, 255), false, ImVec2(148.0F, 20.0F)))
+                                  IM_COL32(105, 205, 255, 255), false, ImVec2(158.0F, 20.0F)))
             {
                 ImGui::OpenPopup("ribbon_world_level_popup");
             }
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Active Project: %s | Stage: %s\n(Click to open Sample Projects from Disk or switch Stage)",
+                ImGui::SetTooltip("Active Project: %s | Stage: %s\n(Click to switch Stage or open Sample Projects)",
                                   w.active_project_name.c_str(), w.active_level_name.c_str());
             if (ImGui::BeginPopup("ribbon_world_level_popup"))
             {
@@ -1170,6 +1170,10 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
                                    "Active Project: %s (%s)",
                                    w.active_project_name.c_str(), w.active_level_name.c_str());
                 ImGui::Separator();
+                if (ImGui::MenuItem("Project Manager..."))
+                {
+                    w.show_project_manager = true;
+                }
                 if (ImGui::MenuItem("New Empty Project (Clean Stage)"))
                 {
                     reset_to_clean_empty_project(s, log_push);
@@ -1218,24 +1222,24 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
             ImGui::TextDisabled("|");
             ImGui::SameLine();
 
-            // Group 2 (Transform Gizmo & Snap): Icon-driven Move / Rot / Scale | Snap / Floor
+            // Group 2 (Center-Left: Transform Gizmo & Snap): [Move (W)] [Rotate (E)] [Scale (R)] [Snap] [Floor (G)]
             const bool is_t = (s.gizmo_state.mode == GizmoMode::kTranslate);
             const bool is_r = (s.gizmo_state.mode == GizmoMode::kRotate);
             const bool is_s = (s.gizmo_state.mode == GizmoMode::kScale);
-            if (ImGui::IconButton("Move##rib_t", cd::ui::chroma::IconKind::kTranslate,
-                                  IM_COL32(255, 115, 115, 255), is_t, ImVec2(56.0F, 20.0F)))
+            if (ImGui::IconButton("Move (W)##rib_t", cd::ui::chroma::IconKind::kTranslate,
+                                  IM_COL32(255, 115, 115, 255), is_t, ImVec2(74.0F, 20.0F)))
             {
                 s.gizmo_state.mode = GizmoMode::kTranslate;
             }
             ImGui::SameLine();
-            if (ImGui::IconButton("Rot##rib_r", cd::ui::chroma::IconKind::kRotate,
-                                  IM_COL32(115, 235, 145, 255), is_r, ImVec2(50.0F, 20.0F)))
+            if (ImGui::IconButton("Rotate (E)##rib_r", cd::ui::chroma::IconKind::kRotate,
+                                  IM_COL32(115, 235, 145, 255), is_r, ImVec2(80.0F, 20.0F)))
             {
                 s.gizmo_state.mode = GizmoMode::kRotate;
             }
             ImGui::SameLine();
-            if (ImGui::IconButton("Scale##rib_s", cd::ui::chroma::IconKind::kScale,
-                                  IM_COL32(115, 185, 255, 255), is_s, ImVec2(58.0F, 20.0F)))
+            if (ImGui::IconButton("Scale (R)##rib_s", cd::ui::chroma::IconKind::kScale,
+                                  IM_COL32(115, 185, 255, 255), is_s, ImVec2(74.0F, 20.0F)))
             {
                 s.gizmo_state.mode = GizmoMode::kScale;
             }
@@ -1243,95 +1247,74 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
             ImGui::SameLine();
             ImGui::Checkbox("Snap", &w.grid_snap_enabled);
             ImGui::SameLine();
-            if (ImGui::SmallButton("Floor(G)"))
+            if (ImGui::SmallButton("Floor (G)"))
                 snap_selected_entity_to_ground(s, log_push);
 
-            // Group 3 (Center Transport Deck — centered over the 3D Viewport)
+            // Group 3 (Center: Transport Deck — Play / Stop, Physics Sim, Reset)
             ImGui::SameLine();
-            if (ImGui::GetCursorScreenPos().x < sw * 0.44F)
+            if (ImGui::GetCursorScreenPos().x < sw * 0.46F)
             {
-                ImGui::SetCursorScreenPos(ImVec2(sw * 0.44F, ImGui::GetCursorScreenPos().y));
+                ImGui::SetCursorScreenPos(ImVec2(sw * 0.46F, ImGui::GetCursorScreenPos().y));
             }
             if (!s.pie_playing)
             {
-                if (ImGui::IconButton("Play (F5)##rib_play", cd::ui::chroma::IconKind::kPlay,
-                                      IM_COL32(85, 245, 155, 255), false, ImVec2(78.0F, 20.0F)))
+                if (ImGui::IconButton("> Play (F5)##rib_play", cd::ui::chroma::IconKind::kPlay,
+                                      IM_COL32(85, 245, 155, 255), false, ImVec2(88.0F, 20.0F)))
                 {
                     enter_pie_play_mode(s, log_push);
                 }
             }
             else
             {
-                if (ImGui::IconButton("Stop (Esc)##rib_stop", cd::ui::chroma::IconKind::kStop,
-                                      IM_COL32(255, 105, 105, 255), true, ImVec2(82.0F, 20.0F)))
+                if (ImGui::IconButton("[] Stop (Esc)##rib_stop", cd::ui::chroma::IconKind::kStop,
+                                      IM_COL32(255, 105, 105, 255), true, ImVec2(94.0F, 20.0F)))
                 {
                     exit_pie_play_mode(s, log_push);
                 }
             }
             ImGui::SameLine();
-            if (ImGui::IconButton(w.simulate_physics_in_edit ? "Sim ON##rib_sim" : "Sim OFF##rib_sim",
+            if (ImGui::IconButton("Physics Sim##rib_sim",
                                   cd::ui::chroma::IconKind::kPhysics,
                                   w.simulate_physics_in_edit ? IM_COL32(95, 235, 215, 255) : IM_COL32(245, 185, 95, 255),
-                                  w.simulate_physics_in_edit, ImVec2(72.0F, 20.0F)))
+                                  w.simulate_physics_in_edit, ImVec2(92.0F, 20.0F)))
             {
                 w.simulate_physics_in_edit = !w.simulate_physics_in_edit;
             }
             ImGui::SameLine();
-            if (ImGui::IconButton("Step##rib_step", cd::ui::chroma::IconKind::kStep,
-                                  IM_COL32(180, 210, 250, 255), false, ImVec2(52.0F, 20.0F)))
-            {
-                w.simulate_physics_in_edit = false;
-                w.step_single_frame        = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Reset(R)"))
+            if (ImGui::SmallButton("Reset"))
                 reset_physics_to_home_positions(s, log_push);
-            ImGui::SameLine();
-            if (ImGui::IconButton("Shoot(B)##rib_shoot", cd::ui::chroma::IconKind::kSphere,
-                                  IM_COL32(255, 165, 95, 255), false, ImVec2(72.0F, 20.0F)))
-            {
-                shoot_physics_ball_from_camera(s, log_push);
-            }
-            ImGui::SameLine();
-            if (ImGui::IconButton(w.autopilot_play_active ? "Bot ON##rib_bot" : "Bot(P)##rib_bot",
-                                  cd::ui::chroma::IconKind::kAvatar,
-                                  IM_COL32(115, 240, 175, 255), w.autopilot_play_active, ImVec2(66.0F, 20.0F)))
-            {
-                if (!s.pie_playing) enter_pie_play_mode(s, log_push);
-                w.autopilot_play_active = !w.autopilot_play_active;
-            }
 
-            // Group 4 (Right): Workspace Mode Switcher + Theme Cycle
+            // Group 4 (Right): [3D Editor] | [Game View] | [Node Graph] | [Theme]
             ImGui::SameLine();
-            if (ImGui::GetCursorScreenPos().x < sw - 348.0F)
+            if (ImGui::GetCursorScreenPos().x < sw - 332.0F)
             {
-                ImGui::SetCursorScreenPos(ImVec2(sw - 348.0F, ImGui::GetCursorScreenPos().y));
+                ImGui::SetCursorScreenPos(ImVec2(sw - 332.0F, ImGui::GetCursorScreenPos().y));
             }
             const int cur_mode = cst.workspace_mode;
             ImGui::PushStyleColor(ImGuiCol_Button, (cur_mode == 0) ? ImVec4(0.15F, 0.52F, 0.91F, 1.0F) : ImVec4(0.13F, 0.16F, 0.22F, 1.0F));
-            if (ImGui::SmallButton("3D Studio"))
+            if (ImGui::SmallButton("3D Editor"))
             {
                 cst.workspace_mode = 0;
                 if (s.pie_playing) exit_pie_play_mode(s, log_push);
-                ImGui::PushToast("Workspace Mode", "Switched to 3D Studio Workspace", 0, 2.0F);
+                ImGui::PushToast("Workspace Mode", "Switched to 3D Editor Workspace", 0, 2.0F);
             }
             ImGui::PopStyleColor();
             ImGui::SameLine();
 
             ImGui::PushStyleColor(ImGuiCol_Button, (cur_mode == 1) ? ImVec4(0.15F, 0.52F, 0.91F, 1.0F) : ImVec4(0.13F, 0.16F, 0.22F, 1.0F));
-            if (ImGui::SmallButton("In-Game HUD"))
+            if (ImGui::SmallButton("Game View"))
             {
                 cst.workspace_mode = 1;
-                ImGui::PushToast("Workspace Mode", "Switched to In-Game HUD & 3D World UI Mode", 0, 2.0F);
+                ImGui::PushToast("Workspace Mode", "Switched to Game View & 3D World UI Mode", 0, 2.0F);
             }
             ImGui::PopStyleColor();
             ImGui::SameLine();
 
             ImGui::PushStyleColor(ImGuiCol_Button, (cur_mode == 2) ? ImVec4(0.15F, 0.52F, 0.91F, 1.0F) : ImVec4(0.13F, 0.16F, 0.22F, 1.0F));
-            if (ImGui::SmallButton("Node & App Lab"))
+            if (ImGui::SmallButton("Node Graph"))
             {
                 cst.workspace_mode = 2;
-                ImGui::PushToast("Workspace Mode", "Switched to Standalone Node & Curve Lab", 0, 2.0F);
+                ImGui::PushToast("Workspace Mode", "Switched to Node Graph & Curve Workspace", 0, 2.0F);
             }
             ImGui::PopStyleColor();
             ImGui::SameLine();
@@ -1413,7 +1396,7 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
             ImGui::End();
             ImGui::PopStyleVar(3);
 
-            // Top-Right Telemetry Pill + Blender 4 / Source 2 3D Orientation Gizmo Rose
+            // Top-Right Telemetry Pill + 3D Orientation Gizmo Rose
             const float fps = (w.smoothed_fps > 1.0F) ? w.smoothed_fps : 60.0F;
             const float ms  = (w.smoothed_frame_ms > 0.01F) ? w.smoothed_frame_ms : 16.6F;
             char tele_buf[96] {};

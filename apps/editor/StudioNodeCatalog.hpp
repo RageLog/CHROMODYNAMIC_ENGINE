@@ -380,7 +380,7 @@ inline constexpr std::array<StudioNodeDescriptor, kTotalStudioNodeCount> kStudio
       detail_preset::make_2d(CatalogPrimKind::Cube, { 0.98F, 0.72F, 0.32F }, NodeSpawnFlags::kBoxCollider | NodeSpawnFlags::kKinematicMover, "FlipbookSprite2DElement + UvFlipbook", 2) },
 
     { 25, "CollisionObject2D", "PlanarCollisionElement2D", StudioNodeCategory::Node2D, ChromaConstructKind::Element, "03:07",
-      "Includes built-in collision shape capsule by default — never shows Godot's missing-shape warning!",
+      "Includes built-in collision shape capsule by default — never shows a missing-shape warning!",
       "Broadphase spatial hash grid + bitmask layer/mask collision filtering",
       detail_preset::make_2d(CatalogPrimKind::Cube, { 0.30F, 0.92F, 0.58F }, NodeSpawnFlags::kBoxCollider, "PlanarCollisionElement2D + SpatialHash") },
 
@@ -465,7 +465,7 @@ inline constexpr std::array<StudioNodeDescriptor, kTotalStudioNodeCount> kStudio
       detail_preset::make_2d(CatalogPrimKind::Sphere, { 1.00F, 0.78F, 0.28F }, NodeSpawnFlags::kLightPoint, "ComputeSparkSwarm2D + IndirectCompute") },
 
     { 42, "TileMap", "TileCanvas2DElement", StudioNodeCategory::Node2D, ChromaConstructKind::Element, "06:08",
-      "Unified multi-layer tilemap ( merges Godot's TileMap + TileMapLayer ) with WFC auto-tiling",
+      "Unified multi-layer tilemap (merges TileMap + TileMapLayer) with WFC auto-tiling",
       "Chunked GPU instanced quad batches + merged greedy-mesh collision strips",
       detail_preset::make_2d(CatalogPrimKind::Cube, { 0.36F, 0.82F, 0.64F }, NodeSpawnFlags::kRigidBodyStatic | NodeSpawnFlags::kBoxCollider, "TileCanvas2DElement + GreedyCollider", 2) },
 
@@ -870,7 +870,7 @@ inline constexpr std::array<StudioNodeDescriptor, kTotalStudioNodeCount> kStudio
 
     { 111, "PhysicsBody3D", "PhysicalVesselBase3D", StudioNodeCategory::Node3D, ChromaConstructKind::Vessel, "16:27",
       "Switch between Static, Kinematic, and Dynamic in place without 'Change Type' node replacement!",
-      "Unified `RigidBodyModifier` + Jolt-style OBB/Sphere/Capsule narrowphase contact manifold",
+      "Unified `RigidBodyModifier` + OBB/Sphere/Capsule narrowphase contact manifold",
       detail_preset::make_3d(CatalogPrimKind::Cube, { 1.0F, 1.0F, 1.0F }, { 0.92F, 0.52F, 0.22F }, 0.25F, 0.32F, 0.0F, 0,
                              NodeSpawnFlags::kPbrMaterial | NodeSpawnFlags::kRigidBodyDynamic | NodeSpawnFlags::kBoxCollider,
                              "Physics", "PhysicalVesselBase3D + UnifiedRigidBody") },
@@ -1006,7 +1006,7 @@ inline constexpr std::array<StudioNodeDescriptor, kTotalStudioNodeCount> kStudio
                              "Characters", "RagdollBoneLink3D + AutoFitCapsule") },
 
     { 132, "SkeletonIK3D", "AnalyticalTwoBoneIkCapsule3D", StudioNodeCategory::Node3D, ChromaConstructKind::TraitCapsule, "40:43",
-      "Not deprecated like Godot's SkeletonIK3D! Built-in foot-ground raycast placement and look-at target",
+      "Active analytical IK solver! Built-in foot-ground raycast placement and look-at target",
       "Closed-form law-of-cosines 2-bone IK + pole-vector twist + FABRIK multi-chain fallback",
       detail_preset::make_3d(CatalogPrimKind::GltfAvatar, { 1.8F, 1.8F, 1.8F }, { 0.88F, 0.96F, 1.00F }, 0.0F, 0.5F, 0.0F, 1,
                              NodeSpawnFlags::kCapsuleCollider | NodeSpawnFlags::kCharacterController, "Characters", "AnalyticalTwoBoneIkCapsule3D + FootPlacementIK") },
@@ -1045,7 +1045,7 @@ inline constexpr std::array<StudioNodeDescriptor, kTotalStudioNodeCount> kStudio
                              "Lights", "RadianceProbe3D + HardwareRayQueryMirror") },
 
     { 138, "VisibleOnScreenNotifier3D", "HiZVisibilitySensor3D", StudioNodeCategory::Node3D, ChromaConstructKind::TraitCapsule, "22:20",
-      "Detects BOTH frustum visibility AND true occlusion behind walls (unlike Godot's frustum-only check)",
+      "Detects BOTH frustum visibility AND true occlusion behind walls (beyond frustum-only checks)",
       "GPU Hierarchical-Z (Hi-Z) depth pyramid occlusion test (`cd::visibility`)",
       detail_preset::make_3d(CatalogPrimKind::Cube, { 0.85F, 0.85F, 0.85F }, { 0.35F, 0.94F, 0.72F }, 0.30F, 0.30F, 0.0F, 0,
                              NodeSpawnFlags::kPbrMaterial | NodeSpawnFlags::kBoxCollider, "Default", "HiZVisibilitySensor3D + HiZOcclusion") },
@@ -1312,7 +1312,7 @@ inline constexpr std::array<StudioNodeDescriptor, kTotalStudioNodeCount> kStudio
       detail_preset::make_ui({ 0.48F, 0.55F, 0.66F }, "UiVerticalRule + RowHeightMatch") },
 
     { 185, "Panel", "UiElevationSurfacePanel", StudioNodeCategory::ControlUI, ChromaConstructKind::Element, "28:51",
-      "Switches across 5 built-in Studio themes (*Chroma Carbon Dark*, *Unreal Slate*, *Blender Graphite*, *Cyberpunk*, *Daylight*)",
+      "Switches across 5 built-in Studio themes (*Chroma Carbon Dark*, *Chroma Slate Pro*, *Chroma Graphite*, *Cyberpunk*, *Daylight*)",
       "Theme-driven SDF rounded surface + elevation shadow",
       detail_preset::make_ui({ 0.22F, 0.26F, 0.34F }, "UiElevationSurfacePanel + 5Themes") },
 
@@ -1484,209 +1484,209 @@ inline constexpr std::array<StudioNodeDescriptor, kTotalStudioNodeCount> kStudio
     // =========================================================================
     // 5. NEXT-GEN SOTA BEYOND-GODOT NODES (31 Nodes, IDs 219..249)
     // =========================================================================
-    { 219, "HardwareRayTracingProbe3D", "HardwareRayTracingProbe3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "42:00+ (Beyond Godot SOTA)",
+    { 219, "HardwareRayTracingProbe3D", "HardwareRayTracingProbe3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "Next-Gen SOTA",
       "1-click hardware ray-traced mirror reflections & contact shadows — no screen-space disocclusion artifacts!",
       "Vulkan 1.3 `VK_KHR_acceleration_structure` + `VK_KHR_ray_query` inline BVH traversal in `prim.frag.glsl`",
       detail_preset::make_sota(CatalogPrimKind::Sphere, { 1.15F, 1.15F, 1.15F }, { 0.96F, 0.98F, 1.00F }, 1.00F, 0.04F, 0.0F, 0,
                                NodeSpawnFlags::kSphereCollider | NodeSpawnFlags::kEnvSkyDdgi, "Lights",
                                "HardwareRayTracingProbe3D + VK_KHR_ray_query + MirrorSphere") },
 
-    { 220, "DDGIIrradianceVolume3D", "DDGIIrradianceVolume3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "42:00+ (Beyond Godot SOTA)",
+    { 220, "DDGIIrradianceVolume3D", "DDGIIrradianceVolume3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "Next-Gen SOTA",
       "Real-time bounce lighting without lightmap UV seams or VoxelGI light leaking through thin walls",
       "Ray-Traced Dynamic Diffuse Global Illumination (`cd::ddgi`) octahedral irradiance + Chebyshev visibility moments",
       detail_preset::make_sota(CatalogPrimKind::Sphere, { 1.10F, 1.10F, 1.10F }, { 1.00F, 0.92F, 0.76F }, 0.90F, 0.08F, 380.0F, 0,
                                NodeSpawnFlags::kSphereCollider | NodeSpawnFlags::kEnvSkyDdgi, "Lights",
                                "DDGIIrradianceVolume3D + OctahedralProbes + VisibilityMoments") },
 
-    { 221, "TurquinMultiScatterPBR3D", "TurquinMultiScatterPBR3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "42:00+ (Beyond Godot SOTA)",
+    { 221, "TurquinMultiScatterPBR3D", "TurquinMultiScatterPBR3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "Next-Gen SOTA",
       "Eliminates rough-metal energy darkening + adds physical thin-film iridescence (`0..800 nm`) in 2 sliders!",
       "Turquin (2019) Eq. 11 multiscatter compensation + Belcour & Barla (SIGGRAPH 2017) Airy thin-film interference (`cd::brdf_multiscatter`)",
       detail_preset::make_sota(CatalogPrimKind::TorusKnot, { 1.10F, 1.10F, 1.10F }, { 0.92F, 0.94F, 0.98F }, 1.00F, 0.16F, 440.0F, 0,
                                NodeSpawnFlags::kSphereCollider, "Geometry",
                                "TurquinMultiScatterPBR3D + Turquin2019 + BelcourBarla440nm") },
 
-    { 222, "MeshletClusterLOD3D", "MeshletClusterLOD3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "42:00+ (Beyond Godot SOTA)",
+    { 222, "MeshletClusterLOD3D", "MeshletClusterLOD3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "Next-Gen SOTA",
       "Renders high-poly hero sculptures without manual LOD0/LOD1/LOD2 mesh authoring or pop-in",
       "Nanite-style 64-triangle meshlet cluster DAG (`cd::virtual_geometry` + `cd::mesh_shader`) + GPU Hi-Z culling",
       detail_preset::make_sota(CatalogPrimKind::TorusKnot, { 1.20F, 1.20F, 1.20F }, { 1.00F, 0.78F, 0.34F }, 1.00F, 0.14F, 0.0F, 0,
                                NodeSpawnFlags::kBoxCollider, "Geometry",
                                "MeshletClusterLOD3D + ClusterDAG + HiZCull") },
 
-    { 223, "NeuralTemporalUpscaler3D", "NeuralTemporalUpscaler3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::TraitCapsule, "42:00+ (Beyond Godot SOTA)",
+    { 223, "NeuralTemporalUpscaler3D", "NeuralTemporalUpscaler3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::TraitCapsule, "Next-Gen SOTA",
       "Sharp sub-pixel anti-aliasing and temporal super-resolution folded directly into the camera stack",
       "Halton sub-pixel jitter + G-buffer motion vectors (`cd::velocity`) + YCoCg neighborhood-clamped TAAU (`cd::post_taa`)",
       detail_preset::make_sota(CatalogPrimKind::Sphere, { 0.90F, 0.90F, 0.90F }, { 0.35F, 0.88F, 1.00F }, 0.95F, 0.06F, 0.0F, 0,
                                NodeSpawnFlags::kEnvTonemap | NodeSpawnFlags::kSphereCollider, "Default",
                                "NeuralTemporalUpscaler3D + MotionVectorTAAU") },
 
-    { 224, "XPBDClothAndSoftBody3D", "XPBDClothAndSoftBody3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Vessel, "42:00+ (Beyond Godot SOTA)",
+    { 224, "XPBDClothAndSoftBody3D", "XPBDClothAndSoftBody3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Vessel, "Next-Gen SOTA",
       "Unconditionally stable cloth, ropes, and tetrahedral soft bodies that interact with rigid bodies",
       "Sub-stepped Extended Position-Based Dynamics (Macklin et al. 2016) distance, bending & tetrahedral volume constraints",
       detail_preset::make_sota(CatalogPrimKind::TorusKnot, { 1.05F, 1.05F, 1.05F }, { 0.94F, 0.96F, 1.00F }, 0.20F, 0.08F, 520.0F, 0,
                                NodeSpawnFlags::kRigidBodyDynamic | NodeSpawnFlags::kSphereCollider, "Physics",
                                "XPBDClothAndSoftBody3D + SubsteppedXPBD + SoapFilm520nm") },
 
-    { 225, "FluidFLIPWater3D", "FluidFLIPWater3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "42:00+ (Beyond Godot SOTA)",
+    { 225, "FluidFLIPWater3D", "FluidFLIPWater3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "Next-Gen SOTA",
       "Interactive water surface with floating rigid-body buoyancy, foam, and shoreline waves in 1 click",
       "Shallow-Water Equations (SWE) + PIC/FLIP hybrid grid-particle solver + FFT ocean spectrum (`cd::water`)",
       detail_preset::make_sota(CatalogPrimKind::Cube, { 2.6F, 0.30F, 2.6F }, { 0.14F, 0.68F, 0.92F }, 0.90F, 0.06F, 360.0F, 0,
                                NodeSpawnFlags::kRigidBodyStatic | NodeSpawnFlags::kBoxCollider, "Geometry",
                                "FluidFLIPWater3D + FftOcean + BuoyancyCoupling") },
 
-    { 226, "SDFSmoothBooleanCSG3D", "SDFSmoothBooleanCSG3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "42:00+ (Beyond Godot SOTA)",
+    { 226, "SDFSmoothBooleanCSG3D", "SDFSmoothBooleanCSG3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "Next-Gen SOTA",
       "Organic clay-like smooth boolean blending between primitives without sharp polygon creases",
       "Analytical Signed Distance Field polynomial smooth-minimum (`smin`) + real-time ray-marched / dual-contoured surface",
       detail_preset::make_sota(CatalogPrimKind::Torus, { 1.25F, 1.25F, 1.25F }, { 0.96F, 0.95F, 0.92F }, 0.18F, 0.14F, 0.0F, 5,
                                NodeSpawnFlags::kRigidBodyStatic | NodeSpawnFlags::kBoxCollider | NodeSpawnFlags::kKinematicMover,
                                "Geometry", "SDFSmoothBooleanCSG3D + SmoothUnionSDF + CarraraMarble") },
 
-    { 227, "BrunetonPlanetarySky3D", "BrunetonPlanetarySky3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "42:00+ (Beyond Godot SOTA)",
+    { 227, "BrunetonPlanetarySky3D", "BrunetonPlanetarySky3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "Next-Gen SOTA",
       "Physically accurate sunrise, noon, golden hour, and twilight just by rotating the sun direction!",
       "Bruneton & Neyret (2008) / Hillaire (2020) Transmittance, Multi-Scattering, Sky-View & Aerial Perspective 3D LUTs (`cd::atmosphere`)",
       detail_preset::make_sota(CatalogPrimKind::Sphere, { 1.25F, 1.25F, 1.25F }, { 0.42F, 0.78F, 1.00F }, 0.85F, 0.10F, 0.0F, 1,
                                NodeSpawnFlags::kEnvSkyDdgi | NodeSpawnFlags::kLightDirectional | NodeSpawnFlags::kSphereCollider,
                                "Lights", "BrunetonPlanetarySky3D + MultiScatterLUT + AerialPerspective") },
 
-    { 228, "FroxelVolumetricFog3D", "FroxelVolumetricFog3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "42:00+ (Beyond Godot SOTA)",
+    { 228, "FroxelVolumetricFog3D", "FroxelVolumetricFog3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "Next-Gen SOTA",
       "Cinematic god-ray light shafts and height-based ground mist with zero temporal flickering",
       "Wronski (2014) 3D camera-frustum froxel grid + Henyey-Greenstein phase function + temporal reprojection (`cd::volumetric_fog`)",
       detail_preset::make_sota(CatalogPrimKind::Cylinder, { 1.3F, 1.6F, 1.3F }, { 0.72F, 0.88F, 1.00F }, 0.20F, 0.60F, 0.0F, 0,
                                NodeSpawnFlags::kEnvFog | NodeSpawnFlags::kBoxCollider, "Lights",
                                "FroxelVolumetricFog3D + WronskiFroxels + GodRayShafts") },
 
-    { 229, "GPUIndirectCrowd3D", "GPUIndirectCrowd3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "42:00+ (Beyond Godot SOTA)",
+    { 229, "GPUIndirectCrowd3D", "GPUIndirectCrowd3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "Next-Gen SOTA",
       "Spawns and animates massive crowds or debris swarms with 1 draw call",
       "Compute-culled `vkCmdDrawIndexedIndirectCount` + Vertex Animation Texture (VAT) skeletal instancing",
       detail_preset::make_sota(CatalogPrimKind::GltfAvatar, { 1.8F, 1.8F, 1.8F }, { 0.90F, 0.95F, 1.00F }, 0.0F, 0.5F, 0.0F, 1,
                                NodeSpawnFlags::kCapsuleCollider | NodeSpawnFlags::kPatrolAi, "Characters",
                                "GPUIndirectCrowd3D + IndirectCount + VatCrowd") },
 
-    { 230, "MotionMatchingInertial3D", "MotionMatchingInertial3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::TraitCapsule, "42:00+ (Beyond Godot SOTA)",
+    { 230, "MotionMatchingInertial3D", "MotionMatchingInertial3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::TraitCapsule, "Next-Gen SOTA",
       "Responsive character locomotion without complex spaghetti state machines",
       "KD-tree pose-feature trajectory matching + Bollo (2018) fifth-order polynomial inertialization blending",
       detail_preset::make_sota(CatalogPrimKind::GltfAvatar, { 1.8F, 1.8F, 1.8F }, { 1.00F, 0.96F, 0.88F }, 0.0F, 0.5F, 0.0F, 1,
                                NodeSpawnFlags::kRigidBodyDynamic | NodeSpawnFlags::kCapsuleCollider | NodeSpawnFlags::kCharacterController,
                                "Characters", "MotionMatchingInertial3D + PoseFeatureKDTree") },
 
-    { 231, "FullBodyFABRIK3D", "FullBodyFABRIK3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::TraitCapsule, "42:00+ (Beyond Godot SOTA)",
+    { 231, "FullBodyFABRIK3D", "FullBodyFABRIK3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::TraitCapsule, "Next-Gen SOTA",
       "Simultaneous hands + feet + head look-at + pelvis balance IK in a single inline capsule",
       "Aristidou & Lasenby (2011) Forward And Backward Reaching IK (FABRIK) with swing-twist joint-limit cones",
       detail_preset::make_sota(CatalogPrimKind::GltfAvatar, { 1.8F, 1.8F, 1.8F }, { 0.92F, 1.00F, 0.94F }, 0.0F, 0.5F, 0.0F, 1,
                                NodeSpawnFlags::kCapsuleCollider | NodeSpawnFlags::kCharacterController,
                                "Characters", "FullBodyFABRIK3D + MultiEffectorConstrainedIK") },
 
-    { 232, "VoronoiFractureDestruction3D", "VoronoiFractureDestruction3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "42:00+ (Beyond Godot SOTA)",
+    { 232, "VoronoiFractureDestruction3D", "VoronoiFractureDestruction3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "Next-Gen SOTA",
       "Shatters walls, pillars, and crates into physical rigid-body fragments on high-velocity impact!",
       "3D Voronoi cell plane-clipping (`ShatterMesh3D`) + connectivity graph island detection",
       detail_preset::make_sota(CatalogPrimKind::Cube, { 1.2F, 1.2F, 1.2F }, { 0.95F, 0.55F, 0.25F }, 0.30F, 0.35F, 0.0F, 3,
                                NodeSpawnFlags::kRigidBodyDynamic | NodeSpawnFlags::kBoxCollider, "Physics",
                                "VoronoiFractureDestruction3D + VoronoiCells + BrickPBR") },
 
-    { 233, "AeroHydrodynamicsTensor3D", "AeroHydrodynamicsTensor3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::TraitCapsule, "42:00+ (Beyond Godot SOTA)",
+    { 233, "AeroHydrodynamicsTensor3D", "AeroHydrodynamicsTensor3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::TraitCapsule, "Next-Gen SOTA",
       "Turns any mesh into a glider, aircraft wing, or floating boat without custom force scripts",
       "Angle-of-attack airfoil lift/drag polar tensor + Archimedes submerged-triangle hydrostatic pressure integration",
       detail_preset::make_sota(CatalogPrimKind::Cone, { 1.4F, 0.45F, 1.6F }, { 0.28F, 0.84F, 0.98F }, 0.85F, 0.16F, 0.0F, 4,
                                NodeSpawnFlags::kRigidBodyDynamic | NodeSpawnFlags::kBoxCollider | NodeSpawnFlags::kKinematicMover,
                                "Physics", "AeroHydrodynamicsTensor3D + AirfoilAndBuoyancy") },
 
-    { 234, "UtilityGOAPBrainAI", "UtilityGOAPBrainAI", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Pilot, "42:00+ (Beyond Godot SOTA)",
+    { 234, "UtilityGOAPBrainAI", "UtilityGOAPBrainAI", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Pilot, "Next-Gen SOTA",
       "Combines Utility response curves, Goal-Oriented Action Planning (GOAP), and Behavior Trees in one AI Pilot",
       "A* world-state action planner + dual-utility consideration scorer (`cd::editor_panel_behavior_designer`)",
       detail_preset::make_sota(CatalogPrimKind::Cone, { 0.90F, 1.20F, 0.90F }, { 0.96F, 0.32F, 0.86F }, 0.94F, 0.14F, 420.0F, 0,
                                NodeSpawnFlags::kPatrolAi | NodeSpawnFlags::kTriggerHazard | NodeSpawnFlags::kBoxCollider,
                                "Characters", "UtilityGOAPBrainAI + GoapPlanner + SynthPilot") },
 
-    { 235, "RayTracedAudioAcoustics3D", "RayTracedAudioAcoustics3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::TraitCapsule, "42:00+ (Beyond Godot SOTA)",
+    { 235, "RayTracedAudioAcoustics3D", "RayTracedAudioAcoustics3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::TraitCapsule, "Next-Gen SOTA",
       "Automatically computes room reverb, wall occlusion, and doorway diffraction from 3D scene geometry!",
       "BVH stochastic acoustic ray tracing + image-source early reflections + FDN late reverb (`EchoChamber3D`)",
       detail_preset::make_sota(CatalogPrimKind::Sphere, { 0.80F, 0.80F, 0.80F }, { 1.00F, 0.76F, 0.28F }, 0.88F, 0.14F, 0.0F, 0,
                                NodeSpawnFlags::kSphereCollider, "Default",
                                "RayTracedAudioAcoustics3D + BvhEarlyReflections + FDNReverb") },
 
-    { 236, "ProceduralModalSynthAudio", "ProceduralModalSynthAudio", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::TraitCapsule, "42:00+ (Beyond Godot SOTA)",
+    { 236, "ProceduralModalSynthAudio", "ProceduralModalSynthAudio", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::TraitCapsule, "Next-Gen SOTA",
       "Synthesizes realistic metal, glass, wood, and stone impact chimes from physics contact velocity — zero `.wav` files needed!",
       "Bank of damped harmonic modal resonators driven by `ContactManifold` impulse magnitude (`SplashAudioCue`)",
       detail_preset::make_sota(CatalogPrimKind::Torus, { 0.85F, 0.85F, 0.85F }, { 1.00F, 0.84F, 0.36F }, 0.96F, 0.10F, 0.0F, 0,
                                NodeSpawnFlags::kRigidBodyDynamic | NodeSpawnFlags::kBoxCollider, "Physics",
                                "ProceduralModalSynthAudio + ModalResonatorBank") },
 
-    { 237, "RollbackNetcodeDeterminism", "RollbackNetcodeDeterminism", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::PulseBus, "42:00+ (Beyond Godot SOTA)",
+    { 237, "RollbackNetcodeDeterminism", "RollbackNetcodeDeterminism", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::PulseBus, "Next-Gen SOTA",
       "Lag-free fighting/action multiplayer with automatic state save, input prediction, and instant rollback resimulation",
       "GGRS-style fixed-point/IEEE-754 deterministic ECS world snapshot ring buffer + frame checksum verifier (`cd::net`)",
       detail_preset::make_sota(CatalogPrimKind::Cube, { 0.95F, 0.95F, 0.95F }, { 0.28F, 0.96F, 0.74F }, 0.80F, 0.18F, 0.0F, 4,
                                NodeSpawnFlags::kBoxCollider, "Gameplay",
                                "RollbackNetcodeDeterminism + SnapshotRing + Resimulate") },
 
-    { 238, "TimeRewindWorldRecorder", "TimeRewindWorldRecorder", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::PulseBus, "42:00+ (Beyond Godot SOTA)",
+    { 238, "TimeRewindWorldRecorder", "TimeRewindWorldRecorder", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::PulseBus, "Next-Gen SOTA",
       "Braid/Prince-of-Persia style live gameplay time-rewind and instant replay scrubbing in the editor!",
       "Delta-compressed transform/velocity/modifier history ring + `cd::game_input_recorder` deterministic replay",
       detail_preset::make_sota(CatalogPrimKind::Cylinder, { 0.85F, 1.10F, 0.85F }, { 0.42F, 0.82F, 1.00F }, 0.90F, 0.12F, 480.0F, 0,
                                NodeSpawnFlags::kKinematicMover | NodeSpawnFlags::kCapsuleCollider, "Gameplay",
                                "TimeRewindWorldRecorder + DeltaTimelineScrub") },
 
-    { 239, "PCGWaveFunctionCollapse3D", "PCGWaveFunctionCollapse3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "42:00+ (Beyond Godot SOTA)",
+    { 239, "PCGWaveFunctionCollapse3D", "PCGWaveFunctionCollapse3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "Next-Gen SOTA",
       "Generates complete 3D arenas, dungeons, and platforming courses from adjacency rules in 1 click",
       " Shannon-entropy Wave Function Collapse (WFC) constraint propagator with backtracking & seed lock",
       detail_preset::make_sota(CatalogPrimKind::Cube, { 1.6F, 1.0F, 1.6F }, { 0.38F, 0.88F, 0.62F }, 0.35F, 0.28F, 0.0F, 2,
                                NodeSpawnFlags::kRigidBodyStatic | NodeSpawnFlags::kBoxCollider, "Geometry",
                                "PCGWaveFunctionCollapse3D + EntropyWFCGenerator") },
 
-    { 240, "SplineTerrainRoadDeformer3D", "SplineTerrainRoadDeformer3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "42:00+ (Beyond Godot SOTA)",
+    { 240, "SplineTerrainRoadDeformer3D", "SplineTerrainRoadDeformer3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "Next-Gen SOTA",
       "Carves roads, ramps, and riverbeds into terrain along a 3D Bezier curve with automatic embankment blending",
       "GPU heightmap SDF spline distance field + automatic splatmap weight painting (`cd::terrain`)",
       detail_preset::make_sota(CatalogPrimKind::Cube, { 3.2F, 0.28F, 1.6F }, { 0.88F, 0.68F, 0.24F }, 0.35F, 0.24F, 0.0F, 4,
                                NodeSpawnFlags::kRigidBodyStatic | NodeSpawnFlags::kBoxCollider, "Geometry",
                                "SplineTerrainRoadDeformer3D + SplineCarve + CarbonRoad") },
 
-    { 241, "ScreenSpaceGIHorizon3D", "ScreenSpaceGIHorizon3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::TraitCapsule, "42:00+ (Beyond Godot SOTA)",
+    { 241, "ScreenSpaceGIHorizon3D", "ScreenSpaceGIHorizon3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::TraitCapsule, "Next-Gen SOTA",
       "Adds contact-hardening ambient occlusion and near-field color bleeding on top of DDGI probes",
       "Ground-Truth Ambient Occlusion (Jimenez et al. 2016 `cd::post_gtao`) + visibility bitmask bent-normal GI",
       detail_preset::make_sota(CatalogPrimKind::Sphere, { 1.00F, 1.00F, 1.00F }, { 0.92F, 0.88F, 0.98F }, 0.75F, 0.18F, 0.0F, 5,
                                NodeSpawnFlags::kEnvSkyDdgi | NodeSpawnFlags::kSphereCollider, "Lights",
                                "ScreenSpaceGIHorizon3D + BitmaskGTAO + BentNormals") },
 
-    { 242, "PhysicalCinemaLens3D", "PhysicalCinemaLens3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::TraitCapsule, "42:00+ (Beyond Godot SOTA)",
+    { 242, "PhysicalCinemaLens3D", "PhysicalCinemaLens3D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::TraitCapsule, "Next-Gen SOTA",
       "Real cinema camera controls: f-stop aperture, focal length, anamorphic bokeh, chromatic dispersion, and AgX film look",
       "7-mip Jimenez dual-filter HDR Bloom (`cd::post_bloom`) + Circle-of-Confusion DoF (`cd::post_dof`) + AgX tonemapper",
       detail_preset::make_sota(CatalogPrimKind::Sphere, { 0.95F, 0.95F, 0.95F }, { 1.00F, 0.82F, 0.42F }, 1.00F, 0.08F, 380.0F, 0,
                                NodeSpawnFlags::kEnvBloomLens | NodeSpawnFlags::kEnvTonemap | NodeSpawnFlags::kSphereCollider,
                                "Default", "PhysicalCinemaLens3D + Bloom + DoF + AgX") },
 
-    { 243, "ReactiveMVVMDataBindUI", "ReactiveMVVMDataBindUI", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::PulseBus, "42:00+ (Beyond Godot SOTA)",
+    { 243, "ReactiveMVVMDataBindUI", "ReactiveMVVMDataBindUI", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::PulseBus, "Next-Gen SOTA",
       "Two-way binds any ECS component or C++23 struct field (`player_hp`, `game_score`) to ChromaUI widgets with zero glue code!",
       "Compile-time pointer-to-member reflection descriptor + dirty-generation reactive `Pulse` notifier",
       detail_preset::make_ui({ 0.30F, 0.94F, 0.78F }, "ReactiveMVVMDataBindUI + TwoWayEcsBinder") },
 
-    { 244, "GPUVectorSlugCanvas2D", "GPUVectorSlugCanvas2D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "42:00+ (Beyond Godot SOTA)",
+    { 244, "GPUVectorSlugCanvas2D", "GPUVectorSlugCanvas2D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "Next-Gen SOTA",
       "Renders SVG icons, HUD reticles, and curved diagrams at 4K/8K with infinite zoom sharpness",
       " Lengyel Slug-style GPU fragment quadratic/cubic Bezier winding-number evaluator + `ChromaUi::DrawIcon`",
       detail_preset::make_2d(CatalogPrimKind::Torus, { 0.32F, 0.92F, 1.00F }, NodeSpawnFlags::kChromaUiBinding, "GPUVectorSlugCanvas2D + GpuBezierEvaluator") },
 
-    { 245, "VerletRopeAndBridge2D", "VerletRopeAndBridge2D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Vessel, "42:00+ (Beyond Godot SOTA)",
+    { 245, "VerletRopeAndBridge2D", "VerletRopeAndBridge2D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Vessel, "Next-Gen SOTA",
       "1-click suspension bridges, grappling hooks, and hanging vines that sag under player weight!",
       "16-substep Jacobi/Gauss-Seidel Verlet distance constraint chain with two-way rigid-body impulse coupling",
       detail_preset::make_2d(CatalogPrimKind::Cylinder, { 0.92F, 0.72F, 0.36F }, NodeSpawnFlags::kRigidBodyDynamic | NodeSpawnFlags::kBoxCollider, "VerletRopeAndBridge2D + 16SubstepVerlet", 6) },
 
-    { 246, "GPUCellularAutomata2D", "GPUCellularAutomata2D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "42:00+ (Beyond Godot SOTA)",
+    { 246, "GPUCellularAutomata2D", "GPUCellularAutomata2D", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "Next-Gen SOTA",
       "Noita-style interactive falling sand, flowing water, rising smoke, and spreading fire simulation grid",
       "Checkerboard-pass ping-pong compute cellular automata + march-squares dynamic collider extraction",
       detail_preset::make_2d(CatalogPrimKind::Cube, { 1.00F, 0.58F, 0.22F }, NodeSpawnFlags::kTriggerHazard | NodeSpawnFlags::kBoxCollider, "GPUCellularAutomata2D + CheckerboardCompute") },
 
-    { 247, "LiveSPIRVShaderGraphNode", "LiveSPIRVShaderGraphNode", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "42:00+ (Beyond Godot SOTA)",
+    { 247, "LiveSPIRVShaderGraphNode", "LiveSPIRVShaderGraphNode", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Element, "Next-Gen SOTA",
       "Edits visual shader nodes or `.glsl` files with zero-stutter background compilation and instant viewport hot-swap",
       "`cd::gluon` AST-to-SPIR-V compiler + frame-fence `DeferredDestroyQueue` pipeline swap (`Wave 3.1`)",
       detail_preset::make_sota(CatalogPrimKind::Sphere, { 1.05F, 1.05F, 1.05F }, { 0.88F, 0.42F, 0.98F }, 0.96F, 0.10F, 480.0F, 0,
                                NodeSpawnFlags::kSphereCollider | NodeSpawnFlags::kChromaUiBinding, "Default",
                                "LiveSPIRVShaderGraphNode + HitchFreePipelineSwap") },
 
-    { 248, "DeterministicBotVerifier", "DeterministicBotVerifier", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Pilot, "42:00+ (Beyond Godot SOTA)",
+    { 248, "DeterministicBotVerifier", "DeterministicBotVerifier", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::Pilot, "Next-Gen SOTA",
       "1-click `[>] Auto-Play E2E (P)` bot that plays the entire level, fires at enemies, collects all cores, and reaches the goal!",
       "Closed-loop hazard/platform/target utility autopilot (`w.autopilot_play_active`) + Golden Fixture #5 byte-parity verifier",
       detail_preset::make_sota(CatalogPrimKind::GltfAvatar, { 1.8F, 1.8F, 1.8F }, { 0.35F, 1.00F, 0.65F }, 0.0F, 0.5F, 0.0F, 1,
                                NodeSpawnFlags::kRigidBodyDynamic | NodeSpawnFlags::kCapsuleCollider | NodeSpawnFlags::kCharacterController,
                                "Characters", "DeterministicBotVerifier + AutopilotE2E") },
 
-    { 249, "ECSArchetypeQueryBus", "ECSArchetypeQueryBus", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::PulseBus, "42:00+ (Beyond Godot SOTA)",
+    { 249, "ECSArchetypeQueryBus", "ECSArchetypeQueryBus", StudioNodeCategory::NextGenSOTA, ChromaConstructKind::PulseBus, "Next-Gen SOTA",
       "Processes 100,000+ entities in parallel across all CPU cores with zero heap allocations per frame",
       "EnTT/Bevy-style SoA archetype chunk iteration (`cd::ecs` + `cd::concurrency` work-stealing job dispatcher)",
       detail_preset::make_sota(CatalogPrimKind::Cube, { 1.0F, 1.0F, 1.0F }, { 0.32F, 0.88F, 0.98F }, 0.90F, 0.14F, 0.0F, 4,
@@ -1934,7 +1934,7 @@ struct StudioState
         if (p.iridescence_nm > 0.0F)
             target.iridescence_nm = p.iridescence_nm;
         state.last_log_message = std::string("[capsule] Folded inline capsule '") + desc->chroma_name +
-                                 "' (" + desc->godot_name + ") into '" + target.name + "'";
+                                 "' into '" + target.name + "'";
         return true;
     }
 
@@ -1968,8 +1968,7 @@ struct StudioState
 
     state.entities.push_back(std::move(rec));
     state.selected_idx = static_cast<int>(state.entities.size()) - 1;
-    state.last_log_message = std::string("[catalog] Spawned '") + desc->chroma_name +
-                             "' (Godot: " + desc->godot_name + ")";
+    state.last_log_message = std::string("[catalog] Spawned '") + desc->chroma_name + "'";
     return true;
 }
 

@@ -34,8 +34,9 @@ inline constexpr float kCamLookSpeed = 0.005F;  // rad/pixel
 /// `pending_pick` to decide whether to walk the entity list this frame.
 struct FreeLookState
 {
-    // ---- Right-mouse FPS look + WASD translation ----
+    // ---- Right-mouse FPS look + Middle-mouse pan + WASD translation ----
     bool  right_drag      { false };
+    bool  middle_drag     { false };
     float yaw             { 0.0F };       // around +Y
     float pitch           { -0.15F };     // looking slightly down (matches pre-N13 default)
     float dist            { 8.0F };       // distance from target (used as zoom)

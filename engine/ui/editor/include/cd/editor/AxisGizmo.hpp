@@ -47,6 +47,8 @@ enum class GizmoAxis : std::uint8_t
     kXY   = 4,
     kXZ   = 5,
     kYZ   = 6,
+    // Center all-axis handle (free 3D view-plane translate / uniform scale / trackball rotate).
+    kXYZ  = 7,
 };
 
 /// True for the XY/XZ/YZ plane-pad values.
@@ -117,6 +119,8 @@ public:
             case GizmoAxis::kXY: target_.x += delta.x; target_.y += delta.y; break;
             case GizmoAxis::kXZ: target_.x += delta.x; target_.z += delta.z; break;
             case GizmoAxis::kYZ: target_.y += delta.y; target_.z += delta.z; break;
+            // Center all-axis handle passes ALL THREE components through.
+            case GizmoAxis::kXYZ: target_.x += delta.x; target_.y += delta.y; target_.z += delta.z; break;
             default: break;
         }
     }
@@ -211,10 +215,11 @@ private:
 {
     switch (a)
     {
-        case GizmoAxis::kX: return { 0.95F, 0.25F, 0.20F };  // warm red
-        case GizmoAxis::kY: return { 0.30F, 0.85F, 0.30F };  // green
-        case GizmoAxis::kZ: return { 0.25F, 0.40F, 0.95F };  // cool blue
-        default:            return { 0.5F,  0.5F,  0.5F  };
+        case GizmoAxis::kX:   return { 0.95F, 0.25F, 0.20F };  // warm red
+        case GizmoAxis::kY:   return { 0.30F, 0.85F, 0.30F };  // green
+        case GizmoAxis::kZ:   return { 0.25F, 0.40F, 0.95F };  // cool blue
+        case GizmoAxis::kXYZ: return { 0.98F, 0.88F, 0.28F };  // gold center all-axis
+        default:              return { 0.5F,  0.5F,  0.5F  };
     }
 }
 

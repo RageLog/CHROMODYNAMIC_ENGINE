@@ -76,18 +76,18 @@ inline void populate_master_showcase_project(cd::world_container::World& cd_worl
         { "1.3 6x Domino Chain & Striker", "World 1: Ultra-FPS & Physics",
           "6 dynamic dominoes & high-velocity cannonball chain reaction", 2 },
 
-        { "2.1 PBR 5x5 Sphere Matrix (01_pbr)", "World 2: Photoreal PBR & Sponza GI",
+        { "2.1 PBR 5x5 Sphere Matrix (01_pbr)", "World 2: Photoreal PBR & Atrium GI",
           "25 Cook-Torrance metallic/roughness spheres + Turquin MS + Iridescence", 4 },
-        { "2.2 Crytek Sponza Atrium & DDGI (03_sponza)", "World 2: Photoreal PBR & Sponza GI",
-          "Full Crytek Sponza Atrium glTF + Clustered Lights + Ray-Traced DDGI", 5 },
-        { "2.3 Cinematic Optics & Bloom (04_optics)", "World 2: Photoreal PBR & Sponza GI",
+        { "2.2 Classical Atrium & DDGI (03_sponza)", "World 2: Photoreal PBR & Atrium GI",
+          "Full Classical Atrium glTF + Clustered Lights + Ray-Traced DDGI", 5 },
+        { "2.3 Cinematic Optics & Bloom (04_optics)", "World 2: Photoreal PBR & Atrium GI",
           "Chrome, 24K Gold & Ceramic sculptures with HDR Bloom & Lens Optics", 6 },
-        { "2.4 Asset Browser & Texture/Mesh Lab", "World 2: Photoreal PBR & Sponza GI",
+        { "2.4 Asset Browser & Texture/Mesh Lab", "World 2: Photoreal PBR & Atrium GI",
           "Multi-textured 3D objects (Brick, UV Checker, Marble, Carbon) + Folder Tree", 12 },
 
-        { "3.1 Double Ramp & Rover Collision (06_jolt)", "World 3: Jolt Dynamics & Shatter Lab",
+        { "3.1 Double Ramp & Rover Collision (06_dynamics)", "World 3: Rigid-Body Dynamics & Shatter Lab",
           "Twin opposing 25-deg OBB ramps + heavy collider impact & crate wall", 7 },
-        { "3.2 Trampoline Bounce Arena", "World 3: Jolt Dynamics & Shatter Lab",
+        { "3.2 Trampoline Bounce Arena", "World 3: Rigid-Body Dynamics & Shatter Lab",
           "High-restitution (0.96) trampoline pads + multi-sphere bounce", 3 },
 
         { "4.1 Skinned Avatar Squad & IK (05_avatar)", "World 4: Avatar Locomotion & Combat",
@@ -102,10 +102,10 @@ inline void populate_master_showcase_project(cd::world_container::World& cd_worl
 
         { "6.1 Cyber-Core Action Platformer (Playable Game)", "World 6: Playable Games & Interactive Templates",
           "Playable 3D Game: Avatar + Moving Platforms + JumpPads + Energy Cores + AI Bot + Goal", 13 },
-        { "6.2 Universal 250-Node Showcase (Godot 219 + SOTA 31)", "World 6: Playable Games & Interactive Templates",
-          "250-Node Universal Showcase: CharacterBody3D+SpringArm3D, VehicleBody3D, SoftBody3D/XPBD, CSG/SDF, VoxelGI/DDGI, GPUParticlesAttractor3D & TurquinMultiScatterPBR3D", 14 },
-        { "6.3 Rockstar 2D+3D Physics & Euphoria/Pacejka Arena", "World 6: Playable Games & Interactive Templates",
-          "32-Module Rockstar Physics Showcase: Euphoria Active Ragdoll + Pacejka 4-Wheel Vehicle + Voronoi Stress Fracture + Archimedes Buoyancy + XPBD Cloth", 15 },
+        { "6.2 Universal 250-Node Showcase (250 Native Constructs)", "World 6: Playable Games & Interactive Templates",
+          "250-Node Universal Showcase: AvatarVessel3D+SpringArm3D, RoverVessel3D, ClothSurface3D/XPBD, CSG/SDF, IrradianceField3D/DDGI, SwarmGravityWell3D & TurquinMultiScatterPBR3D", 14 },
+        { "6.3 Unified 2D+3D Physics & Active Ragdoll Arena", "World 6: Playable Games & Interactive Templates",
+          "32-Module Unified Physics Showcase: Active Ragdoll + Pacejka 4-Wheel Vehicle + Voronoi Stress Fracture + Archimedes Buoyancy + XPBD Cloth", 15 },
     }};
 
     for (const auto& sp : kSpecs)
@@ -757,11 +757,9 @@ inline int spawn_or_compose_studio_catalog_node(
         {
             ms.add_or_replace(std::make_unique<KinematicMoverModifier>());
         }
-        w.hud_toast_message = "Folded Capsule [" + std::string(desc->chroma_name) + "] (" +
-                              std::string(desc->godot_name) + ") -> " + target_ent.name;
+        w.hud_toast_message = "Folded Capsule [" + std::string(desc->chroma_name) + "] -> " + target_ent.name;
         w.hud_toast_timer = 3.5F;
-        log_push("[capsule] Folded inline capsule '" + std::string(desc->chroma_name) + "' (Godot: " +
-                 std::string(desc->godot_name) + ") into '" + target_ent.name + "'");
+        log_push("[capsule] Folded inline capsule '" + std::string(desc->chroma_name) + "' into '" + target_ent.name + "'");
         return prev_selected;
     }
 
@@ -796,7 +794,7 @@ inline int spawn_or_compose_studio_catalog_node(
     if (new_idx < 0 || !std::cmp_less(new_idx, s.entities.size())) return -1;
 
     auto& ent = s.entities[static_cast<std::size_t>(new_idx)];
-    ent.name  = std::string(desc->chroma_name) + " (" + std::string(desc->godot_name) + ")";
+    ent.name  = std::string(desc->chroma_name);
     if (ent.kind != PrimitiveKind::kGltf && ent.kind != PrimitiveKind::kSponza)
     {
         ent.tint              = p.albedo;
@@ -925,13 +923,13 @@ inline int spawn_or_compose_studio_catalog_node(
         ms.add_or_replace(std::move(le));
 
         s.lights.push_back({
-            std::string(desc->chroma_name) + " (" + std::string(desc->godot_name) + ")",
+            std::string(desc->chroma_name),
             cd::light::point({ raw_world_pos.x, raw_world_pos.y + 1.8F, raw_world_pos.z },
                              p.albedo, 2600.0F, 14.0F),
             true, 5800.0F });
     }
 
-    // Attach the UniversalNodeModifier capsule describing the node's Chroma & Godot identity
+    // Attach the UniversalNodeModifier capsule describing the node's Chroma identity
     ms.add_or_replace(std::make_unique<UniversalNodeModifier>(*desc));
 
     // Mode 2: Nest as Child Element under previously selected parent entity!
@@ -980,10 +978,9 @@ inline int spawn_or_compose_studio_catalog_node(
     s.scene.update_transforms();
 
     w.hud_toast_message = "Spawned [" + std::string(chroma_construct_kind_badge(desc->construct_kind)) + "] " +
-                          std::string(desc->chroma_name) + " (Godot: " + std::string(desc->godot_name) + ")";
+                          std::string(desc->chroma_name);
     w.hud_toast_timer = 3.5F;
-    log_push("[catalog] Spawned #" + std::to_string(desc->id) + " '" + std::string(desc->chroma_name) +
-             "' (Godot: " + std::string(desc->godot_name) + " @ " + std::string(desc->video_timestamp) + ")");
+    log_push("[catalog] Spawned #" + std::to_string(desc->id) + " '" + std::string(desc->chroma_name) + "'");
     return new_idx;
 }
 
@@ -1102,17 +1099,30 @@ inline bool assign_mesh_asset_to_entity(StateT& s, int target_idx, std::string_v
     };
 
     const PrimitiveKind prev_kind = ent.kind;
-    const std::string path_str { asset_id };
-    std::error_code ec {};
+    auto resolve_mesh_disk_path = [](std::string_view raw) -> std::string
+    {
+        if (raw.empty()) return {};
+        std::error_code ec {};
+        std::filesystem::path p { std::string(raw) };
+        if (std::filesystem::exists(p, ec)) return p.string();
+        for (const char* prefix : { "../", "../../", "../../../" })
+        {
+            std::filesystem::path cand = std::filesystem::path(prefix) / p;
+            if (std::filesystem::exists(cand, ec)) return cand.string();
+        }
+        return {};
+    };
+    const std::string resolved_path = resolve_mesh_disk_path(asset_id);
+    const std::string& path_str = resolved_path.empty() ? std::string(asset_id) : resolved_path;
     const bool is_disk_gltf =
         (contains_icase(asset_id, ".gltf") || contains_icase(asset_id, ".glb")) &&
         !contains_icase(asset_id, "sponza") &&
         !contains_icase(asset_id, "cesium") &&
-        std::filesystem::exists(path_str, ec) &&
+        !resolved_path.empty() &&
         s.device_owner != nullptr;
     const bool is_disk_obj =
         contains_icase(asset_id, ".obj") &&
-        std::filesystem::exists(path_str, ec) &&
+        !resolved_path.empty() &&
         s.device_owner != nullptr;
 
     if (is_disk_gltf || is_disk_obj)
@@ -1248,6 +1258,50 @@ inline bool assign_mesh_asset_to_entity(StateT& s, int target_idx, std::string_v
     else                                                  ent.kind = PrimitiveKind::kCube;
 
     ent.custom_mesh_path = std::string(asset_id);
+    if (ent.kind != prev_kind)
+    {
+        auto& ms = w.entity_modifiers[ent.handle.id];
+        if (const auto* col = ms.find_collider())
+        {
+            const bool            was_trig = col->is_trigger;
+            const bool            was_wire = col->show_wireframe;
+            const bool            was_en   = col->enabled;
+            const cd::math::Vec3f was_off  = col->center_offset;
+            if (ent.kind == PrimitiveKind::kSphere && col->shape_kind() == ColliderShapeKind::kBox)
+            {
+                for (auto it = ms.items.begin(); it != ms.items.end();)
+                {
+                    if (dynamic_cast<const IColliderModifier*>(it->get()) != nullptr)
+                        it = ms.items.erase(it);
+                    else
+                        ++it;
+                }
+                auto sc            = std::make_unique<SphereColliderModifier>(0.5F);
+                sc->is_trigger     = was_trig;
+                sc->show_wireframe = was_wire;
+                sc->enabled        = was_en;
+                sc->center_offset  = was_off;
+                ms.add_or_replace(std::move(sc));
+            }
+            else if (prev_kind == PrimitiveKind::kSphere && ent.kind != PrimitiveKind::kSphere &&
+                     col->shape_kind() == ColliderShapeKind::kSphere)
+            {
+                for (auto it = ms.items.begin(); it != ms.items.end();)
+                {
+                    if (dynamic_cast<const IColliderModifier*>(it->get()) != nullptr)
+                        it = ms.items.erase(it);
+                    else
+                        ++it;
+                }
+                auto bc            = std::make_unique<BoxColliderModifier>(cd::math::Vec3f { 0.5F, 0.5F, 0.5F });
+                bc->is_trigger     = was_trig;
+                bc->show_wireframe = was_wire;
+                bc->enabled        = was_en;
+                bc->center_offset  = was_off;
+                ms.add_or_replace(std::move(bc));
+            }
+        }
+    }
     if (auto* lt = s.scene.local(ent.handle))
     {
         if (ent.kind == PrimitiveKind::kSponza && prev_kind != PrimitiveKind::kSponza)
@@ -1713,7 +1767,7 @@ inline void load_studio_interactive_template(StateT& s, int template_id, LogFn&&
         s.selected   = probe;
         s.cam.eye    = { -6.2F, 1.85F, -0.15F };
         s.cam.target = {  0.0F, 1.65F, -0.20F };
-        log_push("[level] Loaded '2.2 Crytek Sponza Atrium & DDGI (03_sponza)'");
+        log_push("[level] Loaded '2.2 Classical Atrium & DDGI (03_sponza)'");
     }
     else if (template_id == 6)
     {
@@ -1740,7 +1794,7 @@ inline void load_studio_interactive_template(StateT& s, int template_id, LogFn&&
     }
     else if (template_id == 7)
     {
-        // Level 3.1: 06_jolt_dynamics_rover_shatter — Twin opposing OBB ramps + heavy collider impact
+        // Level 3.1: 06_dynamics_rover_shatter — Twin opposing OBB ramps + heavy collider impact
         (void)spawn_entity_with_modifiers(s, "Static_Ramp", { -2.4F, 0.0F, 0.0F }, log_push);
         const int r2 = spawn_entity_with_modifiers(s, "Static_Ramp", {  2.4F, 0.0F, 0.0F }, log_push);
         if (r2 >= 0 && std::cmp_less(r2, s.entities.size()))
@@ -1778,7 +1832,7 @@ inline void load_studio_interactive_template(StateT& s, int template_id, LogFn&&
         s.selected   = b1;
         s.cam.eye    = { 0.0F, 3.85F, 9.1F };
         s.cam.target = { 0.0F, 1.65F, 0.0F };
-        log_push("[level] Loaded '3.1 Double Ramp & Rover Collision (06_jolt)'");
+        log_push("[level] Loaded '3.1 Double Ramp & Rover Collision (06_dynamics)'");
     }
     else if (template_id == 8)
     {
@@ -1905,7 +1959,7 @@ inline void load_studio_interactive_template(StateT& s, int template_id, LogFn&&
         s.selected   = e_sph;
         s.cam.eye    = { -0.05F, 2.55F, 6.15F };
         s.cam.target = { -0.05F, 0.75F, -0.10F };
-        w.active_world_name = "World 2: Photoreal PBR & Sponza GI";
+        w.active_world_name = "World 2: Photoreal PBR & Atrium GI";
         w.active_level_name = "2.4 Asset Browser & Texture/Mesh Lab";
         log_push("[level] Loaded '2.4 Asset Browser & Texture/Mesh Lab'");
     }
@@ -1962,7 +2016,7 @@ inline void load_studio_interactive_template(StateT& s, int template_id, LogFn&&
     }
     else if (template_id == 14)
     {
-        // Level 6.2: Universal 250-Node Showcase (219 Godot Equivalents + 31 Next-Gen SOTA)
+        // Level 6.2: Universal 250-Node Showcase (250 Native Constructs)
         w.show_all_collider_wires       = false;
         w.focus_bottom_node_catalog_tab = true;
         w.selected_catalog_node_id      = 117; // CharacterBody3D / AvatarVessel3D
@@ -2050,19 +2104,19 @@ inline void load_studio_interactive_template(StateT& s, int template_id, LogFn&&
         s.cam.eye           = { -3.95F, 3.35F, 5.45F };
         s.cam.target        = {  0.05F, 0.85F, 0.05F };
         w.active_world_name = "World 6: Playable Games & Interactive Templates";
-        w.active_level_name = "6.2 Universal 250-Node Showcase (Godot 219 + SOTA 31)";
-        w.hud_toast_message = "6.2 Universal 250-Node Catalog Active (219 Godot + 31 SOTA)!";
+        w.active_level_name = "6.2 Universal 250-Node Showcase (250 Native Constructs)";
+        w.hud_toast_message = "6.2 Universal 250-Construct Library Active (250 Native Constructs)!";
         w.hud_toast_timer   = 4.5F;
-        log_push("[level] Loaded '6.2 Universal 250-Node Showcase (Godot 219 + SOTA 31)'");
+        log_push("[level] Loaded '6.2 Universal 250-Node Showcase (250 Native Constructs)'");
     }
     else if (template_id == 15)
     {
-        // Level 6.3: Rockstar 2D+3D Physics & Euphoria/Pacejka Arena (32-Module Unified Physics Engine)
+        // Level 6.3: Unified 2D+3D Physics & Active Ragdoll Arena (32-Module Unified Physics Engine)
         w.show_all_collider_wires  = true;
         w.simulate_physics_in_edit = true;
         cd::ui::chroma::state().tab_map[ImGui::GetID("BottomDockTabBar")] = 2; // Focus "Console & Physics" tab
 
-        // Initialize the 32-Module Rockstar UnifiedPhysicsEngine with active 2D + 3D + Euphoria + Pacejka + Fracture + XPBD
+        // Initialize the 32-Module UnifiedPhysicsEngine with active 2D + 3D + Active Ragdoll + Pacejka + Fracture + XPBD
         w.rockstar_physics_engine.clear();
         w.rockstar_engine_seeded      = true;
         const auto rag_id  = w.rockstar_physics_engine.create_euphoria_ragdoll({ -2.40F, 1.05F, 0.45F }, 78.0F);
@@ -2121,12 +2175,12 @@ inline void load_studio_interactive_template(StateT& s, int template_id, LogFn&&
             (void)w.rockstar_physics_engine.world_3d().create_body(b3d);
         }
 
-        // 1. Euphoria Active Ragdoll Avatar (AvatarVessel3D #117 + ActiveRagdollMotor3D #245)
+        // 1. Active Ragdoll Avatar (AvatarVessel3D #117 + ActiveRagdollMotor3D #245)
         const int euph_idx = spawn_or_compose_studio_catalog_node(
             s, 117, CatalogComposeMode::SpawnRootElement, { -2.45F, 0.02F, 0.55F }, log_push);
         if (euph_idx >= 0 && std::cmp_less(euph_idx, s.entities.size()))
         {
-            s.entities[static_cast<std::size_t>(euph_idx)].name = "Euphoria_ActiveRagdoll_Avatar";
+            s.entities[static_cast<std::size_t>(euph_idx)].name = "ActiveRagdoll_Avatar";
             s.selected = euph_idx;
             (void)spawn_or_compose_studio_catalog_node(
                 s, 245, CatalogComposeMode::FoldAsInlineCapsule, { -2.45F, 0.02F, 0.55F }, log_push);
@@ -2189,10 +2243,10 @@ inline void load_studio_interactive_template(StateT& s, int template_id, LogFn&&
             s.entities[static_cast<std::size_t>(buoy_idx)].name = "Archimedes_Buoyancy_Vessel3D";
         }
 
-        s.lights.push_back({ "Rockstar Arena Key Cyan (6500K)",
+        s.lights.push_back({ "Physics Arena Key Cyan (6500K)",
             cd::light::point({ 2.35F, 3.55F, 2.35F }, { 0.30F, 0.92F, 1.00F }, 900.0F, 14.0F),
             true, 6500.0F });
-        s.lights.push_back({ "Rockstar Arena Warm Fill (3400K)",
+        s.lights.push_back({ "Physics Arena Warm Fill (3400K)",
             cd::light::point({ -2.15F, 3.25F, 2.55F }, { 1.00F, 0.75F, 0.34F }, 700.0F, 12.0F),
             true, 3400.0F });
 
@@ -2200,10 +2254,10 @@ inline void load_studio_interactive_template(StateT& s, int template_id, LogFn&&
         s.cam.eye           = { -4.15F, 3.40F, 5.55F };
         s.cam.target        = {  0.10F, 0.85F, 0.00F };
         w.active_world_name = "World 6: Playable Games & Interactive Templates";
-        w.active_level_name = "6.3 Rockstar 2D+3D Physics & Euphoria/Pacejka Arena";
-        w.hud_toast_message = "6.3 Rockstar 32-Module 2D+3D Physics Engine Active (Euphoria + Pacejka + Voronoi + XPBD)!";
+        w.active_level_name = "6.3 Unified 2D+3D Physics & Active Ragdoll Arena";
+        w.hud_toast_message = "6.3 Unified 32-Module 2D+3D Physics Engine Active (Active Ragdoll + Pacejka + Voronoi + XPBD)!";
         w.hud_toast_timer   = 4.5F;
-        log_push("[level] Loaded '6.3 Rockstar 2D+3D Physics & Euphoria/Pacejka Arena'");
+        log_push("[level] Loaded '6.3 Unified 2D+3D Physics & Active Ragdoll Arena'");
     }
     s.scene.update_transforms();
     sync_camera_and_invalidate_frame_history(s);
@@ -2251,22 +2305,22 @@ struct ShowcaseProjectEntry
 inline constexpr std::array<ShowcaseProjectEntry, 12> kShowcaseCatalog {{
     { "01_pbr_materials_sss_hair",     "01. PBR Materials, Clearcoat & Hair",
       "showcases/01_pbr_materials_sss_hair/01_pbr_materials_sss_hair.cdproj",
-      "World 2: Photoreal PBR & Sponza GI", 4 },
+      "World 2: Photoreal PBR & Atrium GI", 4 },
     { "02_celestial_aether_fog_clouds","02. Celestial Aether, Fog & Clouds",
       "showcases/02_celestial_aether_fog_clouds/02_celestial_aether_fog_clouds.cdproj",
       "World 5: Volumetric Atmosphere & Nature", 10 },
-    { "03_sponza_clustered_ddgi_restir","03. Sponza Clustered DDGI & ReSTIR",
+    { "03_sponza_clustered_ddgi_restir","03. Classical Atrium Clustered DDGI & ReSTIR",
       "showcases/03_sponza_clustered_ddgi_restir/03_sponza_clustered_ddgi_restir.cdproj",
-      "World 2: Photoreal PBR & Sponza GI", 5 },
+      "World 2: Photoreal PBR & Atrium GI", 5 },
     { "04_optics_cinematic_studio",    "04. Optics Cinematic Studio & AgX",
       "showcases/04_optics_cinematic_studio/04_optics_cinematic_studio.cdproj",
-      "World 2: Photoreal PBR & Sponza GI", 6 },
+      "World 2: Photoreal PBR & Atrium GI", 6 },
     { "05_avatar_locomotion_anim_ik",  "05. Avatar Locomotion & Anim IK",
       "showcases/05_avatar_locomotion_anim_ik/05_avatar_locomotion_anim_ik.cdproj",
       "World 4: Avatar Locomotion & Combat", 8 },
-    { "06_jolt_dynamics_rover_shatter","06. Jolt Dynamics, Rover & Shatter",
+    { "06_jolt_dynamics_rover_shatter","06. Rigid-Body Dynamics, Rover & Shatter",
       "showcases/06_jolt_dynamics_rover_shatter/06_jolt_dynamics_rover_shatter.cdproj",
-      "World 3: Jolt Dynamics & Shatter Lab", 7 },
+      "World 3: Rigid-Body Dynamics & Shatter Lab", 7 },
     { "07_terra_ocean_nature_world",   "07. Terra Ocean & Nature World",
       "showcases/07_terra_ocean_nature_world/07_terra_ocean_nature_world.cdproj",
       "World 5: Volumetric Atmosphere & Nature", 11 },
@@ -2278,7 +2332,7 @@ inline constexpr std::array<ShowcaseProjectEntry, 12> kShowcaseCatalog {{
       "World 1: Ultra-FPS & Physics", 1 },
     { "10_spark_swarm_and_decals",     "10. Spark GPU Swarm & OBB Decals",
       "showcases/10_spark_swarm_and_decals/10_spark_swarm_and_decals.cdproj",
-      "World 3: Jolt Dynamics & Shatter Lab", 3 },
+      "World 3: Rigid-Body Dynamics & Shatter Lab", 3 },
     { "11_custom_ui_hud_and_menus",    "11. ChromaUI 2.0 HUD & Menus",
       "showcases/11_custom_ui_hud_and_menus/11_custom_ui_hud_and_menus.cdproj",
       "World 1: Ultra-FPS & Physics", 2 },
@@ -2399,7 +2453,21 @@ template <typename StateT, typename LogFn>
                 std::string { cd::world_container::layer_of(s.ecs_world, e) } };
             obj["tint"]                = make_vec3_arr(en->tint);
 
-            if (auto hit = w.home_transforms.find(e.id); hit != w.home_transforms.end())
+            if (!s.pie_playing)
+            {
+                if (const auto* lt = s.scene.local(e))
+                {
+                    obj["home_position"] = make_vec3_arr(lt->value.position);
+                    obj["home_scale"]    = make_vec3_arr(lt->value.scale);
+                    cd::asset::json::Array hrot;
+                    hrot.emplace_back(static_cast<double>(lt->value.rotation.x));
+                    hrot.emplace_back(static_cast<double>(lt->value.rotation.y));
+                    hrot.emplace_back(static_cast<double>(lt->value.rotation.z));
+                    hrot.emplace_back(static_cast<double>(lt->value.rotation.w));
+                    obj["home_rotation"] = cd::asset::json::Value { std::move(hrot) };
+                }
+            }
+            else if (auto hit = w.home_transforms.find(e.id); hit != w.home_transforms.end())
             {
                 const auto& htr = hit->second;
                 obj["home_position"] = make_vec3_arr(htr.position);
@@ -2544,6 +2612,20 @@ template <typename StateT, typename LogFn>
     root_obj["camera_eye"]     = make_vec3_arr(s.cam.eye);
     root_obj["camera_target"]  = make_vec3_arr(s.cam.target);
 
+    if (!w.loaded_context_assets.empty())
+    {
+        cd::asset::json::Array ca;
+        for (const auto& asset : w.loaded_context_assets)
+        {
+            cd::asset::json::Object ao;
+            ao["name"] = cd::asset::json::Value { asset.name };
+            ao["path"] = cd::asset::json::Value { asset.path };
+            ao["kind"] = cd::asset::json::Value { static_cast<double>(asset.kind) };
+            ca.emplace_back(std::move(ao));
+        }
+        root_obj["context_assets"] = cd::asset::json::Value { std::move(ca) };
+    }
+
     cd::asset::json::Array la;
     for (const auto& l : s.lights)
     {
@@ -2631,6 +2713,27 @@ template <typename StateT, typename LogFn>
         if (auto* proj = s.cd_world.project())
         {
             (void)proj->set_active_level(w.active_level_name);
+        }
+    }
+
+    if (auto cait = root_obj.find("context_assets"); cait != root_obj.end() && cait->second.is_array())
+    {
+        w.loaded_context_assets.clear();
+        for (const auto& av : cait->second.as_array())
+        {
+            if (!av.is_object()) continue;
+            const auto& ao = av.as_object();
+            std::string aname;
+            std::string apath;
+            std::uint8_t akind = 0U;
+            if (auto it = ao.find("name"); it != ao.end() && it->second.is_string())
+                aname = it->second.as_string();
+            if (auto it = ao.find("path"); it != ao.end() && it->second.is_string())
+                apath = it->second.as_string();
+            if (auto it = ao.find("kind"); it != ao.end() && it->second.is_number())
+                akind = static_cast<std::uint8_t>(it->second.as_number());
+            if (!aname.empty() && !apath.empty())
+                (void)w.load_asset_into_context(aname, apath, akind);
         }
     }
 
@@ -2982,11 +3085,25 @@ template <typename StateT, typename LogFn>
     s.entities = std::move(loaded);
     for (std::size_t i = 0; i < s.entities.size(); ++i)
     {
-        if (!s.entities[i].custom_mesh_path.empty() &&
-            s.entities[i].kind == PrimitiveKind::kCustomGltf)
+        if (!s.entities[i].custom_mesh_path.empty())
         {
             const std::string mp = s.entities[i].custom_mesh_path;
+            cd::math::Transform<float> saved_tr {};
+            bool has_saved_tr = false;
+            if (const auto* lt = s.scene.local(s.entities[i].handle))
+            {
+                saved_tr     = lt->value;
+                has_saved_tr = true;
+            }
             (void)assign_mesh_asset_to_entity(s, static_cast<int>(i), mp, log_push);
+            if (has_saved_tr)
+            {
+                if (auto* lt = s.scene.local(s.entities[i].handle))
+                {
+                    lt->value = saved_tr;
+                }
+                record_entity_home_transform(s, s.entities[i].handle);
+            }
         }
         if (s.entities[i].use_texture && !s.entities[i].custom_texture_path.empty())
         {

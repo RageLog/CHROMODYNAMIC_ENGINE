@@ -698,7 +698,7 @@ public:
     }
 };
 
-/// Universal 250-Node Catalog Trait Capsule (`Godot 219 + Next-Gen SOTA 31`).
+/// Universal 250-Node Catalog Trait Capsule (`219 Standard + 31 Next-Gen SOTA`).
 /// Can be attached to any entity viaSpawnRootElement, NestAsChildElement, or FoldAsInlineCapsule.
 class UniversalNodeModifier final : public IStudioModifier
 {
@@ -708,7 +708,7 @@ public:
     std::string         chroma_name        { "AvatarVessel3D" };
     std::string         video_timestamp    { "17:44" };
     std::string         ux_upgrade         { "Inline Capsule + SpringArm + GroundSensor + CoyoteJump in 1 Vessel" };
-    std::string         tech_upgrade       { "Jolt 60Hz Sub-Stepped Kinematic Sweep + Slope/Stair Solver" };
+    std::string         tech_upgrade       { "60Hz Sub-Stepped Kinematic Sweep + Slope/Stair Solver" };
     StudioNodeCategory  catalog_category   { StudioNodeCategory::Node3D };
     ChromaConstructKind construct_kind     { ChromaConstructKind::Vessel };
     float               intensity_or_rate  { 1.0F };
@@ -784,7 +784,7 @@ public:
                            static_cast<unsigned>(node_id),
                            chroma_name.c_str());
         ImGui::TextColored(ImVec4(0.55F, 0.82F, 1.0F, 1.0F),
-                           "Godot Equivalent: %s | Video @ %s | %s",
+                           "Standard Construct: %s | Ref @ %s | %s",
                            godot_name.c_str(),
                            video_timestamp.c_str(),
                            studio_node_category_label(catalog_category));
@@ -830,7 +830,7 @@ inline constexpr std::array<ModifierDescriptor, 15> kModifierCatalog {{
     { "PatrolWaypointModifier",      "AI Patrol Bot",  "AI",   ModifierCategory::kGameplay,
       "Autonomous waypoint patrol & player-pursuit AI behavior for enemies and synth bots." },
     { "UniversalNodeModifier",       "Chroma Capsule", "CAP+", ModifierCategory::kGameplay,
-      "Any of the 250 Universal Catalog Constructs (219 Godot Equivalents + 31 Next-Gen SOTA) folded inline." },
+      "Any of the 250 Universal Catalog Constructs (219 Standard Constructs + 31 Next-Gen SOTA) folded inline." },
     { "FogModifier",                 "Volumetric Fog", "FOG",  ModifierCategory::kEnvironment,
       "Instantiates volumetric fog, height falloff, and sun god-ray light shafts." },
     { "BloomLensModifier",           "Bloom & Lens",   "BLM",  ModifierCategory::kEnvironment,
@@ -983,7 +983,7 @@ struct StudioRuntimeWorld
     bool                                                  clean_studio_mode         { true };
     bool                                                  simulate_physics_in_edit  { true };
     bool                                                  step_single_frame         { false };
-    bool                                                  show_all_collider_wires   { true };
+    bool                                                  show_all_collider_wires   { false };
     bool                                                  grid_snap_enabled         { false };
     float                                                 grid_snap_step            { 0.50F };
     bool                                                  uniform_scale_lock        { false };
@@ -1032,7 +1032,7 @@ struct StudioRuntimeWorld
     std::string                                           drag_asset_mesh_id        {};
     bool                                                  is_dragging_asset_texture { false };
     std::string                                           drag_asset_texture_id     {};
-    // 250 Element & Vessel Universal Catalog UI state (Godot 219 + Next-Gen SOTA 31)
+    // 250 Element & Vessel Universal Catalog UI state (219 Standard + 31 Next-Gen SOTA)
     int                                                   node_catalog_category_filter { -1 }; // -1=All 250, 0=Core(21), 1=2D(50), 2=3D(88), 3=UI(60), 4=SOTA(31)
     char                                                  node_catalog_search[64]      {};
     std::uint16_t                                         selected_catalog_node_id     { 117 }; // CharacterBody3D / PhysicsCharacterVessel3D
@@ -1056,6 +1056,13 @@ struct StudioRuntimeWorld
     float                                                 hud_toast_timer           { 0.0F };
     std::string                                           pre_pie_scene_snapshot    {};
     std::uint32_t                                         pre_pie_selected_id       { 0 };
+    bool                                                  show_project_manager      { false };
+    bool                                                  enable_demo_hud_overlay   { false };
+    int                                                   project_manager_tab       { 0 };     // 0 = Projects, 1 = Templates
+    int                                                   selected_pm_project_idx   { 0 };
+    char                                                  pm_filter_buf[64]         {};
+    char                                                  pm_new_project_buf[64]    { "My_Chroma_Project" };
+    bool                                                  pm_creating_new           { false };
 
     [[nodiscard]] bool is_asset_in_context(std::string_view path) const noexcept
     {

@@ -992,8 +992,8 @@ struct ThemePalette
         case 0:  return "Chroma Obsidian";
         case 1:  return "Cyber Neon Glass";
         case 2:  return "Daylight CAD";
-        case 3:  return "Godot Slate";
-        case 4:  return "Unreal Carbon";
+        case 3:  return "Chroma Slate";
+        case 4:  return "Chroma Obsidian";
         default: return "Chroma Obsidian";
     }
 }
@@ -1033,7 +1033,7 @@ struct ThemePalette
         t.separator      = IM_COL32(190, 200, 216, 255);
         t.popup_bg       = IM_COL32(248, 250, 254, 255);
     }
-    else if (p == 3) // Godot Slate
+    else if (p == 3) // Chroma Slate
     {
         t.window_bg      = IM_COL32(33, 38, 46, 248);
         t.window_header0 = IM_COL32(44, 51, 63, 255);
@@ -1049,7 +1049,7 @@ struct ThemePalette
         t.accent_bright   = IM_COL32(112, 186, 250, 255);
         t.popup_bg        = IM_COL32(37, 43, 52, 254);
     }
-    else if (p == 4) // Unreal Carbon
+    else if (p == 4) // Chroma Obsidian
     {
         t.window_bg      = IM_COL32(20, 20, 22, 248);
         t.window_header0 = IM_COL32(32, 32, 36, 255);
