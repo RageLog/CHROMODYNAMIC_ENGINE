@@ -147,9 +147,13 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
     {
         w.autopilot_fire_cooldown = std::max(0.0F, w.autopilot_fire_cooldown - clamped_dt);
     }
-    bool has_active_dynamic_rb = false;
-    bool fire_autopilot_shot   = false;
-    int  player_entity_idx     = -1;
+    bool has_active_dynamic_rb    = false;
+    bool fire_autopilot_shot      = false;
+    bool has_fog_entity           = false;
+    bool any_visible_fog_entity   = false;
+    bool has_cloud_entity         = false;
+    bool any_visible_cloud_entity = false;
+    int  player_entity_idx        = -1;
     cd::math::Vec3f player_pos { 0.0F, 0.0F, 0.0F };
     w.player_horiz_speed = 0.0F;
 
@@ -186,17 +190,27 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
             has_active_dynamic_rb = true;
         }
 
-        if (const auto* efog = ms.template find<FogModifier>(); efog && efog->enabled && ent.visible && has_any_enabled_light)
+        if (const auto* efog = ms.template find<FogModifier>())
         {
-            s.fx.volumetric_fog_on  = efog->volumetric_scattering;
-            s.fx.fog_density        = efog->fog_density;
-            s.fx.shafts_strength    = efog->light_shafts_strength;
-            s.fx.aerial_perspective = efog->aerial_perspective;
+            has_fog_entity = true;
+            if (efog->enabled && ent.visible && has_any_enabled_light)
+            {
+                any_visible_fog_entity  = true;
+                s.fx.volumetric_fog_on  = efog->volumetric_scattering;
+                s.fx.fog_density        = efog->fog_density;
+                s.fx.shafts_strength    = efog->light_shafts_strength;
+                s.fx.aerial_perspective = efog->aerial_perspective;
+            }
         }
 
-        if (const auto* cld = ms.template find<CloudLayerModifier>(); cld && ent.visible)
+        if (const auto* cld = ms.template find<CloudLayerModifier>())
         {
-            s.fx.clouds_coverage = (cld->enabled && has_any_enabled_light) ? cld->clouds_coverage : 0.0F;
+            has_cloud_entity = true;
+            if (cld->enabled && ent.visible && has_any_enabled_light)
+            {
+                any_visible_cloud_entity = true;
+                s.fx.clouds_coverage     = cld->clouds_coverage;
+            }
         }
 
         // 1. CharacterControllerModifier (WASD/Arrows + Space in PIE, or Autonomous E2E Autopilot Driver!)
@@ -501,6 +515,16 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
                 }
             }
         }
+    }
+
+    if (has_fog_entity && !any_visible_fog_entity)
+    {
+        s.fx.volumetric_fog_on = false;
+        s.fx.fog_density       = 0.0F;
+    }
+    if (has_cloud_entity && !any_visible_cloud_entity)
+    {
+        s.fx.clouds_coverage = 0.0F;
     }
 
     if (fire_autopilot_shot)
@@ -1096,7 +1120,10 @@ template <typename StateT>
     {
         const auto& ent = s.entities[i];
         if (!ent.visible || ent.locked) continue;
-        if (ent.name.find("Ground_Floor") != std::string::npos) continue;
+        if (ent.name.find("Ground_Floor") != std::string::npos ||
+            ent.name.find("Volumetric_Clouds") != std::string::npos ||
+            ent.name.find("Volumetric_Fog") != std::string::npos)
+            continue;
         if (const auto* lt = s.scene.local(ent.handle))
         {
             ImVec2 sp {};
@@ -1227,6 +1254,106 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
         }
     }
 
+    // 1B. Draw 3D Camera Frustum Pyramid / Cone Visualization for all Scene Camera entities in Edit Mode
+    if (!s.pie_playing)
+    {
+        for (std::size_t ei = 0; ei < s.entities.size(); ++ei)
+        {
+            if (w.pilot_scene_camera_idx == static_cast<int>(ei))
+                continue;
+            const auto& ent = s.entities[ei];
+            if (!ent.visible) continue;
+            auto& ms = w.entity_modifiers[ent.handle.id];
+            const auto* lens = ms.template find<CameraLensModifier>();
+            const bool is_cam = (lens != nullptr) || (ent.name.find("Camera") != std::string::npos);
+            if (!is_cam) continue;
+            const auto* lt = s.scene.local(ent.handle);
+            if (!lt) continue;
+
+            const cd::math::Vec3f cam_pos = lt->value.position;
+            cd::math::Vec3f base_fwd = cd::math::Vec3f { 0.0F, 0.8F, 0.0F } - cam_pos;
+            const float bflen = cd::math::length(base_fwd);
+            if (bflen > 0.25F)
+                base_fwd = base_fwd * (1.0F / bflen);
+            else
+                base_fwd = { 0.0F, 0.0F, -1.0F };
+
+            const cd::math::Quatf q = cd::math::normalize(lt->value.rotation);
+            cd::math::Vec3f fwd = cd::math::rotate(q, base_fwd);
+            const float flen = cd::math::length(fwd);
+            if (flen > 1e-5F) fwd = fwd * (1.0F / flen);
+            else fwd = { 0.0F, 0.0F, -1.0F };
+
+            cd::math::Vec3f world_up = cd::math::rotate(q, cd::math::Vec3f { 0.0F, 1.0F, 0.0F });
+            cd::math::Vec3f rgt      = cd::math::cross(fwd, world_up);
+            if (cd::math::length(rgt) < 1e-4F)
+                rgt = cd::math::cross(fwd, cd::math::Vec3f { 0.0F, 0.0F, 1.0F });
+            rgt = rgt * (1.0F / std::max(1e-5F, cd::math::length(rgt)));
+            const cd::math::Vec3f up_v = cd::math::cross(rgt, fwd);
+
+            const bool is_selected = (s.selected_kind == SelKind::kEntity && std::cmp_equal(s.selected, ei));
+            const ImU32 cam_col    = is_selected ? IM_COL32(95, 225, 255, 245) : IM_COL32(75, 185, 230, 195);
+            const float cam_thick  = is_selected ? 2.2F : 1.5F;
+
+            const float fov_deg   = (lens != nullptr) ? std::clamp(lens->fov_deg, 20.0F, 120.0F) : 60.0F;
+            const float tan_half  = std::tan(fov_deg * 0.5F * (3.14159265F / 180.0F)) * 0.42F;
+            const float aspect    = 16.0F / 9.0F;
+            const float dist_near = 0.26F;
+            const float dist_far  = is_selected ? 2.35F : 1.45F;
+
+            const float hn_y = dist_near * tan_half;
+            const float hn_x = hn_y * aspect;
+            const float hf_y = dist_far * tan_half;
+            const float hf_x = hf_y * aspect;
+
+            const cd::math::Vec3f cn  = cam_pos + fwd * dist_near;
+            const cd::math::Vec3f ntl = cn - rgt * hn_x + up_v * hn_y;
+            const cd::math::Vec3f ntr = cn + rgt * hn_x + up_v * hn_y;
+            const cd::math::Vec3f nbr = cn + rgt * hn_x - up_v * hn_y;
+            const cd::math::Vec3f nbl = cn - rgt * hn_x - up_v * hn_y;
+
+            const cd::math::Vec3f cf  = cam_pos + fwd * dist_far;
+            const cd::math::Vec3f ftl = cf - rgt * hf_x + up_v * hf_y;
+            const cd::math::Vec3f ftr = cf + rgt * hf_x + up_v * hf_y;
+            const cd::math::Vec3f fbr = cf + rgt * hf_x - up_v * hf_y;
+            const cd::math::Vec3f fbl = cf - rgt * hf_x - up_v * hf_y;
+
+            // 4 pyramid edges from cam_pos to far corners
+            draw_3d_line_clipped(dl, cam_pos, ftl, vp, sw, sh, cam_col, cam_thick);
+            draw_3d_line_clipped(dl, cam_pos, ftr, vp, sw, sh, cam_col, cam_thick);
+            draw_3d_line_clipped(dl, cam_pos, fbr, vp, sw, sh, cam_col, cam_thick);
+            draw_3d_line_clipped(dl, cam_pos, fbl, vp, sw, sh, cam_col, cam_thick);
+
+            // Near rectangular frame
+            draw_3d_line_clipped(dl, ntl, ntr, vp, sw, sh, cam_col, cam_thick);
+            draw_3d_line_clipped(dl, ntr, nbr, vp, sw, sh, cam_col, cam_thick);
+            draw_3d_line_clipped(dl, nbr, nbl, vp, sw, sh, cam_col, cam_thick);
+            draw_3d_line_clipped(dl, nbl, ntl, vp, sw, sh, cam_col, cam_thick);
+
+            // Far rectangular frame
+            draw_3d_line_clipped(dl, ftl, ftr, vp, sw, sh, cam_col, cam_thick);
+            draw_3d_line_clipped(dl, ftr, fbr, vp, sw, sh, cam_col, cam_thick);
+            draw_3d_line_clipped(dl, fbr, fbl, vp, sw, sh, cam_col, cam_thick);
+            draw_3d_line_clipped(dl, fbl, ftl, vp, sw, sh, cam_col, cam_thick);
+
+            // Top "UP" triangle chevron above tl-tr edge
+            const cd::math::Vec3f up_tip = cf + up_v * (hf_y * 1.32F);
+            draw_3d_line_clipped(dl, ftl + (ftr - ftl) * 0.25F, up_tip, vp, sw, sh, cam_col, cam_thick);
+            draw_3d_line_clipped(dl, ftl + (ftr - ftl) * 0.75F, up_tip, vp, sw, sh, cam_col, cam_thick);
+
+            // Center optical axis line
+            draw_3d_line_clipped(dl, cam_pos, cf, vp, sw, sh, IM_COL32(95, 225, 255, 130), 1.2F);
+
+            ImVec2 cam_px {};
+            if (project_world_to_screen(cam_pos, vp, sw, sh, cam_px))
+            {
+                dl->AddCircleFilled(cam_px, is_selected ? 5.5F : 4.2F, cam_col, 12);
+                const std::string cam_lbl = "[CAM] " + ent.name;
+                dl->AddText(ImVec2(cam_px.x + 8.0F, cam_px.y - 8.0F), cam_col, cam_lbl.c_str());
+            }
+        }
+    }
+
     // 2. Full-Width Frameless Studio Ribbon Toolbar (y = 25..54, bridging MainMenuBar and DockSpace)
     if (sw > 400.0F)
     {
@@ -1255,11 +1382,48 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
                                   IM_COL32(95, 245, 175, 255), false, ImVec2(96.0F, 20.0F)))
             {
                 cst.workspace_mode = 0;
-                w.focus_bottom_node_catalog_tab = true;
-                ImGui::OpenPopup("studio_viewport_context_menu");
+                ImGui::OpenPopup("studio_quick_add_popup");
             }
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Spawn 3D Object / Open Construct Library");
+                ImGui::SetTooltip("Spawn 3D Object, Ground Floor, Character, Camera or Light Source");
+            if (ImGui::BeginPopup("studio_quick_add_popup"))
+            {
+                ImGui::TextColored(ImVec4(0.45F, 0.90F, 1.0F, 1.0F), "Quick Add to Scene");
+                ImGui::Separator();
+                if (ImGui::MenuItem("+ Ground Floor (Static Collider)"))
+                    (void)spawn_ground_floor_entity(s, log_push);
+                if (ImGui::MenuItem("+ Cube (PBR Mesh)"))
+                    (void)spawn_entity_with_modifiers(s, "Cube", { 0.0F, 0.5F, 0.0F }, log_push);
+                if (ImGui::MenuItem("+ Sphere (PBR Mesh)"))
+                    (void)spawn_entity_with_modifiers(s, "Sphere", { 0.0F, 0.5F, 0.0F }, log_push);
+                if (ImGui::MenuItem("+ Cylinder (PBR Mesh)"))
+                    (void)spawn_entity_with_modifiers(s, "Cylinder", { 0.0F, 0.5F, 0.0F }, log_push);
+                if (ImGui::MenuItem("+ Empty 3D Character Vessel"))
+                    (void)spawn_empty_character_vessel(s, false, log_push);
+                if (ImGui::MenuItem("+ Empty 2D Character Vessel"))
+                    (void)spawn_empty_character_vessel(s, true, log_push);
+                if (ImGui::MenuItem("+ Scene Camera (3D Perspective)"))
+                    (void)spawn_scene_camera_entity(s, false, log_push);
+                if (ImGui::MenuItem("+ Volumetric Clouds"))
+                    (void)spawn_volumetric_clouds_entity(s, log_push);
+                if (ImGui::MenuItem("+ Volumetric Fog"))
+                    (void)spawn_volumetric_fog_entity(s, log_push);
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(1.0F, 0.85F, 0.35F, 1.0F), "Light Sources (All Types)");
+                if (ImGui::MenuItem("+ Directional Sun Light (5800K)"))
+                    (void)spawn_studio_light_by_type(s, 0, log_push);
+                if (ImGui::MenuItem("+ Point Omni Light (3200K)"))
+                    (void)spawn_studio_light_by_type(s, 1, log_push);
+                if (ImGui::MenuItem("+ Spot Cone Light (4200K)"))
+                    (void)spawn_studio_light_by_type(s, 2, log_push);
+                if (ImGui::MenuItem("+ Rect Area Softbox Light (5600K)"))
+                    (void)spawn_studio_light_by_type(s, 3, log_push);
+                if (ImGui::MenuItem("+ Ambient Sky Fill Light (6500K)"))
+                    (void)spawn_studio_light_by_type(s, 4, log_push);
+                if (ImGui::MenuItem("+ 3-Point Studio Lighting Rig"))
+                    (void)spawn_studio_light_by_type(s, 5, log_push);
+                ImGui::EndPopup();
+            }
 
             ImGui::SameLine();
             ImGui::TextDisabled("|");
@@ -1534,6 +1698,15 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
         ImGui::Separator();
         if (ImGui::BeginMenu("+ Spawn 3D Object Here"))
         {
+            if (ImGui::MenuItem("+ Ground Floor (Static Collider)"))
+                (void)spawn_ground_floor_entity(s, log_push);
+            if (ImGui::MenuItem("+ Volumetric Clouds"))
+                (void)spawn_volumetric_clouds_entity(s, log_push);
+            if (ImGui::MenuItem("+ Volumetric Fog"))
+                (void)spawn_volumetric_fog_entity(s, log_push);
+            if (ImGui::MenuItem("+ Scene Camera (3D Perspective)"))
+                (void)spawn_scene_camera_entity(s, false, log_push);
+            ImGui::Separator();
             if (ImGui::MenuItem("Dynamic Cube (RB + BoxCollider)"))
                 (void)spawn_entity_with_modifiers(s, "Dynamic_Cube", w.context_menu_world_pos, log_push);
             if (ImGui::MenuItem("Bouncing Sphere (RB + SphereCollider)"))
@@ -1550,6 +1723,23 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
                 (void)spawn_entity_with_modifiers(s, "Static_Wall", w.context_menu_world_pos, log_push);
             if (ImGui::MenuItem("Skinned Character (CesiumMan)"))
                 (void)spawn_entity_with_modifiers(s, "Character_CesiumMan", w.context_menu_world_pos, log_push);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("+ Add Light Source"))
+        {
+            if (ImGui::MenuItem("+ Directional Sun Light (5800K)"))
+                (void)spawn_studio_light_by_type(s, 0, log_push);
+            if (ImGui::MenuItem("+ Point Omni Light (3200K)"))
+                (void)spawn_studio_light_by_type(s, 1, log_push);
+            if (ImGui::MenuItem("+ Spot Cone Light (4200K)"))
+                (void)spawn_studio_light_by_type(s, 2, log_push);
+            if (ImGui::MenuItem("+ Rect Area Softbox Light (5600K)"))
+                (void)spawn_studio_light_by_type(s, 3, log_push);
+            if (ImGui::MenuItem("+ Ambient Sky Fill Light (6500K)"))
+                (void)spawn_studio_light_by_type(s, 4, log_push);
+            ImGui::Separator();
+            if (ImGui::MenuItem("+ 3-Point Studio Lighting Rig"))
+                (void)spawn_studio_light_by_type(s, 5, log_push);
             ImGui::EndMenu();
         }
         if (s.selected >= 0 && std::cmp_less(s.selected, s.entities.size()))
@@ -1667,7 +1857,111 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
         {
             if (mouse_in_central_viewport)
             {
-                (void)spawn_entity_with_modifiers(s, w.drag_spawn_id, w.drag_preview_pos, log_push);
+                if (w.drag_spawn_id == "Volumetric_Clouds")
+                {
+                    (void)spawn_volumetric_clouds_entity(s, log_push);
+                }
+                else if (w.drag_spawn_id == "Volumetric_Fog")
+                {
+                    (void)spawn_volumetric_fog_entity(s, log_push);
+                }
+                else if (w.drag_spawn_id == "Camera_3D" || w.drag_spawn_id == "Camera_Main")
+                {
+                    const int cidx = spawn_scene_camera_entity(s, false, log_push);
+                    if (cidx >= 0 && std::cmp_less(cidx, s.entities.size()))
+                    {
+                        if (auto* lt = s.scene.local(s.entities[static_cast<std::size_t>(cidx)].handle))
+                        {
+                            lt->value.position = { w.drag_preview_pos.x, std::max(1.6F, w.drag_preview_pos.y + 1.6F), w.drag_preview_pos.z };
+                            s.scene.update_transforms();
+                        }
+                    }
+                }
+                else if (w.drag_spawn_id == "Camera_2D")
+                {
+                    const int cidx = spawn_scene_camera_entity(s, true, log_push);
+                    if (cidx >= 0 && std::cmp_less(cidx, s.entities.size()))
+                    {
+                        if (auto* lt = s.scene.local(s.entities[static_cast<std::size_t>(cidx)].handle))
+                        {
+                            lt->value.position = { w.drag_preview_pos.x, std::max(1.4F, w.drag_preview_pos.y + 1.4F), w.drag_preview_pos.z };
+                            s.scene.update_transforms();
+                        }
+                    }
+                }
+                else if (w.drag_spawn_id == "Character_3D")
+                {
+                    const int ch_idx = spawn_empty_character_vessel(s, false, log_push);
+                    if (ch_idx >= 0 && std::cmp_less(ch_idx, s.entities.size()))
+                    {
+                        if (auto* lt = s.scene.local(s.entities[static_cast<std::size_t>(ch_idx)].handle))
+                        {
+                            lt->value.position = { w.drag_preview_pos.x, std::max(0.55F, w.drag_preview_pos.y + 0.55F), w.drag_preview_pos.z };
+                            s.scene.update_transforms();
+                        }
+                    }
+                }
+                else if (w.drag_spawn_id == "Character_2D")
+                {
+                    const int ch_idx = spawn_empty_character_vessel(s, true, log_push);
+                    if (ch_idx >= 0 && std::cmp_less(ch_idx, s.entities.size()))
+                    {
+                        if (auto* lt = s.scene.local(s.entities[static_cast<std::size_t>(ch_idx)].handle))
+                        {
+                            lt->value.position = { w.drag_preview_pos.x, std::max(0.55F, w.drag_preview_pos.y + 0.55F), w.drag_preview_pos.z };
+                            s.scene.update_transforms();
+                        }
+                    }
+                }
+                else if (w.drag_spawn_id == "Ground_Floor")
+                {
+                    (void)spawn_ground_floor_entity(s, log_push);
+                }
+                else if (w.drag_spawn_id.starts_with("Light_") ||
+                         w.drag_spawn_id == "Sun_Light" ||
+                         w.drag_spawn_id == "Point_Light")
+                {
+                    int lkind = 1;
+                    if (w.drag_spawn_id.find("Sun") != std::string::npos || w.drag_spawn_id.find("Directional") != std::string::npos)
+                        lkind = 0;
+                    else if (w.drag_spawn_id.find("Point") != std::string::npos)
+                        lkind = 1;
+                    else if (w.drag_spawn_id.find("Spot") != std::string::npos)
+                        lkind = 2;
+                    else if (w.drag_spawn_id.find("Rect") != std::string::npos || w.drag_spawn_id.find("Area") != std::string::npos)
+                        lkind = 3;
+                    else if (w.drag_spawn_id.find("Sky") != std::string::npos || w.drag_spawn_id.find("Ambient") != std::string::npos)
+                        lkind = 4;
+                    else if (w.drag_spawn_id.find("3Pt") != std::string::npos || w.drag_spawn_id.find("Rig") != std::string::npos)
+                        lkind = 5;
+                    const int lidx = spawn_studio_light_by_type(s, lkind, log_push);
+                    if (lidx >= 0 && std::cmp_less(lidx, s.lights.size()) && lkind >= 1 && lkind <= 4)
+                    {
+                        s.lights[static_cast<std::size_t>(lidx)].light.position = {
+                            w.drag_preview_pos.x,
+                            std::max(2.6F, w.drag_preview_pos.y + 2.6F),
+                            w.drag_preview_pos.z
+                        };
+                    }
+                }
+                else
+                {
+                    bool spawned_catalog = false;
+                    for (const auto& cdesc : kStudioUniversalNodeCatalog)
+                    {
+                        if (w.drag_spawn_id == cdesc.chroma_name)
+                        {
+                            (void)spawn_or_compose_studio_catalog_node(
+                                s, cdesc.id, CatalogComposeMode::SpawnRootElement, w.drag_preview_pos, log_push);
+                            spawned_catalog = true;
+                            break;
+                        }
+                    }
+                    if (!spawned_catalog)
+                    {
+                        (void)spawn_entity_with_modifiers(s, w.drag_spawn_id, w.drag_preview_pos, log_push);
+                    }
+                }
             }
             w.is_dragging_spawn = false;
             w.drag_spawn_id.clear();
@@ -1729,10 +2023,10 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
     if (w.is_dragging_asset_mesh || w.is_dragging_asset_texture)
     {
         w.drag_hover_entity_idx = pick_entity_under_mouse(s, vp, mouse_px, sw, sh);
-        const int target_idx = (w.drag_hover_entity_idx >= 0) ? w.drag_hover_entity_idx : s.selected;
-        if (target_idx >= 0 && std::cmp_less(target_idx, s.entities.size()))
+        const cd::math::Vec3f floor_drop_pos = unproject_mouse_to_ground(s, mouse_px, sw, sh, 0.0F);
+        if (w.drag_hover_entity_idx >= 0 && std::cmp_less(w.drag_hover_entity_idx, s.entities.size()))
         {
-            const auto& target_ent = s.entities[static_cast<std::size_t>(target_idx)];
+            const auto& target_ent = s.entities[static_cast<std::size_t>(w.drag_hover_entity_idx)];
             if (const auto* lt = s.scene.local(target_ent.handle))
             {
                 const cd::physics::Aabb hl = compute_entity_world_aabb(lt->value, nullptr);
@@ -1754,17 +2048,72 @@ inline void draw_studio_viewport_overlays_and_drop_targets(
                 }
             }
         }
+        else if (mouse_in_central_viewport)
+        {
+            const cd::physics::Aabb preview_box {
+                .min = { floor_drop_pos.x - 0.5F, floor_drop_pos.y,        floor_drop_pos.z - 0.5F },
+                .max = { floor_drop_pos.x + 0.5F, floor_drop_pos.y + 1.0F, floor_drop_pos.z + 0.5F },
+            };
+            const ImU32 col = w.is_dragging_asset_mesh
+                ? IM_COL32(80, 220, 255, 255)
+                : IM_COL32(120, 255, 140, 255);
+            draw_wireframe_aabb_3d(dl, preview_box, vp, sw, sh, col, 2.8F);
+            ImVec2 sp {};
+            if (project_world_to_screen(floor_drop_pos, vp, sw, sh, sp))
+            {
+                const std::string txt = w.is_dragging_asset_mesh
+                    ? ("Drop to Spawn New Mesh [" + w.drag_asset_mesh_id + "]")
+                    : ("Drop to Spawn Textured Cube [" + w.drag_asset_texture_id + "]");
+                dl->AddRectFilled(ImVec2(sp.x - 4.0F, sp.y - 26.0F),
+                                  ImVec2(sp.x + 320.0F, sp.y - 2.0F),
+                                  IM_COL32(15, 35, 55, 235), 4.0F);
+                dl->AddText(ImVec2(sp.x + 2.0F, sp.y - 22.0F),
+                            IM_COL32(95, 235, 255, 255), txt.c_str());
+            }
+        }
 
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
         {
-            if (mouse_in_central_viewport && target_idx >= 0)
+            if (mouse_in_central_viewport)
             {
                 if (w.is_dragging_asset_mesh)
-                    (void)assign_mesh_asset_to_entity(s, target_idx, w.drag_asset_mesh_id, log_push);
+                {
+                    if (w.drag_hover_entity_idx >= 0)
+                    {
+                        (void)assign_mesh_asset_to_entity(s, w.drag_hover_entity_idx, w.drag_asset_mesh_id, log_push);
+                        s.selected      = w.drag_hover_entity_idx;
+                        s.selected_kind = SelKind::kEntity;
+                    }
+                    else
+                    {
+                        const int new_idx = spawn_entity_with_modifiers(s, "Cube", floor_drop_pos, log_push);
+                        if (new_idx >= 0)
+                        {
+                            (void)assign_mesh_asset_to_entity(s, new_idx, w.drag_asset_mesh_id, log_push);
+                            s.selected      = new_idx;
+                            s.selected_kind = SelKind::kEntity;
+                        }
+                    }
+                }
                 if (w.is_dragging_asset_texture)
-                    (void)assign_texture_asset_to_entity(s, target_idx, w.drag_asset_texture_id, log_push);
-                s.selected      = target_idx;
-                s.selected_kind = SelKind::kEntity;
+                {
+                    if (w.drag_hover_entity_idx >= 0)
+                    {
+                        (void)assign_texture_asset_to_entity(s, w.drag_hover_entity_idx, w.drag_asset_texture_id, log_push);
+                        s.selected      = w.drag_hover_entity_idx;
+                        s.selected_kind = SelKind::kEntity;
+                    }
+                    else
+                    {
+                        const int new_idx = spawn_entity_with_modifiers(s, "Cube", floor_drop_pos, log_push);
+                        if (new_idx >= 0)
+                        {
+                            (void)assign_texture_asset_to_entity(s, new_idx, w.drag_asset_texture_id, log_push);
+                            s.selected      = new_idx;
+                            s.selected_kind = SelKind::kEntity;
+                        }
+                    }
+                }
             }
             w.is_dragging_asset_mesh    = false;
             w.drag_asset_mesh_id.clear();

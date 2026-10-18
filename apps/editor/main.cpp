@@ -397,6 +397,7 @@ struct PrevCamBasis
 // ============================================================================
 #include "StudioApp.hpp"
 #include "StudioToolbar.hpp"
+#include "StudioSelfTester.hpp"
 
 namespace
 {
@@ -406,6 +407,7 @@ std::uint32_t g_studio_max_frames           { 0U };
 bool          g_studio_start_pie            { false };
 bool          g_studio_autopilot_e2e        { false };
 [[maybe_unused]] bool g_studio_force_project_manager { false };
+bool          g_studio_self_test_all        { false };
 std::string   g_studio_capture_gameplay_dir {};
 bool          g_studio_demo_all_phases      { false };
 bool          g_studio_load_context_demo    { false };
@@ -1339,6 +1341,7 @@ struct SunLight
 inline SunLight resolve_sun_light(const std::vector<LightRow>& lights)
 {
     SunLight s {};
+    s.ambient_w = cd::studio_rt::golden::enabled() ? 0.0F : 0.22F;
     for (const auto& lrow : lights)
     {
         if (!lrow.enabled || lrow.light.intensity <= 0.001F)
@@ -1347,9 +1350,19 @@ inline SunLight resolve_sun_light(const std::vector<LightRow>& lights)
             continue;
         s.dir = lrow.light.direction;
         s.col = lrow.light.color;
-        s.strength = std::min(2.5F, lrow.light.intensity / 80000.0F);
-        // Sky hemisphere tied to sun being enabled: no sun, no sky bounce.
-        s.ambient_w = 0.18F;
+        const float raw_i = lrow.light.intensity;
+        if (cd::studio_rt::golden::enabled())
+        {
+            s.strength  = std::min(2.5F, raw_i / 80000.0F);
+            s.ambient_w = 0.18F;
+        }
+        else
+        {
+            s.strength = (raw_i <= 250.0F)
+                ? std::clamp(raw_i * 0.22F, 0.05F, 2.5F)
+                : std::clamp(raw_i / 24000.0F, 0.05F, 2.5F);
+            s.ambient_w = 0.26F;
+        }
         s.has_sun = true;
         break;
     }
@@ -1640,8 +1653,10 @@ inline void draw_shadow_map_pass(cd::rhi::ICommandBuffer& cmd,
             auto prep_csm_one = [&](std::size_t i) {
                 const auto& ent = entities[i];
                 if (!ent.visible) return;
-                if (ent.name.find("Ground_Floor") != std::string::npos &&
-                    !ent.use_texture && ent.custom_texture_id == 0)
+                if (ent.name.find("Ground_Floor") != std::string::npos ||
+                    ent.name.find("Volumetric_Clouds") != std::string::npos ||
+                    ent.name.find("Volumetric_Fog") != std::string::npos ||
+                    ent.name.find("Camera") != std::string::npos)
                     return;
                 const auto& mesh = mesh_for(ent.kind);
                 if (!mesh.vb.is_valid()) return;
@@ -3527,7 +3542,9 @@ inline void draw_floor_and_entities(cd::rhi::IDrawRecorder& cmd,
         if (ent.name.find("Ground_Floor") != std::string::npos &&
             !ent.use_texture && ent.custom_texture_id == 0)
             return;
-        if (ent.name.find("Volumetric_Clouds") != std::string::npos)
+        if (ent.name.find("Volumetric_Clouds") != std::string::npos ||
+            ent.name.find("Volumetric_Fog") != std::string::npos ||
+            ent.name.find("Camera") != std::string::npos)
             return;
         const auto& mesh = mesh_for(ent.kind);
         if (!mesh.vb.is_valid())
@@ -3535,15 +3552,11 @@ inline void draw_floor_and_entities(cd::rhi::IDrawRecorder& cmd,
         auto* lt = scene.local(ent.handle);
         if (lt == nullptr)
             return;
-        if (ent.name.find("Camera_") != std::string::npos)
+        auto model = cd::math::to_mat4(lt->value);
+        if (ent.name.find("Ground_Floor") != std::string::npos)
         {
-            const float cdx = lt->value.position.x - cam.eye.x;
-            const float cdy = lt->value.position.y - cam.eye.y;
-            const float cdz = lt->value.position.z - cam.eye.z;
-            if (!show_editor_floor || (cdx * cdx + cdy * cdy + cdz * cdz) < 0.25F)
-                return;
+            model[3][1] = std::min(model[3][1], -0.28F);
         }
-        const auto model = cd::math::to_mat4(lt->value);
         const auto mvp = vp * model;
         PrimPush& pp = ent_push_scratch[i];
         pp.mvp = mvp;
@@ -4965,11 +4978,18 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
             if (g_studio_has_cli_cam_eye || g_studio_has_cli_cam_target)
                 cd::studio::sync_camera_and_invalidate_frame_history(s);
             if (g_studio_force_project_manager ||
-                (!g_studio_autopilot_e2e && !had_cli_template && !had_cli_scene &&
+                (!g_studio_self_test_all && !g_studio_autopilot_e2e && !had_cli_template && !had_cli_scene &&
                  !had_cli_context_demo && !g_studio_start_pie &&
                  g_studio_capture_png.empty() && !cd::studio_rt::golden::enabled()))
             {
                 cd::studio::studio_world().show_project_manager = true;
+            }
+        }
+        if (g_studio_self_test_all)
+        {
+            if (cd::studio::run_studio_autonomous_self_test_step(s, s.frame_idx, resolve_sun_light, log_push_fn))
+            {
+                request_shutdown();
             }
         }
         if (g_studio_autopilot_e2e && !g_studio_capture_gameplay_dir.empty() && s.frame_idx == 13u)
@@ -5005,15 +5025,21 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                 }
             }
 
-            bool  has_cloud_entity     = false;
-            float entity_cloud_cov     = s.fx.clouds_coverage;
-            int   scene_cam_entity_idx = -1;
-            bool  has_player_vessel    = false;
+            bool  has_cloud_entity         = false;
+            float entity_cloud_cov         = s.fx.clouds_coverage;
+            int   scene_cam_entity_idx     = -1;
+            bool  has_player_vessel        = false;
+            bool  has_visible_ground_floor = false;
+            bool  has_sponza_entity_vis    = false;
 
             for (std::size_t ei = 0u; ei < s.entities.size(); ++ei)
             {
                 const auto& ent     = s.entities[ei];
                 auto&       ems     = w_rt.entity_modifiers[ent.handle.id];
+                if (ent.visible && ent.name.find("Ground_Floor") != std::string::npos)
+                    has_visible_ground_floor = true;
+                if (ent.visible && ent.kind == PrimitiveKind::kSponza)
+                    has_sponza_entity_vis = true;
                 const auto* cld_mod = ems.find<cd::studio::CloudLayerModifier>();
                 const auto* sky_mod = ems.find<cd::studio::SkyAtmosphereModifier>();
                 const bool  is_cloud_ent =
@@ -5074,6 +5100,8 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                         scene_cam_entity_idx = static_cast<int>(ei);
                 }
             }
+
+            s.show_editor_floor = has_visible_ground_floor && !has_sponza_entity_vis;
 
             // Sync clouds & sky shafts with active lights and spawnable/deletable cloud entities
             if (active_light_count == 0u || !has_active_sun)
@@ -5187,8 +5215,57 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                 { s.selected = pr.index; s.selected_kind = SelKind::kLight; log_push_fn(pr.log); }
                 else if (pr.kind == cd_studio::PickKind::kEntity)
                 { s.selected = pr.index; s.selected_kind = SelKind::kEntity; log_push_fn(pr.log); }
-                else if (s.selected >= 0)
-                { log_push_fn("[pick] cleared selection"); s.selected = -1; }
+                else
+                {
+                    int ground_hit_idx = -1;
+                    if (!cd::studio_rt::golden::enabled())
+                    {
+                        for (std::size_t gi = 0u; gi < s.entities.size(); ++gi)
+                        {
+                            const auto& gent = s.entities[gi];
+                            if (!gent.visible || gent.locked ||
+                                gent.name.find("Ground_Floor") == std::string::npos)
+                                continue;
+                            if (const auto* glt = s.scene.local(gent.handle))
+                            {
+                                const float top_y = glt->value.position.y + 0.5F * glt->value.scale.y;
+                                cd::math::Vec3f rfwd = s.cam.target - s.cam.eye;
+                                const float rfl = cd::math::length(rfwd);
+                                if (rfl > 1e-4F) rfwd = rfwd * (1.0F / rfl);
+                                constexpr cd::math::Vec3f wup { 0.0F, 1.0F, 0.0F };
+                                const cd::math::Vec3f rright = cd::math::normalize(cd::math::cross(rfwd, wup));
+                                const cd::math::Vec3f rup    = cd::math::cross(rright, rfwd);
+                                const float hh = std::tan(s.cam.fov_y * 0.5F);
+                                const float hw = hh * pin.aspect;
+                                const cd::math::Vec3f rdir = cd::math::normalize(
+                                    rfwd + rright * (pin.ndc_x * hw) + rup * (pin.ndc_y * hh));
+                                if (rdir.y < -1e-4F && s.cam.eye.y > top_y)
+                                {
+                                    const float t_plane = (top_y - s.cam.eye.y) / rdir.y;
+                                    const float hx = std::fabs((s.cam.eye.x + rdir.x * t_plane) - glt->value.position.x);
+                                    const float hz = std::fabs((s.cam.eye.z + rdir.z * t_plane) - glt->value.position.z);
+                                    if (hx <= 0.5F * glt->value.scale.x && hz <= 0.5F * glt->value.scale.z)
+                                    {
+                                        ground_hit_idx = static_cast<int>(gi);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (ground_hit_idx >= 0)
+                    {
+                        s.selected      = ground_hit_idx;
+                        s.selected_kind = SelKind::kEntity;
+                        log_push_fn("[pick] entity: " +
+                                    s.entities[static_cast<std::size_t>(ground_hit_idx)].name);
+                    }
+                    else if (s.selected >= 0)
+                    {
+                        log_push_fn("[pick] cleared selection");
+                        s.selected = -1;
+                    }
+                }
             }
         }
 
@@ -5432,7 +5509,11 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
             [](const SceneEntity& e) -> PrimitiveKind    { return e.kind; },
             [&s](const SceneEntity& e) -> std::optional<cd::math::Mat4f>
             {
-                if (!e.visible || e.name.find("Ground_Floor") != std::string::npos)
+                if (!e.visible ||
+                    e.name.find("Ground_Floor") != std::string::npos ||
+                    e.name.find("Volumetric_Clouds") != std::string::npos ||
+                    e.name.find("Volumetric_Fog") != std::string::npos ||
+                    e.name.find("Camera") != std::string::npos)
                     return std::nullopt;
                 auto* lt = s.scene.local(e.handle);
                 if (!lt) return std::nullopt;
@@ -6150,6 +6231,11 @@ int main(int argc, char** argv)
         else if (arg == "--project-manager")
         {
             g_studio_force_project_manager = true;
+        }
+        else if (arg == "--self-test-all" || arg == "--self-test")
+        {
+            g_studio_self_test_all = true;
+            if (g_studio_max_frames == 0U) g_studio_max_frames = 12U;
         }
         else if ((arg == "--capture-window-png" || arg == "--studio-capture-png" ||
                   arg == "--capture-png" || arg == "--screenshot") &&

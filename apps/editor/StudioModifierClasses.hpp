@@ -1250,6 +1250,7 @@ struct StudioRuntimeWorld
     int                                                   inline_rename_entity_idx  { -1 };
     int                                                   inline_rename_light_idx   { -1 };
     char                                                  inline_rename_buf[64]     {};
+    bool                                                  preload_starter_context_assets { false };
 
     [[nodiscard]] bool is_asset_in_context(std::string_view path) const noexcept
     {
@@ -1282,6 +1283,20 @@ struct StudioRuntimeWorld
         item.path = std::string(path);
         item.kind = kind;
         return load_asset_into_context(item);
+    }
+
+    void populate_starter_context_assets()
+    {
+        (void)load_asset_into_context("Sphere",       "assets/meshes/Sphere.mesh", 0U);
+        (void)load_asset_into_context("Cube",         "assets/meshes/Cube.mesh", 0U);
+        (void)load_asset_into_context("Cylinder",     "assets/meshes/Cylinder.mesh", 0U);
+        (void)load_asset_into_context("Cone",         "assets/meshes/Cone.mesh", 0U);
+        (void)load_asset_into_context("Torus",        "assets/meshes/Torus.mesh", 0U);
+        (void)load_asset_into_context("Gold_24K",     "assets/textures/Gold_Leaf_24K.tex", 1U);
+        (void)load_asset_into_context("Checker_2K",   "assets/textures/UV_Checkerboard_2K.tex", 1U);
+        (void)load_asset_into_context("Carbon_Fiber", "assets/textures/Carbon_Fiber_Twill.tex", 1U);
+        if (selected_content_asset.empty())
+            selected_content_asset = "assets/meshes/Sphere.mesh";
     }
 };
 

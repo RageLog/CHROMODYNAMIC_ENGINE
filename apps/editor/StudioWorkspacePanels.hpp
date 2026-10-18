@@ -225,11 +225,27 @@ inline void draw_project_manager_screen(
     ImGui::TextDisabled("Studio Hub • v1.0");
     ImGui::Separator();
 
+    ImGui::Checkbox("Preload Starter Assets##pm_preload", &w.preload_starter_context_assets);
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip("When checked, preloads 8 basic 3D meshes & materials into Active Context.\nWhen unchecked, starts with a completely empty Active Context.");
+    }
+
     // Primary Action Button (Large Green): New Empty 3D Stage
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18F, 0.54F, 0.34F, 1.0F));
     if (ImGui::Button("+ New Empty 3D Stage", ImVec2(-1.0F, 32.0F)))
     {
         reset_to_clean_empty_project(s, log_push, false);
+        if (!w.preload_starter_context_assets)
+        {
+            w.loaded_context_assets.clear();
+            w.selected_content_asset.clear();
+            w.selected_context_idx = -1;
+        }
+        else
+        {
+            w.populate_starter_context_assets();
+        }
         w.show_project_manager = false;
         log_push("[hub] Launched new clean empty 3D stage");
     }
@@ -279,6 +295,16 @@ inline void draw_project_manager_screen(
     if (ImGui::Button("Create Named Project", ImVec2(-1.0F, 24.0F)))
     {
         reset_to_clean_empty_project(s, log_push, false);
+        if (!w.preload_starter_context_assets)
+        {
+            w.loaded_context_assets.clear();
+            w.selected_content_asset.clear();
+            w.selected_context_idx = -1;
+        }
+        else
+        {
+            w.populate_starter_context_assets();
+        }
         if (w.pm_new_project_buf[0] != '\0')
             w.active_project_name = w.pm_new_project_buf;
         w.show_project_manager = false;
@@ -342,6 +368,16 @@ inline void draw_project_manager_screen(
     if (ImGui::Button("Launch Blank Stage##hero1", ImVec2(-1.0F, 24.0F)))
     {
         reset_to_clean_empty_project(s, log_push, true);
+        if (!w.preload_starter_context_assets)
+        {
+            w.loaded_context_assets.clear();
+            w.selected_content_asset.clear();
+            w.selected_context_idx = -1;
+        }
+        else
+        {
+            w.populate_starter_context_assets();
+        }
         w.show_project_manager = false;
         log_push("[hub] Launched blank 3D stage");
     }
@@ -570,36 +606,54 @@ inline void draw_ingame_hud_workspace(
         if (has_scene_ui_nodes) break;
     }
 
+    // Minimal, elegant top-right floating pill for Play controls in Game View (always rendered)
+    ImGui::SetNextWindowPos(ImVec2(sw - 255.0F, 56.0F), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(242.0F, 40.0F), ImGuiCond_Always);
+    ImGuiWindowFlags pill_flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+                                  ImGuiWindowFlags_NoBackground;
+    if (ImGui::Begin("##clean_play_controls", nullptr, pill_flags))
+    {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.85F, 0.22F, 0.22F, 0.90F));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.95F, 0.32F, 0.32F, 1.0F));
+        const bool stop_clicked = ImGui::Button("[ ] Stop Play (Esc)", ImVec2(132.0F, 26.0F));
+        ImGui::PopStyleColor(2);
+
+        if (stop_clicked || ImGui::IsKeyPressed(ImGuiKey_Escape))
+        {
+            if (s.pie_playing) exit_pie_play_mode(s, log_push);
+            cd::ui::chroma::state().workspace_mode = 0;
+            w.pilot_scene_camera_idx = -1;
+            log_push("[studio] Exited Game View / Play Mode to 3D Editor");
+        }
+
+        ImGui::SameLine();
+        const bool hud_active = w.enable_demo_hud_overlay;
+        if (hud_active)
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20F, 0.60F, 0.35F, 0.90F));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25F, 0.75F, 0.45F, 1.0F));
+        }
+        else
+        {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20F, 0.40F, 0.65F, 0.85F));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25F, 0.50F, 0.80F, 1.0F));
+        }
+        if (ImGui::Button(hud_active ? "- HUD" : "+ HUD", ImVec2(80.0F, 26.0F)))
+        {
+            w.enable_demo_hud_overlay = !w.enable_demo_hud_overlay;
+        }
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("Toggle Sample Demo HUD Overlay");
+        }
+        ImGui::PopStyleColor(2);
+    }
+    ImGui::End();
+
     // If scene is clean/empty and demo HUD overlay is not explicitly enabled:
     if (!has_scene_ui_nodes && !w.enable_demo_hud_overlay)
     {
-        // Minimal, elegant top-right floating pill for Play controls
-        ImGui::SetNextWindowPos(ImVec2(sw - 235.0F, 58.0F), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(225.0F, 36.0F), ImGuiCond_Always);
-        ImGuiWindowFlags pill_flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
-                                      ImGuiWindowFlags_NoBackground;
-        if (ImGui::Begin("##clean_play_controls", nullptr, pill_flags))
-        {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.85F, 0.22F, 0.22F, 0.90F));
-            if (ImGui::Button("[ ] Stop Play (Esc)", ImVec2(125.0F, 24.0F)))
-            {
-                exit_pie_play_mode(s, log_push);
-            }
-            ImGui::PopStyleColor();
-            ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20F, 0.40F, 0.65F, 0.85F));
-            if (ImGui::Button("+ HUD", ImVec2(80.0F, 24.0F)))
-            {
-                w.enable_demo_hud_overlay = true;
-            }
-            if (ImGui::IsItemHovered())
-            {
-                ImGui::SetTooltip("Toggle Sample Demo HUD Overlay");
-            }
-            ImGui::PopStyleColor();
-        }
-        ImGui::End();
         return;
     }
 
@@ -759,51 +813,157 @@ inline void draw_universal_250_node_catalog_panel(StateT& s, LogFn&& log_push)
 {
     auto& w = studio_world();
 
-    // Top Row: Category Filter Tabs (-1=All 250, 0=Core(21), 1=2D(50), 2=3D(88), 3=UI(60), 4=SOTA(31)) + Search
-    struct CatFilterItem
-    {
+    // 1. Quick Essentials Toolbar (Top Strip)
+    ImGui::TextColored(ImVec4(0.95F, 0.82F, 0.40F, 1.0F), "Quick Essentials:");
+    ImGui::SameLine();
+    struct QuickEssential {
         const char* label;
-        int         cat_idx;
+        const char* spawn_id;
+        cd::ui::chroma::IconKind icon;
+        ImU32 col;
     };
-    constexpr std::array<CatFilterItem, 6> kCatButtons {{
-        { "All (250)",        -1 },
-        { "Core (21)",         0 },
-        { "2D (50)",           1 },
-        { "3D (88)",           2 },
-        { "UI (60)",           3 },
-        { "Next-Gen SOTA (31)", 4 },
+    constexpr std::array<QuickEssential, 10> kQuickEssentials {{
+        { "+ Cube##qe_cube",        "Dynamic_Cube",        cd::ui::chroma::IconKind::kCube,     IM_COL32(95, 195, 255, 255) },
+        { "+ Sphere##qe_sph",       "Dynamic_Sphere",      cd::ui::chroma::IconKind::kSphere,   IM_COL32(115, 225, 255, 255) },
+        { "+ 3D Char##qe_3dc",      "Character_CesiumMan", cd::ui::chroma::IconKind::kAvatar,   IM_COL32(85, 245, 165, 255) },
+        { "+ 2D Char##qe_2dc",      "Character_2D",        cd::ui::chroma::IconKind::kAvatar,   IM_COL32(95, 235, 210, 255) },
+        { "+ Sun Light##qe_sun",    "Sun_Light",           cd::ui::chroma::IconKind::kLight,    IM_COL32(255, 220, 90, 255) },
+        { "+ Point Light##qe_pt",   "Point_Light",         cd::ui::chroma::IconKind::kLight,    IM_COL32(255, 200, 80, 255) },
+        { "+ Clouds##qe_cld",       "Volumetric_Clouds",   cd::ui::chroma::IconKind::kWorld,    IM_COL32(185, 215, 255, 255) },
+        { "+ Fog##qe_fog",          "Volumetric_Fog",      cd::ui::chroma::IconKind::kWorld,    IM_COL32(200, 225, 245, 255) },
+        { "+ Camera##qe_cam",       "Camera_3D",           cd::ui::chroma::IconKind::kCamera,   IM_COL32(200, 155, 255, 255) },
+        { "+ Physics Box##qe_pbox", "Dynamic_Cube",        cd::ui::chroma::IconKind::kPhysics,  IM_COL32(95, 240, 175, 255) },
     }};
-    for (std::size_t ci = 0; ci < kCatButtons.size(); ++ci)
+
+    for (std::size_t qi = 0; qi < kQuickEssentials.size(); ++qi)
+    {
+        if (qi > 0) ImGui::SameLine();
+        const auto& qe = kQuickEssentials[qi];
+        if (ImGui::IconButton(qe.label, qe.icon, qe.col, false, ImVec2(0.0F, 20.0F)))
+        {
+            if (std::strcmp(qe.spawn_id, "Volumetric_Clouds") == 0)
+                (void)spawn_volumetric_clouds_entity(s, log_push);
+            else if (std::strcmp(qe.spawn_id, "Volumetric_Fog") == 0)
+                (void)spawn_volumetric_fog_entity(s, log_push);
+            else if (std::strcmp(qe.spawn_id, "Camera_3D") == 0)
+                (void)spawn_scene_camera_entity(s, false, log_push);
+            else if (std::strcmp(qe.spawn_id, "Character_2D") == 0)
+                (void)spawn_empty_character_vessel(s, true, log_push);
+            else if (std::strcmp(qe.spawn_id, "Sun_Light") == 0)
+                (void)spawn_studio_light_by_type(s, 0, log_push);
+            else if (std::strcmp(qe.spawn_id, "Point_Light") == 0)
+                (void)spawn_studio_light_by_type(s, 1, log_push);
+            else
+            {
+                const cd::math::Vec3f pt = camera_spawn_point(s, 3.8F);
+                (void)spawn_entity_with_modifiers(s, qe.spawn_id, { pt.x, 0.0F, pt.z }, log_push);
+            }
+        }
+        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
+        {
+            ImGui::SetDragDropPayload("CD_STUDIO_SPAWN", qe.spawn_id, std::strlen(qe.spawn_id) + 1);
+            w.is_dragging_spawn = true;
+            w.drag_spawn_id     = qe.spawn_id;
+            ImGui::Text("Drop %s onto 3D Viewport", qe.spawn_id);
+            ImGui::EndDragDropSource();
+        }
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("Quick Essential: Click to Spawn or Drag onto 3D Viewport");
+        }
+    }
+    ImGui::Separator();
+
+    // 2. Task-Oriented 8 Category Filter Tabs + Search
+    struct TaskCatFilter {
+        const char* label;
+        int         cat_id;
+    };
+    constexpr std::array<TaskCatFilter, 8> kTaskCatButtons {{
+        { "All (250)",            0 },
+        { "3D Objects",           1 },
+        { "Characters & AI",      2 },
+        { "Lights & Sky",         3 },
+        { "Physics & Colliders",  4 },
+        { "Cameras & Audio",      5 },
+        { "2D & Sprites",         6 },
+        { "UI & Logic",           7 },
+    }};
+
+    static int s_task_cat = 0;
+    for (std::size_t ci = 0; ci < kTaskCatButtons.size(); ++ci)
     {
         if (ci > 0) ImGui::SameLine();
-        const bool is_active_cat = (w.node_catalog_category_filter == kCatButtons[ci].cat_idx);
+        const bool is_active_cat = (s_task_cat == kTaskCatButtons[ci].cat_id);
         ImGui::PushStyleColor(ImGuiCol_Button,
             is_active_cat ? ImVec4(0.15F, 0.52F, 0.91F, 1.0F)
                           : ImVec4(0.15F, 0.18F, 0.25F, 1.0F));
-        if (ImGui::SmallButton(kCatButtons[ci].label))
+        if (ImGui::SmallButton(kTaskCatButtons[ci].label))
         {
-            w.node_catalog_category_filter = kCatButtons[ci].cat_idx;
+            s_task_cat = kTaskCatButtons[ci].cat_id;
         }
         ImGui::PopStyleColor();
     }
 
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(160.0F);
-    ImGui::InputTextWithHint("##node250_search", "Search 250 constructs...",
+    ImGui::SetNextItemWidth(140.0F);
+    ImGui::InputTextWithHint("##node250_search", "Search...",
                              w.node_catalog_search, sizeof(w.node_catalog_search));
     if (w.node_catalog_search[0] != '\0')
     {
         ImGui::SameLine();
-        if (ImGui::SmallButton("Clear##clr250"))
+        if (ImGui::SmallButton("X##clr250"))
             w.node_catalog_search[0] = '\0';
     }
 
-    const auto filtered = filter_studio_nodes(w.node_catalog_category_filter, w.node_catalog_search);
+    const auto all_unfiltered = filter_studio_nodes(-1, w.node_catalog_search);
+
+    auto matches_task_cat = [](const StudioNodeDescriptor& d, int cat) -> bool {
+        if (cat == 0) return true; // All
+        std::string_view name = d.chroma_name;
+        auto contains_icase = [](std::string_view text, std::string_view pat) {
+            if (pat.empty()) return true;
+            auto it = std::search(text.begin(), text.end(), pat.begin(), pat.end(),
+                [](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b)); });
+            return it != text.end();
+        };
+        if (cat == 1) // 3D Objects
+            return d.category == StudioNodeCategory::Node3D || contains_icase(name, "Mesh") || contains_icase(name, "3D");
+        if (cat == 2) // Characters & AI
+            return contains_icase(name, "Char") || contains_icase(name, "Avatar") || contains_icase(name, "Agent") ||
+                   contains_icase(name, "AI") || contains_icase(name, "Nav") || contains_icase(name, "Path") || d.construct_kind == ChromaConstructKind::Vessel;
+        if (cat == 3) // Lights & Sky
+            return contains_icase(name, "Light") || contains_icase(name, "Sun") || contains_icase(name, "Sky") ||
+                   contains_icase(name, "Fog") || contains_icase(name, "Cloud") || contains_icase(name, "Probe") || contains_icase(name, "Aether") || contains_icase(name, "Radiance");
+        if (cat == 4) // Physics & Colliders
+            return contains_icase(name, "Physic") || contains_icase(name, "Rigid") || contains_icase(name, "Colli") ||
+                   contains_icase(name, "Joint") || contains_icase(name, "Body") || contains_icase(name, "Area") || contains_icase(name, "Ray");
+        if (cat == 5) // Cameras & Audio
+            return contains_icase(name, "Camera") || contains_icase(name, "Audio") || contains_icase(name, "Sound") ||
+                   contains_icase(name, "Music") || contains_icase(name, "Listener") || contains_icase(name, "Voice");
+        if (cat == 6) // 2D & Sprites
+            return d.category == StudioNodeCategory::Node2D || contains_icase(name, "2D") || contains_icase(name, "Sprite") ||
+                   contains_icase(name, "Tile") || contains_icase(name, "Canvas");
+        if (cat == 7) // UI & Logic
+            return d.category == StudioNodeCategory::ControlUI || d.category == StudioNodeCategory::CoreSystem ||
+                   contains_icase(name, "UI") || contains_icase(name, "Button") || contains_icase(name, "Label") ||
+                   contains_icase(name, "Timer") || contains_icase(name, "State") || contains_icase(name, "Tree");
+        return true;
+    };
+
+    std::vector<const StudioNodeDescriptor*> filtered;
+    filtered.reserve(all_unfiltered.size());
+    for (const auto* d : all_unfiltered)
+    {
+        if (d && matches_task_cat(*d, s_task_cat))
+            filtered.push_back(d);
+    }
+
     ImGui::SameLine();
     ImGui::TextColored(ImVec4(0.45F, 0.88F, 1.0F, 1.0F),
-                       "| %zu / %zu Constructs", filtered.size(), kStudioTotalCatalogCount);
+                       "| %zu Nodes", filtered.size());
 
-    // Left Pane: Scrollable Icon-Driven List of Matching Constructs
+    // Left Pane: Scrollable List of Matching Constructs
     ImGui::BeginChild("catalog_250_list_pane", ImVec2(265.0F, 0.0F), true);
     for (const auto* desc : filtered)
     {
@@ -865,20 +1025,32 @@ inline void draw_universal_250_node_catalog_panel(StateT& s, LogFn&& log_push)
         {
             w.selected_catalog_node_id = desc->id;
         }
+        // Double-click directly adds to scene
+        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+        {
+            const cd::math::Vec3f spawn_pt = camera_spawn_point(s, 3.5F);
+            (void)spawn_or_compose_studio_catalog_node(
+                s, desc->id, CatalogComposeMode::SpawnRootElement, { spawn_pt.x, 0.0F, spawn_pt.z }, log_push);
+        }
+        // Drag onto 3D viewport
+        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
+        {
+            ImGui::SetDragDropPayload("CD_STUDIO_SPAWN", desc->chroma_name, std::strlen(desc->chroma_name) + 1);
+            w.is_dragging_spawn = true;
+            w.drag_spawn_id     = desc->chroma_name;
+            ImGui::Text("Drop %s onto 3D Viewport", desc->chroma_name);
+            ImGui::EndDragDropSource();
+        }
         if (ImGui::IsItemHovered())
         {
-            ImGui::SetTooltip("#%03u %s  |  Role: %s (%s)",
-                              static_cast<unsigned>(desc->id),
-                              desc->chroma_name,
-                              desc->godot_name,
-                              desc->video_timestamp);
+            ImGui::SetTooltip("%s\nDouble-click or Drag onto 3D Viewport to Spawn", desc->chroma_name);
         }
     }
     ImGui::EndChild();
 
     ImGui::SameLine();
 
-    // Right Pane: Pinned Action Buttons on Top + Clean Construct Specification Card
+    // Right Pane: Simplified Detail Card with Large Add Button
     ImGui::BeginChild("CatalogDetailCard", ImVec2(0.0F, 0.0F), true);
     const StudioNodeDescriptor* sel_desc = find_studio_node_by_id(w.selected_catalog_node_id);
     if (!filtered.empty())
@@ -893,54 +1065,55 @@ inline void draw_universal_250_node_catalog_panel(StateT& s, LogFn&& log_push)
     }
     if (!sel_desc) sel_desc = &kStudioUniversalNodeCatalog[117];
 
-    // Row 1: Pinned 3 Icon-Driven Composition Mode Action Buttons
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(5.0F, 2.0F));
     const cd::math::Vec3f spawn_pt = camera_spawn_point(s, 3.5F);
-    if (ImGui::IconButton("Spawn Root Element##cat_spawn", cd::ui::chroma::IconKind::kPlus,
-                          IM_COL32(85, 245, 165, 255), false, ImVec2(148.0F, 21.0F)))
+
+    // Single prominent Add to Scene button + Attach button
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18F, 0.58F, 0.34F, 1.0F));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24F, 0.72F, 0.42F, 1.0F));
+    if (ImGui::IconButton("+ Add to Scene##cat_add_scene", cd::ui::chroma::IconKind::kPlus,
+                          IM_COL32(255, 255, 255, 255), false, ImVec2(160.0F, 26.0F)))
     {
         (void)spawn_or_compose_studio_catalog_node(
             s, sel_desc->id, CatalogComposeMode::SpawnRootElement, { spawn_pt.x, 0.0F, spawn_pt.z }, log_push);
     }
-    ImGui::SameLine();
-    if (ImGui::IconButton("Nest as Child##cat_nest", cd::ui::chroma::IconKind::kLayers,
-                          IM_COL32(105, 200, 255, 255), false, ImVec2(124.0F, 21.0F)))
+    ImGui::PopStyleColor(2);
+
+    if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
     {
-        (void)spawn_or_compose_studio_catalog_node(
-            s, sel_desc->id, CatalogComposeMode::NestAsChildElement, { spawn_pt.x, 0.0F, spawn_pt.z }, log_push);
-    }
-    ImGui::SameLine();
-    if (ImGui::IconButton("Fold Capsule##cat_fold", cd::ui::chroma::IconKind::kNode,
-                          IM_COL32(205, 155, 255, 255), false, ImVec2(118.0F, 21.0F)))
-    {
-        (void)spawn_or_compose_studio_catalog_node(
-            s, sel_desc->id, CatalogComposeMode::FoldAsInlineCapsule, { spawn_pt.x, 0.0F, spawn_pt.z }, log_push);
+        ImGui::SetDragDropPayload("CD_STUDIO_SPAWN", sel_desc->chroma_name, std::strlen(sel_desc->chroma_name) + 1);
+        w.is_dragging_spawn = true;
+        w.drag_spawn_id     = sel_desc->chroma_name;
+        ImGui::Text("Drop %s onto 3D Viewport", sel_desc->chroma_name);
+        ImGui::EndDragDropSource();
     }
 
-    // Row 2: Construct Title & Standard Role (Clean without external engine references)
+    if (s.selected >= 0 && std::cmp_less(s.selected, s.entities.size()))
+    {
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18F, 0.40F, 0.65F, 1.0F));
+        if (ImGui::IconButton("+ Attach to Selected##cat_attach", cd::ui::chroma::IconKind::kLayers,
+                              IM_COL32(200, 230, 255, 255), false, ImVec2(170.0F, 26.0F)))
+        {
+            (void)spawn_or_compose_studio_catalog_node(
+                s, sel_desc->id, CatalogComposeMode::NestAsChildElement, { spawn_pt.x, 0.0F, spawn_pt.z }, log_push);
+        }
+        ImGui::PopStyleColor();
+    }
+
+    ImGui::Separator();
     ImGui::TextColored(ImVec4(0.38F, 0.94F, 0.68F, 1.0F),
-                       "#%03u  %s  (%s)",
-                       static_cast<unsigned>(sel_desc->id),
-                       sel_desc->chroma_name,
-                       chroma_construct_kind_label(sel_desc->construct_kind));
+                       "%s", sel_desc->chroma_name);
     ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.96F, 0.80F, 0.36F, 1.0F),
-                       "  |  Role: %s (%s | %s)",
-                       sel_desc->godot_name,
-                       sel_desc->video_timestamp,
+    ImGui::TextDisabled("(#%03u • %s)",
+                       static_cast<unsigned>(sel_desc->id),
                        studio_node_category_label(sel_desc->category));
 
-    // Row 3: Auto-Bundled Stack & Layer
-    ImGui::TextColored(ImVec4(0.54F, 0.88F, 1.00F, 1.0F),
-                       "Auto-Bundled: %s   [Layer: %s]",
-                       sel_desc->spawn_preset.bundled_summary != nullptr
-                           ? sel_desc->spawn_preset.bundled_summary
-                           : "Transform3D + PbrMaterialModifier",
-                       sel_desc->spawn_preset.semantic_layer != nullptr
-                           ? sel_desc->spawn_preset.semantic_layer
-                           : "Default");
+    if (sel_desc->spawn_preset.bundled_summary != nullptr)
+    {
+        ImGui::TextColored(ImVec4(0.54F, 0.88F, 1.00F, 1.0F),
+                           "Components: %s", sel_desc->spawn_preset.bundled_summary);
+    }
 
-    // Row 4: UX Upgrade & SOTA Tech (auto-wrapped to available card width so nothing ever clips horizontally!)
     const float card_avail_px = std::max(320.0F, ImGui::GetContentRegionAvail().x - 10.0F);
     const std::size_t max_chars = static_cast<std::size_t>(std::max(44.0F, card_avail_px / 7.68F));
     auto draw_wrapped_labeled_line = [&](const ImVec4& col, const char* prefix, std::string_view body)
@@ -958,10 +1131,9 @@ inline void draw_universal_250_node_catalog_panel(StateT& s, LogFn&& log_push)
         ImGui::TextColored(col, "%s", line1.c_str());
         ImGui::TextColored(col, "%s", line2.c_str());
     };
-    draw_wrapped_labeled_line(ImVec4(0.84F, 0.88F, 0.96F, 1.0F), "UX Upgrade:   ", sel_desc->ux_upgrade);
-    draw_wrapped_labeled_line(ImVec4(0.72F, 0.82F, 0.94F, 1.0F), "SOTA Tech:    ", sel_desc->tech_upgrade);
+    draw_wrapped_labeled_line(ImVec4(0.84F, 0.88F, 0.96F, 1.0F), "Feature:   ", sel_desc->ux_upgrade);
+    draw_wrapped_labeled_line(ImVec4(0.72F, 0.82F, 0.94F, 1.0F), "Details:   ", sel_desc->tech_upgrade);
 
-    ImGui::PopStyleVar();
     ImGui::EndChild();
 }
 
@@ -1225,6 +1397,159 @@ inline void draw_camera_preview_overlay(
 }
 
 template <typename StateT, typename LogFn>
+inline void delete_studio_light_at(StateT& s, std::size_t li, LogFn&& log_push)
+{
+    if (li >= s.lights.size()) return;
+    auto& w = studio_world();
+    const std::string nm = s.lights[li].name;
+    s.lights.erase(s.lights.begin() + static_cast<std::ptrdiff_t>(li));
+    log_push("[light] Deleted light: " + nm);
+    if (s.selected_kind == SelKind::kLight)
+    {
+        if (std::cmp_equal(s.selected, li))
+        {
+            s.selected = s.lights.empty() ? -1 : std::min(s.selected, static_cast<int>(s.lights.size()) - 1);
+            if (s.selected < 0) s.selected_kind = SelKind::kEntity;
+        }
+        else if (std::cmp_greater(s.selected, li))
+        {
+            --s.selected;
+        }
+    }
+    if (s.lights.empty())
+    {
+        s.fx.clouds_coverage    = 0.0F;
+        s.fx.volumetric_fog_on  = false;
+        s.fx.fog_density        = 0.0F;
+        s.fx.shafts_strength    = 0.0F;
+        s.fx.aerial_perspective = 0.0F;
+        if (auto* sky = w.environment_modifiers.template find<SkyAtmosphereModifier>())
+        {
+            sky->enabled         = false;
+            sky->clouds_coverage = 0.0F;
+        }
+    }
+}
+
+template <typename LightRowT, typename LogFn>
+inline void draw_studio_light_controls(LightRowT& lr, LogFn&& log_push, const char* id_suffix = "")
+{
+    // Light Type selector buttons
+    ImGui::TextDisabled("Light Type:");
+    ImGui::SameLine();
+    const bool is_sun   = (lr.light.type == cd::light::LightType::kDirectional);
+    const bool is_point = (lr.light.type == cd::light::LightType::kPoint);
+    const bool is_spot  = (lr.light.type == cd::light::LightType::kSpot);
+    const bool is_rect  = (lr.light.type == cd::light::LightType::kRectArea);
+
+    if (is_sun) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.35F, 0.45F, 0.20F, 1.0F));
+    if (ImGui::SmallButton(("Sun##tp_sun" + std::string(id_suffix)).c_str()))
+    {
+        lr.light.type = cd::light::LightType::kDirectional;
+        log_push("[light] Switched '" + lr.name + "' to Directional Sun");
+    }
+    if (is_sun) ImGui::PopStyleColor();
+    ImGui::SameLine();
+
+    if (is_point) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.35F, 0.45F, 0.20F, 1.0F));
+    if (ImGui::SmallButton(("Point##tp_pt" + std::string(id_suffix)).c_str()))
+    {
+        lr.light.type = cd::light::LightType::kPoint;
+        log_push("[light] Switched '" + lr.name + "' to Point Omni");
+    }
+    if (is_point) ImGui::PopStyleColor();
+    ImGui::SameLine();
+
+    if (is_spot) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.35F, 0.45F, 0.20F, 1.0F));
+    if (ImGui::SmallButton(("Spot##tp_sp" + std::string(id_suffix)).c_str()))
+    {
+        lr.light.type = cd::light::LightType::kSpot;
+        log_push("[light] Switched '" + lr.name + "' to Spot Cone");
+    }
+    if (is_spot) ImGui::PopStyleColor();
+    ImGui::SameLine();
+
+    if (is_rect) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.35F, 0.45F, 0.20F, 1.0F));
+    if (ImGui::SmallButton(("Rect##tp_rc" + std::string(id_suffix)).c_str()))
+    {
+        lr.light.type = cd::light::LightType::kRectArea;
+        log_push("[light] Switched '" + lr.name + "' to Rect Area Softbox");
+    }
+    if (is_rect) ImGui::PopStyleColor();
+
+    // Position (for non-directional)
+    if (lr.light.type != cd::light::LightType::kDirectional)
+    {
+        ImGui::DragFloat3(("Pos (m)##pos" + std::string(id_suffix)).c_str(), &lr.light.position.x, 0.1F);
+    }
+
+    // Direction (for directional, spot, rect area)
+    if (lr.light.type == cd::light::LightType::kDirectional ||
+        lr.light.type == cd::light::LightType::kSpot ||
+        lr.light.type == cd::light::LightType::kRectArea)
+    {
+        if (ImGui::DragFloat3(("Dir##dir" + std::string(id_suffix)).c_str(), &lr.light.direction.x, 0.02F, -1.0F, 1.0F))
+        {
+            const float len_sq = lr.light.direction.x * lr.light.direction.x +
+                                 lr.light.direction.y * lr.light.direction.y +
+                                 lr.light.direction.z * lr.light.direction.z;
+            if (len_sq > 1e-4F)
+            {
+                const float inv_l = 1.0F / std::sqrt(len_sq);
+                lr.light.direction.x *= inv_l;
+                lr.light.direction.y *= inv_l;
+                lr.light.direction.z *= inv_l;
+            }
+        }
+    }
+
+    // Color Temperature / Kelvin CCT
+    if (ImGui::SliderFloat(("Kelvin (CCT)##cct" + std::string(id_suffix)).c_str(), &lr.kelvin, 1800.0F, 15000.0F, "%.0f K"))
+    {
+        lr.light.color = cd::light::cct_to_linear_rgb(lr.kelvin);
+    }
+    ImGui::ColorEdit3(("Tint##col" + std::string(id_suffix)).c_str(), &lr.light.color.x);
+
+    // Intensity
+    if (lr.light.type == cd::light::LightType::kDirectional && lr.light.intensity > 0.0F && lr.light.intensity <= 250.0F)
+    {
+        lr.light.intensity *= 4000.0F; // Upgrade legacy low scale (0..25) to physical lux (0..100000)
+    }
+    const float max_int = (lr.light.type == cd::light::LightType::kDirectional) ? 100000.0F : 120000.0F;
+    const char* int_fmt = (lr.light.type == cd::light::LightType::kDirectional) ? "%.0f lux" : "%.0f lm";
+    const char* int_lbl = (lr.light.type == cd::light::LightType::kDirectional) ? "Intensity (lux)##int" : "Intensity (lm)##int";
+    ImGui::SliderFloat((std::string(int_lbl) + id_suffix).c_str(), &lr.light.intensity, 0.0F, max_int, int_fmt);
+
+    // Range
+    if (lr.light.type != cd::light::LightType::kDirectional)
+    {
+        ImGui::SliderFloat(("Range (m)##rng" + std::string(id_suffix)).c_str(), &lr.light.range, 0.5F, 100.0F, "%.1f m");
+    }
+
+    // Spot-specific cone controls
+    if (lr.light.type == cd::light::LightType::kSpot)
+    {
+        bool cone_changed = false;
+        if (ImGui::SliderFloat(("Inner Cone (cos)##ic" + std::string(id_suffix)).c_str(), &lr.light.cos_inner_cone, 0.0F, 1.0F, "%.3f"))
+            cone_changed = true;
+        if (ImGui::SliderFloat(("Outer Cone (cos)##oc" + std::string(id_suffix)).c_str(), &lr.light.cos_outer_cone, 0.0F, lr.light.cos_inner_cone, "%.3f"))
+            cone_changed = true;
+        if (cone_changed)
+        {
+            lr.light.cos_outer_cone = std::min(lr.light.cos_outer_cone, lr.light.cos_inner_cone - 0.001F);
+            lr.light.inv_cone_range = 1.0F / std::max(0.001F, lr.light.cos_inner_cone - lr.light.cos_outer_cone);
+        }
+    }
+
+    // Area-specific size controls
+    if (lr.light.type == cd::light::LightType::kRectArea || lr.light.type == cd::light::LightType::kDiskArea)
+    {
+        ImGui::DragFloat(("Width (m)##aw" + std::string(id_suffix)).c_str(), &lr.light.area_width, 0.05F, 0.05F, 50.0F, "%.2f m");
+        ImGui::DragFloat(("Height (m)##ah" + std::string(id_suffix)).c_str(), &lr.light.area_height, 0.05F, 0.05F, 50.0F, "%.2f m");
+    }
+}
+
+template <typename StateT, typename LogFn>
 inline void draw_clean_studio_workspace_panels(
     StateT&                s,
     float                  dt,
@@ -1296,13 +1621,35 @@ inline void draw_clean_studio_workspace_panels(
                     (void)spawn_entity_with_modifiers(s, "Dynamic_Sphere", { pt.x, 0.0F, pt.z }, log_push);
                 }
                 ImGui::SameLine();
+                if (ImGui::IconButton("+ Floor##out_flr", cd::ui::chroma::IconKind::kCollider,
+                                      IM_COL32(130, 175, 220, 255), false, ImVec2(58.0F, 20.0F)))
+                {
+                    (void)spawn_ground_floor_entity(s, log_push);
+                }
+                ImGui::SameLine();
                 if (ImGui::IconButton("Light##out_lgt", cd::ui::chroma::IconKind::kLight,
                                       IM_COL32(255, 220, 90, 255), false, ImVec2(54.0F, 20.0F)))
                 {
-                    const auto pos = camera_spawn_point(s, 2.5F);
-                    s.lights.push_back({ "Point Light (2700K)",
-                        cd::light::point(pos, { 1.0F, 0.9F, 0.75F }, 2800.0F, 10.0F), true, 2700.0F });
-                    log_push("[studio] added Point Light");
+                    ImGui::OpenPopup("scene_add_light_popup");
+                }
+                if (ImGui::BeginPopup("scene_add_light_popup"))
+                {
+                    ImGui::TextColored(ImVec4(1.0F, 0.88F, 0.35F, 1.0F), "Add Studio Light");
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("+ Directional Sun Light (5800K)"))
+                        (void)spawn_studio_light_by_type(s, 0, log_push);
+                    if (ImGui::MenuItem("+ Point Omni Light (3200K)"))
+                        (void)spawn_studio_light_by_type(s, 1, log_push);
+                    if (ImGui::MenuItem("+ Spot Cone Light (4200K)"))
+                        (void)spawn_studio_light_by_type(s, 2, log_push);
+                    if (ImGui::MenuItem("+ Rect Area Softbox (5600K)"))
+                        (void)spawn_studio_light_by_type(s, 3, log_push);
+                    if (ImGui::MenuItem("+ Ambient Sky Fill (6500K)"))
+                        (void)spawn_studio_light_by_type(s, 4, log_push);
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("+ 3-Point Studio Rig (Key+Fill+Rim)"))
+                        (void)spawn_studio_light_by_type(s, 5, log_push);
+                    ImGui::EndPopup();
                 }
                 ImGui::SameLine();
                 if (ImGui::IconButton("Avatar##out_av", cd::ui::chroma::IconKind::kAvatar,
@@ -1334,6 +1681,12 @@ inline void draw_clean_studio_workspace_panels(
                                       IM_COL32(185, 215, 255, 255), false, ImVec2(68.0F, 20.0F)))
                 {
                     (void)spawn_volumetric_clouds_entity(s, log_push);
+                }
+                ImGui::SameLine();
+                if (ImGui::IconButton("+ Fog##out_fog", cd::ui::chroma::IconKind::kWorld,
+                                      IM_COL32(200, 225, 245, 255), false, ImVec2(58.0F, 20.0F)))
+                {
+                    (void)spawn_volumetric_fog_entity(s, log_push);
                 }
 
                 // Row 2: Search Filter + Save / Load
@@ -1463,6 +1816,7 @@ inline void draw_clean_studio_workspace_panels(
                     const std::string del_btn = "[X]##del_ent_" + std::to_string(i);
                     if (ImGui::SmallButton(del_btn.c_str()))
                     {
+                        ent.locked = false;
                         deferred_del_idx = static_cast<int>(i);
                     }
                     ImGui::PopStyleColor();
@@ -1641,7 +1995,10 @@ inline void draw_clean_studio_workspace_panels(
                         if (ImGui::MenuItem("Duplicate Object (Ctrl+D)"))
                             deferred_dup_idx = static_cast<int>(i);
                         if (ImGui::MenuItem("Delete Object [X] (Del)"))
+                        {
+                            ent.locked = false;
                             deferred_del_idx = static_cast<int>(i);
+                        }
                         ImGui::Separator();
                         if (ImGui::MenuItem("Focus Camera (F)"))
                             focus_selected(s, log_push);
@@ -1767,12 +2124,41 @@ inline void draw_clean_studio_workspace_panels(
                 {
                     s.selected      = deferred_del_idx;
                     s.selected_kind = SelKind::kEntity;
+                    if (s.selected >= 0 && std::cmp_less(s.selected, s.entities.size()))
+                    {
+                        s.entities[static_cast<std::size_t>(s.selected)].locked = false;
+                    }
                     delete_selected(s, log_push);
                 }
 
                 // Scene Lights in the Outliner (Visual Light Icon + Clean Name + [X] + Rename + Context)
                 ImGui::SeparatorText("Scene Lights");
+                if (ImGui::SmallButton("+Sun"))
+                    (void)spawn_studio_light_by_type(s, 0, log_push);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Directional Sun Light (5800K)");
+                ImGui::SameLine();
+                if (ImGui::SmallButton("+Point"))
+                    (void)spawn_studio_light_by_type(s, 1, log_push);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Point Omni Light (3200K)");
+                ImGui::SameLine();
+                if (ImGui::SmallButton("+Spot"))
+                    (void)spawn_studio_light_by_type(s, 2, log_push);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Spot Cone Light (4200K)");
+                ImGui::SameLine();
+                if (ImGui::SmallButton("+Area"))
+                    (void)spawn_studio_light_by_type(s, 3, log_push);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rect Area Softbox (5600K)");
+                ImGui::SameLine();
+                if (ImGui::SmallButton("+Fill"))
+                    (void)spawn_studio_light_by_type(s, 4, log_push);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Ambient Sky Fill (6500K)");
+                ImGui::SameLine();
+                if (ImGui::SmallButton("+Rig"))
+                    (void)spawn_studio_light_by_type(s, 5, log_push);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("3-Point Studio Rig (Key + Fill + Rim)");
+
                 int deferred_del_light_idx = -1;
+                int deferred_dup_light_idx = -1;
                 for (std::size_t li = 0; li < s.lights.size(); ++li)
                 {
                     // Eye toggle
@@ -1857,13 +2243,7 @@ inline void draw_clean_studio_workspace_panels(
                         }
                         if (ImGui::MenuItem("Duplicate Light"))
                         {
-                            auto cpy = s.lights[li];
-                            cpy.name += "_Copy";
-                            cpy.light.position.x += 1.0F;
-                            s.lights.push_back(cpy);
-                            s.selected = static_cast<int>(s.lights.size()) - 1;
-                            s.selected_kind = SelKind::kLight;
-                            log_push("[light] Duplicated light: " + cpy.name);
+                            deferred_dup_light_idx = static_cast<int>(li);
                         }
                         if (ImGui::MenuItem("Delete Light [X]"))
                         {
@@ -1886,30 +2266,20 @@ inline void draw_clean_studio_workspace_panels(
                     }
                 }
 
-                if (deferred_del_light_idx >= 0 && std::cmp_less(deferred_del_light_idx, s.lights.size()))
+                if (deferred_dup_light_idx >= 0 && std::cmp_less(deferred_dup_light_idx, s.lights.size()))
                 {
-                    log_push("[light] Deleted light: " + s.lights[static_cast<std::size_t>(deferred_del_light_idx)].name);
-                    s.lights.erase(s.lights.begin() + deferred_del_light_idx);
-                    if (s.selected_kind == SelKind::kLight)
-                    {
-                        if (s.selected == deferred_del_light_idx)
-                        {
-                            s.selected = s.lights.empty() ? -1 : std::min(s.selected, static_cast<int>(s.lights.size()) - 1);
-                            if (s.selected < 0) s.selected_kind = SelKind::kEntity;
-                        }
-                        else if (s.selected > deferred_del_light_idx)
-                        {
-                            --s.selected;
-                        }
-                    }
-                    if (s.lights.empty())
-                    {
-                        s.fx.clouds_coverage    = 0.0F;
-                        s.fx.volumetric_fog_on  = false;
-                        s.fx.fog_density        = 0.0F;
-                        s.fx.shafts_strength    = 0.0F;
-                        s.fx.aerial_perspective = 0.0F;
-                    }
+                    auto cpy = s.lights[static_cast<std::size_t>(deferred_dup_light_idx)];
+                    cpy.name += "_Copy";
+                    cpy.light.position.x += 1.0F;
+                    s.lights.push_back(cpy);
+                    s.selected = static_cast<int>(s.lights.size()) - 1;
+                    s.selected_kind = SelKind::kLight;
+                    log_push("[light] Duplicated light: " + cpy.name);
+                }
+
+                if (deferred_del_light_idx >= 0)
+                {
+                    delete_studio_light_at(s, static_cast<std::size_t>(deferred_del_light_idx), log_push);
                 }
 
                 // Scene Empty Space catch-area for right-click context menu
@@ -1919,6 +2289,8 @@ inline void draw_clean_studio_workspace_panels(
                 {
                     ImGui::TextColored(ImVec4(0.45F, 0.95F, 0.65F, 1.0F), "Create in Scene");
                     ImGui::Separator();
+                    if (ImGui::MenuItem("+ Ground Floor (Static Collider)"))
+                        (void)spawn_ground_floor_entity(s, log_push);
                     if (ImGui::MenuItem("+ Empty 3D Character"))
                         (void)spawn_empty_character_vessel(s, false, log_push);
                     if (ImGui::MenuItem("+ Empty 2D Character"))
@@ -1927,6 +2299,8 @@ inline void draw_clean_studio_workspace_panels(
                         (void)spawn_scene_camera_entity(s, false, log_push);
                     if (ImGui::MenuItem("+ Volumetric Clouds"))
                         (void)spawn_volumetric_clouds_entity(s, log_push);
+                    if (ImGui::MenuItem("+ Volumetric Fog"))
+                        (void)spawn_volumetric_fog_entity(s, log_push);
                     ImGui::Separator();
                     if (ImGui::MenuItem("+ Dynamic Cube"))
                     {
@@ -1938,12 +2312,23 @@ inline void draw_clean_studio_workspace_panels(
                         const cd::math::Vec3f pt = camera_spawn_point(s, 3.8F);
                         (void)spawn_entity_with_modifiers(s, "Dynamic_Sphere", { pt.x, 0.0F, pt.z }, log_push);
                     }
-                    if (ImGui::MenuItem("+ Point Light"))
+                    ImGui::Separator();
+                    if (ImGui::BeginMenu("+ Studio Lights"))
                     {
-                        const auto pos = camera_spawn_point(s, 2.5F);
-                        s.lights.push_back({ "Point Light (2700K)",
-                            cd::light::point(pos, { 1.0F, 0.9F, 0.75F }, 2800.0F, 10.0F), true, 2700.0F });
-                        log_push("[studio] added Point Light");
+                        if (ImGui::MenuItem("+ Directional Sun Light (5800K)"))
+                            (void)spawn_studio_light_by_type(s, 0, log_push);
+                        if (ImGui::MenuItem("+ Point Omni Light (3200K)"))
+                            (void)spawn_studio_light_by_type(s, 1, log_push);
+                        if (ImGui::MenuItem("+ Spot Cone Light (4200K)"))
+                            (void)spawn_studio_light_by_type(s, 2, log_push);
+                        if (ImGui::MenuItem("+ Rect Area Softbox (5600K)"))
+                            (void)spawn_studio_light_by_type(s, 3, log_push);
+                        if (ImGui::MenuItem("+ Ambient Sky Fill (6500K)"))
+                            (void)spawn_studio_light_by_type(s, 4, log_push);
+                        ImGui::Separator();
+                        if (ImGui::MenuItem("+ 3-Point Studio Rig (Key+Fill+Rim)"))
+                            (void)spawn_studio_light_by_type(s, 5, log_push);
+                        ImGui::EndMenu();
                     }
                     ImGui::Separator();
                     if (ImGui::MenuItem("Import & Assign OS File..."))
@@ -1969,6 +2354,20 @@ inline void draw_clean_studio_workspace_panels(
                 ImGui::BeginChild("toolbox_scroll_child", ImVec2(0.0F, 0.0F), false);
 
                 ImGui::SeparatorText("0. Characters, Cameras & Environment");
+                if (ImGui::IconButton("+ Ground Floor (Static Collider)##cr_flr", cd::ui::chroma::IconKind::kCollider,
+                                      IM_COL32(130, 175, 220, 255), false, ImVec2(-1.0F, 22.0F)))
+                {
+                    (void)spawn_ground_floor_entity(s, log_push);
+                }
+                if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
+                {
+                    const char* cid = "Ground_Floor";
+                    ImGui::SetDragDropPayload("CD_STUDIO_SPAWN", cid, std::strlen(cid) + 1);
+                    w.is_dragging_spawn = true;
+                    w.drag_spawn_id     = cid;
+                    ImGui::Text("Drop Ground Floor onto 3D Viewport");
+                    ImGui::EndDragDropSource();
+                }
                 if (ImGui::IconButton("+ Empty 3D Character Vessel##cr_3dchar", cd::ui::chroma::IconKind::kAvatar,
                                       IM_COL32(85, 245, 165, 255), false, ImVec2(-1.0F, 22.0F)))
                 {
@@ -1989,6 +2388,30 @@ inline void draw_clean_studio_workspace_panels(
                 {
                     (void)spawn_volumetric_clouds_entity(s, log_push);
                 }
+                if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
+                {
+                    const char* cid = "Volumetric_Clouds";
+                    ImGui::SetDragDropPayload("CD_STUDIO_SPAWN", cid, std::strlen(cid) + 1);
+                    w.is_dragging_spawn = true;
+                    w.drag_spawn_id     = cid;
+                    ImGui::Text("Drop Volumetric Clouds onto 3D Viewport");
+                    ImGui::EndDragDropSource();
+                }
+
+                if (ImGui::IconButton("+ Volumetric Fog##cr_fog", cd::ui::chroma::IconKind::kWorld,
+                                      IM_COL32(200, 225, 245, 255), false, ImVec2(-1.0F, 22.0F)))
+                {
+                    (void)spawn_volumetric_fog_entity(s, log_push);
+                }
+                if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
+                {
+                    const char* cid = "Volumetric_Fog";
+                    ImGui::SetDragDropPayload("CD_STUDIO_SPAWN", cid, std::strlen(cid) + 1);
+                    w.is_dragging_spawn = true;
+                    w.drag_spawn_id     = cid;
+                    ImGui::Text("Drop Volumetric Fog onto 3D Viewport");
+                    ImGui::EndDragDropSource();
+                }
 
                 ImGui::SeparatorText("1. Drag & Drop 3D Objects & Prefabs");
                 struct SpawnCard
@@ -1999,7 +2422,8 @@ inline void draw_clean_studio_workspace_panels(
                     cd::ui::chroma::IconKind icon;
                     ImU32                    col;
                 };
-                constexpr std::array<SpawnCard, 18> kSpawnCards {{
+                constexpr std::array<SpawnCard, 21> kSpawnCards {{
+                    { "Ground_Floor",           "Ground Floor",   "Static Ground Floor Collider (Plane 50x50m)",   cd::ui::chroma::IconKind::kCollider, IM_COL32(130, 175, 220, 255) },
                     { "Dynamic_Cube",           "Dynamic Cube",   "Dynamic RigidBody Cube + BoxCollider3D",        cd::ui::chroma::IconKind::kCube,     IM_COL32(95, 195, 255, 255) },
                     { "Dynamic_Sphere",         "Bounce Sphere",  "Dynamic Metallic Sphere + SphereCollider3D",    cd::ui::chroma::IconKind::kSphere,   IM_COL32(115, 225, 255, 255) },
                     { "Static_Ramp",            "Ramp 25 deg",    "Angled 25 deg OBB Ramp",                        cd::ui::chroma::IconKind::kCollider, IM_COL32(130, 210, 180, 255) },
@@ -2016,6 +2440,8 @@ inline void draw_clean_studio_workspace_panels(
                     { "Cylinder",               "Dyn Cylinder",   "Dynamic Cylinder + CapsuleCollider3D",          cd::ui::chroma::IconKind::kCylinder, IM_COL32(110, 210, 245, 255) },
                     { "Cone",                   "Dynamic Cone",   "Dynamic Cone + BoxCollider3D",                  cd::ui::chroma::IconKind::kCone,     IM_COL32(245, 185, 115, 255) },
                     { "Torus",                  "Dynamic Torus",  "Dynamic Torus + BoxCollider3D",                 cd::ui::chroma::IconKind::kTorus,    IM_COL32(205, 155, 255, 255) },
+                    { "Volumetric_Clouds",      "Vol. Clouds",    "Volumetric Atmospheric Clouds Entity",          cd::ui::chroma::IconKind::kWorld,    IM_COL32(185, 215, 255, 255) },
+                    { "Volumetric_Fog",         "Vol. Fog",       "Volumetric Height & Distance Fog Entity",       cd::ui::chroma::IconKind::kWorld,    IM_COL32(200, 225, 245, 255) },
                     { "Character_CesiumMan",    "Player Avatar",  "Skinned Animated Character + WASD Controller",  cd::ui::chroma::IconKind::kAvatar,   IM_COL32(85, 245, 165, 255) },
                     { "World_Sponza",           "Sponza Atrium",  "Classic Sponza Atrium World (glTF)",            cd::ui::chroma::IconKind::kWorld,    IM_COL32(255, 210, 115, 255) },
                 }};
@@ -2028,8 +2454,23 @@ inline void draw_clean_studio_workspace_panels(
                         const std::string btn_id = std::string(card.short_label) + "##sp_" + card.id;
                         if (ImGui::IconButton(btn_id.c_str(), card.icon, card.col, false, ImVec2(-1.0F, 20.0F)))
                         {
-                            const cd::math::Vec3f pt = camera_spawn_point(s, 3.8F);
-                            (void)spawn_entity_with_modifiers(s, card.id, { pt.x, 0.0F, pt.z }, log_push);
+                            if (std::strcmp(card.id, "Ground_Floor") == 0)
+                            {
+                                (void)spawn_ground_floor_entity(s, log_push);
+                            }
+                            else if (std::strcmp(card.id, "Volumetric_Clouds") == 0)
+                            {
+                                (void)spawn_volumetric_clouds_entity(s, log_push);
+                            }
+                            else if (std::strcmp(card.id, "Volumetric_Fog") == 0)
+                            {
+                                (void)spawn_volumetric_fog_entity(s, log_push);
+                            }
+                            else
+                            {
+                                const cd::math::Vec3f pt = camera_spawn_point(s, 3.8F);
+                                (void)spawn_entity_with_modifiers(s, card.id, { pt.x, 0.0F, pt.z }, log_push);
+                            }
                         }
                         if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
                         {
@@ -2044,6 +2485,48 @@ inline void draw_clean_studio_workspace_panels(
                             ImGui::SetTooltip("%s\n(Drag onto 3D Viewport or Click to Spawn)", card.tip);
                         }
                     }
+                    ImGui::EndTable();
+                }
+
+                ImGui::SeparatorText("Studio Lights & Lighting Rigs");
+                if (ImGui::BeginTable("lights_spawn_grid_2col", 2, ImGuiTableFlags_SizingStretchSame))
+                {
+                    ImGui::TableNextColumn();
+                    if (ImGui::IconButton("+ Sun Light##cr_l_sun", cd::ui::chroma::IconKind::kLight,
+                                          IM_COL32(255, 220, 90, 255), false, ImVec2(-1.0F, 20.0F)))
+                        (void)spawn_studio_light_by_type(s, 0, log_push);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Directional Sun Light (5800K, 5.5 lux)");
+
+                    ImGui::TableNextColumn();
+                    if (ImGui::IconButton("+ Point Omni##cr_l_pt", cd::ui::chroma::IconKind::kLight,
+                                          IM_COL32(255, 200, 80, 255), false, ImVec2(-1.0F, 20.0F)))
+                        (void)spawn_studio_light_by_type(s, 1, log_push);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Point Omni Light (3200K, 2800 lm)");
+
+                    ImGui::TableNextColumn();
+                    if (ImGui::IconButton("+ Spot Cone##cr_l_sp", cd::ui::chroma::IconKind::kLight,
+                                          IM_COL32(255, 175, 70, 255), false, ImVec2(-1.0F, 20.0F)))
+                        (void)spawn_studio_light_by_type(s, 2, log_push);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Spot Cone Light (4200K, 5500 lm)");
+
+                    ImGui::TableNextColumn();
+                    if (ImGui::IconButton("+ Area Softbox##cr_l_area", cd::ui::chroma::IconKind::kLight,
+                                          IM_COL32(215, 235, 255, 255), false, ImVec2(-1.0F, 20.0F)))
+                        (void)spawn_studio_light_by_type(s, 3, log_push);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rect Area Softbox (5600K, 3800 lm)");
+
+                    ImGui::TableNextColumn();
+                    if (ImGui::IconButton("+ Sky Fill##cr_l_sky", cd::ui::chroma::IconKind::kLight,
+                                          IM_COL32(180, 215, 255, 255), false, ImVec2(-1.0F, 20.0F)))
+                        (void)spawn_studio_light_by_type(s, 4, log_push);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Ambient Sky Fill (6500K, 1600 lm)");
+
+                    ImGui::TableNextColumn();
+                    if (ImGui::IconButton("+ 3-Point Rig##cr_l_rig", cd::ui::chroma::IconKind::kLight,
+                                          IM_COL32(255, 140, 220, 255), false, ImVec2(-1.0F, 20.0F)))
+                        (void)spawn_studio_light_by_type(s, 5, log_push);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("3-Point Studio Rig (Key + Fill + Rim)");
+
                     ImGui::EndTable();
                 }
 
@@ -2171,6 +2654,7 @@ inline void draw_clean_studio_workspace_panels(
                     if (ImGui::IconButton("Delete##insp_del", cd::ui::chroma::IconKind::kTrash,
                                           IM_COL32(255, 110, 110, 255), false, ImVec2(64.0F, 20.0F)))
                     {
+                        ent.locked = false;
                         delete_selected(s, log_push);
                     }
 
@@ -2522,16 +3006,41 @@ inline void draw_clean_studio_workspace_panels(
                 else if (s.selected_kind == SelKind::kLight &&
                          s.selected >= 0 && std::cmp_less(s.selected, s.lights.size()))
                 {
-                    auto& lr = s.lights[static_cast<std::size_t>(s.selected)];
+                    const std::size_t sel_li = static_cast<std::size_t>(s.selected);
+                    auto& lr = s.lights[sel_li];
                     ImGui::TextColored(ImVec4(1.0F, 0.88F, 0.35F, 1.0F), "Selected Light: %s", lr.name.c_str());
-                    ImGui::Checkbox("Enabled", &lr.enabled);
-                    ImGui::DragFloat3("Position (m)", &lr.light.position.x, 0.1F);
-                    ImGui::DragFloat3("Direction", &lr.light.direction.x, 0.02F, -1.0F, 1.0F);
-                    if (ImGui::SliderFloat("Kelvin (CCT)", &lr.kelvin, 1800.0F, 15000.0F, "%.0f K"))
-                        lr.light.color = cd::light::cct_to_linear_rgb(lr.kelvin);
-                    ImGui::ColorEdit3("Color Tint", &lr.light.color.x);
-                    ImGui::SliderFloat("Intensity", &lr.light.intensity, 100.0F, 120000.0F);
-                    ImGui::SliderFloat("Range (m)", &lr.light.range, 1.0F, 40.0F);
+                    ImGui::SameLine();
+                    bool del_clicked = false;
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0F, 0.35F, 0.35F, 1.0F));
+                    if (ImGui::SmallButton("Delete Light [X]##insp_del_lgt"))
+                    {
+                        del_clicked = true;
+                    }
+                    ImGui::PopStyleColor();
+
+                    if (del_clicked)
+                    {
+                        delete_studio_light_at(s, sel_li, log_push);
+                    }
+                    else
+                    {
+                        char name_buf[128] {};
+                        std::snprintf(name_buf, sizeof(name_buf), "%s", lr.name.c_str());
+                        ImGui::PushItemWidth(180.0F);
+                        if (ImGui::InputText("Light Name##insp_l_nm", name_buf, sizeof(name_buf)))
+                        {
+                            lr.name = name_buf;
+                        }
+                        ImGui::PopItemWidth();
+                        ImGui::SameLine();
+                        ImGui::Checkbox("Enabled##insp_l_en", &lr.enabled);
+
+                        if (lr.enabled)
+                        {
+                            ImGui::Separator();
+                            draw_studio_light_controls(lr, log_push, "_insp");
+                        }
+                    }
                 }
                 else
                 {
@@ -2578,36 +3087,100 @@ inline void draw_clean_studio_workspace_panels(
             if (ImGui::BeginTabItem("Lights & Export"))
             {
                 ImGui::BeginChild("inspector_lights_scroll", ImVec2(0.0F, 0.0F), false);
-                ImGui::SeparatorText("Clustered Scene Lights");
-                if (ImGui::IconButton("Add Point Light##insp_add_pt", cd::ui::chroma::IconKind::kLight,
-                                      IM_COL32(255, 220, 90, 255), false, ImVec2(130.0F, 20.0F)))
+                ImGui::SeparatorText("Clustered Scene Lights & Presets");
+                if (ImGui::BeginTable("lights_add_grid_2col", 2, ImGuiTableFlags_SizingStretchSame))
                 {
-                    const auto pos = camera_spawn_point(s, 2.5F);
-                    s.lights.push_back({ "Point Light (2700K)",
-                        cd::light::point(pos, { 1.0F, 0.9F, 0.75F }, 2800.0F, 10.0F), true, 2700.0F });
-                    log_push("[studio] added Point Light");
+                    ImGui::TableNextColumn();
+                    if (ImGui::IconButton("+ Directional (Sun)##insp_add_sun", cd::ui::chroma::IconKind::kLight,
+                                          IM_COL32(255, 220, 90, 255), false, ImVec2(-1.0F, 22.0F)))
+                    {
+                        (void)spawn_studio_light_by_type(s, 0, log_push);
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Distant Sun Light (5800K, 5.5 lux)");
+
+                    ImGui::TableNextColumn();
+                    if (ImGui::IconButton("+ Point (Omni)##insp_add_pt", cd::ui::chroma::IconKind::kLight,
+                                          IM_COL32(255, 200, 80, 255), false, ImVec2(-1.0F, 22.0F)))
+                    {
+                        (void)spawn_studio_light_by_type(s, 1, log_push);
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Omnidirectional Point Light (3200K, 2800 lm, 12m)");
+
+                    ImGui::TableNextColumn();
+                    if (ImGui::IconButton("+ Spot (Cone)##insp_add_sp", cd::ui::chroma::IconKind::kLight,
+                                          IM_COL32(255, 175, 70, 255), false, ImVec2(-1.0F, 22.0F)))
+                    {
+                        (void)spawn_studio_light_by_type(s, 2, log_push);
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Spot Cone Light (4200K, 5500 lm, 16m)");
+
+                    ImGui::TableNextColumn();
+                    if (ImGui::IconButton("+ Rect Area (Softbox)##insp_add_rc", cd::ui::chroma::IconKind::kLight,
+                                          IM_COL32(215, 235, 255, 255), false, ImVec2(-1.0F, 22.0F)))
+                    {
+                        (void)spawn_studio_light_by_type(s, 3, log_push);
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rectangular Studio Softbox (5600K, 3800 lm, 2.2x1.2m)");
+
+                    ImGui::TableNextColumn();
+                    if (ImGui::IconButton("+ Sky Fill (6500K)##insp_add_sky", cd::ui::chroma::IconKind::kLight,
+                                          IM_COL32(180, 215, 255, 255), false, ImVec2(-1.0F, 22.0F)))
+                    {
+                        (void)spawn_studio_light_by_type(s, 4, log_push);
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Large Radius Ambient Sky Fill (6500K, 1600 lm)");
+
+                    ImGui::TableNextColumn();
+                    if (ImGui::IconButton("+ 3-Point Studio Rig##insp_add_rig", cd::ui::chroma::IconKind::kLight,
+                                          IM_COL32(255, 140, 220, 255), false, ImVec2(-1.0F, 22.0F)))
+                    {
+                        (void)spawn_studio_light_by_type(s, 5, log_push);
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("3-Point Studio Rig (Key + Fill + Rim)");
+
+                    ImGui::EndTable();
                 }
-                ImGui::SameLine();
-                if (ImGui::IconButton("Add Spot Light##insp_add_sp", cd::ui::chroma::IconKind::kLight,
-                                      IM_COL32(255, 195, 85, 255), false, ImVec2(130.0F, 20.0F)))
-                {
-                    const auto pos = camera_spawn_point(s, 2.5F);
-                    s.lights.push_back({ "Spot Light (3200K)",
-                        cd::light::spot(pos, { 0.0F, -1.0F, 0.0F }, { 1.0F, 0.95F, 0.85F }, 5000.0F, 12.0F, 0.30F, 0.50F),
-                        true, 3200.0F });
-                    log_push("[studio] added Spot Light");
-                }
+
+                ImGui::SeparatorText("Active Lights List");
+                int insp_del_li = -1;
                 for (std::size_t li = 0; li < s.lights.size(); ++li)
                 {
                     auto& lr = s.lights[li];
                     ImGui::PushID(static_cast<int>(li));
-                    ImGui::Checkbox(lr.name.c_str(), &lr.enabled);
+
+                    // Red [X] delete button
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0F, 0.35F, 0.35F, 1.0F));
+                    if (ImGui::SmallButton("[X]##del_l"))
+                    {
+                        insp_del_li = static_cast<int>(li);
+                    }
+                    ImGui::PopStyleColor();
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Delete Light '%s'", lr.name.c_str());
+                    ImGui::SameLine();
+
+                    ImGui::Checkbox("##l_en", &lr.enabled);
+                    ImGui::SameLine();
+
+                    const bool is_l_sel = (s.selected_kind == SelKind::kLight && std::cmp_equal(s.selected, li));
+                    if (ImGui::Selectable(lr.name.c_str(), is_l_sel))
+                    {
+                        s.selected      = static_cast<int>(li);
+                        s.selected_kind = SelKind::kLight;
+                    }
+
                     if (lr.enabled)
                     {
-                        ImGui::DragFloat3("Pos", &lr.light.position.x, 0.1F);
-                        ImGui::SliderFloat("Intensity", &lr.light.intensity, 100.0F, 120000.0F);
+                        ImGui::Indent(18.0F);
+                        draw_studio_light_controls(lr, log_push, ("_tab_" + std::to_string(li)).c_str());
+                        ImGui::Unindent(18.0F);
                     }
+
                     ImGui::PopID();
+                }
+
+                if (insp_del_li >= 0)
+                {
+                    delete_studio_light_at(s, static_cast<std::size_t>(insp_del_li), log_push);
                 }
 
                 ImGui::SeparatorText("Standalone Game Export");
@@ -2931,6 +3504,7 @@ inline void draw_clean_studio_workspace_panels(
                 if (std::filesystem::exists(w.current_content_folder, dire_ec) &&
                     std::filesystem::is_directory(w.current_content_folder, dire_ec))
                 {
+                    std::string pending_sub_dir;
                     for (const auto& dir_entry : std::filesystem::directory_iterator(w.current_content_folder, dire_ec))
                     {
                         if (dir_entry.is_directory(dire_ec))
@@ -2940,11 +3514,15 @@ inline void draw_clean_studio_workspace_panels(
                             const std::string sub_id   = "[DIR] " + sub_name + "##sub_" + sub_full;
                             if (ImGui::Selectable(sub_id.c_str(), false))
                             {
-                                w.current_content_folder = sub_full;
-                                std::snprintf(s_custom_disk_path, sizeof(s_custom_disk_path), "%s", sub_full.c_str());
-                                build_disk_entries(w.current_content_folder);
+                                pending_sub_dir = sub_full;
                             }
                         }
+                    }
+                    if (!pending_sub_dir.empty())
+                    {
+                        w.current_content_folder = pending_sub_dir;
+                        std::snprintf(s_custom_disk_path, sizeof(s_custom_disk_path), "%s", pending_sub_dir.c_str());
+                        build_disk_entries(w.current_content_folder);
                     }
                 }
                 ImGui::EndChild();
@@ -2956,6 +3534,7 @@ inline void draw_clean_studio_workspace_panels(
                 ImGui::TextColored(ImVec4(0.52F, 0.86F, 1.0F, 1.0F),
                                    "2. Disk Files (Click -> Context)");
                 const int disk_cols = std::max(2, static_cast<int>(pane2_w / 92.0F));
+                std::string pending_folder_to_open;
                 if (ImGui::BeginTable("disk_tiles_grid_col", disk_cols, ImGuiTableFlags_SizingStretchSame))
                 {
                     int disk_tile_id = 0;
@@ -2975,8 +3554,7 @@ inline void draw_clean_studio_workspace_panels(
                             w.selected_content_asset = item.path;
                             if (item.kind == 0)
                             {
-                                w.current_content_folder = item.path;
-                                build_disk_entries(w.current_content_folder);
+                                pending_folder_to_open = item.path;
                             }
                             else if (item.kind == 4)
                             {
@@ -2992,6 +3570,31 @@ inline void draw_clean_studio_workspace_panels(
                                 log_push("[context] " + w.last_asset_status_msg);
                             }
                         }
+
+                        // Drag onto 3D Viewport directly from Disk Files!
+                        if (item.kind == 1) // Mesh
+                        {
+                            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
+                            {
+                                ImGui::SetDragDropPayload("CD_ASSET_MESH", item.path.c_str(), item.path.size() + 1);
+                                w.is_dragging_asset_mesh = true;
+                                w.drag_asset_mesh_id     = item.path;
+                                ImGui::Text("Drop Mesh '%s' into Scene", item.name.c_str());
+                                ImGui::EndDragDropSource();
+                            }
+                        }
+                        else if (item.kind == 2) // Texture
+                        {
+                            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
+                            {
+                                ImGui::SetDragDropPayload("CD_ASSET_TEXTURE", item.path.c_str(), item.path.size() + 1);
+                                w.is_dragging_asset_texture = true;
+                                w.drag_asset_texture_id     = item.path;
+                                ImGui::Text("Drop Texture '%s' onto Object", item.name.c_str());
+                                ImGui::EndDragDropSource();
+                            }
+                        }
+
                         if (ImGui::IsItemHovered())
                         {
                             if (item.kind == 4)
@@ -3001,7 +3604,7 @@ inline void draw_clean_studio_workspace_panels(
                             }
                             else
                             {
-                                ImGui::SetTooltip("Disk Asset: %s\nPath: %s\nStatus: %s\nClick to Load into Active Project Context",
+                                ImGui::SetTooltip("Disk Asset: %s\nPath: %s\nStatus: %s\nClick to Load into Active Project Context (or Drag into Scene)",
                                                   item.name.c_str(), item.path.c_str(),
                                                   in_ctx ? "Loaded in Context (Ready)" : "On Disk (Not in Context)");
                             }
@@ -3088,6 +3691,13 @@ inline void draw_clean_studio_workspace_panels(
                     }
                     ImGui::EndTable();
                 }
+
+                if (!pending_folder_to_open.empty())
+                {
+                    w.current_content_folder = pending_folder_to_open;
+                    std::snprintf(s_custom_disk_path, sizeof(s_custom_disk_path), "%s", pending_folder_to_open.c_str());
+                    build_disk_entries(w.current_content_folder);
+                }
                 ImGui::EndChild();
 
                 ImGui::SameLine(0.0F, 6.0F);
@@ -3097,117 +3707,186 @@ inline void draw_clean_studio_workspace_panels(
                 ImGui::TextColored(ImVec4(0.38F, 0.95F, 0.66F, 1.0F),
                                    "3. Active Context (%zu Loaded)",
                                    w.loaded_context_assets.size());
+                if (!w.loaded_context_assets.empty())
+                {
+                    ImGui::SameLine();
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.65F, 0.20F, 0.20F, 0.85F));
+                    if (ImGui::SmallButton("Clear All##ctx_clear_all"))
+                    {
+                        w.loaded_context_assets.clear();
+                        w.selected_content_asset.clear();
+                        w.selected_context_idx = -1;
+                        log_push("[context] Cleared all Active Context assets");
+                    }
+                    ImGui::PopStyleColor();
+                }
+
                 const int ctx_cols = std::max(2, static_cast<int>(pane3_w / 92.0F));
                 if (w.loaded_context_assets.empty())
                 {
                     ImGui::TextDisabled("Active Context is empty (0 loaded).");
                     ImGui::TextDisabled("Click Disk Files (Pane 2) to load");
-                    ImGui::TextDisabled("assets into Context, or load pack:");
-                    if (ImGui::IconButton("Load Starter Pack##ctx_seed_btn",
+                    ImGui::TextDisabled("assets into Context, or load starter pack:");
+                    if (ImGui::IconButton("Load Starter Primitives & Materials##ctx_seed_btn",
                                           cd::ui::chroma::IconKind::kImport,
-                                          IM_COL32(85, 245, 165, 255), false, ImVec2(-1.0F, 22.0F)))
+                                          IM_COL32(85, 245, 165, 255), false, ImVec2(-1.0F, 24.0F)))
                     {
-                        (void)w.load_asset_into_context("Sphere",       "assets/meshes/Sphere.mesh", 0U);
-                        (void)w.load_asset_into_context("Cube",         "assets/meshes/Cube.mesh", 0U);
-                        (void)w.load_asset_into_context("Cylinder",     "assets/meshes/Cylinder.mesh", 0U);
-                        (void)w.load_asset_into_context("Torus",        "assets/meshes/Torus.mesh", 0U);
-                        (void)w.load_asset_into_context("CesiumMan",    "assets/samples/Generic/CesiumMan.gltf", 0U);
-                        (void)w.load_asset_into_context("Gold_24K",     "assets/textures/Gold_Leaf_24K.tex", 1U);
-                        (void)w.load_asset_into_context("Checker_2K",   "assets/textures/UV_Checkerboard_2K.tex", 1U);
-                        (void)w.load_asset_into_context("Sponza_Brick", "assets/samples/Sponza/textures/sponza_brick_a_diff.jpg", 1U);
-                        w.selected_content_asset = "assets/meshes/Sphere.mesh";
-                        w.last_asset_status_msg = "Loaded 8 Disk Assets into Active Context";
+                        w.populate_starter_context_assets();
+                        w.last_asset_status_msg = "Loaded 8 Starter Assets into Active Context";
                         log_push("[context] " + w.last_asset_status_msg);
                     }
                 }
-                else if (ImGui::BeginTable("context_tiles_grid_col", ctx_cols, ImGuiTableFlags_SizingStretchSame))
+                else
                 {
-                    int ctx_tile_id = 0;
-                    for (const auto& ca : w.loaded_context_assets)
+                    int pending_erase_ctx = -1;
+                    if (ImGui::BeginTable("context_tiles_grid_col", ctx_cols, ImGuiTableFlags_SizingStretchSame))
                     {
-                        ImGui::TableNextColumn();
-                        ImGui::PushID(ctx_tile_id++);
-                        cd::ui::chroma::IconKind c_icon = cd::ui::chroma::IconKind::kMesh3D;
-                        ImU32 c_col = IM_COL32(95, 195, 255, 255);
-                        if (ca.kind == 0U)
+                        int ctx_tile_id = 0;
+                        for (std::size_t ci = 0; ci < w.loaded_context_assets.size(); ++ci)
                         {
-                            if (ca.name.find("Sphere") != std::string::npos)        c_icon = cd::ui::chroma::IconKind::kSphere;
-                            else if (ca.name.find("Cube") != std::string::npos)     c_icon = cd::ui::chroma::IconKind::kCube;
-                            else if (ca.name.find("Cylinder") != std::string::npos) c_icon = cd::ui::chroma::IconKind::kCylinder;
-                            else if (ca.name.find("Cone") != std::string::npos)     c_icon = cd::ui::chroma::IconKind::kCone;
-                            else if (ca.name.find("Torus") != std::string::npos)    c_icon = cd::ui::chroma::IconKind::kTorus;
-                            else if (ca.name.find("Cesium") != std::string::npos)   { c_icon = cd::ui::chroma::IconKind::kAvatar; c_col = IM_COL32(85, 245, 165, 255); }
-                            else if (ca.name.find("Sponza") != std::string::npos)   { c_icon = cd::ui::chroma::IconKind::kWorld;  c_col = IM_COL32(255, 210, 110, 255); }
-                        }
-                        else if (ca.kind == 1U)
-                        {
-                            c_icon = cd::ui::chroma::IconKind::kTexture2D;
-                            c_col  = IM_COL32(85, 235, 165, 255);
-                        }
-                        else
-                        {
-                            c_icon = cd::ui::chroma::IconKind::kMaterial;
-                            c_col  = IM_COL32(210, 155, 255, 255);
-                        }
-
-                        const bool is_sel = (w.selected_content_asset == ca.path);
-                        const std::string tile_lbl = ca.name + "##ctx_" + std::to_string(ctx_tile_id);
-                        if (ImGui::IconTile(tile_lbl.c_str(), c_icon, c_col, is_sel, true, ImVec2(-1.0F, 52.0F)))
-                        {
-                            w.selected_content_asset = ca.path;
+                            const auto& ca = w.loaded_context_assets[ci];
+                            ImGui::TableNextColumn();
+                            ImGui::PushID(ctx_tile_id++);
+                            cd::ui::chroma::IconKind c_icon = cd::ui::chroma::IconKind::kMesh3D;
+                            ImU32 c_col = IM_COL32(95, 195, 255, 255);
                             if (ca.kind == 0U)
                             {
-                                const int nidx = spawn_entity_with_modifiers(s, "Dynamic_Cube", { 0.0F, 0.0F, 0.0F }, log_push);
-                                if (nidx >= 0 && std::cmp_less(nidx, s.entities.size()))
-                                {
-                                    s.entities[static_cast<std::size_t>(nidx)].name = ca.name;
-                                    (void)assign_mesh_asset_to_entity(s, nidx, ca.path, log_push);
-                                    if (auto* lt = s.scene.local(s.entities[static_cast<std::size_t>(nidx)].handle))
-                                        lt->value.position = { 0.0F, 0.0F, 0.0F };
-                                    record_entity_home_transform(s, s.entities[static_cast<std::size_t>(nidx)].handle);
-                                    s.scene.update_transforms();
-                                    s.selected      = nidx;
-                                    s.selected_kind = SelKind::kEntity;
-                                }
+                                if (ca.name.find("Sphere") != std::string::npos)        c_icon = cd::ui::chroma::IconKind::kSphere;
+                                else if (ca.name.find("Cube") != std::string::npos)     c_icon = cd::ui::chroma::IconKind::kCube;
+                                else if (ca.name.find("Cylinder") != std::string::npos) c_icon = cd::ui::chroma::IconKind::kCylinder;
+                                else if (ca.name.find("Cone") != std::string::npos)     c_icon = cd::ui::chroma::IconKind::kCone;
+                                else if (ca.name.find("Torus") != std::string::npos)    c_icon = cd::ui::chroma::IconKind::kTorus;
+                                else if (ca.name.find("Cesium") != std::string::npos)   { c_icon = cd::ui::chroma::IconKind::kAvatar; c_col = IM_COL32(85, 245, 165, 255); }
+                                else if (ca.name.find("Sponza") != std::string::npos)   { c_icon = cd::ui::chroma::IconKind::kWorld;  c_col = IM_COL32(255, 210, 110, 255); }
+                            }
+                            else if (ca.kind == 1U)
+                            {
+                                c_icon = cd::ui::chroma::IconKind::kTexture2D;
+                                c_col  = IM_COL32(85, 235, 165, 255);
                             }
                             else
                             {
-                                const int tidx = (s.selected >= 0 && std::cmp_less(s.selected, s.entities.size()))
-                                    ? s.selected
-                                    : (!s.entities.empty() ? static_cast<int>(s.entities.size() - 1U) : -1);
-                                if (tidx >= 0)
-                                    (void)assign_texture_asset_to_entity(s, tidx, ca.path, log_push);
+                                c_icon = cd::ui::chroma::IconKind::kMaterial;
+                                c_col  = IM_COL32(210, 155, 255, 255);
                             }
-                        }
 
-                        if (ca.kind == 0U && ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
-                        {
-                            ImGui::SetDragDropPayload("CD_ASSET_MESH", ca.path.c_str(), ca.path.size() + 1);
-                            w.is_dragging_asset_mesh = true;
-                            w.drag_asset_mesh_id     = ca.path;
-                            ImGui::Text("Use Context Object '%s' in Scene", ca.name.c_str());
-                            ImGui::EndDragDropSource();
-                        }
-                        else if (ca.kind != 0U && ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
-                        {
-                            ImGui::SetDragDropPayload("CD_ASSET_TEXTURE", ca.path.c_str(), ca.path.size() + 1);
-                            w.is_dragging_asset_texture = true;
-                            w.drag_asset_texture_id     = ca.path;
-                            ImGui::Text("Apply Context Texture '%s' to Object", ca.name.c_str());
-                            ImGui::EndDragDropSource();
-                        }
+                            const bool is_sel = (w.selected_content_asset == ca.path);
+                            const std::string tile_lbl = ca.name + "##ctx_" + std::to_string(ctx_tile_id);
+                            if (ImGui::IconTile(tile_lbl.c_str(), c_icon, c_col, is_sel, true, ImVec2(-1.0F, 52.0F)))
+                            {
+                                w.selected_content_asset = ca.path;
+                            }
+                            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                            {
+                                w.selected_content_asset = ca.path;
+                                if (ca.kind == 0U)
+                                {
+                                    const int nidx = spawn_entity_with_modifiers(s, "Dynamic_Cube", { 0.0F, 0.0F, 0.0F }, log_push);
+                                    if (nidx >= 0 && std::cmp_less(nidx, s.entities.size()))
+                                    {
+                                        s.entities[static_cast<std::size_t>(nidx)].name = ca.name;
+                                        (void)assign_mesh_asset_to_entity(s, nidx, ca.path, log_push);
+                                        if (auto* lt = s.scene.local(s.entities[static_cast<std::size_t>(nidx)].handle))
+                                            lt->value.position = { 0.0F, 0.0F, 0.0F };
+                                        record_entity_home_transform(s, s.entities[static_cast<std::size_t>(nidx)].handle);
+                                        s.scene.update_transforms();
+                                        s.selected      = nidx;
+                                        s.selected_kind = SelKind::kEntity;
+                                    }
+                                }
+                                else
+                                {
+                                    const int tidx = (s.selected >= 0 && std::cmp_less(s.selected, s.entities.size()))
+                                        ? s.selected
+                                        : (!s.entities.empty() ? static_cast<int>(s.entities.size() - 1U) : -1);
+                                    if (tidx >= 0)
+                                        (void)assign_texture_asset_to_entity(s, tidx, ca.path, log_push);
+                                }
+                            }
 
-                        if (ImGui::IsItemHovered())
-                        {
-                            ImGui::SetTooltip("Active Context Asset: %s\nDisk Source: %s\n%s",
-                                              ca.name.c_str(), ca.path.c_str(),
-                                              ca.kind == 0U
-                                                  ? "Click to Spawn at (0, 0, 0), or Drag onto any Object"
-                                                  : "Click or Drag to Apply Texture to Selected Object");
+                            if (ca.kind == 0U && ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
+                            {
+                                ImGui::SetDragDropPayload("CD_ASSET_MESH", ca.path.c_str(), ca.path.size() + 1);
+                                w.is_dragging_asset_mesh = true;
+                                w.drag_asset_mesh_id     = ca.path;
+                                ImGui::Text("Use Context Object '%s' in Scene", ca.name.c_str());
+                                ImGui::EndDragDropSource();
+                            }
+                            else if (ca.kind != 0U && ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
+                            {
+                                ImGui::SetDragDropPayload("CD_ASSET_TEXTURE", ca.path.c_str(), ca.path.size() + 1);
+                                w.is_dragging_asset_texture = true;
+                                w.drag_asset_texture_id     = ca.path;
+                                ImGui::Text("Apply Context Texture '%s' to Object", ca.name.c_str());
+                                ImGui::EndDragDropSource();
+                            }
+
+                            if (ImGui::IsItemHovered())
+                            {
+                                ImGui::SetTooltip("Active Context Asset: %s\nDisk Source: %s\n%s\nRight-click for options / remove",
+                                                  ca.name.c_str(), ca.path.c_str(),
+                                                  ca.kind == 0U
+                                                      ? "Drag onto 3D Viewport (or Double-Click to Spawn at 0,0,0)"
+                                                      : "Drag onto 3D Object (or Double-Click to Apply to Selected)");
+                            }
+
+                            if (ImGui::BeginPopupContextItem())
+                            {
+                                w.selected_content_asset = ca.path;
+                                ImGui::TextColored(ImVec4(0.45F, 0.95F, 0.65F, 1.0F), "%s", ca.name.c_str());
+                                ImGui::Separator();
+                                if (ca.kind == 0U)
+                                {
+                                    if (ImGui::MenuItem("Spawn at (0, 0, 0)"))
+                                    {
+                                        const int nidx = spawn_entity_with_modifiers(s, "Dynamic_Cube", { 0.0F, 0.0F, 0.0F }, log_push);
+                                        if (nidx >= 0 && std::cmp_less(nidx, s.entities.size()))
+                                        {
+                                            s.entities[static_cast<std::size_t>(nidx)].name = ca.name;
+                                            (void)assign_mesh_asset_to_entity(s, nidx, ca.path, log_push);
+                                        }
+                                    }
+                                    if (s.selected >= 0 && std::cmp_less(s.selected, s.entities.size()))
+                                    {
+                                        if (ImGui::MenuItem("Assign Mesh to Selected Object"))
+                                        {
+                                            (void)assign_mesh_asset_to_entity(s, s.selected, ca.path, log_push);
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    if (s.selected >= 0 && std::cmp_less(s.selected, s.entities.size()))
+                                    {
+                                        if (ImGui::MenuItem("Assign Texture to Selected Object"))
+                                        {
+                                            (void)assign_texture_asset_to_entity(s, s.selected, ca.path, log_push);
+                                        }
+                                    }
+                                }
+                                ImGui::Separator();
+                                if (ImGui::MenuItem("Remove from Context [X]"))
+                                {
+                                    pending_erase_ctx = static_cast<int>(ci);
+                                }
+                                ImGui::EndPopup();
+                            }
+
+                            ImGui::PopID();
                         }
-                        ImGui::PopID();
+                        ImGui::EndTable();
                     }
-                    ImGui::EndTable();
+
+                    if (pending_erase_ctx >= 0 && static_cast<std::size_t>(pending_erase_ctx) < w.loaded_context_assets.size())
+                    {
+                        const std::string rem_name = w.loaded_context_assets[static_cast<std::size_t>(pending_erase_ctx)].name;
+                        const std::string rem_path = w.loaded_context_assets[static_cast<std::size_t>(pending_erase_ctx)].path;
+                        w.loaded_context_assets.erase(w.loaded_context_assets.begin() + pending_erase_ctx);
+                        if (w.selected_content_asset == rem_path)
+                            w.selected_content_asset.clear();
+                        w.last_asset_status_msg = "Removed '" + rem_name + "' from Active Context";
+                        log_push("[context] " + w.last_asset_status_msg);
+                    }
                 }
                 ImGui::EndChild();
 
@@ -3324,6 +4003,36 @@ inline void draw_clean_studio_workspace_panels(
                         if (tidx >= 0)
                             (void)assign_texture_asset_to_entity(s, tidx, prev_path, log_push);
                     }
+                }
+
+                // Delete / Remove from Context button in Preview pane
+                bool is_in_context = false;
+                for (const auto& ca : w.loaded_context_assets)
+                {
+                    if (ca.path == prev_path) { is_in_context = true; break; }
+                }
+                if (is_in_context)
+                {
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.70F, 0.22F, 0.22F, 0.90F));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85F, 0.28F, 0.28F, 1.0F));
+                    if (ImGui::IconButton("Remove from Context [X]##prev_rm", cd::ui::chroma::IconKind::kTrash,
+                                          IM_COL32(255, 180, 180, 255), false, ImVec2(-1.0F, 22.0F)))
+                    {
+                        for (auto it = w.loaded_context_assets.begin(); it != w.loaded_context_assets.end(); ++it)
+                        {
+                            if (it->path == prev_path)
+                            {
+                                const std::string rm_name = it->name;
+                                w.loaded_context_assets.erase(it);
+                                if (w.selected_content_asset == prev_path)
+                                    w.selected_content_asset.clear();
+                                w.last_asset_status_msg = "Removed '" + rm_name + "' from Active Context";
+                                log_push("[context] " + w.last_asset_status_msg);
+                                break;
+                            }
+                        }
+                    }
+                    ImGui::PopStyleColor(2);
                 }
                 ImGui::EndChild();
                 ImGui::EndTabItem();

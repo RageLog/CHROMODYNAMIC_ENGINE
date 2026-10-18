@@ -276,21 +276,33 @@ inline void init_clean_studio_workspace(StateT& s, LogFn&& log_push)
     s.scene.update_transforms();
     s.selected      = -1;
     s.selected_kind = SelKind::kEntity;
-    if (w.loaded_context_assets.empty())
+    if (w.preload_starter_context_assets)
     {
-        (void)w.load_asset_into_context("Sphere",       "assets/meshes/Sphere.mesh", 0U);
-        (void)w.load_asset_into_context("Cube",         "assets/meshes/Cube.mesh", 0U);
-        (void)w.load_asset_into_context("Cylinder",     "assets/meshes/Cylinder.mesh", 0U);
-        (void)w.load_asset_into_context("Cone",         "assets/meshes/Cone.mesh", 0U);
-        (void)w.load_asset_into_context("Torus",        "assets/meshes/Torus.mesh", 0U);
-        (void)w.load_asset_into_context("Gold_24K",     "assets/textures/Gold_Leaf_24K.tex", 1U);
-        (void)w.load_asset_into_context("Checker_2K",   "assets/textures/UV_Checkerboard_2K.tex", 1U);
-        (void)w.load_asset_into_context("Carbon_Fiber", "assets/textures/Carbon_Fiber_Twill.tex", 1U);
-        if (w.selected_content_asset.empty())
-            w.selected_content_asset = "assets/meshes/Sphere.mesh";
+        if (w.loaded_context_assets.empty())
+            w.populate_starter_context_assets();
+    }
+    else
+    {
+        w.loaded_context_assets.clear();
+        w.selected_context_idx = -1;
     }
     log_push("[studio] Opened Clean Empty Project ('Empty_Project / Empty_Stage'). Click or drag 3D objects to spawn at (0, 0, 0).");
 }
+
+template <typename StateT, typename LogFn>
+inline int spawn_volumetric_clouds_entity(StateT& s, LogFn&& log_push);
+
+template <typename StateT, typename LogFn>
+inline int spawn_volumetric_fog_entity(StateT& s, LogFn&& log_push);
+
+template <typename StateT, typename LogFn>
+inline int spawn_scene_camera_entity(StateT& s, bool is_2d, LogFn&& log_push);
+
+template <typename StateT, typename LogFn>
+inline int spawn_ground_floor_entity(StateT& s, LogFn&& log_push);
+
+template <typename StateT, typename LogFn>
+inline int spawn_studio_light_by_type(StateT& s, int light_preset_kind, LogFn&& log_push);
 
 // =============================================================================
 // 8. Spawn 3D Entities & Prefabs with Attached Modifier Classes
@@ -304,6 +316,12 @@ inline int spawn_entity_with_modifiers(
 {
     auto& w = studio_world();
     const cd::math::Vec3f world_pos = snap_vec3_if_enabled(raw_world_pos);
+
+    if (item_id == "Volumetric_Clouds") return spawn_volumetric_clouds_entity(s, log_push);
+    if (item_id == "Volumetric_Fog")    return spawn_volumetric_fog_entity(s, log_push);
+    if (item_id == "Ground_Floor")      return spawn_ground_floor_entity(s, log_push);
+    if (item_id == "Camera_3D" || item_id == "Camera_Main") return spawn_scene_camera_entity(s, false, log_push);
+    if (item_id == "Camera_2D")         return spawn_scene_camera_entity(s, true, log_push);
 
     if (item_id == "Prefab_CrateStack")
     {
@@ -1565,12 +1583,29 @@ template <typename StateT, typename LogFn>
 inline int spawn_volumetric_clouds_entity(StateT& s, LogFn&& log_push);
 
 template <typename StateT, typename LogFn>
+inline int spawn_volumetric_fog_entity(StateT& s, LogFn&& log_push);
+
+template <typename StateT, typename LogFn>
 inline int spawn_scene_camera_entity(StateT& s, bool is_2d, LogFn&& log_push);
+
+template <typename StateT, typename LogFn>
+inline int spawn_ground_floor_entity(StateT& s, LogFn&& log_push);
+
+template <typename StateT, typename LogFn>
+inline int spawn_studio_light_by_type(StateT& s, int light_preset_kind, LogFn&& log_push);
+
+template <class StateT, class LogFn>
+void reset_to_clean_empty_project(StateT& s, LogFn&& log_push, bool completely_blank = false);
 
 /// 1-Click Interactive Multi-World & Multi-Level Templates (0..13)
 template <typename StateT, typename LogFn>
 inline void load_studio_interactive_template(StateT& s, int template_id, LogFn&& log_push)
 {
+    if (template_id == 0)
+    {
+        reset_to_clean_empty_project(s, log_push, false);
+        return;
+    }
     auto& w = studio_world();
     w.initialized = false;
     init_clean_studio_workspace(s, log_push);
@@ -1626,9 +1661,9 @@ inline void load_studio_interactive_template(StateT& s, int template_id, LogFn&&
         const cd::ecs::Entity floor_h = s.scene.create_node();
         if (auto* lt = s.scene.local(floor_h))
         {
-            lt->value.position = { 0.0F, -0.25F, 0.0F };
+            lt->value.position = { 0.0F, -0.26F, 0.0F };
             lt->value.rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
-            lt->value.scale    = { 20.0F, 0.50F, 20.0F };
+            lt->value.scale    = { 24.0F, 0.50F, 24.0F };
         }
         SceneEntity floor_ent {};
         floor_ent.handle    = floor_h;
@@ -1638,6 +1673,7 @@ inline void load_studio_interactive_template(StateT& s, int template_id, LogFn&&
         floor_ent.is_pbr    = true;
         floor_ent.metallic  = 0.08F;
         floor_ent.roughness = 0.72F;
+        floor_ent.locked    = false;
         s.entities.push_back(floor_ent);
         cd::world_container::assign_layer(s.ecs_world, floor_h, "Geometry");
 
@@ -3347,6 +3383,67 @@ inline int spawn_volumetric_clouds_entity(StateT& s, LogFn&& log_push)
 }
 
 template <typename StateT, typename LogFn>
+inline int spawn_volumetric_fog_entity(StateT& s, LogFn&& log_push)
+{
+    auto& w = studio_world();
+    const cd::ecs::Entity h = s.scene.create_node();
+    if (auto* lt = s.scene.local(h))
+    {
+        lt->value.position = { 0.0F, 2.0F, 0.0F };
+        lt->value.rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
+        lt->value.scale    = { 0.01F, 0.01F, 0.01F };
+    }
+    SceneEntity e {};
+    e.handle    = h;
+    e.name      = "Volumetric_Fog";
+    e.kind      = PrimitiveKind::kSphere;
+    e.tint      = { 0.80F, 0.88F, 0.96F };
+    e.is_pbr    = true;
+    e.metallic  = 0.0F;
+    e.roughness = 0.98F;
+    e.visible   = true;
+    cd::world_container::assign_layer(s.ecs_world, h, "Environment");
+
+    auto& ms = w.entity_modifiers[h.id];
+    auto fg  = std::make_unique<FogModifier>();
+    fg->volumetric_scattering = true;
+    fg->fog_density           = 0.028F;
+    fg->light_shafts_strength = 0.35F;
+    fg->aerial_perspective    = 0.18F;
+    ms.add_or_replace(std::move(fg));
+
+    if (auto* efg = w.environment_modifiers.template find<FogModifier>())
+    {
+        efg->enabled               = true;
+        efg->volumetric_scattering = true;
+        efg->fog_density           = 0.028F;
+        efg->light_shafts_strength = 0.35F;
+        efg->aerial_perspective    = 0.18F;
+    }
+    else
+    {
+        auto nfg = std::make_unique<FogModifier>();
+        nfg->volumetric_scattering = true;
+        nfg->fog_density           = 0.028F;
+        nfg->light_shafts_strength = 0.35F;
+        nfg->aerial_perspective    = 0.18F;
+        w.environment_modifiers.add_or_replace(std::move(nfg));
+    }
+    s.fx.volumetric_fog_on = true;
+    s.fx.fog_density       = 0.028F;
+
+    record_entity_home_transform(s, h);
+    s.entities.push_back(std::move(e));
+    s.scene.update_transforms();
+    const int idx   = static_cast<int>(s.entities.size()) - 1;
+    s.selected      = idx;
+    s.selected_kind = SelKind::kEntity;
+    s.last_tlas_scene_hash = 0;
+    log_push("[studio] Spawned Volumetric_Fog entity");
+    return idx;
+}
+
+template <typename StateT, typename LogFn>
 inline int spawn_scene_camera_entity(StateT& s, bool is_2d, LogFn&& log_push)
 {
     auto& w = studio_world();
@@ -3354,9 +3451,11 @@ inline int spawn_scene_camera_entity(StateT& s, bool is_2d, LogFn&& log_push)
     if (auto* lt = s.scene.local(h))
     {
         lt->value.position = is_2d
-            ? cd::math::Vec3f { 0.0F, 1.4F, 8.0F }
-            : cd::math::Vec3f { 0.0F, 1.8F, 5.2F };
-        lt->value.rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
+            ? cd::math::Vec3f { 0.0F, 1.4F, 6.0F }
+            : cd::math::Vec3f { -2.4F, 1.55F, 2.8F };
+        lt->value.rotation = is_2d
+            ? cd::math::Quatf { 0.0F, 0.0F, 0.0F, 1.0F }
+            : cd::math::Quatf { -0.08F, -0.34F, -0.03F, 0.936F };
         lt->value.scale    = { 0.28F, 0.28F, 0.42F };
     }
     SceneEntity e {};
@@ -3547,7 +3646,7 @@ inline bool import_or_assign_os_file(
         ContextAssetItem item {};
         item.name       = stem;
         item.path       = norm_path;
-        item.kind       = 1;
+        item.kind       = 0;
         item.icon       = cd::ui::chroma::IconKind::kMesh3D;
         item.accent_col = 0xFFFFB446U;
         (void)w.load_asset_into_context(item);
@@ -3555,6 +3654,17 @@ inline bool import_or_assign_os_file(
         if (assign_to_selected && s.selected >= 0 && std::cmp_less(s.selected, s.entities.size()))
         {
             (void)assign_mesh_asset_to_entity(s, s.selected, norm_path, log_push);
+        }
+        else
+        {
+            const int nidx = spawn_entity_with_modifiers(s, "Cube", { 0.0F, 0.50F, 0.0F }, log_push);
+            if (nidx >= 0 && std::cmp_less(nidx, s.entities.size()))
+            {
+                s.entities[static_cast<std::size_t>(nidx)].name = stem;
+                (void)assign_mesh_asset_to_entity(s, nidx, norm_path, log_push);
+                s.selected      = nidx;
+                s.selected_kind = SelKind::kEntity;
+            }
         }
         w.hud_toast_message = "Imported 3D Model from OS Disk: " + stem;
         w.hud_toast_timer   = 3.0F;
@@ -3619,8 +3729,151 @@ inline bool import_or_assign_os_file(
     return true;
 }
 
+template <typename StateT, typename LogFn>
+inline int spawn_ground_floor_entity(StateT& s, LogFn&& log_push)
+{
+    auto& w = studio_world();
+    const cd::ecs::Entity floor_h = s.scene.create_node();
+    if (auto* lt = s.scene.local(floor_h))
+    {
+        lt->value.position = { 0.0F, -0.26F, 0.0F };
+        lt->value.rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
+        lt->value.scale    = { 24.0F, 0.50F, 24.0F };
+    }
+    SceneEntity fl {};
+    fl.handle    = floor_h;
+    fl.name      = "Ground_Floor";
+    fl.kind      = PrimitiveKind::kCube;
+    fl.tint      = { 0.22F, 0.24F, 0.28F };
+    fl.is_pbr    = true;
+    fl.metallic  = 0.04F;
+    fl.roughness = 0.82F;
+    fl.locked    = false;
+    fl.visible   = true;
+    cd::world_container::assign_layer(s.ecs_world, floor_h, "Environment");
+
+    auto& fms = w.entity_modifiers[floor_h.id];
+    fms.add_or_replace(std::make_unique<PbrMaterialModifier>(fl.tint, fl.metallic, fl.roughness));
+    fms.add_or_replace(std::make_unique<RigidBodyModifier>(cd::physics::BodyType::kStatic, 0.0F, 0.50F));
+    fms.add_or_replace(std::make_unique<BoxColliderModifier>(cd::math::Vec3f { 0.5F, 0.5F, 0.5F }));
+    record_entity_home_transform(s, floor_h);
+
+    s.entities.push_back(std::move(fl));
+    s.scene.update_transforms();
+    const int idx          = static_cast<int>(s.entities.size()) - 1;
+    s.selected             = idx;
+    s.selected_kind        = SelKind::kEntity;
+    s.last_tlas_scene_hash = 0;
+    log_push("[studio] Spawned Ground_Floor (Static Collider)");
+    return idx;
+}
+
+// light_preset_kind:
+// 0 = Directional (Sun / Moon) Light
+// 1 = Point (Omni) Light
+// 2 = Spot (Cone) Light
+// 3 = Rect Area (Softbox) Light
+// 4 = Ambient Sky Fill Light (6500K wide fill)
+// 5 = 3-Point Studio Lighting Rig (Key + Fill + Rim)
+template <typename StateT, typename LogFn>
+inline int spawn_studio_light_by_type(StateT& s, int light_preset_kind, LogFn&& log_push)
+{
+    auto& w = studio_world();
+    const cd::math::Vec3f pos { 0.0F, 3.2F, 2.2F };
+    if (light_preset_kind == 0)
+    {
+        s.lights.push_back({
+            "Directional Sun Light (5800K)",
+            cd::light::directional({ -0.42F, -0.82F, -0.38F }, cd::light::cct_to_linear_rgb(5800.0F), 24400.0F),
+            true,
+            5800.0F
+        });
+        log_push("[light] Added Directional Sun Light (5800K)");
+    }
+    else if (light_preset_kind == 1)
+    {
+        s.lights.push_back({
+            "Point Omni Light (3200K)",
+            cd::light::point(pos, cd::light::cct_to_linear_rgb(3200.0F), 2800.0F, 12.0F),
+            true,
+            3200.0F
+        });
+        log_push("[light] Added Point Omni Light (3200K)");
+    }
+    else if (light_preset_kind == 2)
+    {
+        s.lights.push_back({
+            "Spot Cone Light (4200K)",
+            cd::light::spot(pos, { 0.0F, -0.85F, -0.52F }, cd::light::cct_to_linear_rgb(4200.0F), 5500.0F, 16.0F, 0.25F, 0.48F),
+            true,
+            4200.0F
+        });
+        log_push("[light] Added Spot Cone Light (4200K)");
+    }
+    else if (light_preset_kind == 3)
+    {
+        auto rl  = cd::light::rect_area(pos, { 0.0F, -1.0F, 0.0F }, { 1.0F, 0.0F, 0.0F }, 2.2F, 1.2F,
+                                        { 0.85F, 0.94F, 1.0F }, 3800.0F);
+        rl.range = 14.0F;
+        s.lights.push_back({
+            "Rect Area Softbox (5600K)",
+            rl,
+            true,
+            5600.0F
+        });
+        log_push("[light] Added Rect Area Softbox (5600K)");
+    }
+    else if (light_preset_kind == 4)
+    {
+        s.lights.push_back({
+            "Ambient Sky Fill (6500K)",
+            cd::light::point({ 0.0F, 6.5F, 0.0F }, cd::light::cct_to_linear_rgb(6500.0F), 1600.0F, 35.0F),
+            true,
+            6500.0F
+        });
+        log_push("[light] Added Ambient Sky Fill (6500K)");
+    }
+    else
+    {
+        // 5 = 3-Point Studio Lighting Rig (Key + Fill + Rim)
+        s.lights.push_back({
+            "3-Pt Key Spot (5200K)",
+            cd::light::spot({ 2.6F, 3.8F, 2.8F }, { -0.55F, -0.70F, -0.45F },
+                            cd::light::cct_to_linear_rgb(5200.0F), 5200.0F, 16.0F, 0.26F, 0.50F),
+            true,
+            5200.0F
+        });
+        auto fill_rl  = cd::light::rect_area({ -2.8F, 2.8F, 2.2F }, { 0.65F, -0.55F, -0.52F }, { 0.0F, 1.0F, 0.0F },
+                                             2.4F, 1.4F, cd::light::cct_to_linear_rgb(6500.0F), 2600.0F);
+        fill_rl.range = 14.0F;
+        s.lights.push_back({
+            "3-Pt Fill Softbox (6500K)",
+            fill_rl,
+            true,
+            6500.0F
+        });
+        s.lights.push_back({
+            "3-Pt Rim Backlight (3200K)",
+            cd::light::point({ -0.4F, 3.4F, -3.2F }, cd::light::cct_to_linear_rgb(3200.0F), 3200.0F, 12.0F),
+            true,
+            3200.0F
+        });
+        log_push("[light] Added 3-Point Studio Lighting Rig (Key + Fill + Rim)");
+    }
+
+    if (auto* sky = w.environment_modifiers.template find<SkyAtmosphereModifier>())
+    {
+        sky->enabled = true;
+    }
+    const int idx          = static_cast<int>(s.lights.size()) - 1;
+    s.selected             = idx;
+    s.selected_kind        = SelKind::kLight;
+    s.last_tlas_scene_hash = 0;
+    return idx;
+}
+
 template <class StateT, class LogFn>
-void reset_to_clean_empty_project(StateT& s, LogFn&& log_push, bool completely_blank = false)
+void reset_to_clean_empty_project(StateT& s, LogFn&& log_push, bool completely_blank)
 {
     auto& w = studio_world();
     s.pie_playing = false;
@@ -3657,38 +3910,13 @@ void reset_to_clean_empty_project(StateT& s, LogFn&& log_push, bool completely_b
     w.live_contacts.clear();
     s.history.clear();
 
-    // 1. Spawn protected Ground_Floor
-    {
-        const cd::ecs::Entity floor_h = s.scene.create_node();
-        if (auto* lt = s.scene.local(floor_h))
-        {
-            lt->value.position = { 0.0F, -0.25F, 0.0F };
-            lt->value.rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
-            lt->value.scale    = { 24.0F, 0.50F, 24.0F };
-        }
-        SceneEntity fl {};
-        fl.handle    = floor_h;
-        fl.name      = "Ground_Floor";
-        fl.kind      = PrimitiveKind::kCube;
-        fl.tint      = { 0.22F, 0.24F, 0.28F };
-        fl.is_pbr    = true;
-        fl.metallic  = 0.04F;
-        fl.roughness = 0.82F;
-        fl.locked    = true;
-        s.entities.push_back(fl);
-        cd::world_container::assign_layer(s.ecs_world, floor_h, "Environment");
-
-        auto& fms = w.entity_modifiers[floor_h.id];
-        fms.add_or_replace(std::make_unique<PbrMaterialModifier>(fl.tint, fl.metallic, fl.roughness));
-        fms.add_or_replace(std::make_unique<RigidBodyModifier>(cd::physics::BodyType::kStatic, 0.0F, 0.50F));
-        fms.add_or_replace(std::make_unique<BoxColliderModifier>(cd::math::Vec3f { 0.5F, 0.5F, 0.5F }));
-        record_entity_home_transform(s, floor_h);
-    }
+    // 1. Spawn deletable Ground_Floor (z-fighting offset y = -0.26F, unlocked)
+    (void)spawn_ground_floor_entity(s, log_push);
 
     // 2. Spawn 1 clean Studio Sun directional light
     s.lights.push_back({
         "Studio Sun (5800K)",
-        cd::light::directional({ -0.42F, -0.82F, -0.38F }, { 1.0F, 0.98F, 0.94F }, 5.2F),
+        cd::light::directional({ -0.42F, -0.82F, -0.38F }, { 1.0F, 0.98F, 0.94F }, 24400.0F),
         true,
         5800.0F
     });
@@ -3734,15 +3962,11 @@ void reset_to_clean_empty_project(StateT& s, LogFn&& log_push, bool completely_b
         s.selected = 0;
     }
 
-    // Seed standard starter meshes & textures in Active Context
-    (void)w.load_asset_into_context("Sphere",       "assets/meshes/Sphere.mesh", 0U);
-    (void)w.load_asset_into_context("Cube",         "assets/meshes/Cube.mesh", 0U);
-    (void)w.load_asset_into_context("Cylinder",     "assets/meshes/Cylinder.mesh", 0U);
-    (void)w.load_asset_into_context("Cone",         "assets/meshes/Cone.mesh", 0U);
-    (void)w.load_asset_into_context("Torus",        "assets/meshes/Torus.mesh", 0U);
-    (void)w.load_asset_into_context("Gold_24K",     "assets/textures/Gold_Leaf_24K.tex", 1U);
-    (void)w.load_asset_into_context("Checker_2K",   "assets/textures/UV_Checkerboard_2K.tex", 1U);
-    (void)w.load_asset_into_context("Carbon_Fiber", "assets/textures/Carbon_Fiber_Twill.tex", 1U);
+    // Seed standard starter meshes & textures in Active Context only when selected by user
+    if (w.preload_starter_context_assets && !completely_blank)
+    {
+        w.populate_starter_context_assets();
+    }
 
     s.selected_kind        = SelKind::kEntity;
     s.show_editor_floor    = true;

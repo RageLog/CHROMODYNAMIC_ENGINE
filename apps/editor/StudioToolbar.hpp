@@ -121,11 +121,6 @@ inline void delete_selected(StateT& s, LogFn&& log_push)
     {
         const auto& ent = s.entities[static_cast<std::size_t>(s.selected)];
         const std::string nm = ent.name;
-        if (nm.find("Ground_Floor") != std::string::npos)
-        {
-            log_push("[studio] Ground_Floor is protected and cannot be deleted");
-            return;
-        }
         const auto hid = ent.handle;
         const bool is_clouds = (nm.find("Volumetric_Clouds") != std::string::npos) ||
                                (nm.find("Cloud") != std::string::npos) ||
@@ -138,6 +133,16 @@ inline void delete_selected(StateT& s, LogFn&& log_push)
                 sky->clouds_coverage = 0.0F;
             if (auto* cld = w.environment_modifiers.template find<CloudLayerModifier>())
                 cld->enabled = false;
+        }
+        const bool is_fog = (nm.find("Volumetric_Fog") != std::string::npos) ||
+                            (nm.find("Fog") != std::string::npos) ||
+                            (w.entity_modifiers[hid.id].template find<FogModifier>() != nullptr);
+        if (is_fog)
+        {
+            s.fx.volumetric_fog_on = false;
+            s.fx.fog_density       = 0.0F;
+            if (auto* fg = w.environment_modifiers.template find<FogModifier>())
+                fg->enabled = false;
         }
         if (w.pilot_scene_camera_idx == s.selected)
             w.pilot_scene_camera_idx = -1;
@@ -457,6 +462,10 @@ inline void draw_studio_main_menu_bar(StateT& s, float dt, LogFn&& log_push)
             (void)spawn_scene_camera_entity(s, true, log_push);
         if (ImGui::MenuItem("+ Volumetric Clouds (Environment Layer)"))
             (void)spawn_volumetric_clouds_entity(s, log_push);
+        if (ImGui::MenuItem("+ Volumetric Fog (Environment Layer)"))
+            (void)spawn_volumetric_fog_entity(s, log_push);
+        if (ImGui::MenuItem("+ Ground Floor (Static Collider)"))
+            (void)spawn_ground_floor_entity(s, log_push);
         ImGui::Separator();
         if (ImGui::MenuItem("+ PBR Chrome Mirror Sphere"))
             spawn_studio_entity(s, "PBR Chrome", PrimitiveKind::kSphere, { 0.95F, 0.93F, 0.88F }, true, 1.0F, 0.04F, log_push);
@@ -495,44 +504,19 @@ inline void draw_studio_main_menu_bar(StateT& s, float dt, LogFn&& log_push)
 
     if (ImGui::BeginMenu("Create Light"))
     {
-        if (ImGui::MenuItem("+ Point Light (2700K Warm)"))
-        {
-            const auto pos = camera_spawn_point(s, 2.5F);
-            s.lights.push_back({ "Point Light (2700K)",
-                cd::light::point(pos, { 1, 1, 1 }, 2500.0F, 8.0F), true, 2700.0F });
-            s.selected = static_cast<int>(s.lights.size()) - 1;
-            s.selected_kind = SelKind::kLight;
-            log_push("[studio] added Point Light");
-        }
-        if (ImGui::MenuItem("+ Spot Light (3200K Halogen)"))
-        {
-            const auto pos = camera_spawn_point(s, 2.5F);
-            s.lights.push_back({ "Spot Light (3200K)",
-                cd::light::spot(pos, { 0.0F, -1.0F, 0.0F }, { 1, 1, 1 }, 5000.0F, 10.0F, 0.30F, 0.50F),
-                true, 3200.0F });
-            s.selected = static_cast<int>(s.lights.size()) - 1;
-            s.selected_kind = SelKind::kLight;
-            log_push("[studio] added Spot Light");
-        }
-        if (ImGui::MenuItem("+ Rect Area Light (8000K Cyan)"))
-        {
-            const auto pos = camera_spawn_point(s, 2.5F);
-            s.lights.push_back({ "Rect Area Light (8000K)",
-                cd::light::rect_area(pos, { 0, 0, 1 }, { 1, 0, 0 }, 2.0F, 1.0F, { 0.6F, 0.85F, 1.0F }, 3000.0F),
-                true, 8000.0F });
-            s.selected = static_cast<int>(s.lights.size()) - 1;
-            s.selected_kind = SelKind::kLight;
-            log_push("[studio] added Rect Area Light");
-        }
-        if (ImGui::MenuItem("+ Directional Sun (6500K)"))
-        {
-            s.lights.push_back({ "Directional Sun (6500K)",
-                cd::light::directional({ -0.35F, -0.65F, -0.50F }, { 1, 1, 1 }, 90000.0F),
-                true, 6500.0F });
-            s.selected = static_cast<int>(s.lights.size()) - 1;
-            s.selected_kind = SelKind::kLight;
-            log_push("[studio] added Directional Sun");
-        }
+        if (ImGui::MenuItem("+ Directional Sun Light (5800K)"))
+            (void)spawn_studio_light_by_type(s, 0, log_push);
+        if (ImGui::MenuItem("+ Point Omni Light (3200K)"))
+            (void)spawn_studio_light_by_type(s, 1, log_push);
+        if (ImGui::MenuItem("+ Spot Cone Light (4200K)"))
+            (void)spawn_studio_light_by_type(s, 2, log_push);
+        if (ImGui::MenuItem("+ Rect Area Softbox Light (5600K)"))
+            (void)spawn_studio_light_by_type(s, 3, log_push);
+        if (ImGui::MenuItem("+ Ambient Sky Fill Light (6500K)"))
+            (void)spawn_studio_light_by_type(s, 4, log_push);
+        ImGui::Separator();
+        if (ImGui::MenuItem("+ 3-Point Studio Lighting Rig (Key + Fill + Rim)"))
+            (void)spawn_studio_light_by_type(s, 5, log_push);
         ImGui::EndMenu();
     }
 

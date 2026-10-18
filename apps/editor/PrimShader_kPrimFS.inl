@@ -232,8 +232,8 @@ float ray_visibility(vec3 origin, vec3 N, vec3 dir, float tmax) {
       rq, cd_tlas,
       gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
       0xFFu,
-      origin + N * 0.01,
-      0.01, dir, tmax);
+      origin + N * 0.045,
+      0.035, dir, tmax);
   while (rayQueryProceedEXT(rq)) { /* opaque-only walk */ }
   return (rayQueryGetIntersectionTypeEXT(rq, true) ==
           gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
@@ -253,8 +253,8 @@ float reflection_hit(vec3 origin, vec3 N, vec3 dir, float tmax) {
       rq, cd_tlas,
       gl_RayFlagsOpaqueEXT,
       0xFFu,
-      origin + N * 0.01,
-      0.01, dir, tmax);
+      origin + N * 0.045,
+      0.035, dir, tmax);
   while (rayQueryProceedEXT(rq)) { /* opaque-only walk */ }
   return (rayQueryGetIntersectionTypeEXT(rq, true) ==
           gl_RayQueryCommittedIntersectionNoneEXT) ? 0.0 : 1.0;
@@ -280,8 +280,8 @@ float reflection_hit_id(vec3 origin, vec3 N, vec3 dir, float tmax,
       rq, cd_tlas,
       gl_RayFlagsOpaqueEXT,
       0xFFu,
-      origin + N * 0.01,
-      0.01, dir, tmax);
+      origin + N * 0.045,
+      0.035, dir, tmax);
   while (rayQueryProceedEXT(rq)) { /* opaque-only walk */ }
   if (rayQueryGetIntersectionTypeEXT(rq, true) ==
       gl_RayQueryCommittedIntersectionNoneEXT) {
@@ -384,8 +384,8 @@ float reflection_hit_id_t(vec3 origin, vec3 N, vec3 dir, float tmax,
                           out int  out_inst, out int  out_geom,
                           out int  out_prim, out vec2 out_bary,
                           out float out_t) {
-  vec3 ray_orig = origin + N * 0.01;
-  float tmin = 0.01;
+  vec3 ray_orig = origin + N * 0.045;
+  float tmin = 0.035;
   for (int step = 0; step < 5; ++step) {
     rayQueryEXT rq;
     rayQueryInitializeEXT(
@@ -432,7 +432,7 @@ float reflection_hit_id_t(vec3 origin, vec3 N, vec3 dir, float tmax,
 
 float reflection_hit_color(vec3 origin, vec3 dir, float tmax,
                            out vec3 out_color) {
-  float tmin = 0.01;
+  float tmin = 0.035;
   for (int step = 0; step < 4; ++step) {
     rayQueryEXT rq;
     rayQueryInitializeEXT(
@@ -648,49 +648,38 @@ void main() {
     return;
   }
 
-  // Floor grid overlay
+  // Floor grid overlay (100% environment & light invariant reference grid)
   bool is_floor = (pc.tint.w > 1.5 && pc.tint.w < 2.5);
-  float floor_fade = 1.0;
   if (is_floor) {
-    bool is_transparent_grid = (pc.tint.w > 2.15 && pc.tint.w < 2.45);
-    float d_xz = length(v_world_pos.xz);
-    floor_fade = clamp(1.0 - (d_xz - 60.0) / 140.0, 0.0, 1.0);
     vec2 p    = v_world_pos.xz;
     vec2 dp   = max(fwidth(p), vec2(1e-5));
     vec2 d1_px = abs(fract(p - 0.5) - 0.5) / dp;
     vec2 d5_px = (abs(fract(p * 0.2 - 0.5) - 0.5) * 5.0) / dp;
     float a_minor = 1.0 - smoothstep(0.0, 1.35, min(d1_px.x, d1_px.y));
     float a_major = 1.0 - smoothstep(0.0, 1.85, min(d5_px.x, d5_px.y));
-    float on_axis_x = 1.0 - smoothstep(0.0, 2.10, abs(p.x) / dp.x);
-    float on_axis_z = 1.0 - smoothstep(0.0, 2.10, abs(p.y) / dp.y);
-    vec3 minor_col = vec3(0.50, 0.52, 0.58);
-    vec3 major_col = vec3(0.75, 0.78, 0.85);
-    vec3 ax_x_col  = vec3(0.96, 0.28, 0.24);
-    vec3 ax_z_col  = vec3(0.24, 0.54, 0.98);
-    vec3 line_col  = minor_col;
-    float line_a   = a_minor * 0.35;
-    line_col = mix(line_col, major_col, smoothstep(0.0, 0.8, a_major));
-    line_a   = max(line_a, a_major * 0.6);
-    line_col = mix(line_col, ax_x_col, on_axis_z * 0.85);
-    line_col = mix(line_col, ax_z_col, on_axis_x * 0.85);
-    line_a   = max(line_a, max(on_axis_x, on_axis_z));
-    line_a *= floor_fade;
-    if (is_transparent_grid) {
-      vec3 dark_base = vec3(0.042, 0.048, 0.062);
-      float line_mask = clamp(max(max(a_minor * 0.72, a_major * 0.95), max(on_axis_x, on_axis_z)), 0.0, 1.0);
-      vec3 dark_line = mix(vec3(0.42, 0.48, 0.58), vec3(0.68, 0.76, 0.90), a_major);
-      dark_line = mix(dark_line, ax_x_col, on_axis_z);
-      dark_line = mix(dark_line, ax_z_col, on_axis_x);
-      vec3 grid_rgb = mix(dark_base, dark_line, line_mask);
-      float grid_alpha = clamp(0.32 + line_mask * 0.60, 0.0, 0.92) * floor_fade;
-      out_normal = vec4(0.0);
-      out_albedo = vec4(grid_rgb, 1.0);
-      out_mr     = vec2(0.0, 1.0);
-      out_color  = vec4(grid_rgb, grid_alpha);
-      return;
-    }
-    albedo  = mix(albedo, line_col, clamp(line_a, 0.0, 1.0));
-    albedo  = mix(vec3(0.55, 0.60, 0.66) * 0.0, albedo, floor_fade);
+
+    float dist       = length(p);
+    float floor_fade = 1.0 - smoothstep(18.0, 52.0, dist);
+    a_minor *= floor_fade;
+    a_major *= floor_fade;
+
+    float on_axis_x = (1.0 - smoothstep(0.0, 2.10, abs(p.x) / dp.x)) * floor_fade;
+    float on_axis_z = (1.0 - smoothstep(0.0, 2.10, abs(p.y) / dp.y)) * floor_fade;
+    vec3  ax_x_col  = vec3(0.92, 0.26, 0.24);
+    vec3  ax_z_col  = vec3(0.24, 0.52, 0.96);
+
+    vec3 dark_base = vec3(0.105, 0.112, 0.128);
+    float line_mask = clamp(max(max(a_minor * 0.75, a_major * 0.95), max(on_axis_x, on_axis_z)), 0.0, 1.0);
+    vec3 dark_line = mix(vec3(0.38, 0.42, 0.50), vec3(0.62, 0.68, 0.78), a_major);
+    dark_line = mix(dark_line, ax_x_col, on_axis_z);
+    dark_line = mix(dark_line, ax_z_col, on_axis_x);
+    vec3 grid_rgb = mix(dark_base, dark_line, line_mask);
+    float grid_alpha = clamp(0.88 + line_mask * 0.12, 0.0, 0.96) * floor_fade;
+    out_albedo = vec4(grid_rgb, 1.0);
+    out_normal = vec4(0.0);
+    out_mr     = vec2(0.0, 1.0);
+    out_color  = vec4(grid_rgb, grid_alpha);
+    return;
   }
 
   // Normal mapping (only for slot 1 bound normal map on non-PBR-sphere prims)
@@ -807,7 +796,7 @@ void main() {
       rayQueryInitializeEXT(
           rq_a, cd_tlas,
           gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
-          0xFFu, v_world_pos + safe_N * 0.01, 0.01, Lc, area_tmax);
+          0xFFu, v_world_pos + safe_N * 0.045, 0.035, Lc, area_tmax);
       while (rayQueryProceedEXT(rq_a)) {}
       float vis_a = (rayQueryGetIntersectionTypeEXT(rq_a, true) ==
                     gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
@@ -858,7 +847,7 @@ void main() {
     rayQueryInitializeEXT(
         rq, cd_tlas,
         gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
-        0xFFu, v_world_pos + safe_N * 0.01, 0.01, Lp, ray_tmax);
+        0xFFu, v_world_pos + safe_N * 0.045, 0.035, Lp, ray_tmax);
     while (rayQueryProceedEXT(rq)) { /* opaque-only walk */ }
     float vis = (rayQueryGetIntersectionTypeEXT(rq, true) ==
                  gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
@@ -880,12 +869,13 @@ void main() {
   }
 
   // Ambient hemisphere lighting
-  float any_light = clamp(pc.sun_dir.w + float(cd_lights.count) * 0.5, 0.0, 1.0);
+  float any_light = clamp(max(pc.sun_dir.w, float(cd_lights.count) * 0.65), 0.35, 1.0);
   float up_t   = N.y * 0.5 + 0.5;
-  vec3  sky_c  = vec3(0.55, 0.65, 0.85);
-  vec3  gnd_c  = vec3(0.18, 0.16, 0.14);
-  vec3  hemi   = mix(gnd_c, sky_c, up_t) * pc.sun_color.w;
-  vec3  ambient = is_pbr_w ? vec3(0.0) : albedo * (hemi + vec3(0.020) * any_light) * ao_factor;
+  vec3  sky_c  = vec3(0.58, 0.68, 0.88);
+  vec3  gnd_c  = vec3(0.22, 0.20, 0.18);
+  float hemi_w = max(pc.sun_color.w, 0.28);
+  vec3  hemi   = mix(gnd_c, sky_c, up_t) * hemi_w * any_light;
+  vec3  ambient = albedo * (hemi * (is_pbr_w ? 0.52 : 1.0) + vec3(0.12)) * ao_factor;
 
   // IBL split-sum + Option B colored RT reflections
   vec3  Ri   = reflect(-V, N);
@@ -907,7 +897,7 @@ void main() {
   vec3  ibl_spec_p = raw_ibl_spec * ibl_spec_metallic_gate;
 
   float ibl_gate_factor = is_pbr_w ? 1.0 : 0.6;
-  float ibl_gate = clamp(pc.sun_dir.w * ibl_gate_factor, 0.0, 1.0);
+  float ibl_gate = clamp(max(max(pc.sun_dir.w, float(cd_lights.count) * 0.65), 0.38) * ibl_gate_factor, 0.32, 1.0);
 
   int   hit_inst   = -1;
   int   hit_geom   = -1;
@@ -933,7 +923,7 @@ void main() {
     vec3 hit_alb = cd_instance_mats.data[hit_slot].albedo.rgb;
     uint tex_slot   = cd_instance_mats.data[hit_slot].albedo_tex_slot;
     uint idx_offset = cd_instance_mats.data[hit_slot].index_offset;
-    vec3 hit_pos1   = (v_world_pos + safe_N * 0.01) + Ri * hit_t;
+    vec3 hit_pos1   = (v_world_pos + safe_N * 0.045) + Ri * hit_t;
     if (tex_slot != kBindlessAlbedoSlotNone && tex_slot < 256u) {
       hit_alb = sample_hit_albedo_rgba(
           hit_slot, hit_prim, hit_bary, hit_pos1, hit_t, hit_alb).rgb;

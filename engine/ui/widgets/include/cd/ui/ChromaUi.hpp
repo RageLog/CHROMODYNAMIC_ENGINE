@@ -3764,7 +3764,12 @@ inline void advance_item(cd::ui::chroma::WindowLayout& w, ImVec2 item_min, ImVec
     st.last_item_hovered = !occluded && !w.skip && in_win &&
                            (mp.x >= item_min.x && mp.x <= item_max.x &&
                             mp.y >= item_min.y && mp.y <= item_max.y);
-    if (st.last_item_hovered) st.any_item_hovered = true;
+    if (st.last_item_hovered)
+    {
+        st.any_item_hovered = true;
+        if (st.mouse_clicked[0] && st.active_id == 0U && st.last_item_id != 0U)
+            st.active_id = st.last_item_id;
+    }
 }
 
 [[nodiscard]] inline float resolve_item_width(const cd::ui::chroma::WindowLayout& w, float label_w = 0.0F) noexcept
@@ -3914,6 +3919,11 @@ inline void TextDisabled(const char* fmt, ...) noexcept
     va_start(args, fmt);
     std::vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
+    if (st.dnd_in_source)
+    {
+        st.dnd_label = cd::ui::chroma::visible_label(buf);
+        return;
+    }
     auto& w = st.window_stack.back();
     const std::string_view sv { buf };
     w.draw_list->AddText(ImVec2(w.cursor.x, w.cursor.y + 2.0F), st.theme.text_disabled,
@@ -3931,6 +3941,11 @@ inline void TextColored(const ImVec4& col, const char* fmt, ...) noexcept
     va_start(args, fmt);
     std::vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
+    if (st.dnd_in_source)
+    {
+        st.dnd_label = cd::ui::chroma::visible_label(buf);
+        return;
+    }
     auto& w = st.window_stack.back();
     const std::string_view sv { buf };
     w.draw_list->AddText(ImVec2(w.cursor.x, w.cursor.y + 2.0F), cd::ui::chroma::pack_vec4(col),
