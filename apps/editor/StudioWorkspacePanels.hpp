@@ -1906,8 +1906,12 @@ inline void draw_clean_studio_workspace_panels(
                                    w.loaded_context_assets.size(),
                                    w.current_content_folder.c_str());
 
+                static float s_pane1_w = 156.0F;
+                static float s_pane2_w = 266.0F;
+                static float s_pane3_w = 268.0F;
+
                 // ---- PANE 1 (Left): Disk Directory Tree (Visual Folder Icons) ----
-                ImGui::BeginChild("disk_dir_tree_pane", ImVec2(158.0F, 0.0F), true);
+                ImGui::BeginChild("disk_dir_tree_pane", ImVec2(s_pane1_w, 0.0F), false);
                 ImGui::TextColored(ImVec4(0.95F, 0.80F, 0.42F, 1.0F), "1. Disk Directory");
                 struct FolderNode
                 {
@@ -1940,10 +1944,12 @@ inline void draw_clean_studio_workspace_panels(
                 }
                 ImGui::EndChild();
 
-                ImGui::SameLine();
+                ImGui::SameLine(0.0F, 1.0F);
+                (void)ImGui::VerticalPaneSplitter("##split_disk_pane1", &s_pane1_w, 110.0F, 260.0F);
+                ImGui::SameLine(0.0F, 1.0F);
 
                 // ---- PANE 2 (Center-Left): Disk Files Grid (3D/Texture Previews — Click to Open/Load) ----
-                ImGui::BeginChild("disk_files_grid_pane", ImVec2(272.0F, 0.0F), true);
+                ImGui::BeginChild("disk_files_grid_pane", ImVec2(s_pane2_w, 0.0F), false);
                 ImGui::TextColored(ImVec4(0.52F, 0.86F, 1.0F, 1.0F),
                                    "2. Disk Files (Click -> Context)");
                 if (ImGui::BeginTable("disk_tiles_grid_4col", 4, ImGuiTableFlags_SizingStretchSame))
@@ -2002,10 +2008,12 @@ inline void draw_clean_studio_workspace_panels(
                 }
                 ImGui::EndChild();
 
-                ImGui::SameLine();
+                ImGui::SameLine(0.0F, 1.0F);
+                (void)ImGui::VerticalPaneSplitter("##split_disk_pane2", &s_pane2_w, 160.0F, 440.0F);
+                ImGui::SameLine(0.0F, 1.0F);
 
                 // ---- PANE 3 (Center-Right): Active Project Context (Visual 3D & Texture Previews) ----
-                ImGui::BeginChild("active_context_tiles_pane", ImVec2(276.0F, 0.0F), true);
+                ImGui::BeginChild("active_context_tiles_pane", ImVec2(s_pane3_w, 0.0F), false);
                 ImGui::TextColored(ImVec4(0.38F, 0.95F, 0.66F, 1.0F),
                                    "3. Active Context (%zu Loaded)",
                                    w.loaded_context_assets.size());
@@ -2119,7 +2127,9 @@ inline void draw_clean_studio_workspace_panels(
                 }
                 ImGui::EndChild();
 
-                ImGui::SameLine();
+                ImGui::SameLine(0.0F, 1.0F);
+                (void)ImGui::VerticalPaneSplitter("##split_disk_pane3", &s_pane3_w, 160.0F, 440.0F);
+                ImGui::SameLine(0.0F, 1.0F);
 
                 // ---- PANE 4 (Right): Live 3D / Texture Preview of Selected Context (or Disk) Object ----
                 ImGui::BeginChild("context_live_preview_pane", ImVec2(0.0F, 0.0F), false);

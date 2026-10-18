@@ -196,7 +196,7 @@ public:
 
         frameless_ = desc.frameless;
         const DWORD style = desc.frameless
-            ? (WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX)
+            ? (WS_POPUP | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX)
             : (desc.resizable ? (WS_OVERLAPPEDWINDOW) : (WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX));
 
         // Adjust client size to the requested width/height (the OS frame
@@ -219,6 +219,8 @@ public:
             win_y = std::max(0, (scr_h - win_h) / 2);
         }
 
+        width_ = desc.width;
+        height_ = desc.height;
         const std::wstring title = widen(desc.title);
         hwnd_ = CreateWindowExW(
             0,
@@ -232,12 +234,17 @@ public:
             nullptr,
             nullptr,
             instance_,
-            nullptr
+            this
         );
         if (hwnd_ == nullptr)
             return false;
         // Stash `this` so the thunk can dispatch back into the instance.
         SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+        if (desc.frameless)
+        {
+            SetWindowPos(hwnd_, nullptr, win_x, win_y, win_w, win_h,
+                         SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        }
         width_ = desc.width;
         height_ = desc.height;
         if (desc.visible)
@@ -287,6 +294,15 @@ public:
         if (hwnd_ != nullptr)
         {
             ShowWindow(hwnd_, IsZoomed(hwnd_) ? SW_RESTORE : SW_MAXIMIZE);
+        }
+    }
+
+    void set_cursor_shape(int shape) noexcept override
+    {
+        if (cursor_shape_ != shape)
+        {
+            cursor_shape_ = shape;
+            apply_client_cursor();
         }
     }
 
@@ -354,6 +370,14 @@ public:
 private:
     static LRESULT CALLBACK wndproc_thunk(HWND h, UINT msg, WPARAM w, LPARAM l)
     {
+        if (msg == WM_NCCREATE)
+        {
+            const auto* cs = reinterpret_cast<const CREATESTRUCTW*>(l);
+            auto* created_self = static_cast<Win32Window*>(cs->lpCreateParams);
+            SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(created_self));
+            if (created_self != nullptr)
+                created_self->hwnd_ = h;
+        }
         auto* self = reinterpret_cast<Win32Window*>(GetWindowLongPtrW(h, GWLP_USERDATA));
         if (self == nullptr)
             return DefWindowProcW(h, msg, w, l);
@@ -364,6 +388,32 @@ private:
     {
         switch (msg)
         {
+            case WM_NCCALCSIZE:
+            {
+                if (frameless_ && w == TRUE)
+                {
+                    if (IsZoomed(h))
+                    {
+                        auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(l);
+                        HMONITOR mon = MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST);
+                        MONITORINFO mi {};
+                        mi.cbSize = sizeof(mi);
+                        if (GetMonitorInfoW(mon, &mi))
+                        {
+                            params->rgrc[0] = mi.rcWork;
+                        }
+                    }
+                    return 0;
+                }
+                return DefWindowProcW(h, msg, w, l);
+            }
+            case WM_GETMINMAXINFO:
+            {
+                auto* mmi = reinterpret_cast<MINMAXINFO*>(l);
+                mmi->ptMinTrackSize.x = 640;
+                mmi->ptMinTrackSize.y = 400;
+                return 0;
+            }
             case WM_CLOSE:
             {
                 should_close_ = true;
@@ -374,13 +424,18 @@ private:
             }
             case WM_SIZE:
             {
-                width_ = static_cast<std::uint32_t>(LOWORD(l));
-                height_ = static_cast<std::uint32_t>(HIWORD(l));
-                OSEvent e {};
-                e.kind = OSEventKind::kResize;
-                e.width = width_;
-                e.height = height_;
-                pending_.push_back(e);
+                const auto nw = static_cast<std::uint32_t>(LOWORD(l));
+                const auto nh = static_cast<std::uint32_t>(HIWORD(l));
+                if (nw > 0 && nh > 0)
+                {
+                    width_  = nw;
+                    height_ = nh;
+                    OSEvent e {};
+                    e.kind   = OSEventKind::kResize;
+                    e.width  = width_;
+                    e.height = height_;
+                    pending_.push_back(e);
+                }
                 return 0;
             }
             case WM_SETFOCUS:
@@ -417,10 +472,6 @@ private:
             }
             case WM_CHAR:
             {
-                // wParam carries the Unicode code point (we use the
-                // wide window class, so Win32 calls WM_CHAR not
-                // WM_UNICHAR). Skip control characters except for the
-                // ones ImGui expects (tab=9, newline=10, return=13).
                 const auto cp = static_cast<std::uint32_t>(w);
                 if (cp == 0 || (cp < 32 && cp != 9 && cp != 10 && cp != 13))
                     return 0;
@@ -467,6 +518,17 @@ private:
                 pending_.push_back(e);
                 return 0;
             }
+            case WM_NCMOUSEMOVE:
+            {
+                POINT pt { GET_X_LPARAM(l), GET_Y_LPARAM(l) };
+                ScreenToClient(h, &pt);
+                OSEvent e {};
+                e.kind = OSEventKind::kMouseMove;
+                e.mouse_x = static_cast<float>(pt.x);
+                e.mouse_y = static_cast<float>(pt.y);
+                pending_.push_back(e);
+                return DefWindowProcW(h, msg, w, l);
+            }
             case WM_MOUSEWHEEL:
             {
                 OSEvent e {};
@@ -475,41 +537,98 @@ private:
                 pending_.push_back(e);
                 return 0;
             }
+            case WM_SETCURSOR:
+            {
+                const UINT ht = LOWORD(l);
+                if (ht == HTLEFT || ht == HTRIGHT)
+                {
+                    SetCursor(LoadCursorW(nullptr, MAKEINTRESOURCEW(32644)));  // IDC_SIZEWE
+                    return TRUE;
+                }
+                if (ht == HTTOP || ht == HTBOTTOM)
+                {
+                    SetCursor(LoadCursorW(nullptr, MAKEINTRESOURCEW(32645)));  // IDC_SIZENS
+                    return TRUE;
+                }
+                if (ht == HTTOPLEFT || ht == HTBOTTOMRIGHT)
+                {
+                    SetCursor(LoadCursorW(nullptr, MAKEINTRESOURCEW(32642)));  // IDC_SIZENWSE
+                    return TRUE;
+                }
+                if (ht == HTTOPRIGHT || ht == HTBOTTOMLEFT)
+                {
+                    SetCursor(LoadCursorW(nullptr, MAKEINTRESOURCEW(32643)));  // IDC_SIZENESW
+                    return TRUE;
+                }
+                if (ht == HTCLIENT && cursor_shape_ != 0)
+                {
+                    apply_client_cursor();
+                    return TRUE;
+                }
+                return DefWindowProcW(h, msg, w, l);
+            }
             case WM_NCHITTEST:
             {
                 if (frameless_)
                 {
                     POINT pt { GET_X_LPARAM(l), GET_Y_LPARAM(l) };
-                    ScreenToClient(h, &pt);
-                    const int cw = static_cast<int>(width_);
-                    const int ch = static_cast<int>(height_);
-                    const int b  = 4;
+                    RECT wr {};
+                    GetWindowRect(h, &wr);
                     if (!IsZoomed(h))
                     {
-                        const bool left   = (pt.x >= 0 && pt.x < b);
-                        const bool right  = (pt.x >= cw - b && pt.x < cw);
-                        const bool top    = (pt.y >= 0 && pt.y < b);
-                        const bool bottom = (pt.y >= ch - b && pt.y < ch);
-                        if (top && left)     return HTTOPLEFT;
-                        if (top && right)    return HTTOPRIGHT;
-                        if (bottom && left)  return HTBOTTOMLEFT;
-                        if (bottom && right) return HTBOTTOMRIGHT;
-                        if (left)            return HTLEFT;
-                        if (right)           return HTRIGHT;
-                        if (top)             return HTTOP;
-                        if (bottom)          return HTBOTTOM;
+                        constexpr int kEdge   = 8;
+                        constexpr int kCorner = 16;
+                        const bool on_left   = (pt.x >= wr.left && pt.x < wr.left + kEdge);
+                        const bool on_right  = (pt.x <= wr.right && pt.x >= wr.right - kEdge);
+                        const bool on_top    = (pt.y >= wr.top && pt.y < wr.top + kEdge);
+                        const bool on_bottom = (pt.y <= wr.bottom && pt.y >= wr.bottom - kEdge);
+
+                        const bool c_left   = (pt.x >= wr.left && pt.x < wr.left + kCorner);
+                        const bool c_right  = (pt.x <= wr.right && pt.x >= wr.right - kCorner);
+                        const bool c_top    = (pt.y >= wr.top && pt.y < wr.top + kCorner);
+                        const bool c_bottom = (pt.y <= wr.bottom && pt.y >= wr.bottom - kCorner);
+
+                        // Keep top-right window control buttons (— □ ✕ at x = wr.right - 90..wr.right - 4, y = 4..25) clickable
+                        const bool over_win_btns =
+                            (pt.x >= wr.right - 90 && pt.x < wr.right - 4 &&
+                             pt.y >= wr.top + 4 && pt.y < wr.top + 25);
+                        if (!over_win_btns)
+                        {
+                            if ((on_top && c_left) || (on_left && c_top))         return HTTOPLEFT;
+                            if ((on_top && c_right) || (on_right && c_top))       return HTTOPRIGHT;
+                            if ((on_bottom && c_left) || (on_left && c_bottom))   return HTBOTTOMLEFT;
+                            if ((on_bottom && c_right) || (on_right && c_bottom)) return HTBOTTOMRIGHT;
+                            if (on_left)   return HTLEFT;
+                            if (on_right)  return HTRIGHT;
+                            if (on_top)    return HTTOP;
+                            if (on_bottom) return HTBOTTOM;
+                        }
                     }
-                    // Empty center stretch of top bar (between menus and right telemetry/buttons) drags the window
-                    if (pt.y >= 0 && pt.y < 24 && pt.x >= 720 && pt.x < cw - 280)
+                    ScreenToClient(h, &pt);
+                    const int cw = static_cast<int>(width_);
+                    // Empty center stretch of top bar (between menus and right telemetry/buttons) drags/maximizes the window
+                    if (pt.y >= 0 && pt.y < 25 && pt.x >= 680 && pt.x < cw - 280)
                     {
                         return HTCAPTION;
                     }
+                    return HTCLIENT;
                 }
                 return DefWindowProcW(h, msg, w, l);
             }
             default:
                 return DefWindowProcW(h, msg, w, l);
         }
+    }
+
+    void apply_client_cursor() const noexcept
+    {
+        WORD cid = 32512;  // IDC_ARROW
+        if (cursor_shape_ == 1)      cid = 32644;  // IDC_SIZEWE (<->)
+        else if (cursor_shape_ == 2) cid = 32645;  // IDC_SIZENS (↕)
+        else if (cursor_shape_ == 3) cid = 32642;  // IDC_SIZENWSE (↖↘)
+        else if (cursor_shape_ == 4) cid = 32643;  // IDC_SIZENESW (↗↙)
+        else if (cursor_shape_ == 5) cid = 32649;  // IDC_HAND
+        SetCursor(LoadCursorW(nullptr, MAKEINTRESOURCEW(cid)));
     }
 
     static constexpr const wchar_t* kClassName = L"ChromodynamicWindow";
@@ -519,6 +638,7 @@ private:
     bool owns_class_ref_ { false };
     bool should_close_ { false };
     bool frameless_ { false };
+    int cursor_shape_ { 0 };
     std::uint32_t width_ { 0 };
     std::uint32_t height_ { 0 };
     std::vector<OSEvent> pending_ {};

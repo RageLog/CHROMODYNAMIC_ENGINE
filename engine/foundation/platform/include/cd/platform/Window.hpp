@@ -238,6 +238,10 @@ public:
     virtual void minimize() noexcept {}
     virtual void toggle_maximize() noexcept {}
 
+    /// Set mouse cursor shape for the client area:
+    /// 0 = Arrow, 1 = ResizeWE (<->), 2 = ResizeNS (^v), 3 = ResizeNWSE, 4 = ResizeNESW, 5 = Hand.
+    virtual void set_cursor_shape(int /*shape*/) noexcept {}
+
     /// Native handles for swapchain integration. The pair feeds straight
     /// into `cd::rhi::SwapchainDesc::window_handle` / `display_handle`.
     ///   * Win32:   (HWND, HINSTANCE)

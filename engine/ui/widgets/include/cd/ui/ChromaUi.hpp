@@ -1163,6 +1163,8 @@ struct State
     float dock_bottom_h_ratio { 0.270F };
     float dock_left_split_ratio { 0.70F };
     int   dragging_splitter { 0 }; // 1=left, 2=right, 3=bottom, 4=left_mid
+    ImGuiID active_pane_splitter_id { 0U };
+    int   desired_cursor { 0 }; // 0=Arrow, 1=ResizeWE, 2=ResizeNS, 3=ResizeNWSE, 4=ResizeNESW, 5=Hand
     bool  dock_node_created { false };
     // Dock slot mapping: 1=LeftTop, 2=LeftBottom, 3=Right, 4=Bottom, 0=Floating
     std::unordered_map<ImGuiID, int> dock_node_slot {};
@@ -2295,10 +2297,12 @@ public:
         st.hovered_id = 0U;
         st.any_item_hovered = false;
         st.mouse_in_any_window = false;
+        st.desired_cursor = 0;
         if (!st.mouse_down[0])
         {
             st.active_id = 0U;
             st.dragging_splitter = 0;
+            st.active_pane_splitter_id = 0U;
             st.dragging_window_id = 0U;
             st.resizing_window_id = 0U;
             st.dragging_node_id = 0U;
@@ -2341,6 +2345,85 @@ public:
                     st.active_submenu_name.clear();
                 }
             }
+        }
+
+        // Outer Frameless Window Edge & Corner Resizer Indicator (visual glow + badge + OS resize cursor)
+        {
+            const float W = st.io.DisplaySize.x;
+            const float H = st.io.DisplaySize.y;
+            const ImVec2 mp = st.io.MousePos;
+            if ((mp.x > 0.5F || mp.y > 0.5F) && mp.x >= 0.0F && mp.x <= W && mp.y >= 0.0F && mp.y <= H)
+            {
+                constexpr float kEdge   = 8.0F;
+                constexpr float kCorner = 16.0F;
+                const bool over_win_btns = (mp.x >= W - 90.0F && mp.x < W - 4.0F && mp.y >= 4.0F && mp.y < 25.0F);
+                if (!over_win_btns)
+                {
+                    const bool on_l = (mp.x <= kEdge);
+                    const bool on_r = (mp.x >= W - kEdge);
+                    const bool on_t = (mp.y <= kEdge);
+                    const bool on_b = (mp.y >= H - kEdge);
+                    const bool cl   = (mp.x <= kCorner);
+                    const bool cr   = (mp.x >= W - kCorner);
+                    const bool ct   = (mp.y <= kCorner);
+                    const bool cb   = (mp.y >= H - kCorner);
+
+                    const ImU32 hi = st.theme.accent_bright;
+                    if ((on_t && cl) || (on_l && ct))
+                    {
+                        st.desired_cursor = 3; // ResizeNWSE
+                        st.fg_dl.AddRectFilled(ImVec2(0.0F, 0.0F), ImVec2(18.0F, 3.5F), hi);
+                        st.fg_dl.AddRectFilled(ImVec2(0.0F, 0.0F), ImVec2(3.5F, 18.0F), hi);
+                    }
+                    else if ((on_t && cr) || (on_r && ct))
+                    {
+                        st.desired_cursor = 4; // ResizeNESW
+                        st.fg_dl.AddRectFilled(ImVec2(W - 18.0F, 0.0F), ImVec2(W, 3.5F), hi);
+                        st.fg_dl.AddRectFilled(ImVec2(W - 3.5F, 0.0F), ImVec2(W, 18.0F), hi);
+                    }
+                    else if ((on_b && cl) || (on_l && cb))
+                    {
+                        st.desired_cursor = 4; // ResizeNESW
+                        st.fg_dl.AddRectFilled(ImVec2(0.0F, H - 3.5F), ImVec2(18.0F, H), hi);
+                        st.fg_dl.AddRectFilled(ImVec2(0.0F, H - 18.0F), ImVec2(3.5F, H), hi);
+                    }
+                    else if ((on_b && cr) || (on_r && cb))
+                    {
+                        st.desired_cursor = 3; // ResizeNWSE
+                        st.fg_dl.AddRectFilled(ImVec2(W - 18.0F, H - 3.5F), ImVec2(W, H), hi);
+                        st.fg_dl.AddRectFilled(ImVec2(W - 3.5F, H - 18.0F), ImVec2(W, H), hi);
+                    }
+                    else if (on_l)
+                    {
+                        st.desired_cursor = 1; // ResizeWE
+                        st.fg_dl.AddRectFilled(ImVec2(0.0F, std::max(0.0F, mp.y - 36.0F)),
+                                               ImVec2(3.5F, std::min(H, mp.y + 36.0F)), hi, 2.0F);
+                    }
+                    else if (on_r)
+                    {
+                        st.desired_cursor = 1; // ResizeWE
+                        st.fg_dl.AddRectFilled(ImVec2(W - 3.5F, std::max(0.0F, mp.y - 36.0F)),
+                                               ImVec2(W, std::min(H, mp.y + 36.0F)), hi, 2.0F);
+                    }
+                    else if (on_t)
+                    {
+                        st.desired_cursor = 2; // ResizeNS
+                        st.fg_dl.AddRectFilled(ImVec2(std::max(0.0F, mp.x - 36.0F), 0.0F),
+                                               ImVec2(std::min(W, mp.x + 36.0F), 3.5F), hi, 2.0F);
+                    }
+                    else if (on_b)
+                    {
+                        st.desired_cursor = 2; // ResizeNS
+                        st.fg_dl.AddRectFilled(ImVec2(std::max(0.0F, mp.x - 36.0F), H - 3.5F),
+                                               ImVec2(std::min(W, mp.x + 36.0F), H), hi, 2.0F);
+                    }
+                }
+            }
+        }
+
+        if (st.os_window != nullptr)
+        {
+            st.os_window->set_cursor_shape(st.desired_cursor);
         }
 
         // Draw floating Drag-and-Drop ghost badge if dragging
@@ -2890,10 +2973,10 @@ inline ImGuiID DockSpace(ImGuiID id, const ImVec2& /*size*/ = ImVec2(0, 0),
     const bool popup_open = (!st.active_menu_name.empty() || st.open_popup_id != 0U) &&
                             (mp.x >= st.last_popup_min.x && mp.x <= st.last_popup_max.x &&
                              mp.y >= st.last_popup_min.y && mp.y <= st.last_popup_max.y);
-    const bool hover_l  = !popup_open && (mp.y >= top_y && std::fabs(mp.x - lx) <= 4.0F);
-    const bool hover_r  = !popup_open && (mp.y >= top_y && std::fabs(mp.x - rx) <= 4.0F);
-    const bool hover_b  = !popup_open && (mp.x >= lx && mp.x <= rx && std::fabs(mp.y - by) <= 4.0F);
-    const bool hover_lm = has_left_split && !popup_open && (mp.x <= lx && std::fabs(mp.y - lmy) <= 4.0F);
+    const bool hover_l  = !popup_open && (mp.y >= top_y && std::fabs(mp.x - lx) <= 7.0F);
+    const bool hover_r  = !popup_open && (mp.y >= top_y && std::fabs(mp.x - rx) <= 7.0F);
+    const bool hover_b  = !popup_open && (mp.x >= lx && mp.x <= rx && std::fabs(mp.y - by) <= 7.0F);
+    const bool hover_lm = has_left_split && !popup_open && (mp.x <= lx && std::fabs(mp.y - lmy) <= 7.0F);
 
     if (st.mouse_clicked[0] && !popup_open)
     {
@@ -2906,27 +2989,80 @@ inline ImGuiID DockSpace(ImGuiID id, const ImVec2& /*size*/ = ImVec2(0, 0),
     if (st.mouse_down[0] && st.dragging_splitter != 0)
     {
         if (st.dragging_splitter == 1)
-            st.dock_left_w_ratio = std::clamp(mp.x / W, 0.14F, 0.34F);
+            st.dock_left_w_ratio = std::clamp(mp.x / W, 0.13F, 0.36F);
         else if (st.dragging_splitter == 2)
-            st.dock_right_w_ratio = std::clamp((W - mp.x) / W, 0.15F, 0.36F);
+            st.dock_right_w_ratio = std::clamp((W - mp.x) / W, 0.14F, 0.38F);
         else if (st.dragging_splitter == 3)
-            st.dock_bottom_h_ratio = std::clamp((H - mp.y) / work_h, 0.14F, 0.44F);
+            st.dock_bottom_h_ratio = std::clamp((H - mp.y) / work_h, 0.12F, 0.48F);
         else if (st.dragging_splitter == 4 && has_left_split)
             st.dock_left_split_ratio = std::clamp((mp.y - top_y) / work_h, 0.25F, 0.80F);
     }
 
-    const ImU32 grip_col = IM_COL32(36, 44, 58, 255);
-    const ImU32 grip_hi  = st.theme.accent_bright;
-    st.fg_dl.AddRectFilled(ImVec2(lx - 0.5F, top_y), ImVec2(lx + 0.5F, H),
-                           (hover_l || st.dragging_splitter == 1) ? grip_hi : grip_col);
-    st.fg_dl.AddRectFilled(ImVec2(rx - 0.5F, top_y), ImVec2(rx + 0.5F, H),
-                           (hover_r || st.dragging_splitter == 2) ? grip_hi : grip_col);
-    st.fg_dl.AddRectFilled(ImVec2(lx, by - 0.5F), ImVec2(rx, by + 0.5F),
-                           (hover_b || st.dragging_splitter == 3) ? grip_hi : grip_col);
+    const bool act_l  = hover_l  || (st.dragging_splitter == 1);
+    const bool act_r  = hover_r  || (st.dragging_splitter == 2);
+    const bool act_b  = hover_b  || (st.dragging_splitter == 3);
+    const bool act_lm = hover_lm || (st.dragging_splitter == 4);
+
+    if (act_l || act_r)
+        st.desired_cursor = 1; // IDC_SIZEWE (<->)
+    else if (act_b || act_lm)
+        st.desired_cursor = 2; // IDC_SIZENS (^v)
+
+    const ImU32 grip_col  = IM_COL32(42, 54, 72, 255);
+    const ImU32 pill_idle = IM_COL32(84, 112, 148, 220);
+    const ImU32 grip_hi   = st.theme.accent_bright;
+
+    auto draw_v_resizer_badge = [&](float x, float y)
+    {
+        const float cy = std::clamp(y, top_y + 24.0F, H - 24.0F);
+        st.fg_dl.AddRectFilled(ImVec2(x - 9.0F, cy - 11.0F), ImVec2(x + 9.0F, cy + 11.0F),
+                               IM_COL32(16, 24, 38, 245), 4.0F);
+        st.fg_dl.AddRect(ImVec2(x - 9.0F, cy - 11.0F), ImVec2(x + 9.0F, cy + 11.0F),
+                         grip_hi, 4.0F, 0, 1.3F);
+        // Left & right arrows (< | >)
+        st.fg_dl.AddTriangleFilled(ImVec2(x - 6.5F, cy), ImVec2(x - 2.5F, cy - 3.5F), ImVec2(x - 2.5F, cy + 3.5F), grip_hi);
+        st.fg_dl.AddTriangleFilled(ImVec2(x + 6.5F, cy), ImVec2(x + 2.5F, cy - 3.5F), ImVec2(x + 2.5F, cy + 3.5F), grip_hi);
+        st.fg_dl.AddRectFilled(ImVec2(x - 0.6F, cy - 5.0F), ImVec2(x + 0.6F, cy + 5.0F), IM_COL32(235, 245, 255, 230));
+    };
+
+    auto draw_h_resizer_badge = [&](float x, float y, float min_x, float max_x)
+    {
+        const float cx = std::clamp(x, min_x + 24.0F, max_x - 24.0F);
+        st.fg_dl.AddRectFilled(ImVec2(cx - 11.0F, y - 9.0F), ImVec2(cx + 11.0F, y + 9.0F),
+                               IM_COL32(16, 24, 38, 245), 4.0F);
+        st.fg_dl.AddRect(ImVec2(cx - 11.0F, y - 9.0F), ImVec2(cx + 11.0F, y + 9.0F),
+                         grip_hi, 4.0F, 0, 1.3F);
+        // Up & down arrows (^ / v)
+        st.fg_dl.AddTriangleFilled(ImVec2(cx, y - 6.5F), ImVec2(cx - 3.5F, y - 2.5F), ImVec2(cx + 3.5F, y - 2.5F), grip_hi);
+        st.fg_dl.AddTriangleFilled(ImVec2(cx, y + 6.5F), ImVec2(cx - 3.5F, y + 2.5F), ImVec2(cx + 3.5F, y + 2.5F), grip_hi);
+        st.fg_dl.AddRectFilled(ImVec2(cx - 5.0F, y - 0.6F), ImVec2(cx + 5.0F, y + 0.6F), IM_COL32(235, 245, 255, 230));
+    };
+
+    // Left vertical dock splitter
+    const float lw_half = act_l ? 1.8F : 0.8F;
+    st.fg_dl.AddRectFilled(ImVec2(lx - lw_half, top_y), ImVec2(lx + lw_half, H), act_l ? grip_hi : grip_col);
+    const float mid_ly = 0.5F * (top_y + by);
+    st.fg_dl.AddRectFilled(ImVec2(lx - 1.5F, mid_ly - 14.0F), ImVec2(lx + 1.5F, mid_ly + 14.0F), act_l ? grip_hi : pill_idle, 1.5F);
+    if (act_l) draw_v_resizer_badge(lx, mp.y);
+
+    // Right vertical dock splitter
+    const float rw_half = act_r ? 1.8F : 0.8F;
+    st.fg_dl.AddRectFilled(ImVec2(rx - rw_half, top_y), ImVec2(rx + rw_half, H), act_r ? grip_hi : grip_col);
+    st.fg_dl.AddRectFilled(ImVec2(rx - 1.5F, mid_ly - 14.0F), ImVec2(rx + 1.5F, mid_ly + 14.0F), act_r ? grip_hi : pill_idle, 1.5F);
+    if (act_r) draw_v_resizer_badge(rx, mp.y);
+
+    // Bottom horizontal dock splitter
+    const float bh_half = act_b ? 1.8F : 0.8F;
+    st.fg_dl.AddRectFilled(ImVec2(lx, by - bh_half), ImVec2(rx, by + bh_half), act_b ? grip_hi : grip_col);
+    const float mid_bx = 0.5F * (lx + rx);
+    st.fg_dl.AddRectFilled(ImVec2(mid_bx - 16.0F, by - 1.5F), ImVec2(mid_bx + 16.0F, by + 1.5F), act_b ? grip_hi : pill_idle, 1.5F);
+    if (act_b) draw_h_resizer_badge(mp.x, by, lx, rx);
+
     if (has_left_split)
     {
-        st.fg_dl.AddRectFilled(ImVec2(0.0F, lmy - 0.5F), ImVec2(lx, lmy + 0.5F),
-                               (hover_lm || st.dragging_splitter == 4) ? grip_hi : grip_col);
+        const float lmw_half = act_lm ? 1.8F : 0.8F;
+        st.fg_dl.AddRectFilled(ImVec2(0.0F, lmy - lmw_half), ImVec2(lx, lmy + lmw_half), act_lm ? grip_hi : grip_col);
+        if (act_lm) draw_h_resizer_badge(mp.x, lmy, 0.0F, lx);
     }
     if (st.workspace_mode == 0)
     {
@@ -2934,6 +3070,66 @@ inline ImGuiID DockSpace(ImGuiID id, const ImVec2& /*size*/ = ImVec2(0, 0),
         st.bg_dl.PushClipRect(ImVec2(lx + 1.0F, top_y + 1.0F), ImVec2(rx - 1.0F, by - 1.0F));
     }
     return id;
+}
+
+inline bool VerticalPaneSplitter(const char* str_id, float* io_width, float min_w, float max_w,
+                                 float height = 0.0F, bool invert_drag = false) noexcept
+{
+    auto& st = cd::ui::chroma::state();
+    if (st.window_stack.empty() || io_width == nullptr) return false;
+    auto& w = st.window_stack.back();
+    const ImGuiID sid = cd::ui::chroma::hash_str(str_id != nullptr ? str_id : "##vsplit", w.id);
+    const float h = (height > 0.0F) ? height : std::max(24.0F, (w.pos.y + w.size.y - 6.0F) - w.cursor.y);
+    const ImVec2 p0 = w.cursor;
+    const ImVec2 p1 { p0.x + 6.0F, p0.y + h };
+    const float cx = p0.x + 3.0F;
+
+    const ImVec2 mp = st.io.MousePos;
+    const bool hovered = (mp.x >= p0.x - 4.0F && mp.x <= p1.x + 4.0F && mp.y >= p0.y && mp.y <= p1.y);
+    if (hovered && st.mouse_clicked[0])
+    {
+        st.active_pane_splitter_id = sid;
+    }
+    const bool dragging = (st.active_pane_splitter_id == sid) && st.mouse_down[0];
+    bool changed = false;
+    if (dragging && std::fabs(st.mouse_delta.x) > 0.001F)
+    {
+        const float dx = invert_drag ? -st.mouse_delta.x : st.mouse_delta.x;
+        *io_width = std::clamp(*io_width + dx, min_w, max_w);
+        changed = true;
+    }
+
+    const bool active = hovered || dragging;
+    if (active)
+    {
+        st.desired_cursor = 1; // IDC_SIZEWE (<->)
+    }
+
+    const ImU32 line_col = active ? st.theme.accent_bright : IM_COL32(46, 58, 78, 255);
+    const ImU32 pill_col = active ? st.theme.accent_bright : IM_COL32(92, 124, 164, 225);
+    const float half_t   = active ? 1.6F : 0.7F;
+    w.draw_list->AddRectFilled(ImVec2(cx - half_t, p0.y + 2.0F), ImVec2(cx + half_t, p1.y - 2.0F), line_col);
+    const float mid_y = 0.5F * (p0.y + p1.y);
+    w.draw_list->AddRectFilled(ImVec2(cx - 1.5F, mid_y - 12.0F), ImVec2(cx + 1.5F, mid_y + 12.0F), pill_col, 1.5F);
+
+    if (active)
+    {
+        const float by = std::clamp(mp.y, p0.y + 14.0F, p1.y - 14.0F);
+        st.fg_dl.AddRectFilled(ImVec2(cx - 8.5F, by - 10.0F), ImVec2(cx + 8.5F, by + 10.0F),
+                               IM_COL32(16, 24, 38, 245), 4.0F);
+        st.fg_dl.AddRect(ImVec2(cx - 8.5F, by - 10.0F), ImVec2(cx + 8.5F, by + 10.0F),
+                         st.theme.accent_bright, 4.0F, 0, 1.2F);
+        st.fg_dl.AddTriangleFilled(ImVec2(cx - 6.0F, by), ImVec2(cx - 2.2F, by - 3.2F), ImVec2(cx - 2.2F, by + 3.2F), st.theme.accent_bright);
+        st.fg_dl.AddTriangleFilled(ImVec2(cx + 6.0F, by), ImVec2(cx + 2.2F, by - 3.2F), ImVec2(cx + 2.2F, by + 3.2F), st.theme.accent_bright);
+    }
+
+    w.prev_item_min = p0;
+    w.prev_item_max = p1;
+    w.cursor.x      = p0.x;
+    w.cursor.y      = p1.y + st.style_item_spacing.y;
+    w.content_max_x = std::max(w.content_max_x, p1.x);
+    w.content_max_y = std::max(w.content_max_y, p1.y);
+    return changed;
 }
 
 // -----------------------------------------------------------------------------
