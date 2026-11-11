@@ -1,21 +1,49 @@
 # =============================================================================
-# apps/editor -- CHROMODYNAMIC 3D Engine Studio (editor.exe)
+# apps/editor -- CHROMODYNAMIC Studio (cd_editor_lib + cd_app_editor)
 #
-# Full Vulkan 1.3 3D PBR + Sponza Atrium + Skinned Animation + Hardware Z-Buffer
-# + Multi-Light & CSM Shadows + Post-FX + Domestic Studio Workbench UI.
+# Valve Source 2 toolframework2-modeled modular C++23 editor architecture
+# (ADR-20261112):
+#   * cd_editor_lib -- compiled core, render, scene, physics, pipeline,
+#                      workspace_2d, and Hammer 5 / Godot 4 clean UI docks
+#   * cd_app_editor -- thin 23-line entry point (apps/editor/main.cpp)
 # =============================================================================
 
 option(STUDIO_USE_ON_DISK_SHADERS
        "When ON: read shaders from apps/editor/shaders/*.glsl at runtime (dev iteration)."
        ON)
 
-cd_add_app(editor
-  SOURCES main.cpp
-  DEPS
+option(CD_USE_MATERIAL_UI_ROUTE_A
+       "Editor prefers Route A (cd::material UI variant) at runtime, with safety fallback to Route B (inline GLSL). Default ON (ship path)."
+       ON)
+
+cd_add_library(editor_lib
+  EXCLUDE_FROM_INSTALL
+  TYPE STATIC
+  SOURCES
+    core/StudioConfig.cpp
+    core/StudioState.cpp
+    core/StudioApp.cpp
+    render/WorldRenderPasses.cpp
+    scene/SceneOperations.cpp
+    physics/PhysicsPieSolver.cpp
+    pipeline/AssetIngest.cpp
+    workspace_2d/Workspace2D.cpp
+    ui/UnifiedTopBar.cpp
+    ui/ProjectHubModal.cpp
+    ui/SceneTreeDock.cpp
+    ui/InspectorDock.cpp
+    ui/ProjectAndToolsDock.cpp
+    ui/ViewportHudAndGizmo.cpp
+  PUBLIC_DEPS
     cd::asset
     cd::asset_gltf
     cd::asset_image
     cd::asset_json
+    cd::asset_obj
+    cd::asset_pak
+    cd::schema
+    cd::render2d
+    cd::world2d
     cd::audio
     cd::camera
     cd::concurrency
@@ -87,13 +115,29 @@ cd_add_app(editor
     cd::app_common
 )
 
-target_compile_definitions(cd_app_editor PRIVATE
-  STUDIO_USE_ON_DISK_SHADERS=$<BOOL:${STUDIO_USE_ON_DISK_SHADERS}>)
+target_include_directories(cd_editor_lib PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+)
+
+target_compile_definitions(cd_editor_lib PUBLIC
+  STUDIO_USE_ON_DISK_SHADERS=$<BOOL:${STUDIO_USE_ON_DISK_SHADERS}>
+)
 
 if(STUDIO_USE_ON_DISK_SHADERS)
-  target_compile_definitions(cd_app_editor PRIVATE
-    STUDIO_SHADER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/shaders")
+  target_compile_definitions(cd_editor_lib PUBLIC
+    STUDIO_SHADER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/shaders"
+  )
 endif()
+
+if(CD_USE_MATERIAL_UI_ROUTE_A)
+  target_compile_definitions(cd_editor_lib PUBLIC CD_USE_MATERIAL_UI_ROUTE_A=1)
+endif()
+
+cd_add_app(editor
+  SOURCES main.cpp
+  DEPS
+    cd::editor_lib
+)
 
 file(GLOB STUDIO_SHADER_SOURCES CONFIGURE_DEPENDS
   ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.glsl)
@@ -120,11 +164,4 @@ if(CD_ENABLE_TESTING)
     COMMAND cd_app_editor --headless 5 --pie-play --showcase 01_pbr_materials_sss_hair
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   )
-endif()
-
-option(CD_USE_MATERIAL_UI_ROUTE_A
-       "Editor prefers Route A (cd::material UI variant) at runtime, with safety fallback to Route B (inline GLSL). Default ON (ship path)."
-       ON)
-if(CD_USE_MATERIAL_UI_ROUTE_A)
-  target_compile_definitions(cd_app_editor PRIVATE CD_USE_MATERIAL_UI_ROUTE_A=1)
 endif()

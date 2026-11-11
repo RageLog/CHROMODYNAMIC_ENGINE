@@ -82,41 +82,6 @@ inline void setup_boot_world_and_project(StateT& s)
         s.fx.hdr_parallel_lanes = true;
 }
 
-// ---- start_boot_streamer_and_random_viz -------------------------------------
-// AsyncStreamer worker start + the random-viz histograms' first fill
-// (Box-Muller normal pairs + uniform bucket fill, 8192 samples each).
-template <typename StateT>
-inline void start_boot_streamer_and_random_viz(StateT& s)
-{
-    // AsyncStreamer
-    s.streamer.start();
-
-    // Random viz initial fill
-    {
-        auto do_rv = [&s]()
-        {
-            std::vector<float> u; u.reserve(8192);
-            for (int i = 0; i < 8192; ++i) u.push_back(s.rand_rng.next_float());
-            s.hist_uniform.rebuild(u, 0.0F, 1.0F, 24);
-            std::vector<float> n; n.reserve(8192);
-            bool cv_ok = false; float cv = 0.0F;
-            for (int i = 0; i < 8192; ++i)
-            {
-                if (cv_ok) { cv_ok = false; n.push_back(cv); continue; }
-                float u1 = s.rand_rng.next_float();
-                u1 = std::max(u1, 1e-7F);
-                float u2 = s.rand_rng.next_float();
-                float rr = std::sqrt(-2.0F * std::log(u1));
-                float t  = 2.0F * std::numbers::pi_v<float> * u2;
-                cv = rr * std::sin(t); cv_ok = true;
-                n.push_back(rr * std::cos(t));
-            }
-            s.hist_normal.rebuild(n, -3.0F, 3.0F, 24);
-        };
-        do_rv();
-    }
-}
-
 // ---- register_boot_palette_commands -----------------------------------------
 // The fx/engineering palette buckets (StudioFxCommands + StudioEngineCommands)
 // plus the edit/select/transform/camera/audio/net/random/help commands.
@@ -206,37 +171,6 @@ inline void register_boot_palette_commands(StateT& s, LogFn log_push_fn)
                     s.audio_state.muted ? 0.0F : 0.65F);
             log_push_fn(std::string("[palette] Audio: ") +
                 (s.audio_state.muted ? "MUTED" : "LIVE"));
-        });
-    s.palette.register_command(50, "Net: Toggle Sim",
-        [&s, log_push_fn]() mutable
-        {
-            s.net_enabled = !s.net_enabled;
-            log_push_fn(std::string("[palette] Net sim: ") +
-                (s.net_enabled ? "RUNNING" : "PAUSED"));
-        });
-    s.palette.register_command(60, "Random: Reseed + Refresh",
-        [&s, log_push_fn]() mutable
-        {
-            thread_local std::mt19937_64 tl_rng(std::random_device{}());
-            std::uniform_int_distribution<std::uint64_t> dist;
-            s.rand_rng = cd::math::Random { dist(tl_rng) };
-            std::vector<float> u; u.reserve(8192);
-            for (int i = 0; i < 8192; ++i) u.push_back(s.rand_rng.next_float());
-            s.hist_uniform.rebuild(u, 0.0F, 1.0F, 24);
-            std::vector<float> n; n.reserve(8192);
-            bool cv_ok = false; float cv = 0.0F;
-            for (int i = 0; i < 8192; ++i)
-            {
-                if (cv_ok) { cv_ok = false; n.push_back(cv); continue; }
-                float u1 = s.rand_rng.next_float(); u1 = std::max(u1, 1e-7F);
-                float u2 = s.rand_rng.next_float();
-                float rr = std::sqrt(-2.0F * std::log(u1));
-                float t  = 2.0F * std::numbers::pi_v<float> * u2;
-                cv = rr * std::sin(t); cv_ok = true;
-                n.push_back(rr * std::cos(t));
-            }
-            s.hist_normal.rebuild(n, -3.0F, 3.0F, 24);
-            log_push_fn("[palette] Random reseeded");
         });
     s.palette.register_command(70, "Help: Print Shortcuts",
         [log_push_fn]() mutable

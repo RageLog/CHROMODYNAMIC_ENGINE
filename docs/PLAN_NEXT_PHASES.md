@@ -483,3 +483,64 @@
 - [x] **Wave 32.2 — 16. Vitrin Seviyesi: `6.3 Rockstar 2D+3D Physics & Euphoria/Pacejka Arena` (`template_id = 15`) ve Canlı GPU Doğrulaması**:
   - `World 6: Playable Games & Interactive Templates` altına 16. Seviye olarak `6.3 Rockstar 2D+3D Physics & Euphoria/Pacejka Arena` (`template_id = 15`) eklenmesi: `Euphoria_ActiveRagdoll_Avatar`, `Pacejka_Vehicle_Rover3D`, `Voronoi_Fracture_Chunk_1..3`, `XPBD_ClothSoftBody_Banner3D`, `Archimedes_Buoyancy_Vessel3D` ve alt `Console & Physics` panelinde canlı `[Impulse Euphoria]` / `[Shatter Voronoi]` kontrolleri.
 
+---
+
+# BÖLÜM XII — TİCARİ 2D-ÖNCELİKLİ OYUN MOTORU, BİRLEŞİK 3D/HD-2D YOL HARİTASI, TAM DAĞITIM BORU HATTI VE İNSAN+AI SİMETRİK STÜDYO MİMARİSİ (FAZ 33–37)
+
+## FAZ 33 — Temel Yansıma & Öz-Betimleyici Şema Katmanı (`cd::schema` — Level 0) ve Mimari Karar Kaydı (`ADR-20261111`)
+
+- [x] **Wave 33.1 — Ticari 2D/3D & İnsan+AI Mimari Karar Kaydı (`ADR-20261111`)**:
+  - [`docs/ADR/ADR-20261111-commercial-2d-3d-ai-native-architecture.md`](ADR/ADR-20261111-commercial-2d-3d-ai-native-architecture.md) içinde Üçlü Split-Brain tanısı, SOTA karşılaştırma matrisi, `cd::schema` (L0) -> `cd::render2d` (L3) -> `cd::world2d` (L4) -> `apps/editor` & `apps/player` (L6) katman mimarisi ve doğrulama kapılarının belgelenmesi (`check_human_voice.py` `PASS`).
+- [x] **Wave 33.2 — `cd::schema` (`engine/foundation/schema`) Öz-Betimleyici C++23 Tip/Alan Şeması ve JSON Schema Draft 2020-12 Üreteci**:
+  - `FieldKind`, `FieldDesc`, `TypeSchema`, `SchemaRegistry`, tip doğrulama ve AI ajanlarının sıfır halüsinasyonla motor şemasını okuyabilmesi için `export_json_schema_draft2020()` gerçeklemesi + `cd_test_schema` birim testleri (`2/2 PASS`).
+
+## FAZ 34 — Birinci Hedef: Ultra-Gelişmiş Modüler 2D Render Motoru (`cd::render2d` — Level 3) ve Varlık Formatları
+
+- [x] **Wave 34.1 — 64-Bit Radix Z/Y-Sort, Subpixel Smooth `Camera2D`, `SpriteBatch2D` / `FlipbookAnimator2D` ve `Lighting2D` Yumuşak Gölge Çekirdeği**:
+  - `engine/render/render2d/include/cd/render2d/` altında 6 tek-sorumluluklu modül: `SortKey2D.hpp`, `Camera2D.hpp` (`critically-damped follow` + `lookahead` + `deadzone` + `trauma shake`), `SpriteBatch2D.hpp` (`FlipbookClip2D`, `NineSlice2D`, frustum culling, `DrawBatcher` GPU emisyonu), `Lighting2D.hpp` (`PointLight2D`, `ShadowOccluder2D` analitik yarı-gölge + 2D yüzey normali aydınlatması).
+- [x] **Wave 34.2 — Seyrek Yığınlı (`16x16`) `Tilemap2D`, 16-Parçalı Wang Auto-Tiling, Greedy Collider Birleştirici ve `.aseprite` / `.ldtk` Yükleyicileri**:
+  - `Tilemap2D.hpp` içinde 4-bit kardinal (16-tile Wang) otomatik döşeme (`paint_autotile`), bitişik dolu fayansları minimum sayıda kutuya indirgeyen `bake_greedy_collision_rects` ve `FormatLoaders2D.hpp` içinde sıfır harici bağımlılıklı `.aseprite` + `.ldtk` yükleyicileri + `cd_test_render2d` birim testleri (`5/5 PASS`).
+
+## FAZ 35 — Birleşik 2D Oynanış/Fizik/Lua Dünyası (`cd::world2d` — Level 4), `[2D Studio]` Çalışma Alanı, İnsan+AI `CommandBus2D` ve Gerçek `.cdpak` + `cd_player` Hattı
+
+- [x] **Wave 35.1 — `cd::world2d` (`Stage2D` + `PhysicsWorld2D` + `CharacterController2D` + Kum-Havuzlu Lua 5.4 + `CommandBus2D` + `PlaytestRunner2D`)**:
+  - `engine/game/world2d/` altında `cd::physics::v2d::PhysicsWorld2D` + `CharacterController2D` (`coyote_time`, `jump_buffer`), canlı Lua 5.4 `on_tick` varlık betikleri, hem İnsan `Undo/Redo` hem AI JSON komutlarını aynı atomik yoldan yürüten `CommandBus2D`, deterministik otonom `PlaytestRunner2D` telemetrisi ve `.cd2d.json` kayıpsız serileştirme + `cd_test_world2d` birim testleri (`3/3 PASS`).
+- [x] **Wave 35.2 — Modüler `[2D Studio]` Çalışma Alanı (`apps/editor/Studio2DWorkspace.hpp`), CLI AI Köprüsü (`--dump-schema`, `--2d-studio`, `--playtest-2d`) ve Bağımsız `.cdpak` + `cd_player.exe` Dağıtımı**:
+  - `apps/editor` üst şerit araç çubuğuna `[2D Studio]` sekmesi eklenmesi; etkileşimli 2D GPU Tuvali (fayans fırçası, Wang auto-tile, dikdörtgen doldurma, silgi, nesne taşıma, `F5` canlı 2D fizik oynanışı), `cd::schema` Otomatik Inspector, Canlı Lua 5.4 Editörü ve AI Komut Konsolu.
+  - `apps/player` (`cd_player.exe --stage2d` / `--pak`) içine gerçek `Stage2D` + `Renderer2D` çalıştırıcısının eklenmesi ve `export_standalone_game_package` (`F9`) adımının `PakBuilder` ile gerçek `game.cdpak` arşivi + taşınabilir `cd_player.exe` başlatıcısı üretmesi.
+
+## FAZ 36 — İkinci Hedef: Birleşik 3D `SceneRenderer` GPU Geçişleri ve `StageMode` (`Pure2D` / `HD2D` / `Pure3D`) Tekilleştirmesi
+
+- [ ] **Wave 36.1 — `SceneRenderer` 19-Geçişli FrameGraph Yürütme Gövdelerinin Doldurulması ve `apps/editor` / `apps/player` 3D Split-Brain Eliminasyonu**:
+  - `apps/editor` içindeki kanıtlanmış Vulkan 1.3 bindless PBR, CSM gölge, DDGI, Wronski hacimsel sis ve Karis Bloom/AgX geçişlerinin `cd::scene_renderer` kütüphanesine taşınarak `apps/player` içindeki tel-kafes taklidinin gerçek PBR GPU çizimiyle değiştirilmesi.
+- [ ] **Wave 36.2 — `StageMode::HD2D` Hibrit Sahne Modu (3D Aydınlatmalı Sahne İçinde 2D Piksel Karakterler, Flipbook Gölgeleri ve Bokeh Alan Derinliği)**:
+  - *Octopath Traveler* / * Dave the Diver* sınıfı hibrit 2D/3D kamera, 3D derinlik tamponuna yazan alfa-kesimli 2D sprite kartları (`Billboard` / `Y-Locked`) ve 3D nokta/spot ışıklarla birleşik gölge düşümü.
+
+## FAZ 37 — Canlı Soket/MCP AI Sunucusu, Görsel Altın-İmaj Kâhini ve Çoklu-Platform Dağıtım Paketi
+
+- [ ] **Wave 37.1 — Canlı JSON-RPC / MCP Soket Sunucusu (`--mcp-server`) ve Hot-Reload Sahne Senkronizasyonu**:
+  - Harici IDE ve AI ajanlarının açık olan Studio sürecine gerçek zamanlı bağlanarak `CommandBus` komutları göndermesi, sahne ağacını sorgulaması ve anlık kare yakalaması.
+- [ ] **Wave 37.2 — `tools/assetc` Çevrimdışı BC7/KTX2 + SPIR-V Pişirici ve Windows/Linux/WebGPU Tek-Tık Dağıtıcı (`installer-maker`)**:
+  - Ham `.png`/`.gltf`/`.aseprite`/`.ldtk` varlıklarının dağıtım sırasında otomatik sıkıştırılmış `.cdpak` paketlerine dönüştürülmesi ve sıfır editör bağımlılıklı imzalı kurulum paketi üretimi.
+
+---
+
+# BÖLÜM XIII — VALVE SOURCE 2 ESİNLİ TEMİZ MODÜLER MİMARİ, SIFIR KOD TEKRARI VE GODOT 4 / HAMMER 5 UI/UX YENİDEN YAPILANDIRMASI (FAZ 38)
+
+## FAZ 38 — Monolitik Uygulama Katmanının Modülerleştirilmesi, Kod Tekrarının Sıfırlanması ve Temiz Stüdyo UI/UX (`ADR-20261112`)
+
+- [x] **Wave 38.0 — Mimari Karar Kaydı (`ADR-20261112-source2-clean-modular-architecture.md`)**:
+  - Valve Source 2 (`tier0`, `schemasystem`, `resourcesystem`, `rendersystem`, `worldrenderer`, `vphysics2`, `engine2`, `toolframework2`) eşlemesi, 5 yapısal tuzağın kök neden analizi, sıfır kod tekrarı matrisi ve Hammer 5 + Godot 4 temiz UI/UX spesifikasyonunun belgelenmesi.
+- [x] **Wave 38.1 — Paylaşımlı `cd::app_common` Derlenen Statik Kütüphanesi (`FileTextIo`, `CameraMath3D`, `FrameCapture`, `PackageExporter`) ve `cd_test_app_common`**:
+  - Tekrarlanan UTF-8 BOM dosya okuma/yazma, 3D kamera baz/ışın/kuaterniyon matematiği, Vulkan takas-zinciri + `DrawBatcher` PNG yakalama ve bağımsız `.cdpak` + `cd_player.exe` paketleme kodlarının tekil `cd::app_common` kütüphanesinde birleştirilmesi ve birim testlerinin yazılması.
+- [x] **Wave 38.2 — `apps/player/` Modülerleştirilmesi (`main.cpp < 80` Satır, `PlayerConfig`, `PlayerApp`) ve Mükerrer PNG/Font Kodlarının Silinmesi**:
+  - `apps/player/main.cpp` içindeki el yapımı PNG/CRC32 kodlayıcısı, yazılım üçgen tarayıcısı ve mükerrer 5x7 piksel font tablosunun silinerek `cd::app_common::FrameCapture` ve `cd::render2d::Canvas2D::add_pixel_text` kullanımına geçilmesi (`cd_player_all_showcases_smoke` `%100 PASS`).
+- [x] **Wave 38.3 — `apps/editor/` Source 2 `toolframework2` Alt-Sistem Ayrıştırması (`main.cpp < 80` Satır, Paralel `cd_editor_lib`, Oyuncak Kod Temizliği)**:
+  - `apps/editor/` altının `core/`, `render/`, `scene/`, `physics/`, `pipeline/`, `ui/` ve `workspace_2d/` dizinlerine ayrılması (`main.cpp` = 23 satır, 14 derlenen `.cpp` çeviri birimi); özel `EngineState` tuzağının ve oyuncak/ölü kodların (`net_throttle`, `sleep_for(120ms)` sahte akış, `Histogram`, `vt_table`, 4.100+ satır mükerrer şablon UI) temizlenmesi; `.obj` yüklemesinin `cd::asset_obj` kütüphanesine yönlendirilmesi (`editor.exe --self-test-all` `8/8 PASS`).
+- [x] **Wave 38.4 — Valve Source 2 Hammer 5 + Godot 4 Temiz Stüdyo UI/UX Uygulaması ve Canlı Vulkan 1.3 Görsel Doğrulaması**:
+  - Fizik başlığı içindeki şerit araç çubuğunun kaldırılarak tek satırlık `32px` Birleşik Üst Çubuk (`UnifiedTopBar`), temiz Sol `Scene Outliner` rıhtımı, sade Hammer 5 Görünüm Hapları + 3D X/Y/Z Yönelim Gülü, temiz Sağ `Inspector` kartları ve 2 bölmeli doğrudan `Assets & FileSystem` alt rıhtımının uygulanması; 4 canlı Vulkan 1.3 PNG yakalamasının incelenerek doğrulanması.
+- [x] **Wave 38.5 — Kapsamlı Dokümantasyon Yenilemesi (`README.md`, `docs/ARCHITECTURE.md`, `docs/DESIGN.md`, `docs/LIBRARIES.md`, `docs/ENGINE_GUIDE.md`) ve Uçtan Uca Regresyon Kapıları**:
+  - Güncelliğini yitirmiş dokümanların gerçek C++23 mimarisiyle (`199` kütüphane, Y-up, `ChromaUi`, `cd::schema`, Source 2 katman eşlemesi, Godot 4 -> Unity 6 -> Unreal Engine 5 yol haritası) uyumlu olacak biçimde yeniden yazılması (`check_human_voice.py` `PASS`, `check_layer_dag.py` `1483 files, violations=0 PASS`, CTest `11/11 PASS`).
+
+
+

@@ -1251,6 +1251,7 @@ struct StudioRuntimeWorld
     int                                                   inline_rename_light_idx   { -1 };
     char                                                  inline_rename_buf[64]     {};
     bool                                                  preload_starter_context_assets { false };
+    bool                                                  show_diagnostic_probes         { false };
 
     [[nodiscard]] bool is_asset_in_context(std::string_view path) const noexcept
     {

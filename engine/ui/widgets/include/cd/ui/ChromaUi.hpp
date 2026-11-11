@@ -1172,6 +1172,8 @@ struct State
     std::string input_chars {};
 
     // Dock ratios & dynamic window docking (frameless edge-to-edge layout)
+    float top_bar_height { 54.0F };
+    float menu_bar_height { 25.0F };
     float dock_left_w_ratio { 0.195F };
     float dock_right_w_ratio { 0.220F };
     float dock_bottom_h_ratio { 0.270F };
@@ -2274,8 +2276,8 @@ public:
         st.io.DisplaySize      = ImVec2 { w, h };
         st.main_viewport.Pos   = ImVec2 { 0.0F, 0.0F };
         st.main_viewport.Size  = ImVec2 { w, h };
-        st.main_viewport.WorkPos  = ImVec2 { 0.0F, 54.0F };
-        st.main_viewport.WorkSize = ImVec2 { w, std::max(100.0F, h - 54.0F) };
+        st.main_viewport.WorkPos  = ImVec2 { 0.0F, st.top_bar_height };
+        st.main_viewport.WorkSize = ImVec2 { w, std::max(100.0F, h - st.top_bar_height) };
 
         if (st.has_prev_mouse)
         {
@@ -2952,10 +2954,10 @@ inline void DockBuilderDockWindow(const char* window_name, ImGuiID node_id) noex
     {
         slot = nit->second;
     }
-    else if (wn == "Studio Workbench") slot = 1;
+    else if (wn == "Studio Workbench" || wn == "Scene Outliner") slot = 1;
     else if (wn == "Scene")            slot = 2;
     else if (wn == "Inspector")        slot = 3;
-    else if (wn == "History")          slot = 4;
+    else if (wn == "History" || wn == "Project & Tools") slot = 4;
     else if (node_id != 0U)            slot = 1;
 
     if (slot > 0)
@@ -2981,7 +2983,7 @@ inline ImGuiID DockSpace(ImGuiID id, const ImVec2& /*size*/ = ImVec2(0, 0),
     auto& st = cd::ui::chroma::state();
     const float W = st.io.DisplaySize.x;
     const float H = st.io.DisplaySize.y;
-    const float top_y = 54.0F;
+    const float top_y = st.top_bar_height;
     const float work_h = std::max(100.0F, H - top_y);
 
     const float lx = std::round(W * st.dock_left_w_ratio);
@@ -3083,7 +3085,7 @@ inline ImGuiID DockSpace(ImGuiID id, const ImVec2& /*size*/ = ImVec2(0, 0),
         st.fg_dl.AddRectFilled(ImVec2(0.0F, lmy - lmw_half), ImVec2(lx, lmy + lmw_half), act_lm ? grip_hi : grip_col);
         if (act_lm) draw_h_resizer_badge(mp.x, lmy, 0.0F, lx);
     }
-    if (st.workspace_mode == 0)
+    if (st.workspace_mode == 0 || st.workspace_mode == 3)
     {
         st.bg_dl.clear();
         st.bg_dl.PushClipRect(ImVec2(lx + 1.0F, top_y + 1.0F), ImVec2(rx - 1.0F, by - 1.0F));
@@ -3173,7 +3175,7 @@ inline bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags fla
 
     const float W = st.io.DisplaySize.x;
     const float H = st.io.DisplaySize.y;
-    const float top_y = 54.0F;
+    const float top_y = st.top_bar_height;
     const float work_h = std::max(100.0F, H - top_y);
     const float lx = std::round(W * st.dock_left_w_ratio);
     const float rx = std::round(W * (1.0F - st.dock_right_w_ratio));
@@ -3188,10 +3190,10 @@ inline bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags fla
     }
     else
     {
-        if (wl.name == "Studio Workbench" || wl.name == "Left_Dock_Scene_Hierarchy") slot = 1;
+        if (wl.name == "Studio Workbench" || wl.name == "Left_Dock_Scene_Hierarchy" || wl.name == "Scene Outliner") slot = 1;
         else if (wl.name == "Scene")       slot = 2;
         else if (wl.name == "Inspector" || wl.name == "Right_Dock_Inspector_ModifierStack") slot = 3;
-        else if (wl.name == "History" || wl.name == "Bottom_Dock_Workspace") slot = 4;
+        else if (wl.name == "History" || wl.name == "Bottom_Dock_Workspace" || wl.name == "Project & Tools") slot = 4;
         if (slot != 0) st.window_dock_slot[wl.name] = slot;
     }
 
@@ -5189,21 +5191,22 @@ inline bool BeginMainMenuBar() noexcept
 {
     auto& st = cd::ui::chroma::state();
     const float W = st.io.DisplaySize.x;
-    st.win_dl.AddGradient(ImVec2(0.0F, 0.0F), ImVec2(W, 25.0F),
+    const float bar_h = std::max(24.0F, st.menu_bar_height);
+    st.win_dl.AddGradient(ImVec2(0.0F, 0.0F), ImVec2(W, bar_h),
                           st.theme.window_header0, st.theme.window_header1, false);
-    st.win_dl.AddRectFilled(ImVec2(0.0F, 24.0F), ImVec2(W, 25.0F), IM_COL32(34, 42, 56, 255));
+    st.win_dl.AddRectFilled(ImVec2(0.0F, bar_h - 1.0F), ImVec2(W, bar_h), IM_COL32(34, 42, 56, 255));
 
     cd::ui::chroma::WindowLayout wl {};
     wl.name      = "##MainMenuBar";
     wl.pos       = ImVec2 { 0.0F, 0.0F };
-    wl.size      = ImVec2 { W, 25.0F };
-    wl.cursor    = ImVec2 { 6.0F, 2.5F };
+    wl.size      = ImVec2 { W, bar_h };
+    wl.cursor    = ImVec2 { 6.0F, std::max(2.5F, (bar_h - 20.0F) * 0.5F) };
     wl.draw_list = &st.win_dl;
     st.window_stack.push_back(std::move(wl));
     st.in_menu_bar = true;
     st.menu_bar_cursor_x = 6.0F;
 
-    if (st.io.MousePos.y <= 25.0F) st.mouse_in_any_window = true;
+    if (st.io.MousePos.y <= bar_h) st.mouse_in_any_window = true;
     return true;
 }
 
@@ -5212,10 +5215,11 @@ inline void EndMainMenuBar() noexcept
     auto& st = cd::ui::chroma::state();
     const float W = st.io.DisplaySize.x;
     const ImVec2 mp = st.io.MousePos;
+    const float bar_h = std::max(24.0F, st.menu_bar_height);
 
     // Native ChromaUi Frameless Window Controls (Minimize / Maximize / Close) at top-right
     const float btn_w = 26.0F;
-    const float btn_h = 24.0F;
+    const float btn_h = bar_h - 1.0F;
     const float x_min = W - btn_w * 3.0F;
     const float x_max = W - btn_w * 2.0F;
     const float x_cls = W - btn_w * 1.0F;
@@ -5224,14 +5228,14 @@ inline void EndMainMenuBar() noexcept
     const bool hov_max = (mp.y >= 0.0F && mp.y <= btn_h && mp.x >= x_max && mp.x < x_cls);
     const bool hov_cls = (mp.y >= 0.0F && mp.y <= btn_h && mp.x >= x_cls && mp.x <= W);
 
-    st.win_dl.AddLine(ImVec2(x_min - 1.0F, 4.0F), ImVec2(x_min - 1.0F, 20.0F), IM_COL32(52, 66, 88, 200), 1.0F);
+    st.win_dl.AddLine(ImVec2(x_min - 1.0F, 4.0F), ImVec2(x_min - 1.0F, btn_h - 4.0F), IM_COL32(52, 66, 88, 200), 1.0F);
 
     if (hov_min) st.win_dl.AddRectFilled(ImVec2(x_min, 0.0F), ImVec2(x_max, btn_h), IM_COL32(45, 58, 78, 240));
     if (hov_max) st.win_dl.AddRectFilled(ImVec2(x_max, 0.0F), ImVec2(x_cls, btn_h), IM_COL32(45, 58, 78, 240));
     if (hov_cls) st.win_dl.AddRectFilled(ImVec2(x_cls, 0.0F), ImVec2(W, btn_h), IM_COL32(212, 42, 52, 255));
 
     // Minimize glyph (horizontal bar)
-    const float cy = 12.0F;
+    const float cy = std::round(btn_h * 0.5F);
     st.win_dl.AddLine(ImVec2(x_min + 8.0F, cy + 2.0F), ImVec2(x_max - 8.0F, cy + 2.0F),
                       hov_min ? IM_COL32(255, 255, 255, 255) : IM_COL32(190, 204, 224, 235), 1.4F);
     // Maximize glyph (clean window box)
@@ -5361,12 +5365,13 @@ inline bool BeginMenu(const char* label, bool enabled = true) noexcept
         auto sz_it = st.auto_size_map.find(menu_id);
         const ImVec2 pop_sz = (sz_it != st.auto_size_map.end()) ? sz_it->second : ImVec2 { 340.0F, 185.0F };
 
+        const float pop_y = std::max(25.0F, st.menu_bar_height) + 4.0F;
         cd::ui::chroma::WindowLayout mpw {};
         mpw.name            = std::string("##menu_") + std::string(vis);
         mpw.is_popup        = true;
-        mpw.pos             = ImVec2 { p0.x, 29.0F };
+        mpw.pos             = ImVec2 { p0.x, pop_y };
         mpw.size            = pop_sz;
-        mpw.cursor          = ImVec2 { p0.x + 8.0F, 35.0F };
+        mpw.cursor          = ImVec2 { p0.x + 8.0F, pop_y + 6.0F };
         mpw.content_max_x   = mpw.cursor.x;
         mpw.content_max_y   = mpw.cursor.y;
         mpw.popup_cmd_start = st.popup_dl.cmd_count();
@@ -7117,7 +7122,7 @@ inline void DrawWorldSpaceEntityTag(ImVec2 screen_pos, const char* name,
     float min_x = 4.0F;
     float max_x = std::max(4.0F, st.io.DisplaySize.x - bw - 4.0F);
     float min_y = 64.0F;
-    if (st.workspace_mode == 0 && !st.window_dock_slot.empty())
+    if ((st.workspace_mode == 0 || st.workspace_mode == 3) && !st.window_dock_slot.empty())
     {
         const float W = st.io.DisplaySize.x;
         const float H = st.io.DisplaySize.y;

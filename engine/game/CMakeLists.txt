@@ -146,4 +146,5 @@ add_subdirectory(ai_squad)
 add_subdirectory(element_core)
 add_subdirectory(elements_domain)
 add_subdirectory(gameplay_framework)
+add_subdirectory(world2d)            # FAZ 35 — Commercial 2D World, Physics2D + Lua 5.4 + AI CommandBus2D
 

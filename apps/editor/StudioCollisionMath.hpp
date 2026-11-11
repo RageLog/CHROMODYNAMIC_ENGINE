@@ -8,53 +8,37 @@
 #pragma once
 
 #include "StudioModifierClasses.hpp"
+#include <cd/app_common/CameraMath3D.hpp>
 
 namespace cd::studio
 {
-// 5. Euler Degrees <-> Quaternion & Snap Math Utilities
+// 5. Euler Degrees <-> Quaternion & Snap Math Utilities (delegated to cd::app_common)
 // =============================================================================
 [[nodiscard]] inline cd::math::Quatf euler_deg_to_quat(cd::math::Vec3f deg) noexcept
 {
-    constexpr float kDegToRad = 3.1415926535F / 180.0F;
-    const cd::math::Quatf qx = cd::math::Quatf::from_axis_angle({ 1.0F, 0.0F, 0.0F }, deg.x * kDegToRad);
-    const cd::math::Quatf qy = cd::math::Quatf::from_axis_angle({ 0.0F, 1.0F, 0.0F }, deg.y * kDegToRad);
-    const cd::math::Quatf qz = cd::math::Quatf::from_axis_angle({ 0.0F, 0.0F, 1.0F }, deg.z * kDegToRad);
-    return cd::math::normalize(qy * qx * qz);
+    return cd::app_common::euler_deg_to_quat(deg);
 }
 
 [[nodiscard]] inline cd::math::Vec3f quat_to_euler_deg(const cd::math::Quatf& q_in) noexcept
 {
-    const cd::math::Quatf q = cd::math::normalize(q_in);
-    constexpr float kRadToDeg = 180.0F / 3.1415926535F;
-
-    // Pitch (x-axis rotation)
-    const float sinp = 2.0F * (q.w * q.x - q.y * q.z);
-    const float pitch = (std::abs(sinp) >= 1.0F)
-        ? std::copysign(90.0F, sinp)
-        : (std::asin(sinp) * kRadToDeg);
-
-    // Yaw (y-axis rotation)
-    const float siny_cosp = 2.0F * (q.w * q.y + q.z * q.x);
-    const float cosy_cosp = 1.0F - 2.0F * (q.x * q.x + q.y * q.y);
-    const float yaw = std::atan2(siny_cosp, cosy_cosp) * kRadToDeg;
-
-    // Roll (z-axis rotation)
-    const float sinr_cosp = 2.0F * (q.w * q.z + q.x * q.y);
-    const float cosr_cosp = 1.0F - 2.0F * (q.x * q.x + q.z * q.z);
-    const float roll = std::atan2(sinr_cosp, cosr_cosp) * kRadToDeg;
-
-    return { pitch, yaw, roll };
+    return cd::app_common::quat_to_euler_deg(q_in);
 }
 
 [[nodiscard]] inline cd::math::Vec3f snap_vec3_if_enabled(cd::math::Vec3f v) noexcept
 {
     const auto& w = studio_world();
     if (!w.grid_snap_enabled || w.grid_snap_step <= 1e-4F) return v;
-    const float st = w.grid_snap_step;
+    return cd::app_common::snap_vec3_to_grid(v, w.grid_snap_step);
+}
+
+template <typename StateT>
+[[nodiscard]] inline cd::math::Vec3f camera_spawn_point(const StateT& s, float dist = 3.5F) noexcept
+{
+    const auto basis = cd::app_common::compute_camera_basis(s.cam.eye, s.cam.target);
     return {
-        std::round(v.x / st) * st,
-        std::round(v.y / st) * st,
-        std::round(v.z / st) * st,
+        s.cam.eye.x + basis.forward.x * dist,
+        s.cam.eye.y + basis.forward.y * dist,
+        s.cam.eye.z + basis.forward.z * dist,
     };
 }
 

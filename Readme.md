@@ -1,230 +1,104 @@
-# CHROMODYNAMIC Engine
+# CHROMODYNAMIC Engine & Studio
 
-[![CI](https://github.com/RageLog/CHROMODYNAMIC_ENGINE/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/RageLog/CHROMODYNAMIC_ENGINE/actions/workflows/ci.yml)
-[![Docs](https://github.com/RageLog/CHROMODYNAMIC_ENGINE/actions/workflows/docs.yml/badge.svg?branch=master)](https://github.com/RageLog/CHROMODYNAMIC_ENGINE/actions/workflows/docs.yml)
-[![Bench regression](https://github.com/RageLog/CHROMODYNAMIC_ENGINE/actions/workflows/bench-regression.yml/badge.svg)](https://github.com/RageLog/CHROMODYNAMIC_ENGINE/actions/workflows/bench-regression.yml)
-[![Latest tag](https://img.shields.io/github/v/tag/RageLog/CHROMODYNAMIC_ENGINE?sort=semver&label=tag)](https://github.com/RageLog/CHROMODYNAMIC_ENGINE/tags)
+**CHROMODYNAMIC** (`cd::`) is a modular C++23 hybrid 2D and 3D game engine, standalone runtime player, and human-plus-AI studio built on an explicit library-oriented architecture modeled after **Valve Source 2** (`tier0` through `toolframework2`). Every subsystem compiles as an independent CMake target (`cd::<module>`, **199 libraries** configured in the active build graph) enforcing a strict acyclic layer hierarchy with zero upward `#include` dependencies.
 
-CHROMODYNAMIC is a cross-platform, cross-API hybrid 2D+3D game engine and
-general-purpose rendering / framework, written in modern C++23. Every
-subsystem is shipped as a standalone library (`cd::<name>`), so the engine
-can be consumed wholesale or one module at a time inside an unrelated
-application.
+## Commercial Progression & Architectural North Star
 
-> **Status:** active development. Phases 2–9 closed (foundation,
-> runtime, rendering, asset, ECS, scripting, audio, networking, Forward+
-> GPU compute). Phase 10 closed at **v0.25.0** — the honest baseline
-> after a v1.0.0 tag was cut prematurely and rolled back when manual
-> visual smoke surfaced 5 bugs ctest could not catch
-> ([ADR-wave125](docs/ADR/ADR-20260523-wave125-v1.0-rollback.md)).
-> All 5 fixed; engine-level hardening (Vulkan-NDC winding default,
-> version-string sync) applied. Phase 11 opens with the 4-axis v1.0
-> maturity gate (visual correctness on all windowed samples, cross-
-> GPU-vendor validation, external downstream consumer, independent
-> review).
-> Library count: **55**. Sample count: **17**. Test binaries: **58**.
-> Latest tag: **v0.25.0**.
+CHROMODYNAMIC targets commercial engine usability and engineering quality in three deliberate stages while preserving Valve Source 2 modularity across every layer:
 
-## Highlights
+1. **Stage 1 (Godot 4 Class Usability & 2D Mastery)**: Instant boot, subpixel-accurate 2D camera, 64-bit Z/Y-sorted sprite and flipbook batching (`cd::render2d`), sparse `16x16` chunked tilemaps with 16-tile Wang auto-tiling, greedy AABB collider meshing, 2D analytical soft-shadow lighting, `.aseprite` and `.ldtk` native importers, sandboxed Lua 5.4 live scripting, and one-click `.cdpak` standalone game export (`cd::world2d`).
+2. **Stage 2 (Unity 6 Class Multi-Genre Pipeline)**: Self-describing C++23 reflection (`cd::schema`), schema-driven Inspector cards, undoable command bus (`CommandBus2D` and `cd::editor::EditHistory`), multi-world/level/layer containers (`cd::world_container`), skeletal glTF 2.0 animation, Jolt/XPBD/active-ragdoll physics (`cd::physics`), and portable runtime playback (`cd_player`).
+3. **Stage 3 (Unreal Engine 5 Class High-End 3D Rendering)**: Vulkan 1.3 bindless PBR (`cd::rhi_vulkan`), Turquin multi-scattering energy compensation, Belcour-Barla thin-film iridescence, cascaded shadow maps, ray-traced DDGI irradiance volumes (`cd::ddgi`), ReSTIR DI/GI (`cd::restir_di`, `cd::restir_gi`), Wronski froxel volumetric fog, Karis 6-mip bloom, and AgX/ACES tone mapping.
 
-- **Modern C++23** — `std::expected` for errors, `[[nodiscard]]` discipline,
-  zero raw `new`/`delete`, `-Werror` across MSVC, clang-cl, MinGW GCC,
-  and LLVM Clang.
-- **Vulkan 1.3 dynamic rendering** via [volk](https://github.com/zeux/volk)
-  and [VMA](https://gpuopen.com/vulkan-memory-allocator/). No global Vulkan
-  prototypes, function pointers resolved per-device.
-- **Library-oriented** — every `cd::<lib>` builds, tests, and links
-  in isolation. Cross-library dependencies are an explicit DAG; circular
-  references are a build error.
-- **Cooked asset pipeline** — offline cookers (`cd_cook_mesh`,
-  `cd_cook_texture`) emit engine-native binary formats (`.cdmesh`, `.cdtex`)
-  with mip chains, BC7 compression, and `mmap`-friendly layout.
-- **Asset import** — runtime readers for KTX2, glTF 2.0, OBJ, PNG/JPG/HDR.
-- **ECS** — archetype storage + declared reads/writes + topologically
-  sorted scheduler; 1000 entities × 3 systems × 120 frames in ~32 ms.
-- **Profile** — header-only `cd::profile` with ring-buffer sink, stats
-  aggregator, CSV sink, and Chrome Tracing sink
-  (perfetto.dev / speedscope.app compatible).
-- **Frustum culling** — Gribb-Hartmann plane extraction, per-mesh
-  pre-computed local AABBs, 8-corner world-space transforms.
-- **Dear ImGui** — docking branch + Vulkan dynamic-rendering backend,
-  wired through `cd::imgui_backend`.
-- **Tooling** — Doxygen HTML, gcov / OpenCppCoverage, ASan / UBSan / TSan
-  / MSan, clang-tidy, clang-format, sample smoke harness.
+## Valve Source 2 Layer Correspondence
 
-## Quick start
+| Source 2 Subsystem | CHROMODYNAMIC Layer & Libraries | Responsibility |
+| :-- | :-- | :-- |
+| `tier0` / `tier1` | **L0 Foundation** (`cd::core`, `cd::math`, `cd::memory`, `cd::concurrency`, `cd::io`, `cd::vfs`, `cd::platform`) | Allocators, generational `Handle<Tag>`, SIMD math (right-handed **Y-up**), virtual filesystem, OS windowing, logging, diagnostics. |
+| `schemasystem` | **L0 Reflection** (`cd::schema`) | Compile-time and runtime type/field descriptors, range clamping, JSON serialization, Draft 2020-12 JSON Schema export for AI agents. |
+| `resourcesystem` | **L1 Asset** (`cd::asset`, `cd::asset_gltf`, `cd::asset_obj`, `cd::asset_ktx2`, `cd::asset_pak`) | Streaming glTF 2.0, Wavefront OBJ, KTX2/BCn textures, and compressed `.cdpak` archives. |
+| `rendersystem` / `materialsystem2` | **L2-L3 Render Core** (`cd::rhi`, `cd::rhi_vulkan`, `cd::shader`, `cd::material`, `cd::framegraph`) | Explicit RHI command buffers, SPIR-V compilation and hot-reload, bindless descriptor layouts, render-graph barrier scheduling. |
+| `worldrenderer` | **L3 World Renderers** (`cd::render2d`, `cd::scene_renderer`, `cd::ddgi`, `cd::post`) | 2D sorted sprite/tilemap/soft-shadow renderer and 3D clustered PBR, shadow, GI, volumetric, and post-processing passes. |
+| `vphysics2` | **L3-L4 Simulation** (`cd::physics`, `cd::ecs`, `cd::scene`, `cd::anim`, `cd::audio`) | Archetype ECS, transform hierarchy, 2D/3D rigid-body and character-controller solvers, skeletal skinning, spatial audio. |
+| `engine2` | **L5-L6 Runtime & App Common** (`cd::runtime`, `cd::world2d`, `cd::app_common`, `cd_player`) | Fixed-timestep simulation loop, camera math, UTF-8 file I/O, GPU swapchain PNG readback, standalone `.cdpak` runtime player (`15`-line `apps/player/main.cpp`). |
+| `toolframework2` / **Hammer 5** | **L6 Studio Tooling** (`cd::ui`, `cd::editor`, `cd::editor_lib`, `cd_app_editor`) | GPU-accelerated `ChromaUi` docking studio (`23`-line `apps/editor/main.cpp`), unified `32px` top bar, Scene Outliner, Inspector, 2-pane Asset Browser, PIE. |
 
-The engine builds with [Ninja Multi-Config](https://ninja-build.org/) and
-[CMake 3.28+](https://cmake.org/). All third-party dependencies are
-either vendored or pulled via `FetchContent` — no `vcpkg` is required.
-
-```bash
-git clone https://github.com/CRFLT/CHROMODYNAMIC.git
-cd CHROMODYNAMIC
-
-cmake --preset ninja-base -DCD_DISABLE_VCPKG=ON
-cmake --build --preset ninja-debug
-ctest --preset ninja-debug --output-on-failure
-```
-
-You should see `100% tests passed, 0 tests failed out of 58`.
-
-### Run every sample headlessly
-
-```bash
-cmake --build --preset ninja-debug --target smoke
-```
-
-This invokes [scripts/run_all_samples.ps1](scripts/run_all_samples.ps1)
-(or `.sh` on POSIX). Every `hello_*` executable is launched with
-`--headless 3`, watched with a 10-second deadline, and its exit code
-captured.
-
-### Generate API documentation
-
-```bash
-cmake --preset ninja-base -DCD_ENABLE_DOXYGEN=ON
-cmake --build build/ninja-base --target cd_docs
-# → build/ninja-base/docs/doxygen/html/index.html
-```
-
-### Coverage report
-
-```bash
-cmake --preset ci-gcc -DCD_ENABLE_COVERAGE=ON -DCD_DISABLE_VCPKG=ON
-cmake --build --preset ci-gcc-debug
-ctest --preset ci-gcc-debug
-cmake --build --preset ci-gcc-debug --target coverage-report
-# → build/ci-gcc/coverage.html + coverage.xml (Cobertura)
-```
-
-### Sanitizers
-
-```bash
-cmake --preset ninja-base-asan -DCD_DISABLE_VCPKG=ON
-cmake --build --preset ninja-debug-asan
-ctest --preset ninja-debug-asan        # ASan + UBSan
-```
-
-TSan and MSan have their own presets (`ninja-base-tsan`, `ninja-base-msan`).
-
-## Supported toolchains
-
-CI verifies the build matrix on every push:
-
-| OS      | Compiler                  | Preset           | Status |
-|---------|---------------------------|------------------|--------|
-| Windows | MSVC 17 (VS 2022)         | `ci-vs2022`      | ✅ |
-| Windows | MSVC 18 (VS 2026)         | `ci-vs2026`      | ✅ |
-| Windows | MSVC + Ninja Multi-Config | `ci-msvc`        | ✅ |
-| Windows | clang-cl                  | `ci-clangcl-win` | ✅ |
-| Windows | LLVM Clang                | `ci-llvm-win`    | ✅ |
-| Windows | MinGW GCC (UCRT64)        | `gcc-ucrt64-base`| ⚠️ partial (some MinGW-specific issues) |
-| Linux   | GCC                       | `ci-gcc`         | ✅ |
-| Linux   | LLVM Clang                | `ci-clang`       | ✅ |
-| macOS   | AppleClang                | `ci-appleclang`  | ✅ |
-
-The minimum compilers actively tested are MSVC 19.42, Clang 18, and
-GCC 14. C++23 features used: `std::expected`, `consteval`, lambda
-capture-init, deducing `this`, `if constexpr` with explicit template
-arguments.
-
-## Architecture
-
-For the high-level stack diagram, the dependency DAG, and the cross-cutting
-conventions (error policy, ownership, build flags, test discipline, and the
-checklist for adding a new subsystem) read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-See [docs/LIBRARIES.md](docs/LIBRARIES.md) for the full per-library catalogue
-(targets, namespaces, public headers, dependencies).
-
-Tier summary:
-
-- **Foundation** — `cd::core`, `cd::mem`, `cd::concurrency`, `cd::time`,
-  `cd::io`, `cd::log`, `cd::events`, `cd::diag`,
-  `cd::profile`, `cd::platform`, `cd::plugin`, `cd::config`, `cd::math`,
-  `cd::vfs`, `cd::bench`.
-- **Asset** — `cd::asset`, `cd::asset_image`, `cd::asset_obj`,
-  `cd::asset_gltf`, `cd::asset_cdmesh`, `cd::asset_cdtex`, `cd::asset_ktx2`,
-  `cd::asset_wav`, `cd::asset_json`, `cd::asset_pak`.
-- **Render** — `cd::rhi`, `cd::rhi_vulkan`, `cd::rhi_d3d12`,
-  `cd::rhi_metal`, `cd::rhi_native`, `cd::shader`, `cd::material`,
-  `cd::render`, `cd::framegraph`, `cd::camera`, `cd::cluster`,
-  `cd::cluster_gpu`, `cd::cluster_pbr`, `cd::volumetric`, `cd::ibl`,
-  `cd::async_submit`, `cd::imgui_backend`.
-- **World** — `cd::ecs`, `cd::scene`, `cd::physics`, `cd::anim`,
-  `cd::audio`, `cd::input`, `cd::net`.
-- **UI** — `cd::ui`, `cd::editor_ui`, `cd::editor`.
-- **Side** — `cd::script` (Lua 5.4), `cd::imgdiff` (FLIP/SSIM/PSNR).
-- **Runtime** — `cd::runtime` — composition layer.
-
-## Repository layout
+## Repository Layout
 
 ```text
-.claude/agents/      # 33-subagent suite (planning, build, test, audit, etc.)
-docs/ADR/            # 17 Architecture Decision Records (ADR-NNNN-*.md)
-docs/PLAN.md         # Phase / sprint timeline
-docs/DESIGN.md       # Master design document
-docs/Doxyfile.in     # Doxygen template (configured at CMake time)
-cmake/CD*.cmake      # cd_add_library / cd_add_test / cd_add_sample helpers
-cmake/CDDoxygen.cmake, CDCoverage.cmake, CDSmoke.cmake
-CMakeModules/        # Vendored helpers (Sanitizers, Packaging, …)
-engine/<lib>/        # One subdirectory per cd::<lib>
-samples/             # 17 hello_* / bench_* samples covering every public surface
-tools/               # Offline cookers (cd_cook_mesh, cd_cook_texture)
-Dependencies/        # Optional vendored deps (googletest fallback)
-scripts/             # Smoke harness, build helpers
+CHROMODYNAMIC_ENGINE/
+  engine/
+    foundation/     L0: core, math, platform, io, vfs, schema, concurrency, diag, log
+    asset/          L1: gltf, obj, ktx2, pak, streaming resource loaders
+    render/         L2-L3: rhi, rhi_vulkan, shader, material, framegraph, render2d, ddgi, post
+    world/          L3: ecs, scene, physics, anim, audio, net, input, world_container
+    script/         L4: sandboxed Lua 5.4 VM and hot-reload bindings
+    game/           L4: world2d, element_core, gameplay_framework, ai_bt, camera, trigger
+    ui/             L5: ChromaUi immediate/retained widgets, flex layout, FreeType/MSDF font, editor
+    runtime/        L5: EngineContext, EngineLoop, fixed-step orchestration
+  apps/
+    common/         L6: cd::app_common (FileTextIo, CameraMath3D, FrameCapture, PackageExporter)
+    editor/         L6: cd::editor_lib (core/, render/, scene/, physics/, pipeline/, workspace_2d/, ui/) + 23-line main.cpp
+    player/         L6: cd_player standalone game & showcase runner + 15-line main.cpp
+  tools/            Offline asset compiler (cd_assetc) and soak/stress harnesses
+  tests/            Deterministic GTest unit, integration, golden-image, and headless PIE smoke suites
+  docs/             Architecture, design principles, library catalog, roadmap, and ADRs
 ```
 
-## Sample applications
+## Quick Build & Verification
 
-Built into `build/<preset>/bin/<Config>/hello_*`:
+### Prerequisites
 
-| Sample | Category | Demonstrates |
-| ----------------------- | ---------- | -------------------------------------------------------------------- |
-| `hello_engine`          | engine   | Full PBR/Vulkan render loop, Sponza, IBL, TAA, bloom, RT reflections + Behavior Designer cd::ui Submitter overlay (R-Showcase toggle) |
-| `hello_editor`          | editor   | EditHistory + TransformCommands + Material Editor + Animator panels wired into ImGui |
-<!-- hello_behavior_designer removed phase1176 (ADR-20260614): BehaviorDesigner node-graph folded into hello_engine as a golden-gated cd::ui::Submitter (Route B) overlay; library coverage via engine/ui/editor/panel_behavior_designer/tests (12 cases) -->
-<!-- hello_hot_reload removed phase1157: shader watch + material rebuild covered by hello_engine HelloShaderWatch.hpp -->
-| `hello_asset_pipeline`  | asset    | Mesh / texture / OBJ / cooked (.cdmesh) / glTF / BC7 — all 6 importers in one binary |
-| `hello_stress`          | foundation | Concurrency stress: work-stealing pool + ring-buffer flood under load |
-<!-- hello_world removed phase1173: gameplay stack (query/trigger/camera/particles_event) folded into hello_engine "Gameplay Stack Demo" probe (HelloGameplayDemo.hpp) -->
-| `hello_d3d12_pbr`       | render   | D3D12 PBR sphere grid (D3D12 backend has 5 kNotImpl sites — X4-E) |
-| `hello_metal`           | rhi      | Metal minimal triangle (Apple Silicon / macOS) |
-| `hello_opengl`          | rhi      | OpenGL triangle + resource upload (consolidates 2 former samples) |
-| `hello_path_trace`      | rhi      | Vulkan ray-query path-tracer prototype |
-| `hello_triangle`        | rhi      | Vulkan dynamic-rendering minimal triangle |
-<!-- hello_ui removed phase1177: cd::ui Button/Slider/Label/Flex demo folded into hello_engine golden-gated "UI Widgets Demo" R-Showcase panel (re-uses the BehaviorDesigner Submitter overlay) -->
-| `bench_archetype`       | world    | ECS archetype storage throughput benchmark |
+* **Compiler**: Clang `21+` (Windows MSVC ABI, Linux, or macOS) with full C++23 support (`-std=c++23 -Wall -Wextra -Werror`)
+* **Build System**: CMake `3.28+` and Ninja
+* **Graphics SDK**: Vulkan SDK `1.3+`
 
-## Documentation
+### Configure, Build, and Test
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — engine stack, DAG, and
-  cross-cutting conventions
-- [docs/LIBRARIES.md](docs/LIBRARIES.md) — per-library catalogue
-- [docs/DESIGN.md](docs/DESIGN.md) — long-form design rationale
-- [docs/PLAN.md](docs/PLAN.md) — phase / sprint timeline
-- [docs/ADR/](docs/ADR/) — Architecture Decision Records (the
-  authoritative "why" — 71 entries through Phase 10 Sprint 1)
-- [CHANGELOG.md](CHANGELOG.md) — per-release notes (Conventional Commits)
-- [docs/Modules.dox](docs/Modules.dox) — Doxygen module hierarchy
-- API reference — generated locally via the `cd_docs` target; published
-  to GitHub Pages by the `Docs` workflow on every master push.
+```powershell
+cmake --preset ide-base
+cmake --build build/ide-base --target cd_app_editor cd_player -j 8
+ctest --test-dir build/ide-base --output-on-failure
+```
 
-## Contributing
+## Running CHROMODYNAMIC Studio & Standalone Player
 
-Project rules are codified in [CLAUDE.md](CLAUDE.md) and are enforced
-both by the CI and by the agent suite under [.claude/agents/](.claude/agents/).
+### Interactive Studio (`editor.exe`)
 
-The short version:
+```powershell
+# Launch Studio into the Project Hub (2D & 3D starter templates + disk showcases)
+.\build\ide-base\bin\editor.exe --project-manager
 
-- C++23, `[[nodiscard]]` on every fallible return, `std::expected` for errors.
-- Every claim needs evidence: build clean + tests pass + grep'able symbol.
-- Surgical edits only — no full-file rewrites.
-- Mimic the existing library pattern (`include/cd/<lib>/`, `src/`, `tests/`,
-  `CMakeLists.txt`). Cross-library dependencies are explicit; cycles are
-  build errors.
+# Launch directly into the 2D Engine Studio (TileBrush, Wang Auto-Tile, Lua 5.4, Schema Inspector)
+.\build\ide-base\bin\editor.exe --2d-studio
 
-## License
+# Launch directly into a 3D Physics & Skinned Avatar Stage
+.\build\ide-base\bin\editor.exe --template 1
+```
 
-To be decided per ADR. The current development copy is unpublished.
+### Symmetric Human + AI Headless Workflows
+
+Human authors and AI coding agents execute through the exact same `cd::schema` types and undoable `CommandBus2D` / `EditHistory` operations:
+
+```powershell
+# Export Draft 2020-12 JSON Schema for zero-hallucination AI tool calling
+.\build\ide-base\bin\editor.exe --dump-schema build/schema_2d.json
+
+# Apply a batch of AI JSON commands, run a 240-frame deterministic playtest, and emit JSON telemetry
+.\build\ide-base\bin\editor.exe --2d-studio --exec-2d-commands ai_patch.json --playtest-2d 240 --telemetry-out build/report.json
+
+# Package a standalone .cdpak bundle and run it in cd_player.exe
+.\build\ide-base\bin\editor.exe --2d-studio --export-standalone build/export/My2DGame
+.\build\ide-base\bin\cd_player.exe --pak build/export/My2DGame/game.cdpak --autopilot --frames 60
+
+# Run the 8-part autonomous end-to-end Studio self-test suite
+.\build\ide-base\bin\editor.exe --self-test-all
+```
+
+## Documentation Index
+
+* [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): Layer DAG, Source 2 correspondence, coordinate conventions, frame lifecycle, and `cd::app_common` / `cd::editor_lib` boundaries.
+* [docs/DESIGN.md](docs/DESIGN.md): Core C++23 engineering rules, memory ownership, error handling (`std::expected`), UI/UX principles, and symmetric Human + AI design.
+* [docs/LIBRARIES.md](docs/LIBRARIES.md): Directory and dependency guide for the `199` CMake libraries across `engine/` and `apps/`.
+* [docs/ENGINE_GUIDE.md](docs/ENGINE_GUIDE.md): Concise developer quickstart for adding modules, authoring scenes, and running verification gates.
+* [docs/ADR/](docs/ADR/): Architecture Decision Records, including [ADR-20261111](docs/ADR/ADR-20261111-commercial-2d-3d-ai-native-architecture.md) and [ADR-20261112](docs/ADR/ADR-20261112-source2-clean-modular-architecture.md).

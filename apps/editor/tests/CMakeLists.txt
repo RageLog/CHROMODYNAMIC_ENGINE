@@ -12,7 +12,7 @@
 
 cd_add_test(splash_audio_cue
   SOURCES test_splash_audio_cue.cpp
-  DEPS    cd::audio cd::core cd::asset cd::math
+  DEPS    cd::audio cd::core cd::asset cd::asset_obj cd::app_common cd::math
 )
 
 # The test's source includes ../SplashAudioCue.hpp from the parent directory.

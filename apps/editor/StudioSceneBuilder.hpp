@@ -6,6 +6,8 @@
 // =============================================================================
 #pragma once
 
+#include "Studio2DWorkspace.hpp"
+#include "StudioCliOptions.hpp"
 #include "StudioCollisionMath.hpp"
 #include "StudioCustomMeshLoader.hpp"
 #include "StudioRenderTargets.hpp"
@@ -3252,15 +3254,7 @@ template <typename StateT, typename LogFn>
         (void)cd::world_container::save_project_file(proj_file, *proj);
     }
 
-    const std::string launcher_bat = std::string(export_dir) + "/Play_ChromodynamicGame.bat";
-    if (std::ofstream bat(launcher_bat); bat.is_open())
-    {
-        bat << "@echo off\n"
-            << "echo Launching CHROMODYNAMIC Standalone Game...\n"
-            << "\"%~dp0..\\..\\ide-base\\bin\\editor.exe\" --scene \"%~dp0game_world.cdscene.json\" --pie-play\n";
-    }
-    log_push(std::string("[export] Packaged standalone game -> ") + export_dir);
-    return true;
+    return export_2d_and_3d_standalone_bundle(export_dir, std::forward<LogFn>(log_push));
 }
 
 /// E2E Engine Authoring Builder: constructs a full playable 3D game level using the engine's

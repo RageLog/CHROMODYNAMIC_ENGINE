@@ -1,11 +1,22 @@
-# apps/player — cd_player standalone runtime executable (FAZ 6 Wave 6.2)
+# =============================================================================
+# apps/player — cd_player standalone runtime executable (ADR-20261112)
+# =============================================================================
 
-add_executable(cd_player main.cpp)
+add_executable(cd_player
+  main.cpp
+  PlayerConfig.cpp
+  PlayerApp.cpp
+)
+
 target_link_libraries(cd_player PRIVATE
+  cd::app_common
   cd::runtime
   cd::gameplay_framework
   cd::elements_domain
   cd::element_core
+  cd::world2d
+  cd::render2d
+  cd::asset_pak
   cd::scene_renderer
   cd::framegraph
   cd::ui_renderer

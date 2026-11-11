@@ -22,10 +22,22 @@
 #include <cd/camera/Camera.hpp>
 #include <cd/camera/Frustum.hpp>
 #include <cd/decal/Decal.hpp>
+#include <cd/gpu_particles/GpuParticles.hpp>
+#include <cd/ibl/Cubemap.hpp>
+#include <cd/light/Attenuation.hpp>
+#include <cd/light/CascadedShadow.hpp>
+#include <cd/light/ColorTemperature.hpp>
 #include <cd/light/Light.hpp>
+#include <cd/math/CubicBezier.hpp>
 #include <cd/math/Matrix.hpp>
+#include <cd/math/QuatSlerp.hpp>
+#include <cd/math/Quaternion.hpp>
 #include <cd/math/Vector.hpp>
+#include <cd/restir_di/Reservoir.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
+#include <cd/texture_synth/Earth.hpp>
+#include <cd/texture_synth/Noise.hpp>
+#include <cd/virtual_geometry/VirtualGeometry.hpp>
 
 #include <algorithm>
 #include <cmath>

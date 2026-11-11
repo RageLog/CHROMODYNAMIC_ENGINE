@@ -59,4 +59,5 @@ add_subdirectory(spirv_cross_glue)  # B-infra1 — SPIR-V → HLSL/MSL/GLSL cros
 add_subdirectory(scene_ingest)      # phase439 — generic glTF → GPU + ECS (ADR-20260530)
 add_subdirectory(lighting_clusters) # phase660 — Forward+ froxel grid CPU assignment (Olsson 2012)
 add_subdirectory(scene_renderer)    # FAZ 4 — Unified GPU-Driven & Photorealistic SceneRenderer FrameGraph Pipeline
+add_subdirectory(render2d)          # FAZ 34 — Modular SOTA 2D Renderer (SortKey2D, Camera2D, Tilemap2D, Lighting2D, Loaders)
 

@@ -1,21 +1,21 @@
 // =============================================================================
 // CHROMODYNAMIC STUDIO -- apps/editor/StudioCustomMeshLoader.hpp
 //
-// Wavefront .obj parser and custom mesh bounding-box/normal/UV normalizer
-// for the Studio Content Browser & Folder Tree mesh assignment pipeline.
+// Canonical Wavefront .obj mesh adapter delegating parsing to `cd::asset::obj`
+// (`cd::asset_obj`) and `cd::app_common::read_text_file_utf8` (zero duplicate
+// `.obj` parser, zero `try/catch(...)`), plus studio bounding-box/UV normalizer.
 // =============================================================================
 #pragma once
 
+#include <cd/app_common/FileTextIo.hpp>
 #include <cd/asset/Primitives.hpp>
+#include <cd/asset/obj/ObjLoader.hpp>
 #include <cd/math/Vector.hpp>
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <fstream>
-#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -23,148 +23,73 @@
 namespace cd::studio
 {
 
-/// Parse a Wavefront .obj file from disk into a `cd::asset::PrimitiveMesh` (supports v, vt, vn, f with fan triangulation).
+/// Parse a Wavefront .obj file from disk into a `cd::asset::PrimitiveMesh` via `cd::asset::obj::parse_obj`.
 [[nodiscard]] inline bool parse_wavefront_obj_mesh(const std::string& path_str, cd::asset::PrimitiveMesh& out_mesh)
 {
-    std::ifstream in(path_str);
-    if (!in.is_open()) return false;
-
-    std::vector<cd::math::Vec3f> positions;
-    std::vector<cd::math::Vec2f> texcoords;
-    std::vector<cd::math::Vec3f> normals;
-    std::vector<cd::asset::PrimitiveVertex> raw_verts;
-
-    std::string line;
-    while (std::getline(in, line))
+    const auto text_res = cd::app_common::read_text_file_utf8(path_str);
+    if (!text_res.has_value())
     {
-        if (line.empty() || line[0] == '#') continue;
-        std::istringstream iss(line);
-        std::string cmd;
-        if (!(iss >> cmd)) continue;
+        return false;
+    }
 
-        if (cmd == "v")
+    const auto obj_res = cd::asset::obj::parse_obj(*text_res);
+    if (!obj_res.has_value() || obj_res->indices.size() < 3U || obj_res->vertices.empty())
+    {
+        return false;
+    }
+
+    const auto& obj = *obj_res;
+    bool has_explicit_uv = false;
+    for (const auto& ov : obj.vertices)
+    {
+        if (std::abs(ov.texcoord0.x) > 1e-5F || std::abs(ov.texcoord0.y) > 1e-5F)
         {
-            float x = 0.0F, y = 0.0F, z = 0.0F;
-            if (iss >> x >> y >> z && std::isfinite(x) && std::isfinite(y) && std::isfinite(z))
-                positions.push_back({ x, y, z });
-        }
-        else if (cmd == "vt")
-        {
-            float u = 0.0F, v = 0.0F;
-            if (iss >> u >> v && std::isfinite(u) && std::isfinite(v))
-                texcoords.push_back({ u, v });
-        }
-        else if (cmd == "vn")
-        {
-            float nx = 0.0F, ny = 1.0F, nz = 0.0F;
-            if (iss >> nx >> ny >> nz && std::isfinite(nx) && std::isfinite(ny) && std::isfinite(nz))
-                normals.push_back({ nx, ny, nz });
-        }
-        else if (cmd == "f")
-        {
-            struct ObjCorner { int vi = 0; int ti = 0; int ni = 0; };
-            std::vector<ObjCorner> poly;
-            std::string tok;
-            while (iss >> tok)
-            {
-                ObjCorner c {};
-                const auto s1 = tok.find('/');
-                try
-                {
-                    if (s1 == std::string::npos)
-                    {
-                        c.vi = std::stoi(tok);
-                    }
-                    else
-                    {
-                        c.vi = std::stoi(tok.substr(0, s1));
-                        const auto s2 = tok.find('/', s1 + 1U);
-                        if (s2 == std::string::npos)
-                        {
-                            if (s1 + 1U < tok.size()) c.ti = std::stoi(tok.substr(s1 + 1U));
-                        }
-                        else
-                        {
-                            if (s2 > s1 + 1U) c.ti = std::stoi(tok.substr(s1 + 1U, s2 - s1 - 1U));
-                            if (s2 + 1U < tok.size()) c.ni = std::stoi(tok.substr(s2 + 1U));
-                        }
-                    }
-                }
-                catch (...)
-                {
-                    continue;
-                }
-                poly.push_back(c);
-            }
-            if (poly.size() < 3U) continue;
-
-            auto resolve_idx = [](int raw_idx, std::size_t count) noexcept -> int
-            {
-                if (raw_idx > 0 && std::cmp_less_equal(raw_idx, count)) return raw_idx - 1;
-                if (raw_idx < 0 && std::cmp_less_equal(-raw_idx, count)) return static_cast<int>(count) + raw_idx;
-                return -1;
-            };
-
-            for (std::size_t k = 1U; k + 1U < poly.size(); ++k)
-            {
-                const std::array<ObjCorner, 3> tri {{ poly[0], poly[k], poly[k + 1U] }};
-                const int pi0 = resolve_idx(tri[0].vi, positions.size());
-                const int pi1 = resolve_idx(tri[1].vi, positions.size());
-                const int pi2 = resolve_idx(tri[2].vi, positions.size());
-                if (pi0 < 0 || pi1 < 0 || pi2 < 0) continue;
-
-                const cd::math::Vec3f p0 = positions[static_cast<std::size_t>(pi0)];
-                const cd::math::Vec3f p1 = positions[static_cast<std::size_t>(pi1)];
-                const cd::math::Vec3f p2 = positions[static_cast<std::size_t>(pi2)];
-                cd::math::Vec3f face_n = cd::math::cross(p1 - p0, p2 - p0);
-                const float fn_len = cd::math::length(face_n);
-                face_n = (fn_len > 1e-6F) ? (face_n * (1.0F / fn_len)) : cd::math::Vec3f { 0.0F, 1.0F, 0.0F };
-
-                const std::array<int, 3> pis {{ pi0, pi1, pi2 }};
-                for (std::size_t ci = 0U; ci < 3U; ++ci)
-                {
-                    const cd::math::Vec3f pos = positions[static_cast<std::size_t>(pis[ci])];
-                    const int ti = resolve_idx(tri[ci].ti, texcoords.size());
-                    const int ni = resolve_idx(tri[ci].ni, normals.size());
-                    cd::math::Vec3f nrm = (ni >= 0) ? normals[static_cast<std::size_t>(ni)] : face_n;
-                    const float nl = cd::math::length(nrm);
-                    nrm = (nl > 1e-6F) ? (nrm * (1.0F / nl)) : face_n;
-                    const cd::math::Vec2f uv = (ti >= 0)
-                        ? texcoords[static_cast<std::size_t>(ti)]
-                        : cd::math::Vec2f { pos.x * 0.5F + 0.5F, pos.y * 0.5F + 0.5F };
-
-                    cd::asset::PrimitiveVertex pv {};
-                    pv.pos[0]    = pos.x;
-                    pv.pos[1]    = pos.y;
-                    pv.pos[2]    = pos.z;
-                    pv.normal[0] = nrm.x;
-                    pv.normal[1] = nrm.y;
-                    pv.normal[2] = nrm.z;
-                    pv.uv[0]     = uv.x;
-                    pv.uv[1]     = uv.y;
-                    pv.color[0]  = 1.0F;
-                    pv.color[1]  = 1.0F;
-                    pv.color[2]  = 1.0F;
-                    raw_verts.push_back(pv);
-                }
-            }
+            has_explicit_uv = true;
+            break;
         }
     }
 
-    if (raw_verts.size() < 3U) return false;
+    std::vector<cd::asset::PrimitiveVertex> raw_verts;
+    raw_verts.reserve(obj.indices.size());
+    for (const std::uint32_t vidx : obj.indices)
+    {
+        if (vidx >= obj.vertices.size())
+        {
+            return false;
+        }
+        const auto& ov = obj.vertices[vidx];
+        cd::asset::PrimitiveVertex pv {};
+        pv.pos[0]    = ov.position.x;
+        pv.pos[1]    = ov.position.y;
+        pv.pos[2]    = ov.position.z;
+        pv.normal[0] = ov.normal.x;
+        pv.normal[1] = ov.normal.y;
+        pv.normal[2] = ov.normal.z;
+        pv.uv[0]     = has_explicit_uv ? ov.texcoord0.x : (ov.position.x * 0.5F + 0.5F);
+        pv.uv[1]     = has_explicit_uv ? ov.texcoord0.y : (ov.position.y * 0.5F + 0.5F);
+        pv.color[0]  = 1.0F;
+        pv.color[1]  = 1.0F;
+        pv.color[2]  = 1.0F;
+        raw_verts.push_back(pv);
+    }
+
     out_mesh = {};
     out_mesh.vertices = std::move(raw_verts);
     if (out_mesh.vertices.size() > 0xFFFFU)
     {
         out_mesh.indices_u32.resize(out_mesh.vertices.size());
         for (std::size_t i = 0; i < out_mesh.vertices.size(); ++i)
+        {
             out_mesh.indices_u32[i] = static_cast<std::uint32_t>(i);
+        }
     }
     else
     {
         out_mesh.indices.resize(out_mesh.vertices.size());
         for (std::size_t i = 0; i < out_mesh.vertices.size(); ++i)
+        {
             out_mesh.indices[i] = static_cast<std::uint16_t>(i);
+        }
     }
     return true;
 }
