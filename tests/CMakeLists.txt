@@ -13,3 +13,5 @@ cd_add_test(restir_math
 )
 
 add_subdirectory(stress)
+add_subdirectory(e2e)
+

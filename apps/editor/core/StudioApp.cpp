@@ -9,6 +9,7 @@
 #include "StudioApp.hpp"
 
 #include "core/StudioState.hpp"
+#include "core/StudioMcpServer.hpp"
 #include "physics/PhysicsPieSolver.hpp"
 #include "pipeline/AssetIngest.hpp"
 #include "render/WorldRenderPasses.hpp"
@@ -44,6 +45,7 @@
 #include <cd/rhi/vulkan/VulkanDevice.hpp>
 #include <cd/ui/ChromaUi.hpp>
 #include <cd/ui/theme/Theme.hpp>
+#include <cd/world2d/GenreTemplates2D.hpp>
 #include <cd/world2d/PlaytestRunner2D.hpp>
 
 #include <algorithm>
@@ -266,16 +268,57 @@ cd::core::Result<void> StudioApp::on_boot()
         s.uiw_btn.set_on_click([&s] { ++s.uiw_click_count; });
         s.uiw_sld.set_on_change([&s](float v) { s.uiw_slider_val = v; });
 
+        const auto starter_atlas =
+            cd::render2d::TextureAtlas2D::generate_procedural_starter_atlas(32U);
+        if (starter_atlas.is_valid())
+        {
+            s.atlas2d_tex = cd::render::upload_texture_2d_rgba8(
+                device,
+                starter_atlas.pixels().data(),
+                starter_atlas.width(),
+                starter_atlas.height());
+
+            cd::rhi::SamplerDesc sd {};
+            sd.min_filter  = cd::rhi::SamplerFilter::kNearest;
+            sd.mag_filter  = cd::rhi::SamplerFilter::kNearest;
+            sd.mipmap_mode = cd::rhi::SamplerMipmapMode::kNearest;
+            sd.address_u   = cd::rhi::SamplerAddressMode::kClampToEdge;
+            sd.address_v   = cd::rhi::SamplerAddressMode::kClampToEdge;
+            sd.address_w   = cd::rhi::SamplerAddressMode::kClampToEdge;
+            if (auto smp_r = device.create_sampler(sd); smp_r.has_value())
+            {
+                s.atlas2d_sampler = *smp_r;
+            }
+        }
+
         cd::ui::renderer_rhi::SubmitterCreateInfo sci {};
-        sci.color_format = cd::rhi::Format::kBGRA8Unorm;
-        sci.max_vertices = 65532U;
-        sci.max_indices  = 196608U;
+        sci.color_format  = cd::rhi::Format::kBGRA8Unorm;
+        sci.max_vertices  = 65532U;
+        sci.max_indices   = 196608U;
+        sci.atlas_view    = s.atlas2d_tex.view;
+        sci.atlas_sampler = s.atlas2d_sampler;
         auto sub_r =
             cd::ui::renderer_rhi::Submitter::create_with_inline_shader(device, sci);
         if (sub_r.has_value())
         {
             s.ui_submitter = std::make_unique<cd::ui::renderer_rhi::Submitter>(
                 std::move(*sub_r));
+            if (s.atlas2d_tex.view.is_valid() && s.atlas2d_sampler.is_valid())
+            {
+                s.ui_submitter->set_texture_slot(0U, s.atlas2d_tex.view, s.atlas2d_sampler);
+                auto& s2d = cd::studio::studio_2d();
+                s2d.stage.bind_starter_atlas(0U, 32U);
+                if (s.config.exec_2d_cmds.empty() && s.config.project_path.empty())
+                {
+                    const auto gkind = cd::world2d::parse_genre_template_kind_2d(s.config.initial_genre_2d)
+                                           .value_or(cd::world2d::GenreTemplateKind2D::kActionPlatformer);
+                    s2d.active_genre_template_idx = static_cast<int>(gkind);
+                    cd::world2d::GenreTemplates2D::apply_genre_template(s2d.stage, gkind);
+                    s2d.selected_entity_id =
+                        s2d.stage.entities().empty() ? 0U : s2d.stage.entities().front().id;
+                    s2d.sync_lua_buffer_from_selected();
+                }
+            }
             s.bd_panel.set_tree_root(1U);
             s.bd_panel.set_selected(2U);
             s.bd_panel.set_pan_offset(20.0F, 10.0F);
@@ -486,6 +529,16 @@ cd::core::Result<void> StudioApp::on_boot()
             }
         });
 
+    if (s.config.mcp_transport != cd::studio::McpTransportKind::kDisabled)
+    {
+        s.mcp_server = std::make_unique<cd::studio::StudioMcpServer>(s.config);
+        if (s.mcp_server->start())
+        {
+            s.push_log("[mcp] server started (" +
+                       std::string(s.config.mcp_transport == cd::studio::McpTransportKind::kStdio ? "stdio" : ("tcp port " + std::to_string(s.config.mcp_port))) + ")");
+        }
+    }
+
     return {};
 }
 
@@ -522,6 +575,12 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
         if (!window.pump_events(events))
         {
             break;
+        }
+
+        if (s.mcp_server)
+        {
+            auto& s2d = cd::studio::studio_2d();
+            s.mcp_server->tick(s2d.stage, s2d.command_bus);
         }
 
         if ((s.frame_idx & 63U) == 0U)
@@ -866,6 +925,7 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
         {
             const bool had_cli_template     = (s.config.initial_template >= 0);
             const bool had_cli_scene        = !s.config.initial_scene.empty();
+            const bool had_cli_project      = !s.config.project_path.empty();
             const bool had_cli_context_demo = s.config.load_context_demo;
             if (s.config.autopilot_e2e)
             {
@@ -889,13 +949,20 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
                 (void)cd::studio::scene_ops::load_scene(s, s.config.initial_scene.c_str());
                 s.config.initial_scene.clear();
             }
+            if (had_cli_project)
+            {
+                cd::studio::scene_ops::init_clean_workspace(s);
+                (void)cd::studio::scene_ops::load_project_or_scene_from_disk(s, s.config.project_path);
+                cd::studio::studio_2d().stage.bind_starter_atlas(0U, 32U);
+                s.config.project_path.clear();
+            }
             if (s.config.load_context_demo)
             {
                 cd::studio::scene_ops::seed_demo_context_and_scene(s);
                 s.config.load_context_demo = false;
             }
             else if (!s.config.autopilot_e2e && !had_cli_template &&
-                     !had_cli_scene && !cd::studio_rt::golden::enabled())
+                     !had_cli_scene && !had_cli_project && !cd::studio_rt::golden::enabled())
             {
                 cd::studio::scene_ops::init_clean_workspace(s);
             }
@@ -951,7 +1018,7 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
             }
             if (s.config.force_project_manager ||
                 (!s.config.self_test_all && !s.config.autopilot_e2e &&
-                 !had_cli_template && !had_cli_scene && !had_cli_context_demo &&
+                 !had_cli_template && !had_cli_scene && !had_cli_project && !had_cli_context_demo &&
                  !s.config.start_pie && !s.config.start_2d_studio &&
                  s.config.capture_png.empty() && !cd::studio_rt::golden::enabled()))
             {
@@ -1987,6 +2054,11 @@ void StudioApp::on_shutdown() noexcept
         return;
     }
     auto& s      = *state_;
+    if (s.mcp_server)
+    {
+        s.mcp_server->stop();
+        s.mcp_server.reset();
+    }
     auto& device = *s.device_owner;
 
     s.renderer.wait_idle();
@@ -2056,6 +2128,21 @@ void StudioApp::on_shutdown() noexcept
         s.ui_submitter->destroy();
     }
     s.ui_submitter.reset();
+    if (s.atlas2d_sampler.is_valid())
+    {
+        device.destroy_sampler(s.atlas2d_sampler);
+        s.atlas2d_sampler = {};
+    }
+    if (s.atlas2d_tex.view.is_valid())
+    {
+        device.destroy_texture_view(s.atlas2d_tex.view);
+        s.atlas2d_tex.view = {};
+    }
+    if (s.atlas2d_tex.image.is_valid())
+    {
+        device.destroy_texture(s.atlas2d_tex.image);
+        s.atlas2d_tex.image = {};
+    }
     if (s.imgui_ctx)
     {
         s.imgui_ctx->destroy();

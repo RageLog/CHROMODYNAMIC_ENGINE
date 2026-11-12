@@ -18,6 +18,7 @@
 #include <cd/post/taa/Taa.hpp>
 #include <cd/render/PlanarShadow.hpp>
 #include <cd/rhi/Barriers.hpp>
+#include <cd/scene_renderer/SceneRenderer.hpp>
 
 #include <algorithm>
 #include <array>
@@ -205,40 +206,17 @@ void draw_sky_pass(cd::rhi::IDrawRecorder& cmd,
                    const SunLight& sun,
                    cd::material::Material& sky_material)
 {
-    const auto  basis  = cd::app_common::compute_camera_basis(cam.eye, cam.target);
-    const float half_h = std::tan(cam.fov_y * 0.5F);
-    const float half_w = half_h * aspect;
-
-    cd::material::AnalyticalSkyPush spush {};
-    spush.cam_right[0] = basis.right.x;
-    spush.cam_right[1] = basis.right.y;
-    spush.cam_right[2] = basis.right.z;
-    spush.cam_right[3] = half_w;
-    spush.cam_up[0]    = basis.up.x;
-    spush.cam_up[1]    = basis.up.y;
-    spush.cam_up[2]    = basis.up.z;
-    spush.cam_up[3]    = half_h;
-    spush.cam_fwd[0]   = basis.forward.x;
-    spush.cam_fwd[1]   = basis.forward.y;
-    spush.cam_fwd[2]   = basis.forward.z;
-    spush.cam_fwd[3]   = 0.0F;
-    spush.sun_dir[0]   = sun.dir.x;
-    spush.sun_dir[1]   = sun.dir.y;
-    spush.sun_dir[2]   = sun.dir.z;
-    spush.sun_dir[3]   = sun.strength;
-    spush.sun_color[0] = sun.col.x;
-    spush.sun_color[1] = sun.col.y;
-    spush.sun_color[2] = sun.col.z;
-    spush.sun_color[3] = (!cd::studio_rt::golden::enabled() && !sun.has_sun) ? 0.0F : 1.0F;
-
     sky_material.apply(cmd);
-    cmd.push_constants(
-        sky_material.pipeline_layout(),
-        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
-        0,
-        sizeof(spush),
-        &spush);
-    cmd.draw(3, 1, 0, 0);
+    cd::scene_renderer::SkyPassParams sky_params {};
+    sky_params.camera_eye = cam.eye;
+    sky_params.camera_target = cam.target;
+    sky_params.fov_y = cam.fov_y;
+    sky_params.aspect = aspect;
+    sky_params.sun_dir = sun.dir;
+    sky_params.sun_color = sun.col;
+    sky_params.sun_intensity = sun.strength;
+    sky_params.has_sun = cd::studio_rt::golden::enabled() || sun.has_sun;
+    cd::scene_renderer::record_analytical_sky(cmd, sky_material.pipeline_layout(), sky_params);
 }
 
 void draw_planar_shadows(StudioEngineState& s,

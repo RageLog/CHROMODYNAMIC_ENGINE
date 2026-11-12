@@ -71,6 +71,8 @@ struct AtmosphereVolumetricHandles
     cd::framegraph::ResourceHandle light_shafts_mask {};
 };
 
+struct SceneViewData;
+
 /// Register the Atmosphere LUTs, Froxel Volumetric Fog, Volumetric Clouds, and
 /// Light Shafts passes into `fg`, reading `depth` and `hdr_scene` and producing
 /// updated `hdr_scene`.
@@ -79,7 +81,8 @@ struct AtmosphereVolumetricHandles
     cd::framegraph::ResourceHandle depth,
     cd::framegraph::ResourceHandle& hdr_scene,
     cd::rhi::Extent2D viewport,
-    const AtmosphereVolumetricConfig& config
+    const AtmosphereVolumetricConfig& config,
+    const SceneViewData* scene_data = nullptr
 );
 
 }  // namespace cd::scene_renderer

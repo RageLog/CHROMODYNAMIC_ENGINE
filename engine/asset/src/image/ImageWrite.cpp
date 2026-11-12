@@ -94,4 +94,45 @@ write_png_rgba(std::string_view path, const std::uint8_t* rgba, std::uint32_t wi
     return {};
 }
 
+cd::core::Result<std::vector<std::uint8_t>>
+write_png_rgba_to_memory(const std::uint8_t* rgba, std::uint32_t width, std::uint32_t height)
+{
+    if (rgba == nullptr)
+        return std::unexpected(image_errors::make(image_errors::Code::kInvalidArgument, "rgba pointer is null"));
+    if (width == 0 || height == 0)
+        return std::unexpected(image_errors::make(image_errors::Code::kInvalidArgument, "zero-sized image"));
+
+    std::vector<std::uint8_t> buffer;
+    constexpr int kChannels = 4;
+    const int stride_bytes = static_cast<int>(width) * kChannels;
+
+    auto write_cb = [](void* context, void* data, int size) {
+        if (context == nullptr || data == nullptr || size <= 0)
+        {
+            return;
+        }
+        auto* vec = static_cast<std::vector<std::uint8_t>*>(context);
+        const auto* bytes = static_cast<const std::uint8_t*>(data);
+        vec->insert(vec->end(), bytes, bytes + size);
+    };
+
+    const int rc = stbi_write_png_to_func(
+        write_cb,
+        &buffer,
+        static_cast<int>(width),
+        static_cast<int>(height),
+        kChannels,
+        rgba,
+        stride_bytes
+    );
+    if (rc == 0)
+    {
+        return std::unexpected(image_errors::make(
+            image_errors::Code::kEncodeFailed,
+            "stbi_write_png_to_func returned 0 (encode failed)"
+        ));
+    }
+    return buffer;
+}
+
 }  // namespace cd::asset::image

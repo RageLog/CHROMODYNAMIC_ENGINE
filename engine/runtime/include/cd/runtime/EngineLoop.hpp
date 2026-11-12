@@ -17,8 +17,10 @@
 #include <cd/element_core/Element.hpp>
 #include <cd/gameplay_framework/VesselPilotDirector.hpp>
 #include <cd/rhi/Handles.hpp>
+#include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
 #include <cd/runtime/EngineContext.hpp>
+#include <cd/scene_renderer/SceneRenderer.hpp>
 #include <cd/scene_renderer/SurfaceAndPostFxPipeline.hpp>
 
 #include <cstddef>
@@ -52,11 +54,25 @@ public:
         return renderer_cfg_;
     }
 
+    [[nodiscard]] cd::scene_renderer::SceneViewData& scene_view_data() noexcept
+    {
+        return scene_view_data_;
+    }
+    [[nodiscard]] const cd::scene_renderer::SceneViewData& scene_view_data() const noexcept
+    {
+        return scene_view_data_;
+    }
+    void set_scene_view_data(cd::scene_renderer::SceneViewData data) noexcept
+    {
+        scene_view_data_ = std::move(data);
+    }
+
     /// Execute one deterministic engine frame across all subsystems.
     FrameStepReport step_frame(
         float frame_dt,
         cd::rhi::IDevice* device = nullptr,
-        cd::rhi::TextureHandle backbuffer = {}
+        cd::rhi::TextureHandle backbuffer = {},
+        cd::rhi::ICommandBuffer* cmd = nullptr
     );
 
     // ---- Play-In-Editor (PIE) Lifecycle (FAZ 7 Wave 7.3) -------------------
@@ -75,6 +91,7 @@ private:
     EngineContext* ctx_ { nullptr };
     cd::element_core::Stage stage_ { "DefaultStage" };
     cd::scene_renderer::SceneRendererConfig renderer_cfg_ {};
+    cd::scene_renderer::SceneViewData scene_view_data_ {};
     float fixed_dt_ { 1.0F / 60.0F };
     float fixed_accum_ { 0.0F };
     std::uint64_t frame_counter_ { 0 };

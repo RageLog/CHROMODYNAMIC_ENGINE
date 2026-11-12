@@ -1,0 +1,1034 @@
+{
+  "ambient_color": [
+    0.23999999463558197,
+    0.28999999165534973,
+    0.41999998688697815
+  ],
+  "ambient_intensity": 1,
+  "arcade_ruleset": 0,
+  "camera_pos": [
+    9.5,
+    3.7999999523162842
+  ],
+  "camera_zoom": 1,
+  "entities": [
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.25,
+        0.77999997138977051,
+        1,
+        1
+      ],
+      "flip_x": false,
+      "id": 1,
+      "jump_speed": 14.199999809265137,
+      "layer": 120,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.5999999046325684,
+      "name": "Hero_CyberRunner_2D",
+      "patrol_span": 3,
+      "pos": [
+        1.5,
+        2.2000000476837158
+      ],
+      "role": 1,
+      "rotation_deg": 0,
+      "size": [
+        0.85000002384185791,
+        1.3500000238418579
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.34999999403953552,
+        1,
+        0.72000002861022949,
+        1
+      ],
+      "flip_x": false,
+      "id": 2,
+      "jump_speed": 13.800000190734863,
+      "layer": 110,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Energy_Gem_1",
+      "patrol_span": 3,
+      "pos": [
+        4.5,
+        2
+      ],
+      "role": 3,
+      "rotation_deg": 0,
+      "size": [
+        0.62000000476837158,
+        0.62000000476837158
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.34999999403953552,
+        1,
+        0.72000002861022949,
+        1
+      ],
+      "flip_x": false,
+      "id": 3,
+      "jump_speed": 13.800000190734863,
+      "layer": 110,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Energy_Gem_2",
+      "patrol_span": 3,
+      "pos": [
+        7.8000001907348633,
+        4
+      ],
+      "role": 3,
+      "rotation_deg": 0,
+      "size": [
+        0.62000000476837158,
+        0.62000000476837158
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.34999999403953552,
+        1,
+        0.72000002861022949,
+        1
+      ],
+      "flip_x": false,
+      "id": 4,
+      "jump_speed": 13.800000190734863,
+      "layer": 110,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Energy_Gem_3",
+      "patrol_span": 3,
+      "pos": [
+        14.5,
+        5.4000000953674316
+      ],
+      "role": 3,
+      "rotation_deg": 0,
+      "size": [
+        0.62000000476837158,
+        0.62000000476837158
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.34999999403953552,
+        1,
+        0.72000002861022949,
+        1
+      ],
+      "flip_x": false,
+      "id": 5,
+      "jump_speed": 13.800000190734863,
+      "layer": 110,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Energy_Gem_4",
+      "patrol_span": 3,
+      "pos": [
+        20,
+        5
+      ],
+      "role": 3,
+      "rotation_deg": 0,
+      "size": [
+        0.62000000476837158,
+        0.62000000476837158
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 16.799999237060547,
+      "cast_shadows": true,
+      "color": [
+        0.20000000298023224,
+        0.94999998807907104,
+        0.77999997138977051,
+        1
+      ],
+      "flip_x": false,
+      "id": 6,
+      "jump_speed": 13.800000190734863,
+      "layer": 105,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "JumpPad_Launcher_2D",
+      "patrol_span": 3,
+      "pos": [
+        10,
+        1.3500000238418579
+      ],
+      "role": 4,
+      "rotation_deg": 0,
+      "size": [
+        1.1499999761581421,
+        0.5
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.31999999284744263,
+        0.62000000476837158,
+        0.95999997854232788,
+        1
+      ],
+      "flip_x": false,
+      "id": 7,
+      "jump_speed": 13.800000190734863,
+      "layer": 95,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "-- Live Sandboxed Lua 5.4 Platform Controller\nfunction on_tick(id, x, y, vx, vy, t, dt)\n  local target_x = 14.5 + math.sin(t * 1.8) * 1.8\n  local new_vx = (target_x - x) / math.max(dt, 0.001)\n  return target_x, y, new_vx, 0.0\nend\n",
+      "move_speed": 7.1999998092651367,
+      "name": "Lua_MovingBridge_2D",
+      "patrol_span": 2.2000000476837158,
+      "pos": [
+        14.5,
+        3.5999999046325684
+      ],
+      "role": 6,
+      "rotation_deg": 0,
+      "size": [
+        2.7999999523162842,
+        0.5
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        1,
+        0.34000000357627869,
+        0.43999999761581421,
+        1
+      ],
+      "flip_x": false,
+      "id": 8,
+      "jump_speed": 13.800000190734863,
+      "layer": 115,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 2.7999999523162842,
+      "name": "Synth_PatrolDrone_2D",
+      "patrol_span": 2.5,
+      "pos": [
+        17.5,
+        1.8500000238418579
+      ],
+      "role": 5,
+      "rotation_deg": 0,
+      "size": [
+        0.94999998807907104,
+        0.85000002384185791
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.92000001668930054,
+        0.68000000715255737,
+        0.30000001192092896,
+        1
+      ],
+      "flip_x": false,
+      "id": 9,
+      "jump_speed": 13.800000190734863,
+      "layer": 108,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Physics_SupplyCrate_2D",
+      "patrol_span": 3,
+      "pos": [
+        21.5,
+        2.2000000476837158
+      ],
+      "role": 2,
+      "rotation_deg": 0,
+      "size": [
+        0.89999997615814209,
+        0.89999997615814209
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.30000001192092896,
+        0.92000001668930054,
+        1,
+        1
+      ],
+      "flip_x": false,
+      "id": 10,
+      "jump_speed": 13.800000190734863,
+      "layer": 102,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Goal_CitadelPortal_2D",
+      "patrol_span": 3,
+      "pos": [
+        25.5,
+        4.3499999046325684
+      ],
+      "role": 7,
+      "rotation_deg": 0,
+      "size": [
+        1.3500000238418579,
+        2.0999999046325684
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        1,
+        0.77999997138977051,
+        0.41999998688697815,
+        1
+      ],
+      "flip_x": false,
+      "id": 11,
+      "jump_speed": 13.800000190734863,
+      "layer": 100,
+      "light_intensity": 1.75,
+      "light_radius": 10.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Warm_CavernLantern_Light2D",
+      "patrol_span": 3,
+      "pos": [
+        5.1999998092651367,
+        4.8000001907348633
+      ],
+      "role": 8,
+      "rotation_deg": 0,
+      "size": [
+        0.5,
+        0.5
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.25,
+        0.92000001668930054,
+        1,
+        1
+      ],
+      "flip_x": false,
+      "id": 12,
+      "jump_speed": 13.800000190734863,
+      "layer": 100,
+      "light_intensity": 1.9500000476837158,
+      "light_radius": 12,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Cyan_CitadelBeacon_Light2D",
+      "patrol_span": 3,
+      "pos": [
+        24.799999237060547,
+        5.8000001907348633
+      ],
+      "role": 8,
+      "rotation_deg": 0,
+      "size": [
+        0.5,
+        0.5
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.30000001192092896,
+        0.36000001430511475,
+        0.47999998927116394,
+        1
+      ],
+      "flip_x": false,
+      "id": 13,
+      "jump_speed": 13.800000190734863,
+      "layer": 85,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Stone_ShadowPillar_2D",
+      "patrol_span": 3,
+      "pos": [
+        8.8000001907348633,
+        4.1999998092651367
+      ],
+      "role": 9,
+      "rotation_deg": 0,
+      "size": [
+        0.69999998807907104,
+        1.6000000238418579
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    }
+  ],
+  "format": "chromodynamic.stage2d.v1",
+  "gravity_y": -28,
+  "parallax_layers": [
+    {
+      "auto_scroll_velocity": [
+        0.10000000149011612,
+        0
+      ],
+      "layer": 10,
+      "name": "Distant_Mountains",
+      "procedural_style": 2,
+      "repeat_x": true,
+      "repeat_y": false,
+      "scroll_factor": [
+        0.15000000596046448,
+        0.05000000074505806
+      ],
+      "texture_slot": -1,
+      "tile_size": [
+        16,
+        9
+      ],
+      "tint": [
+        60,
+        75,
+        110,
+        255
+      ],
+      "visible": true,
+      "z_order": 0
+    },
+    {
+      "auto_scroll_velocity": [
+        0.25,
+        0
+      ],
+      "layer": 10,
+      "name": "Forest_Silhouettes",
+      "procedural_style": 3,
+      "repeat_x": true,
+      "repeat_y": false,
+      "scroll_factor": [
+        0.40000000596046448,
+        0.15000000596046448
+      ],
+      "texture_slot": -1,
+      "tile_size": [
+        16,
+        9
+      ],
+      "tint": [
+        40,
+        90,
+        80,
+        255
+      ],
+      "visible": true,
+      "z_order": 0
+    },
+    {
+      "auto_scroll_velocity": [
+        0,
+        0
+      ],
+      "layer": 10,
+      "name": "Cyber_Skyline",
+      "procedural_style": 1,
+      "repeat_x": true,
+      "repeat_y": false,
+      "scroll_factor": [
+        0.69999998807907104,
+        0.30000001192092896
+      ],
+      "texture_slot": -1,
+      "tile_size": [
+        16,
+        9
+      ],
+      "tint": [
+        90,
+        50,
+        120,
+        255
+      ],
+      "visible": true,
+      "z_order": 0
+    }
+  ],
+  "stage_name": "Neon_Cavern_Platformer_2D",
+  "swarm_spawner": {
+    "active": false,
+    "enemy_speed": 3.2000000476837158,
+    "max_swarm_count": 40,
+    "spawn_interval_sec": 1.7999999523162842,
+    "spawn_radius": 16
+  },
+  "tiles": [
+    [
+      -3,
+      -1,
+      1
+    ],
+    [
+      -2,
+      -1,
+      1
+    ],
+    [
+      -1,
+      -1,
+      1
+    ],
+    [
+      -3,
+      0,
+      1
+    ],
+    [
+      -2,
+      0,
+      1
+    ],
+    [
+      -1,
+      0,
+      1
+    ],
+    [
+      -3,
+      1,
+      1
+    ],
+    [
+      -3,
+      2,
+      1
+    ],
+    [
+      -3,
+      3,
+      1
+    ],
+    [
+      -3,
+      4,
+      1
+    ],
+    [
+      -3,
+      5,
+      1
+    ],
+    [
+      -3,
+      6,
+      1
+    ],
+    [
+      -3,
+      7,
+      1
+    ],
+    [
+      -3,
+      8,
+      1
+    ],
+    [
+      0,
+      -1,
+      1
+    ],
+    [
+      1,
+      -1,
+      1
+    ],
+    [
+      2,
+      -1,
+      1
+    ],
+    [
+      3,
+      -1,
+      1
+    ],
+    [
+      4,
+      -1,
+      1
+    ],
+    [
+      5,
+      -1,
+      1
+    ],
+    [
+      6,
+      -1,
+      1
+    ],
+    [
+      7,
+      -1,
+      1
+    ],
+    [
+      8,
+      -1,
+      1
+    ],
+    [
+      9,
+      -1,
+      1
+    ],
+    [
+      10,
+      -1,
+      1
+    ],
+    [
+      11,
+      -1,
+      3
+    ],
+    [
+      12,
+      -1,
+      3
+    ],
+    [
+      13,
+      -1,
+      1
+    ],
+    [
+      14,
+      -1,
+      1
+    ],
+    [
+      15,
+      -1,
+      1
+    ],
+    [
+      0,
+      0,
+      1
+    ],
+    [
+      1,
+      0,
+      1
+    ],
+    [
+      2,
+      0,
+      1
+    ],
+    [
+      3,
+      0,
+      1
+    ],
+    [
+      4,
+      0,
+      1
+    ],
+    [
+      5,
+      0,
+      1
+    ],
+    [
+      6,
+      0,
+      1
+    ],
+    [
+      7,
+      0,
+      1
+    ],
+    [
+      8,
+      0,
+      1
+    ],
+    [
+      9,
+      0,
+      1
+    ],
+    [
+      10,
+      0,
+      1
+    ],
+    [
+      13,
+      0,
+      1
+    ],
+    [
+      14,
+      0,
+      1
+    ],
+    [
+      15,
+      0,
+      1
+    ],
+    [
+      6,
+      2,
+      2
+    ],
+    [
+      7,
+      2,
+      2
+    ],
+    [
+      8,
+      2,
+      2
+    ],
+    [
+      9,
+      2,
+      2
+    ],
+    [
+      16,
+      -1,
+      1
+    ],
+    [
+      17,
+      -1,
+      1
+    ],
+    [
+      18,
+      -1,
+      1
+    ],
+    [
+      19,
+      -1,
+      1
+    ],
+    [
+      20,
+      -1,
+      1
+    ],
+    [
+      21,
+      -1,
+      1
+    ],
+    [
+      22,
+      -1,
+      1
+    ],
+    [
+      23,
+      -1,
+      1
+    ],
+    [
+      24,
+      -1,
+      1
+    ],
+    [
+      25,
+      -1,
+      1
+    ],
+    [
+      26,
+      -1,
+      1
+    ],
+    [
+      27,
+      -1,
+      1
+    ],
+    [
+      28,
+      -1,
+      1
+    ],
+    [
+      29,
+      -1,
+      1
+    ],
+    [
+      16,
+      0,
+      1
+    ],
+    [
+      17,
+      0,
+      1
+    ],
+    [
+      18,
+      0,
+      1
+    ],
+    [
+      19,
+      0,
+      1
+    ],
+    [
+      20,
+      0,
+      1
+    ],
+    [
+      21,
+      0,
+      1
+    ],
+    [
+      22,
+      0,
+      1
+    ],
+    [
+      23,
+      0,
+      1
+    ],
+    [
+      24,
+      0,
+      1
+    ],
+    [
+      25,
+      0,
+      1
+    ],
+    [
+      26,
+      0,
+      1
+    ],
+    [
+      27,
+      0,
+      1
+    ],
+    [
+      28,
+      0,
+      1
+    ],
+    [
+      29,
+      0,
+      1
+    ],
+    [
+      23,
+      1,
+      4
+    ],
+    [
+      24,
+      1,
+      4
+    ],
+    [
+      25,
+      1,
+      4
+    ],
+    [
+      26,
+      1,
+      4
+    ],
+    [
+      27,
+      1,
+      4
+    ],
+    [
+      29,
+      1,
+      1
+    ],
+    [
+      23,
+      2,
+      4
+    ],
+    [
+      24,
+      2,
+      4
+    ],
+    [
+      25,
+      2,
+      4
+    ],
+    [
+      26,
+      2,
+      4
+    ],
+    [
+      27,
+      2,
+      4
+    ],
+    [
+      29,
+      2,
+      1
+    ],
+    [
+      18,
+      3,
+      2
+    ],
+    [
+      19,
+      3,
+      2
+    ],
+    [
+      20,
+      3,
+      2
+    ],
+    [
+      21,
+      3,
+      2
+    ],
+    [
+      29,
+      3,
+      1
+    ],
+    [
+      29,
+      4,
+      1
+    ],
+    [
+      29,
+      5,
+      1
+    ],
+    [
+      29,
+      6,
+      1
+    ],
+    [
+      29,
+      7,
+      1
+    ],
+    [
+      29,
+      8,
+      1
+    ]
+  ],
+  "y_sort_enabled": false
+}

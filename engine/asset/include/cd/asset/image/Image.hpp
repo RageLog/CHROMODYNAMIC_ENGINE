@@ -111,6 +111,14 @@ load_image_from_memory(std::span<const std::uint8_t> bytes, const LoadOptions& o
 [[nodiscard]] cd::core::Result<void>
 write_png_rgba(std::string_view path, const std::uint8_t* rgba, std::uint32_t width, std::uint32_t height);
 
+/// Write an RGBA8 buffer to memory as PNG bytes. `width * height * 4` bytes
+/// are read from `rgba` row-major, top-left origin.
+///
+/// Used by MCP capture_frame and headless screenshot streaming pipelines
+/// to produce base64 PNG payloads without intermediate disk writes.
+[[nodiscard]] cd::core::Result<std::vector<std::uint8_t>>
+write_png_rgba_to_memory(const std::uint8_t* rgba, std::uint32_t width, std::uint32_t height);
+
 /// 2x2 box-filter mipmap chain generator. Returns a vector of Images,
 /// element 0 being the input copied unchanged and element N being a
 /// 1x1 (or 1xK / Kx1 for non-square inputs) final mip.

@@ -9,6 +9,10 @@ cd_add_library(world2d
     src/Stage2D.cpp
     src/CommandBus2D.cpp
     src/PlaytestRunner2D.cpp
+    src/ParticleSystem2D.cpp
+    src/SpatialHash2D.cpp
+    src/AudioCue2D.cpp
+    src/GenreTemplates2D.cpp
   PUBLIC_DEPS
     cd::core
     cd::math
@@ -18,6 +22,7 @@ cd_add_library(world2d
     cd::script
     cd::asset_json
     cd::asset_pak
+    cd::audio
 )
 
 if(CD_ENABLE_TESTING)

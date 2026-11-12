@@ -9,6 +9,7 @@
 #include <cd/render2d/Camera2D.hpp>
 #include <cd/render2d/FormatLoaders2D.hpp>
 #include <cd/render2d/Lighting2D.hpp>
+#include <cd/render2d/ParallaxLayer2D.hpp>
 #include <cd/render2d/SortKey2D.hpp>
 #include <cd/render2d/SpriteBatch2D.hpp>
 #include <cd/render2d/Tilemap2D.hpp>
@@ -39,7 +40,8 @@ public:
         const LightingEnvironment2D&     lighting,
         std::span<const Sprite2D>        sprites,
         std::span<const CollisionRect2D> debug_colliders,
-        const Render2DDebugOptions&      options = {}) const;
+        const Render2DDebugOptions&      options = {},
+        std::span<const ParallaxLayer2D> parallax_layers = {}) const;
 };
 
 }  // namespace cd::render2d

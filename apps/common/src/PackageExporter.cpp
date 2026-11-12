@@ -27,9 +27,20 @@ cd::core::Result<PackageExportReport> export_standalone_cdpak_bundle(
 
     cd::asset::pak::PakBuilder pak_builder;
 
+    std::string exe_filename = req.executable_name.empty() ? std::string("cd_player.exe") : req.executable_name;
+    if (!exe_filename.ends_with(".exe") && !exe_filename.ends_with(".EXE"))
+    {
+        exe_filename += ".exe";
+    }
+
     std::string manifest = "{\n"
                            "  \"engine\": \"CHROMODYNAMIC\",\n"
                            "  \"mode\": \"" + (req.mode.empty() ? std::string("Pure2D") : req.mode) + "\"";
+    if (!req.game_title.empty())
+    {
+        manifest += ",\n  \"title\": \"" + req.game_title + "\"";
+    }
+    manifest += ",\n  \"executable\": \"" + exe_filename + "\"";
     if (!req.stage2d_json.empty())
     {
         manifest += ",\n  \"entry_stage2d\": \"stages/main.cd2d.json\"";
@@ -95,7 +106,7 @@ cd::core::Result<PackageExportReport> export_standalone_cdpak_bundle(
             {
                 continue;
             }
-            const std::filesystem::path player_dst = out_dir / "cd_player.exe";
+            const std::filesystem::path player_dst = out_dir / exe_filename;
             std::filesystem::copy_file(
                 player_src,
                 player_dst,
@@ -104,14 +115,16 @@ cd::core::Result<PackageExportReport> export_standalone_cdpak_bundle(
             if (!ec)
             {
                 report.bundled_player_exe = true;
+                report.exe_path           = player_dst.string();
                 for (const auto& entry : std::filesystem::directory_iterator(bin_dir, ec))
                 {
                     if (!entry.is_regular_file())
                     {
                         continue;
                     }
-                    const std::string ext = entry.path().extension().string();
-                    if (ext == ".dll" || ext == ".DLL")
+                    const std::string fname = entry.path().filename().string();
+                    const std::string ext   = entry.path().extension().string();
+                    if ((ext == ".dll" || ext == ".DLL") && !fname.starts_with("gtest"))
                     {
                         std::filesystem::copy_file(
                             entry.path(),
@@ -129,16 +142,21 @@ cd::core::Result<PackageExportReport> export_standalone_cdpak_bundle(
         }
     }
 
-    const std::string launcher_bat = (out_dir / "Play_ChromodynamicGame.bat").string();
+    const std::string stem = req.executable_name.empty()
+        ? std::string("ChromodynamicGame")
+        : std::filesystem::path(exe_filename).stem().string();
+    const std::string launcher_bat = (out_dir / ("Play_" + stem + ".bat")).string();
     const std::string bat_content =
         "@echo off\r\n"
-        "echo Launching CHROMODYNAMIC Standalone Game (.cdpak)...\r\n"
-        "if exist \"%~dp0cd_player.exe\" (\r\n"
-        "    \"%~dp0cd_player.exe\" --pak \"%~dp0game.cdpak\"\r\n"
+        "echo Launching CHROMODYNAMIC Standalone Game (" + exe_filename + ")...\r\n"
+        "if exist \"%~dp0" + exe_filename + "\" (\r\n"
+        "    \"%~dp0" + exe_filename + "\" --pak \"%~dp0game.cdpak\" %*\r\n"
+        ") else if exist \"%~dp0cd_player.exe\" (\r\n"
+        "    \"%~dp0cd_player.exe\" --pak \"%~dp0game.cdpak\" %*\r\n"
         ") else if exist \"%~dp0..\\..\\ide-base\\bin\\cd_player.exe\" (\r\n"
-        "    \"%~dp0..\\..\\ide-base\\bin\\cd_player.exe\" --pak \"%~dp0game.cdpak\"\r\n"
+        "    \"%~dp0..\\..\\ide-base\\bin\\cd_player.exe\" --pak \"%~dp0game.cdpak\" %*\r\n"
         ") else (\r\n"
-        "    echo cd_player.exe not found in bundle or build/ide-base/bin.\r\n"
+        "    echo " + exe_filename + " not found in bundle or build/ide-base/bin.\r\n"
         ")\r\n";
     (void)write_text_file_utf8(launcher_bat, bat_content);
 

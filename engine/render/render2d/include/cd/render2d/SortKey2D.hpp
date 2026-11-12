@@ -34,7 +34,7 @@ namespace cd::render2d
     const std::uint64_t z_bits     = z_biased << 40U;
 
     std::uint64_t y_bits = 0x800000ULL << 16U;
-    if (y_sort_enabled)
+    if (y_sort_enabled && std::isfinite(world_foot_y))
     {
         // In Y-up world coordinates, larger Y is further "back" (drawn first -> smaller key),
         // smaller Y is closer "front" (drawn later -> larger key).

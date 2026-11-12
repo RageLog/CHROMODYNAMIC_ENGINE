@@ -21,12 +21,25 @@ struct Aabb2D
 
     [[nodiscard]] constexpr bool overlaps(const Aabb2D& other) const noexcept
     {
+        if (!std::isfinite(min.x) || !std::isfinite(min.y) ||
+            !std::isfinite(max.x) || !std::isfinite(max.y) ||
+            !std::isfinite(other.min.x) || !std::isfinite(other.min.y) ||
+            !std::isfinite(other.max.x) || !std::isfinite(other.max.y))
+        {
+            return false;
+        }
         return !(max.x < other.min.x || min.x > other.max.x ||
                  max.y < other.min.y || min.y > other.max.y);
     }
 
     [[nodiscard]] constexpr bool contains(cd::math::Vec2f p) const noexcept
     {
+        if (!std::isfinite(p.x) || !std::isfinite(p.y) ||
+            !std::isfinite(min.x) || !std::isfinite(min.y) ||
+            !std::isfinite(max.x) || !std::isfinite(max.y))
+        {
+            return false;
+        }
         return p.x >= min.x && p.x <= max.x && p.y >= min.y && p.y <= max.y;
     }
 };

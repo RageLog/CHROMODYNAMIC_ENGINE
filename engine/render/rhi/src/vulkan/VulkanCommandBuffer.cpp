@@ -149,6 +149,7 @@ VulkanCommandBuffer::VulkanCommandBuffer(
     , pool_ { pool }
     , cmd_ { command_buffer }
     , tables_ { tables }
+    , in_render_pass_ { pool == VK_NULL_HANDLE && command_buffer != VK_NULL_HANDLE }
 {
 }
 
@@ -204,6 +205,9 @@ void VulkanCommandBuffer::begin()
     // flag so neither leaks from a previous recording.
     current_bind_point_ = cd::rhi::BindPoint::kCompute;
     recording_error_ = false;
+    in_render_pass_ = false;
+    current_graphics_layout_ = VK_NULL_HANDLE;
+    current_compute_layout_ = VK_NULL_HANDLE;
 
     // phase1119 (X1-FU-F step-2 gate, audit A3): free lane pools retired by
     // parallel recorders in earlier frames. begin() may only run when this
@@ -417,11 +421,13 @@ void VulkanCommandBuffer::begin_rendering_(const cd::rhi::RenderPassBeginInfo& i
     ri.pStencilAttachment = has_stencil ? &stencil_attachment : nullptr;
 
     vkCmdBeginRendering(cmd_, &ri);
+    in_render_pass_ = true;
 }
 
 void VulkanCommandBuffer::end_render_pass()
 {
     vkCmdEndRendering(cmd_);
+    in_render_pass_ = false;
     // phase1146: a graphics pipeline can only be used inside a render pass.
     // Clear the remembered graphics layout so a follow-up COMPUTE dispatch
     // (e.g. the DDGI trace/blend/sample passes recorded between the HDR pass
@@ -592,6 +598,11 @@ void VulkanCommandBuffer::draw(
     std::uint32_t first_instance
 )
 {
+    if (!in_render_pass_ || current_graphics_layout_ == VK_NULL_HANDLE)
+    {
+        note_recording_error_("draw: draw called outside render pass or without bound graphics pipeline");
+        return;
+    }
     vkCmdDraw(cmd_, vertex_count, instance_count, first_vertex, first_instance);
 }
 
@@ -603,11 +614,21 @@ void VulkanCommandBuffer::draw_indexed(
     std::uint32_t first_instance
 )
 {
+    if (!in_render_pass_ || current_graphics_layout_ == VK_NULL_HANDLE)
+    {
+        note_recording_error_("draw_indexed: draw called outside render pass or without bound graphics pipeline");
+        return;
+    }
     vkCmdDrawIndexed(cmd_, index_count, instance_count, first_index, vertex_offset, first_instance);
 }
 
 void VulkanCommandBuffer::dispatch(std::uint32_t group_x, std::uint32_t group_y, std::uint32_t group_z)
 {
+    if (current_compute_layout_ == VK_NULL_HANDLE)
+    {
+        note_recording_error_("dispatch: dispatch called without bound compute pipeline");
+        return;
+    }
     vkCmdDispatch(cmd_, group_x, group_y, group_z);
 }
 
@@ -623,6 +644,11 @@ void VulkanCommandBuffer::draw_indirect(
     std::uint32_t stride
 )
 {
+    if (!in_render_pass_ || current_graphics_layout_ == VK_NULL_HANDLE)
+    {
+        note_recording_error_("draw_indirect: called outside render pass or without bound graphics pipeline");
+        return;
+    }
     if (tables_.buffers == nullptr || draw_count == 0)
         return;
     auto it = tables_.buffers->find(args.index());
@@ -638,6 +664,11 @@ void VulkanCommandBuffer::draw_indexed_indirect(
     std::uint32_t stride
 )
 {
+    if (!in_render_pass_ || current_graphics_layout_ == VK_NULL_HANDLE)
+    {
+        note_recording_error_("draw_indexed_indirect: called outside render pass or without bound graphics pipeline");
+        return;
+    }
     if (tables_.buffers == nullptr || draw_count == 0)
         return;
     auto it = tables_.buffers->find(args.index());
@@ -648,6 +679,11 @@ void VulkanCommandBuffer::draw_indexed_indirect(
 
 void VulkanCommandBuffer::dispatch_indirect(cd::rhi::BufferHandle args, std::uint64_t offset)
 {
+    if (current_compute_layout_ == VK_NULL_HANDLE)
+    {
+        note_recording_error_("dispatch_indirect: called without bound compute pipeline");
+        return;
+    }
     if (tables_.buffers == nullptr)
         return;
     auto it = tables_.buffers->find(args.index());

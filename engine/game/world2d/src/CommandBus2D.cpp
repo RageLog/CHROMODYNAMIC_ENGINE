@@ -1,6 +1,6 @@
 // =============================================================================
-// CHROMODYNAMIC — cd/world2d/CommandBus2D.cpp
-// FAZ 35 (ADR-20261111) — Symmetric Human Undo/Redo + AI JSON Command Protocol.
+// CHROMODYNAMIC: cd/world2d/CommandBus2D.cpp
+// FAZ 35 (ADR-20261111): Symmetric Human Undo/Redo + AI JSON Command Protocol.
 // =============================================================================
 #include <cd/world2d/CommandBus2D.hpp>
 
@@ -188,6 +188,39 @@ void CommandBus2D::paint_rect(Stage2D& stage, int x0, int y0, int x1, int y1, st
                 stage.save_to_json_string(false));
 }
 
+std::size_t CommandBus2D::flood_fill(Stage2D& stage, int start_x, int start_y, std::uint16_t replacement_id)
+{
+    const std::string before = stage.save_to_json_string(false);
+    const std::size_t filled = stage.tilemap().flood_fill(start_x, start_y, replacement_id);
+    stage.rebuild_baked_colliders();
+    push_record("Flood Fill (" + std::to_string(filled) + " tiles)", before, stage.save_to_json_string(false));
+    return filled;
+}
+
+std::size_t CommandBus2D::stamp(
+    Stage2D&                       stage,
+    int                            start_x,
+    int                            start_y,
+    int                            pattern_width,
+    int                            pattern_height,
+    std::span<const std::uint16_t> pattern,
+    bool                           update_autotile)
+{
+    const std::string before = stage.save_to_json_string(false);
+    const std::size_t stamped =
+        stage.tilemap().stamp(start_x, start_y, pattern_width, pattern_height, pattern, update_autotile);
+    stage.rebuild_baked_colliders();
+    push_record("Stamp (" + std::to_string(stamped) + " tiles)", before, stage.save_to_json_string(false));
+    return stamped;
+}
+
+void CommandBus2D::load_starter_platformer(Stage2D& stage)
+{
+    const std::string before = stage.save_to_json_string(false);
+    stage.build_starter_illuminated_platformer();
+    push_record("Load Starter Showcase 2D", before, stage.save_to_json_string(false));
+}
+
 bool CommandBus2D::attach_lua_script(Stage2D& stage, std::uint32_t entity_id, std::string lua_code)
 {
     Entity2D* ent = stage.find_entity(entity_id);
@@ -202,11 +235,12 @@ bool CommandBus2D::attach_lua_script(Stage2D& stage, std::uint32_t entity_id, st
     return compiled;
 }
 
-void CommandBus2D::load_starter_platformer(Stage2D& stage)
+void CommandBus2D::load_genre_template(Stage2D& stage, GenreTemplateKind2D kind)
 {
     const std::string before = stage.save_to_json_string(false);
-    stage.build_starter_illuminated_platformer();
-    push_record("Load Starter Showcase 2D", before, stage.save_to_json_string(false));
+    GenreTemplates2D::apply_genre_template(stage, kind);
+    push_record("Load Genre Template: " + std::string(genre_template_name_2d(kind)),
+                before, stage.save_to_json_string(false));
 }
 
 void CommandBus2D::begin_stroke(const Stage2D& stage, std::string description)
@@ -426,6 +460,29 @@ CommandExecutionReport2D CommandBus2D::execute_json(Stage2D& stage, std::string_
         else if (op == "load_starter_platformer_2d")
         {
             stage.build_starter_illuminated_platformer();
+            ++rep.applied_count;
+        }
+        else if (op == "load_genre_template_2d")
+        {
+            std::string_view gname = "platformer";
+            if (auto v_tpl = op_val->at("template"); v_tpl.has_value() && (*v_tpl)->is_string())
+            {
+                gname = (*v_tpl)->as_string();
+            }
+            else if (auto v_gnr = op_val->at("genre"); v_gnr.has_value() && (*v_gnr)->is_string())
+            {
+                gname = (*v_gnr)->as_string();
+            }
+
+            const auto gkind_opt = parse_genre_template_kind_2d(gname);
+            if (!gkind_opt.has_value())
+            {
+                rep.ok            = false;
+                rep.error_message = "Unknown genre template: " + std::string(gname);
+                (void)stage.load_from_json_string(batch_before);
+                return rep;
+            }
+            GenreTemplates2D::apply_genre_template(stage, *gkind_opt);
             ++rep.applied_count;
         }
         else

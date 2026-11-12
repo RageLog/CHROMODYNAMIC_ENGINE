@@ -152,4 +152,57 @@ TEST(AppCommonPackageExporter, BuildsMountableCdPakArchiveWithManifestAndStage)
     std::filesystem::remove_all(out_dir, ec);
 }
 
+TEST(AppCommonPackageExporter, CustomExecutableNameWritesNamedLauncherAndManifest)
+{
+    const auto out_dir = (std::filesystem::temp_directory_path() / "cd_test_pong_export").string();
+    cd::app_common::PackageExportRequest req {};
+    req.output_dir         = out_dir;
+    req.mode               = "Pure2D";
+    req.game_title         = "Neon Cyber Pong";
+    req.executable_name    = "Pong";
+    req.stage2d_json       = "{\"stage\":\"pong\"}";
+    req.copy_player_binary = false;
+
+    const auto rep = cd::app_common::export_standalone_cdpak_bundle(req);
+    ASSERT_TRUE(rep.has_value());
+    EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(out_dir) / "Play_Pong.bat"));
+
+    auto bat_txt = cd::app_common::read_text_file_utf8((std::filesystem::path(out_dir) / "Play_Pong.bat").string());
+    ASSERT_TRUE(bat_txt.has_value());
+    EXPECT_NE(bat_txt->find("Pong.exe"), std::string::npos);
+
+    std::error_code ec {};
+    std::filesystem::remove_all(out_dir, ec);
+}
+
+TEST(AppCommonFrameCapture, Base64EncodeAndPngMemoryWriteRoundTrip)
+{
+    // Test base64 encode RFC 4648 vectors
+    const std::string text = "Chromodynamic MCP";
+    std::vector<std::uint8_t> bytes(text.begin(), text.end());
+    const std::string b64 = cd::app_common::base64_encode(bytes);
+    EXPECT_EQ(b64, "Q2hyb21vZHluYW1pYyBNQ1A=");
+
+    // Test write_png_rgba_to_memory
+    const std::vector<std::uint8_t> rgba {
+        255, 0, 0, 255,
+        0, 255, 0, 255,
+        0, 0, 255, 255,
+        255, 255, 0, 255
+    };
+    auto png_r = cd::asset::image::write_png_rgba_to_memory(rgba.data(), 2U, 2U);
+    ASSERT_TRUE(png_r.has_value());
+    EXPECT_GT(png_r->size(), 16U);
+
+    // Verify PNG magic header "\x89PNG\r\n\x1a\n"
+    EXPECT_EQ((*png_r)[0], 0x89U);
+    EXPECT_EQ((*png_r)[1], 'P');
+    EXPECT_EQ((*png_r)[2], 'N');
+    EXPECT_EQ((*png_r)[3], 'G');
+
+    const std::string png_b64 = cd::app_common::base64_encode(*png_r);
+    EXPECT_FALSE(png_b64.empty());
+    EXPECT_EQ(png_b64.substr(0, 4), "iVBO");
+}
+
 }  // namespace

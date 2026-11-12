@@ -49,6 +49,16 @@ enum class Tool2DKind : std::uint8_t
     kTileBrush  = 1U,
     kRectFill   = 2U,
     kEraser     = 3U,
+    kStamp      = 4U,
+    kFloodFill  = 5U,
+};
+
+struct StampBrushConfig
+{
+    int                        pattern_width { 2 };
+    int                        pattern_height { 2 };
+    std::vector<std::uint16_t> pattern { 1U, 1U, 1U, 1U };
+    int                        preset_index { 0 }; // 0: 2x2 Block, 1: 3x1 Platform, 2: 1x3 Pillar, 3: 3x3 Arena Block
 };
 
 struct Studio2DState
@@ -62,10 +72,19 @@ struct Studio2DState
     cd::render2d::Canvas2D            canvas {};
     cd::render2d::Render2DDebugOptions debug_opts {};
 
-    Tool2DKind    active_tool { Tool2DKind::kTileBrush };
-    std::uint16_t selected_tile_id { 1U };
-    bool          auto_wang_tiling { true };
-    std::uint32_t selected_entity_id { 1U };
+    Tool2DKind       active_tool { Tool2DKind::kTileBrush };
+    std::uint16_t    selected_tile_id { 1U };
+    bool             auto_wang_tiling { true };
+    std::uint32_t    selected_entity_id { 1U };
+    StampBrushConfig stamp_cfg {};
+    std::uint32_t    locked_layers_mask { 0U };
+    float            anim_preview_fps { 10.0F };
+    bool             anim_preview_playing { true };
+    bool             anim_preview_loop { true };
+    int              anim_preview_clip_idx { 0 };
+    float            anim_preview_timer { 0.0F };
+    int              anim_preview_frame { 0 };
+    int              active_genre_template_idx { 0 };
 
     // Viewport mouse interaction state
     bool   pan_dragging { false };
@@ -184,8 +203,10 @@ struct Studio2DState
 
 template <typename LogFn>
 [[nodiscard]] inline bool export_2d_and_3d_standalone_bundle(
-    const char* export_dir,
-    LogFn&&     log_push)
+    const char*      export_dir,
+    LogFn&&          log_push,
+    std::string_view exe_name     = {},
+    std::string_view project_json = {})
 {
     auto& s2d = studio_2d();
     std::string scene3d_json {};
@@ -198,8 +219,11 @@ template <typename LogFn>
     cd::app_common::PackageExportRequest req {};
     req.output_dir         = export_dir;
     req.mode               = scene3d_json.empty() ? "Pure2D" : "Hybrid2D3D";
+    req.game_title         = std::string(s2d.stage.name());
+    req.executable_name    = std::string(exe_name);
     req.stage2d_json       = s2d.stage.save_to_json_string(true);
     req.scene3d_json       = std::move(scene3d_json);
+    req.project_json       = std::string(project_json);
     req.copy_player_binary = true;
 
     const auto exp_res = cd::app_common::export_standalone_cdpak_bundle(req);
@@ -210,11 +234,148 @@ template <typename LogFn>
         return false;
     }
 
+    const std::string bundled_label = exp_res->bundled_player_exe
+        ? (", +" + std::filesystem::path(exp_res->exe_path).filename().string() + " bundled)")
+        : std::string(", launcher ready)");
     s2d.last_status_msg = "Packaged " + exp_res->pak_path + " (" +
-                          std::to_string(exp_res->pak_size_bytes) + " bytes" +
-                          (exp_res->bundled_player_exe ? ", +cd_player.exe bundled)" : ", launcher ready)");
-    log_push("[export] Standalone .cdpak bundle -> " + std::string(export_dir));
+                          std::to_string(exp_res->pak_size_bytes) + " bytes" + bundled_label;
+    log_push("[export] Standalone .cdpak bundle -> " + std::string(export_dir) +
+             (exp_res->exe_path.empty() ? std::string {} : (" (" + exp_res->exe_path + ")")));
     return true;
+}
+
+[[nodiscard]] inline bool load_2d_project_or_stage_from_disk(
+    const std::string& path_str,
+    std::string*       out_project_json = nullptr)
+{
+    if (path_str.empty())
+    {
+        return false;
+    }
+
+    std::error_code ec {};
+    const std::filesystem::path in_path(path_str);
+    std::filesystem::path stage_path {};
+    std::filesystem::path proj_file {};
+
+    if (path_str.ends_with(".cd2d.json"))
+    {
+        stage_path = in_path;
+        const auto cand_proj = in_path.parent_path().parent_path() / "project.cdproj";
+        if (std::filesystem::exists(cand_proj, ec))
+        {
+            proj_file = cand_proj;
+        }
+    }
+    else
+    {
+        const std::filesystem::path base_dir = std::filesystem::is_directory(in_path, ec)
+            ? in_path
+            : in_path.parent_path();
+        if (std::filesystem::is_regular_file(in_path, ec) &&
+            (path_str.ends_with(".cdproj") || path_str.ends_with(".cdproject")))
+        {
+            proj_file = in_path;
+        }
+        else if (std::filesystem::exists(base_dir / "project.cdproj", ec))
+        {
+            proj_file = base_dir / "project.cdproj";
+        }
+
+        if (std::filesystem::exists(base_dir / "stages" / "main.cd2d.json", ec))
+        {
+            stage_path = base_dir / "stages" / "main.cd2d.json";
+        }
+        else if (std::filesystem::exists(base_dir / "game_world.cd2d.json", ec))
+        {
+            stage_path = base_dir / "game_world.cd2d.json";
+        }
+    }
+
+    if (stage_path.empty() || !std::filesystem::exists(stage_path, ec))
+    {
+        return false;
+    }
+
+    auto& s2d = studio_2d();
+    const auto lr = s2d.stage.load_from_file(stage_path.string());
+    if (!lr.has_value())
+    {
+        s2d.last_status_msg = "Failed to load 2D stage: " + std::string(lr.error().message);
+        return false;
+    }
+
+    if (out_project_json != nullptr && !proj_file.empty())
+    {
+        if (auto pr = cd::app_common::read_text_file_utf8(proj_file.string()); pr.has_value())
+        {
+            *out_project_json = std::move(*pr);
+        }
+    }
+
+    s2d.command_bus.clear_history();
+    if (s2d.stage.arcade_ruleset() == cd::world2d::ArcadeRuleset2D::kPongCourt)
+    {
+        s2d.active_genre_template_idx = 4;
+    }
+    else if (s2d.stage.arcade_ruleset() == cd::world2d::ArcadeRuleset2D::kBridgeDemolition)
+    {
+        s2d.active_genre_template_idx = 5;
+    }
+    else if (s2d.stage.entities().empty() && s2d.stage.tilemap().non_empty_tile_count() == 0U)
+    {
+        s2d.active_genre_template_idx = 3;
+    }
+    else if (s2d.stage.name().find("Dungeon") != std::string_view::npos ||
+             s2d.stage.name().find("RPG") != std::string_view::npos)
+    {
+        s2d.active_genre_template_idx = 1;
+    }
+    else if (s2d.stage.name().find("Arena") != std::string_view::npos ||
+             s2d.stage.name().find("Twin") != std::string_view::npos)
+    {
+        s2d.active_genre_template_idx = 2;
+    }
+    else
+    {
+        s2d.active_genre_template_idx = 0;
+    }
+    s2d.selected_entity_id = s2d.stage.entities().empty() ? 0U : s2d.stage.entities().front().id;
+    s2d.sync_lua_buffer_from_selected();
+    std::snprintf(s2d.stage_file_buf.data(), s2d.stage_file_buf.size(), "%s", stage_path.string().c_str());
+    s2d.last_status_msg = "Loaded 2D project stage: " + stage_path.string();
+    return true;
+}
+
+[[nodiscard]] inline bool save_2d_project_folder_to_disk(const std::string& project_dir)
+{
+    if (project_dir.empty())
+    {
+        return false;
+    }
+    std::error_code ec {};
+    const std::filesystem::path dir(project_dir);
+    const std::filesystem::path stages_dir = dir / "stages";
+    std::filesystem::create_directories(stages_dir, ec);
+
+    auto& s2d = studio_2d();
+    const std::string stage_file = (stages_dir / "main.cd2d.json").string();
+    if (!s2d.stage.save_to_file(stage_file).has_value())
+    {
+        return false;
+    }
+
+    const std::string stage_name(s2d.stage.name());
+    const std::string proj_json =
+        "{\n"
+        "  \"engine\": \"CHROMODYNAMIC\",\n"
+        "  \"version\": \"1.0.0\",\n"
+        "  \"name\": \"" + stage_name + "\",\n"
+        "  \"mode\": \"Pure2D\",\n"
+        "  \"entry_stage2d\": \"stages/main.cd2d.json\",\n"
+        "  \"arcade_ruleset\": " + std::to_string(static_cast<int>(s2d.stage.arcade_ruleset())) + "\n"
+        "}\n";
+    return cd::app_common::write_text_file_utf8((dir / "project.cdproj").string(), proj_json).has_value();
 }
 
 inline void spawn_2d_prefab_from_catalog(int prefab_kind)
@@ -293,6 +454,32 @@ inline void spawn_2d_prefab_from_catalog(int prefab_kind)
             proto.color_rgba   = { 0.24F, 0.28F, 0.38F, 1.0F };
             proto.layer        = 92;
             proto.cast_shadows = true;
+            break;
+        case 8: // Kinematic Arcade Paddle
+            proto.name        = "Arcade_Paddle_" + std::to_string(s2d.stage.entities().size() + 1U);
+            proto.role        = cd::world2d::EntityRole2D::kKinematicPaddle;
+            proto.size        = { 2.8F, 0.50F };
+            proto.color_rgba  = { 0.22F, 0.92F, 1.0F, 1.0F };
+            proto.layer       = 120;
+            proto.move_speed  = 14.5F;
+            proto.patrol_span = 8.0F;
+            break;
+        case 9: // Bouncing Energy Ball
+            proto.name             = "Energy_Ball_" + std::to_string(s2d.stage.entities().size() + 1U);
+            proto.role             = cd::world2d::EntityRole2D::kBouncingBall;
+            proto.size             = { 0.58F, 0.58F };
+            proto.runtime_velocity = { 7.5F, 9.5F };
+            proto.color_rgba       = { 1.0F, 0.92F, 0.35F, 1.0F };
+            proto.layer            = 130;
+            proto.move_speed       = 11.5F;
+            proto.bounce_impulse   = 22.0F;
+            break;
+        case 10: // Destructible Bridge Span
+            proto.name       = "Bridge_Span_" + std::to_string(s2d.stage.entities().size() + 1U);
+            proto.role       = cd::world2d::EntityRole2D::kDestructibleBlock;
+            proto.size       = { 1.90F, 0.48F };
+            proto.color_rgba = { 0.96F, 0.66F, 0.24F, 1.0F };
+            proto.layer      = 108;
             break;
         default: // Victory Goal Portal
             proto.name            = "Goal_Portal_" + std::to_string(s2d.stage.entities().size() + 1U);
@@ -428,6 +615,28 @@ inline void draw_schema_driven_entity2d_inspector(Studio2DState& s2d)
             }
         }
     }
+
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.40F, 0.85F, 1.0F, 1.0F), "Role-Specific Prefab Parameters");
+    if (ent->role == cd::world2d::EntityRole2D::kPatrolEnemy)
+    {
+        ImGui::DragFloat("Patrol Span (m)", &ent->patrol_span, 0.1F, 0.5F, 50.0F);
+        ImGui::DragFloat("Move Speed (m/s)", &ent->move_speed, 0.1F, 0.1F, 20.0F);
+    }
+    else if (ent->role == cd::world2d::EntityRole2D::kJumpPad)
+    {
+        ImGui::DragFloat("Bounce Impulse", &ent->bounce_impulse, 0.5F, 5.0F, 50.0F);
+    }
+    else if (ent->role == cd::world2d::EntityRole2D::kMovingPlatform)
+    {
+        ImGui::DragFloat("Platform Span (m)", &ent->patrol_span, 0.1F, 0.5F, 50.0F);
+    }
+    else if (ent->role == cd::world2d::EntityRole2D::kPointLight)
+    {
+        ImGui::DragFloat("Light Intensity", &ent->light_intensity, 0.05F, 0.0F, 10.0F);
+        ImGui::DragFloat("Light Radius (m)", &ent->light_radius, 0.2F, 1.0F, 50.0F);
+        ImGui::Checkbox("Cast Soft Shadows", &ent->cast_shadows);
+    }
 }
 
 template <typename StateT, typename LogFn>
@@ -448,9 +657,9 @@ inline void draw_2d_studio_workspace_panels(
         s2d.sync_lua_buffer_from_selected();
     }
 
-    // -------------------------------------------------------------------------
+    // =========================================================================
     // 1. Compute 2D GPU Canvas Viewport Rect (Docked Edit vs Fullscreen 2D Play)
-    // -------------------------------------------------------------------------
+    // =========================================================================
     const bool playing_2d = s2d.stage.is_playing();
     const float vp_x0 = playing_2d ? 0.0F : std::round(sw * cst.dock_left_w_ratio);
     const float vp_x1 = playing_2d ? sw   : std::round(sw * (1.0F - cst.dock_right_w_ratio));
@@ -462,9 +671,9 @@ inline void draw_2d_studio_workspace_panels(
     const float vp_h  = std::max(64.0F, vp_y1 - vp_y0);
     const cd::render2d::ViewportRect2D vp_rect { vp_x0, vp_y0, vp_w, vp_h };
 
-    // -------------------------------------------------------------------------
+    // =========================================================================
     // 2. Keyboard Shortcuts & 2D Play-In-Editor (PIE) Simulation Step
-    // -------------------------------------------------------------------------
+    // =========================================================================
     const auto& io = ImGui::GetIO();
     if (!io.WantCaptureKeyboard)
     {
@@ -519,6 +728,7 @@ inline void draw_2d_studio_workspace_panels(
         else
         {
             float mx = 0.0F;
+            float my = 0.0F;
             if (ImGui::IsKeyDown(ImGuiKey_A) || ImGui::IsKeyDown(ImGuiKey_LeftArrow))
             {
                 mx -= 1.0F;
@@ -527,19 +737,46 @@ inline void draw_2d_studio_workspace_panels(
             {
                 mx += 1.0F;
             }
+            if (ImGui::IsKeyDown(ImGuiKey_S) || ImGui::IsKeyDown(ImGuiKey_DownArrow))
+            {
+                my -= 1.0F;
+            }
+            if (ImGui::IsKeyDown(ImGuiKey_W) || ImGui::IsKeyDown(ImGuiKey_UpArrow))
+            {
+                my += 1.0F;
+            }
             p_in.move_x       = mx;
+            p_in.move_y       = my;
             p_in.jump_held    = ImGui::IsKeyDown(ImGuiKey_Space) || ImGui::IsKeyDown(ImGuiKey_W) ||
                                 ImGui::IsKeyDown(ImGuiKey_UpArrow);
             p_in.jump_pressed = ImGui::IsKeyPressed(ImGuiKey_Space, false) ||
                                 ImGui::IsKeyPressed(ImGuiKey_W, false) ||
                                 ImGui::IsKeyPressed(ImGuiKey_UpArrow, false);
+            if (!io.WantCaptureMouse && ImGui::IsMouseDown(ImGuiMouseButton_Left))
+            {
+                const ImVec2 mpos = ImGui::GetMousePos();
+                const cd::math::Vec2f world_aim =
+                    s2d.stage.camera().screen_to_world({ mpos.x, mpos.y }, vp_rect);
+                for (const auto& ent : s2d.stage.entities())
+                {
+                    if (ent.visible && ent.role == cd::world2d::EntityRole2D::kPlayerHero)
+                    {
+                        p_in.aim_angle_rad = std::atan2(
+                            world_aim.y - ent.position.y,
+                            world_aim.x - ent.position.x);
+                        break;
+                    }
+                }
+                p_in.fire_held    = true;
+                p_in.fire_pressed = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+            }
         }
         s2d.stage.step_play(std::clamp(dt, 1.0F / 240.0F, 1.0F / 20.0F), p_in);
     }
 
-    // -------------------------------------------------------------------------
+    // =========================================================================
     // 3. Floating Top-Center 2D Tool Pill Overlay (Edit Mode) or 2D Gameplay HUD
-    // -------------------------------------------------------------------------
+    // =========================================================================
     bool pill_hovered = false;
     if (s2d.stage.is_playing())
     {
@@ -585,11 +822,12 @@ inline void draw_2d_studio_workspace_panels(
     }
     else if (vp_w > 420.0F)
     {
-        const float pill_w = std::min(vp_w - 20.0F, 650.0F);
+        const float pill_w = std::min(vp_w - 16.0F, 920.0F);
         const float pill_x = vp_x0 + (vp_w - pill_w) * 0.5F;
         ImGui::SetNextWindowPos(ImVec2(pill_x, vp_y0 + 8.0F));
         ImGui::SetNextWindowSize(ImVec2(pill_w, 34.0F));
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.07F, 0.09F, 0.14F, 0.90F));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(5.0F, 4.0F));
         if (ImGui::Begin("2D Canvas Tool Pill##pill2d", nullptr,
                          ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar))
@@ -613,6 +851,28 @@ inline void draw_2d_studio_workspace_panels(
             tool_btn("2:AutoTile", Tool2DKind::kTileBrush);
             tool_btn("3:RectFill", Tool2DKind::kRectFill);
             tool_btn("4:Erase", Tool2DKind::kEraser);
+            tool_btn("5:Stamp", Tool2DKind::kStamp);
+            tool_btn("6:Fill", Tool2DKind::kFloodFill);
+
+            static const char* kGenreNames[] = {
+                "Platformer",
+                "Top-Down RPG",
+                "Twin-Stick Arena",
+                "Empty 2D Project",
+                "Pong Arcade",
+                "Break the Bridges"
+            };
+            ImGui::SetNextItemWidth(142.0F);
+            if (ImGui::Combo("##genre_dropdown", &s2d.active_genre_template_idx, kGenreNames, 6))
+            {
+                s2d.command_bus.load_genre_template(
+                    s2d.stage,
+                    static_cast<cd::world2d::GenreTemplateKind2D>(s2d.active_genre_template_idx));
+                s2d.selected_entity_id = s2d.stage.entities().empty() ? 0U : s2d.stage.entities().front().id;
+                s2d.sync_lua_buffer_from_selected();
+                s2d.last_status_msg = std::string("Loaded Template: ") + kGenreNames[s2d.active_genre_template_idx];
+            }
+            ImGui::SameLine();
 
             ImGui::Checkbox("Grid", &s2d.debug_opts.show_grid);
             ImGui::SameLine();
@@ -627,12 +887,13 @@ inline void draw_2d_studio_workspace_panels(
             ImGui::TextDisabled("Zoom %.2fx", static_cast<double>(s2d.stage.camera().zoom()));
         }
         ImGui::End();
+        ImGui::PopStyleVar();
         ImGui::PopStyleColor();
     }
 
-    // -------------------------------------------------------------------------
+    // =========================================================================
     // 4. Direct 2D GPU Canvas Mouse Interaction (Zoom, Pan, Select/Drag, Paint)
-    // -------------------------------------------------------------------------
+    // =========================================================================
     const ImVec2 mp = ImGui::GetMousePos();
     const bool inside_vp =
         (mp.x >= vp_x0 && mp.x <= vp_x1 && mp.y >= vp_y0 && mp.y <= vp_y1) && !pill_hovered;
@@ -772,6 +1033,36 @@ inline void draw_2d_studio_workspace_panels(
                 s2d.last_status_msg = "Painted 2D auto-tile rectangle.";
             }
         }
+        else if (s2d.active_tool == Tool2DKind::kFloodFill)
+        {
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+            {
+                const std::size_t filled = s2d.command_bus.flood_fill(s2d.stage, gx, gy, s2d.selected_tile_id);
+                s2d.last_status_msg = "Flood-filled " + std::to_string(filled) + " tiles.";
+            }
+        }
+        else if (s2d.active_tool == Tool2DKind::kStamp)
+        {
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+            {
+                if (s2d.stamp_cfg.pattern.size() !=
+                    static_cast<std::size_t>(s2d.stamp_cfg.pattern_width * s2d.stamp_cfg.pattern_height))
+                {
+                    s2d.stamp_cfg.pattern.assign(
+                        static_cast<std::size_t>(s2d.stamp_cfg.pattern_width * s2d.stamp_cfg.pattern_height),
+                        s2d.selected_tile_id);
+                }
+                const std::size_t stamped = s2d.command_bus.stamp(
+                    s2d.stage,
+                    gx,
+                    gy,
+                    s2d.stamp_cfg.pattern_width,
+                    s2d.stamp_cfg.pattern_height,
+                    s2d.stamp_cfg.pattern,
+                    s2d.auto_wang_tiling);
+                s2d.last_status_msg = "Stamped " + std::to_string(stamped) + " tiles.";
+            }
+        }
     }
     else
     {
@@ -793,9 +1084,9 @@ inline void draw_2d_studio_workspace_panels(
     }
     s2d.prev_mouse_pos = mp;
 
-    // -------------------------------------------------------------------------
+    // =========================================================================
     // 5. Render Stage2D into `s2d.canvas` (Tiles + Wang + Soft Shadows + Sprites)
-    // -------------------------------------------------------------------------
+    // =========================================================================
     cd::render2d::Render2DDebugOptions render_opts = s2d.debug_opts;
     if (s2d.stage.is_playing())
     {
@@ -841,6 +1132,27 @@ inline void draw_2d_studio_workspace_panels(
                 cd::render2d::ColorRgba8 { 55U, 210U, 255U, 95U },
                 kOverlayKey);
         }
+        if (s2d.active_tool == Tool2DKind::kStamp && inside_vp)
+        {
+            const cd::math::Vec2f wm  = s2d.stage.camera().screen_to_world(cd::math::Vec2f { mp.x, mp.y }, vp_rect);
+            const float           ts  = std::max(0.05F, s2d.stage.tilemap().tile_size());
+            const int             sgx = static_cast<int>(std::floor(wm.x / ts));
+            const int             sgy = static_cast<int>(std::floor(wm.y / ts));
+            const float           wx0 = static_cast<float>(sgx) * ts;
+            const float           wy0 = static_cast<float>(sgy) * ts;
+            const float           wx1 = static_cast<float>(sgx + s2d.stamp_cfg.pattern_width) * ts;
+            const float           wy1 = static_cast<float>(sgy + s2d.stamp_cfg.pattern_height) * ts;
+            const auto            s0  = s2d.stage.camera().world_to_screen({ wx0, wy1 }, vp_rect);
+            const auto            s1  = s2d.stage.camera().world_to_screen({ wx1, wy0 }, vp_rect);
+            s2d.canvas.add_rect_outline(
+                s0.x,
+                s0.y,
+                std::max(4.0F, s1.x - s0.x),
+                std::max(4.0F, s1.y - s0.y),
+                2.0F,
+                cd::render2d::ColorRgba8 { 255U, 215U, 64U, 220U },
+                kOverlayKey);
+        }
         s2d.canvas.sort_commands();
     }
 
@@ -853,7 +1165,7 @@ inline void draw_2d_studio_workspace_panels(
     // 6. DOCKED PANELS (Left: Studio Workbench | Right: Inspector | Bottom: History)
     // =========================================================================
 
-    // --- LEFT DOCK: "Scene Outliner" ---
+    // ======== LEFT DOCK: "Scene Outliner" ========
     if (ImGui::Begin("Scene Outliner", nullptr, ImGuiWindowFlags_NoTitleBar))
     {
         if (ImGui::BeginTabBar("Studio2DLeftTabs"))
@@ -919,20 +1231,40 @@ inline void draw_2d_studio_workspace_panels(
                     }
                     const bool active =
                         (s2d.selected_tile_id == pal.palette_id && s2d.active_tool != Tool2DKind::kEraser);
+
+                    // Swatch color
+                    const ImVec4 swatch_col(
+                        static_cast<float>(pal.fill_color.r) / 255.0F,
+                        static_cast<float>(pal.fill_color.g) / 255.0F,
+                        static_cast<float>(pal.fill_color.b) / 255.0F,
+                        1.0F);
+
+                    ImGui::PushStyleColor(ImGuiCol_Button, swatch_col);
+                    if (ImGui::Button(("##swatch_" + std::to_string(pal.palette_id)).c_str(), ImVec2(24.0F, 24.0F)))
+                    {
+                        s2d.selected_tile_id = pal.palette_id;
+                        if (s2d.active_tool == Tool2DKind::kSelectMove || s2d.active_tool == Tool2DKind::kEraser)
+                        {
+                            s2d.active_tool = Tool2DKind::kTileBrush;
+                        }
+                    }
+                    ImGui::PopStyleColor();
+                    ImGui::SameLine();
+
                     ImGui::PushStyleColor(
                         ImGuiCol_Button,
-                        active
-                            ? ImVec4(0.18F, 0.56F, 0.90F, 1.0F)
-                            : ImVec4(
-                                  static_cast<float>(pal.fill_color.r) / 255.0F * 0.65F,
-                                  static_cast<float>(pal.fill_color.g) / 255.0F * 0.65F,
-                                  static_cast<float>(pal.fill_color.b) / 255.0F * 0.65F,
-                                  0.95F));
-                    const std::string btn_lbl =
-                        "[" + std::to_string(pal.palette_id) + "] " + pal.name +
-                        (pal.hazard ? " (Hazard)" : (pal.one_way ? " (One-Way)" : " (Solid)")) +
-                        "##pal_" + std::to_string(pal.palette_id);
-                    if (ImGui::Button(btn_lbl.c_str(), ImVec2(-1.0F, 26.0F)))
+                        active ? ImVec4(0.18F, 0.56F, 0.90F, 1.0F) : ImVec4(0.14F, 0.17F, 0.24F, 0.9F));
+                    std::string badges;
+                    if (pal.solid)    badges += "[SOLID] ";
+                    if (pal.one_way)  badges += "[1-WAY] ";
+                    if (pal.hazard)   badges += "[HAZARD] ";
+                    if (pal.emissive) badges += "[GLOW] ";
+                    const std::string card_lbl =
+                        "[" + std::to_string(pal.palette_id) + "] " + pal.name + "\n" +
+                        (badges.empty() ? "[FLOOR] " : badges) +
+                        (s2d.auto_wang_tiling ? "Wang: [^] [>] [v] [<]" : "") +
+                        "##card_" + std::to_string(pal.palette_id);
+                    if (ImGui::Button(card_lbl.c_str(), ImVec2(-1.0F, 38.0F)))
                     {
                         s2d.selected_tile_id = pal.palette_id;
                         if (s2d.active_tool == Tool2DKind::kSelectMove || s2d.active_tool == Tool2DKind::kEraser)
@@ -975,7 +1307,7 @@ inline void draw_2d_studio_workspace_panels(
                     int         kind;
                     const char* label;
                 };
-                static constexpr std::array<PrefabCard, 8> kCards { {
+                static constexpr std::array<PrefabCard, 11> kCards { {
                     { 0, "[+] Crystal Gem (+Lua Hover)" },
                     { 1, "[+] Patrol Drone (AI Enemy)" },
                     { 2, "[+] Moving Elevator (+Lua)" },
@@ -984,6 +1316,9 @@ inline void draw_2d_studio_workspace_panels(
                     { 5, "[+] 2D Point Light (Soft Shadows)" },
                     { 6, "[+] 2D Shadow Pillar (Occluder)" },
                     { 7, "[+] Victory Goal Portal" },
+                    { 8, "[+] Arcade Player Paddle" },
+                    { 9, "[+] Bouncing Energy Ball" },
+                    { 10, "[+] Destructible Bridge Span" },
                 } };
                 for (const auto& card : kCards)
                 {
@@ -994,12 +1329,68 @@ inline void draw_2d_studio_workspace_panels(
                 }
                 ImGui::EndTabItem();
             }
+
+            if (ImGui::BeginTabItem("Layers"))
+            {
+                ImGui::TextColored(ImVec4(0.45F, 0.90F, 1.0F, 1.0F), "2D Multi-Layer & Parallax Management");
+                ImGui::Separator();
+
+                auto& layers = s2d.stage.parallax_layers();
+                for (std::size_t i = 0U; i < layers.size(); ++i)
+                {
+                    auto& l = layers[i];
+                    ImGui::PushID(static_cast<int>(i));
+
+                    // Visibility eye toggle
+                    if (ImGui::SmallButton(l.visible ? "[Eye]" : "[ - ]"))
+                    {
+                        l.visible = !l.visible;
+                    }
+                    ImGui::SameLine();
+
+                    // Lock padlock toggle
+                    const bool is_locked = (s2d.locked_layers_mask & (1U << i)) != 0U;
+                    if (ImGui::SmallButton(is_locked ? "[Lock]" : "[Unl]"))
+                    {
+                        s2d.locked_layers_mask ^= (1U << i);
+                    }
+                    ImGui::SameLine();
+
+                    ImGui::Text("%s", l.name.c_str());
+
+                    // Parallax scroll factor and auto-scroll speed controls
+                    ImGui::SetNextItemWidth(70.0F);
+                    ImGui::DragFloat("Parallax X", &l.scroll_factor.x, 0.02F, 0.0F, 3.0F, "%.2f");
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(70.0F);
+                    ImGui::DragFloat("Y##par_y", &l.scroll_factor.y, 0.02F, 0.0F, 3.0F, "%.2f");
+
+                    ImGui::SetNextItemWidth(70.0F);
+                    ImGui::DragFloat("Auto-Scroll X", &l.auto_scroll_velocity.x, 0.05F, -20.0F, 20.0F, "%.1f");
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(70.0F);
+                    ImGui::DragFloat("Y##scroll_y", &l.auto_scroll_velocity.y, 0.05F, -20.0F, 20.0F, "%.1f");
+                    ImGui::Separator();
+                    ImGui::PopID();
+                }
+
+                if (ImGui::Button("+ Add Skyline Parallax Layer", ImVec2(-1.0F, 24.0F)))
+                {
+                    cd::render2d::ParallaxLayer2D nl {};
+                    nl.name                 = "Custom_Parallax_" + std::to_string(layers.size() + 1U);
+                    nl.scroll_factor        = { 0.35F, 0.10F };
+                    nl.auto_scroll_velocity = { 0.15F, 0.0F };
+                    nl.procedural_style     = cd::render2d::ParallaxProceduralStyle::kCitySkyline;
+                    layers.push_back(nl);
+                }
+                ImGui::EndTabItem();
+            }
             ImGui::EndTabBar();
         }
     }
     ImGui::End();
 
-    // --- RIGHT DOCK: "Inspector" ---
+    // ======== RIGHT DOCK: "Inspector" ========
     if (ImGui::Begin("Inspector", nullptr, ImGuiWindowFlags_NoTitleBar))
     {
         if (ImGui::BeginTabBar("Studio2DRightTabs"))
@@ -1117,12 +1508,100 @@ inline void draw_2d_studio_workspace_panels(
                 ImGui::Checkbox("Show Camera Frame", &s2d.debug_opts.show_camera_frame);
                 ImGui::EndTabItem();
             }
+
+            if (ImGui::BeginTabItem("Flipbook"))
+            {
+                ImGui::TextColored(ImVec4(0.45F, 0.95F, 0.72F, 1.0F), "Flipbook Animation Preview & Scrubber");
+                ImGui::Separator();
+
+                static const char* kClips[] = { "hero_idle", "hero_run", "gem_spin", "drone_patrol" };
+                ImGui::Combo("Clip", &s2d.anim_preview_clip_idx, kClips, 4);
+
+                if (ImGui::Button(s2d.anim_preview_playing ? "|| Pause" : "> Play", ImVec2(75.0F, 24.0F)))
+                {
+                    s2d.anim_preview_playing = !s2d.anim_preview_playing;
+                }
+                ImGui::SameLine();
+                ImGui::Checkbox("Loop", &s2d.anim_preview_loop);
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(90.0F);
+                ImGui::SliderFloat("FPS", &s2d.anim_preview_fps, 1.0F, 60.0F, "%.0f");
+
+                constexpr int kFrameCount = 4;
+                ImGui::SliderInt("Timeline Scrubber", &s2d.anim_preview_frame, 0, kFrameCount - 1);
+                ImGui::TextDisabled("Frame: %d/%d | Duration: %.0f ms | UV: [0.0, 0.0, 1.0, 1.0]",
+                                    s2d.anim_preview_frame + 1, kFrameCount, static_cast<double>(1000.0F / s2d.anim_preview_fps));
+
+                if (ImGui::Button("Attach to Selected Entity", ImVec2(-1.0F, 24.0F)))
+                {
+                    if (auto* ent = s2d.stage.find_entity(s2d.selected_entity_id))
+                    {
+                        ent->anim_frame     = static_cast<std::uint32_t>(s2d.anim_preview_frame);
+                        s2d.last_status_msg = "Attached animation frame to " + ent->name;
+                    }
+                }
+                ImGui::EndTabItem();
+            }
+
+            if (ImGui::BeginTabItem("Particles"))
+            {
+                ImGui::TextColored(ImVec4(1.0F, 0.85F, 0.35F, 1.0F), "ParticleSystem2D Live Emitter Inspector");
+                ImGui::Separator();
+
+                auto& ps  = s2d.stage.particle_system();
+                auto& cfg = ps.config();
+
+                int                shape_idx = static_cast<int>(cfg.shape);
+                static const char* kShapes[] = { "Point", "Circle", "Box", "Cone" };
+                if (ImGui::Combo("Shape", &shape_idx, kShapes, 4))
+                {
+                    cfg.shape = static_cast<cd::world2d::ParticleEmitterShape2D>(shape_idx);
+                }
+                ImGui::DragFloat("Rate (part/s)", &cfg.emission_rate, 1.0F, 1.0F, 500.0F);
+
+                ImGui::SetNextItemWidth(70.0F);
+                ImGui::DragFloat("Life Min", &cfg.lifetime_min, 0.05F, 0.05F, 10.0F);
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(70.0F);
+                ImGui::DragFloat("Max##life_max", &cfg.lifetime_max, 0.05F, 0.05F, 10.0F);
+
+                ImGui::SetNextItemWidth(70.0F);
+                ImGui::DragFloat("Speed Min", &cfg.speed_min, 0.1F, 0.0F, 50.0F);
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(70.0F);
+                ImGui::DragFloat("Max##spd_max", &cfg.speed_max, 0.1F, 0.0F, 50.0F);
+
+                ImGui::SetNextItemWidth(70.0F);
+                ImGui::DragFloat("Gravity X", &cfg.gravity.x, 0.2F, -50.0F, 50.0F);
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(70.0F);
+                ImGui::DragFloat("Y##grav_y", &cfg.gravity.y, 0.2F, -50.0F, 50.0F);
+
+                ImGui::DragFloat("Drag", &cfg.drag, 0.05F, 0.0F, 5.0F);
+
+                ImGui::TextDisabled("Presets:");
+                if (ImGui::SmallButton("Sparkle")) { cfg = cd::world2d::ParticleEmitterPresets2D::sparkle_burst(); }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Jump Dust")) { cfg = cd::world2d::ParticleEmitterPresets2D::jump_dust(); }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Hit Impact")) { cfg = cd::world2d::ParticleEmitterPresets2D::hit_impact(); }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Enemy Defeat")) { cfg = cd::world2d::ParticleEmitterPresets2D::enemy_defeat(); }
+
+                ImGui::Separator();
+                if (ImGui::Button("Test Burst at Camera", ImVec2(-1.0F, 26.0F)))
+                {
+                    s2d.stage.particle_system().spawn_burst(s2d.stage.camera().position(), cfg.burst_count, cfg);
+                    s2d.last_status_msg = "Spawned particle burst at camera.";
+                }
+                ImGui::EndTabItem();
+            }
             ImGui::EndTabBar();
         }
     }
     ImGui::End();
 
-    // --- BOTTOM DOCK: "Project & Tools" ---
+    // ======== BOTTOM DOCK: "Project & Tools" ========
     if (ImGui::Begin("Project & Tools", nullptr, ImGuiWindowFlags_NoTitleBar))
     {
         if (ImGui::BeginTabBar("Studio2DBottomTabs"))

@@ -1,5 +1,5 @@
 // =============================================================================
-// CHROMODYNAMIC — apps/player/PlayerApp.cpp
+// CHROMODYNAMIC - apps/player/PlayerApp.cpp
 //
 // Standalone runtime game & showcase player implementation (ADR-20261112).
 //   * Zero duplicated PNG/CRC32 encoders -> cd::app_common::FrameCapture
@@ -7,14 +7,18 @@
 //   * Zero duplicated 5x7 font tables    -> cd::render2d::Canvas2D::add_pixel_text
 // =============================================================================
 #include "PlayerApp.hpp"
+#include "ShowcaseRenderer3D.hpp"
 
 #include <cd/app_common/FileTextIo.hpp>
 #include <cd/app_common/FrameCapture.hpp>
+#include <cd/audio/NativeBackend.hpp>
 #include <cd/element_core/Element.hpp>
 #include <cd/gameplay_framework/VesselPilotDirector.hpp>
 #include <cd/platform/Window.hpp>
 #include <cd/render/Renderer.hpp>
+#include <cd/render/TextureUpload.hpp>
 #include <cd/render2d/Renderer2D.hpp>
+#include <cd/render2d/TextureAtlas2D.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi/NullDevice.hpp>
@@ -23,6 +27,7 @@
 #include <cd/runtime/EngineLoop.hpp>
 #include <cd/ui/renderer/DrawBatcher.hpp>
 #include <cd/ui/renderer_rhi/Submitter.hpp>
+#include <cd/world2d/GenreTemplates2D.hpp>
 #include <cd/world2d/PlaytestRunner2D.hpp>
 #include <cd/world2d/Stage2D.hpp>
 
@@ -135,6 +140,8 @@ void render_showcase_hud_canvas(
     PlayerUiState&                      ui,
     const cd::element_core::Stage&      stage,
     const cd::runtime::FrameStepReport& telemetry,
+    bool                                gpu_3d_active,
+    bool                                hd2d_mode,
     bool&                               out_stage_changed)
 {
     out_stage_changed = false;
@@ -147,7 +154,15 @@ void render_showcase_hud_canvas(
 
     canvas.clear(r2d::ViewportRect2D { 0.0F, 0.0F, w, h });
 
-    // 1. Sky & Ground Gradient
+    const float cy = std::cos(ui.cam_yaw);
+    const float sy = std::sin(ui.cam_yaw);
+    const float cp = std::cos(ui.cam_pitch);
+    const float sp = std::sin(ui.cam_pitch);
+    const auto& children = stage.root().children();
+
+    if (!gpu_3d_active)
+    {
+    // 1. Sky & Ground Gradient (CPU --null fallback only)
     canvas.add_gradient_rect(
         0.0F, vp_y, w, horizon_y - vp_y,
         r2d::ColorRgba8 { 14U, 22U, 38U, 255U },
@@ -163,10 +178,6 @@ void render_showcase_hud_canvas(
     canvas.add_solid_rect(sun_x - 6.0F, sun_y - 6.0F, 12.0F, 12.0F, r2d::ColorRgba8 { 255U, 248U, 215U, 245U }, kHudSortKey);
 
     // 2. 3D Perspective Camera Projection
-    const float cy        = std::cos(ui.cam_yaw);
-    const float sy        = std::sin(ui.cam_yaw);
-    const float cp        = std::cos(ui.cam_pitch);
-    const float sp        = std::sin(ui.cam_pitch);
     const float cam_dist  = 10.5F;
     const float fov_scale = std::min(w, vp_h) * 0.72F;
     const float center_x  = w * 0.50F;
@@ -232,7 +243,6 @@ void render_showcase_hud_canvas(
     }
 
     // 4. Render 3D Stage Elements
-    const auto& children = stage.root().children();
     if (ui.selected_elem_idx >= children.size() && !children.empty())
     {
         ui.selected_elem_idx = 0U;
@@ -375,6 +385,7 @@ void render_showcase_hud_canvas(
             is_selected ? r2d::ColorRgba8 { 255U, 235U, 140U, 255U } : r2d::ColorRgba8 { 215U, 225U, 242U, 245U },
             lbl_x + lbl_w - 2.0F);
     }
+    }  // end if (!gpu_3d_active)
 
     // 5. Top-Right 3D Orientation Rose
     {
@@ -451,7 +462,13 @@ void render_showcase_hud_canvas(
     }
 
     canvas.add_solid_rect(w - 172.0F, 6.0F, 164.0F, 26.0F, r2d::ColorRgba8 { 24U, 58U, 42U, 255U }, kHudSortKey);
-    canvas.add_pixel_text(w - 162.0F, 15.0F, "VULKAN 19-PASS LIVE", 1.0F, r2d::ColorRgba8 { 145U, 245U, 175U, 255U }, kHudSortKey);
+    canvas.add_pixel_text(
+        w - 162.0F,
+        15.0F,
+        hd2d_mode ? "VULKAN HD-2D HYBRID" : "VULKAN 3D PBR LIVE",
+        1.0F,
+        r2d::ColorRgba8 { 145U, 245U, 175U, 255U },
+        kHudSortKey);
 
     // 7. Optional Bottom Telemetry Strip
     if (ui.show_hud)
@@ -483,6 +500,16 @@ PlayerApp::PlayerApp(PlayerConfig config)
 
 int PlayerApp::run()
 {
+    if (config_.show_help)
+    {
+        return 0;
+    }
+    if (config_.has_error)
+    {
+        return config_.exit_code != 0 ? config_.exit_code : 1;
+    }
+
+    cd::audio::NativeBackendResult native_audio {};
     const bool use_stage2d = config_.uses_stage2d();
     cd::world2d::Stage2D stage2d {};
     if (use_stage2d)
@@ -506,7 +533,7 @@ int PlayerApp::run()
                 return 2;
             }
         }
-        else
+        else if (!config_.stage2d_path.empty())
         {
             const auto lr = stage2d.load_from_file(config_.stage2d_path);
             if (!lr.has_value())
@@ -519,6 +546,15 @@ int PlayerApp::run()
                 return 2;
             }
         }
+        else
+        {
+            const auto gkind = cd::world2d::parse_genre_template_kind_2d(config_.genre)
+                                   .value_or(cd::world2d::GenreTemplateKind2D::kActionPlatformer);
+            cd::world2d::GenreTemplates2D::apply_genre_template(stage2d, gkind);
+        }
+
+        native_audio = cd::audio::make_native_audio_backend();
+        stage2d.audio_cues().set_backend(native_audio.backend.get());
 
         if (config_.force_headless && !config_.force_windowed && config_.capture_png_path.empty())
         {
@@ -533,6 +569,8 @@ int PlayerApp::run()
                 rep.total_gems,
                 rep.score,
                 rep.victory ? 1 : 0);
+            std::fflush(stdout);
+            stage2d.audio_cues().set_backend(nullptr);
             return 0;
         }
         stage2d.enter_play();
@@ -584,8 +622,11 @@ int PlayerApp::run()
 
     if (!using_null)
     {
+        const std::string win_title = use_stage2d
+            ? ("CHROMODYNAMIC - " + std::string(stage2d.name()))
+            : std::string("CHROMODYNAMIC - Standalone Stage Player");
         cd::platform::WindowDesc wd {};
-        wd.title  = "CHROMODYNAMIC - Standalone Stage Player";
+        wd.title  = win_title.c_str();
         wd.width  = 1280U;
         wd.height = 720U;
         auto wr = cd::platform::create_window(wd);
@@ -637,6 +678,42 @@ int PlayerApp::run()
     sci.max_vertices = 65532U;
     sci.max_indices  = 196608U;
     sci.color_format = cd::rhi::Format::kBGRA8Unorm;
+
+    const auto starter_atlas = cd::render2d::TextureAtlas2D::generate_procedural_starter_atlas(32U);
+    cd::render::GpuTexture2D atlas_gpu {};
+    cd::rhi::SamplerHandle   atlas_sampler {};
+    if (!using_null)
+    {
+        atlas_gpu = cd::render::upload_texture_2d_rgba8(
+            *device,
+            starter_atlas.pixels().data(),
+            starter_atlas.width(),
+            starter_atlas.height());
+
+        cd::rhi::SamplerDesc smp_desc {};
+        smp_desc.mag_filter  = cd::rhi::SamplerFilter::kNearest;
+        smp_desc.min_filter  = cd::rhi::SamplerFilter::kNearest;
+        smp_desc.mipmap_mode = cd::rhi::SamplerMipmapMode::kNearest;
+        smp_desc.address_u   = cd::rhi::SamplerAddressMode::kClampToEdge;
+        smp_desc.address_v   = cd::rhi::SamplerAddressMode::kClampToEdge;
+        smp_desc.address_w   = cd::rhi::SamplerAddressMode::kClampToEdge;
+        auto smp_r = device->create_sampler(smp_desc);
+        if (smp_r.has_value())
+        {
+            atlas_sampler = *smp_r;
+        }
+
+        if (atlas_gpu.view.is_valid() && atlas_sampler.is_valid())
+        {
+            sci.atlas_view    = atlas_gpu.view;
+            sci.atlas_sampler = atlas_sampler;
+            if (use_stage2d)
+            {
+                stage2d.bind_starter_atlas(0U, 32U);
+            }
+        }
+    }
+
     auto sub_r = urr::Submitter::create_with_inline_shader(*device, sci);
     if (!sub_r.has_value())
     {
@@ -644,6 +721,23 @@ int PlayerApp::run()
         return 2;
     }
     auto& submitter = *sub_r;
+    if (atlas_gpu.view.is_valid() && atlas_sampler.is_valid())
+    {
+        submitter.set_texture_slot(0U, atlas_gpu.view, atlas_sampler);
+    }
+
+    const bool is_hd2d_mode = (config_.stage_mode == "HD2D" || config_.stage_mode == "hd2d");
+    ShowcaseRenderer3D showcase_3d {};
+    if (!using_null && !use_stage2d && window)
+    {
+        (void)showcase_3d.init(
+            *device,
+            cd::rhi::Format::kBGRA8Unorm,
+            { std::max(1U, window->width()), std::max(1U, window->height()) },
+            atlas_gpu.view,
+            atlas_sampler,
+            starter_atlas);
+    }
 
     PlayerUiState ui {};
     for (std::size_t idx = 0U; idx < kAllShowcaseSlugs.size(); ++idx)
@@ -669,10 +763,15 @@ int PlayerApp::run()
     ur::DrawBatcher batcher;
     r2d::Canvas2D   canvas2d;
     r2d::Canvas2D   hud_canvas;
-    bool key_2d_left         = false;
-    bool key_2d_right        = false;
-    bool key_2d_jump         = false;
-    bool key_2d_jump_pressed = false;
+    bool key_2d_left             = false;
+    bool key_2d_right            = false;
+    bool key_2d_up               = false;
+    bool key_2d_down             = false;
+    bool key_2d_jump             = false;
+    bool key_2d_jump_pressed     = false;
+    bool key_2d_fire_pressed     = false;
+    bool key_2d_fire_held        = false;
+    bool key_2d_interact_pressed = false;
     std::vector<cd::platform::OSEvent> events;
     events.reserve(64U);
 
@@ -686,10 +785,12 @@ int PlayerApp::run()
             break;
         }
 
-        ui.lmb_pressed      = false;
-        ui.prev_mouse_x     = ui.mouse_x;
-        ui.prev_mouse_y     = ui.mouse_y;
-        key_2d_jump_pressed = false;
+        ui.lmb_pressed          = false;
+        ui.prev_mouse_x         = ui.mouse_x;
+        ui.prev_mouse_y         = ui.mouse_y;
+        key_2d_jump_pressed     = false;
+        key_2d_fire_pressed     = false;
+        key_2d_interact_pressed = false;
 
         if (window)
         {
@@ -706,6 +807,14 @@ int PlayerApp::run()
                     close_requested = true;
                     break;
                 }
+                if (ev.kind == cd::platform::OSEventKind::kResize)
+                {
+                    if (renderer && ev.width > 0 && ev.height > 0)
+                    {
+                        (void)renderer->recreate_swapchain({ ev.width, ev.height });
+                    }
+                    continue;
+                }
                 if (ev.kind == cd::platform::OSEventKind::kMouseMove)
                 {
                     ui.mouse_x = ev.mouse_x;
@@ -717,7 +826,9 @@ int PlayerApp::run()
                     ui.mouse_y = ev.mouse_y;
                     if (ev.mouse_button == cd::platform::MouseButton::kLeft)
                     {
-                        ui.lmb_pressed = true;
+                        ui.lmb_pressed      = true;
+                        key_2d_fire_pressed = true;
+                        key_2d_fire_held    = true;
                     }
                     else if (ev.mouse_button == cd::platform::MouseButton::kRight)
                     {
@@ -726,7 +837,11 @@ int PlayerApp::run()
                 }
                 else if (ev.kind == cd::platform::OSEventKind::kMouseButtonUp)
                 {
-                    if (ev.mouse_button == cd::platform::MouseButton::kRight)
+                    if (ev.mouse_button == cd::platform::MouseButton::kLeft)
+                    {
+                        key_2d_fire_held = false;
+                    }
+                    else if (ev.mouse_button == cd::platform::MouseButton::kRight)
                     {
                         ui.rmb_down = false;
                     }
@@ -746,14 +861,32 @@ int PlayerApp::run()
                     {
                         key_2d_right = true;
                     }
-                    if (ev.key == cd::platform::KeyCode::kW || ev.key == cd::platform::KeyCode::kUp ||
-                        ev.key == cd::platform::KeyCode::kSpace)
+                    if (ev.key == cd::platform::KeyCode::kW || ev.key == cd::platform::KeyCode::kUp)
                     {
+                        key_2d_up = true;
                         if (!key_2d_jump)
                         {
                             key_2d_jump_pressed = true;
                         }
                         key_2d_jump = true;
+                    }
+                    if (ev.key == cd::platform::KeyCode::kS || ev.key == cd::platform::KeyCode::kDown)
+                    {
+                        key_2d_down = true;
+                    }
+                    if (ev.key == cd::platform::KeyCode::kSpace)
+                    {
+                        if (!key_2d_jump)
+                        {
+                            key_2d_jump_pressed = true;
+                        }
+                        key_2d_jump         = true;
+                        key_2d_fire_pressed = true;
+                        key_2d_fire_held    = true;
+                    }
+                    if (ev.key == cd::platform::KeyCode::kE || ev.key == cd::platform::KeyCode::kF)
+                    {
+                        key_2d_interact_pressed = true;
                     }
                     if (!use_stage2d)
                     {
@@ -780,6 +913,11 @@ int PlayerApp::run()
                     {
                         ui.show_hud = !ui.show_hud;
                     }
+                    else if (ev.key == cd::platform::KeyCode::kR)
+                    {
+                        stage2d.exit_play();
+                        stage2d.enter_play();
+                    }
                 }
                 else if (ev.kind == cd::platform::OSEventKind::kKeyUp)
                 {
@@ -791,10 +929,19 @@ int PlayerApp::run()
                     {
                         key_2d_right = false;
                     }
-                    if (ev.key == cd::platform::KeyCode::kW || ev.key == cd::platform::KeyCode::kUp ||
-                        ev.key == cd::platform::KeyCode::kSpace)
+                    if (ev.key == cd::platform::KeyCode::kW || ev.key == cd::platform::KeyCode::kUp)
                     {
+                        key_2d_up   = false;
                         key_2d_jump = false;
+                    }
+                    if (ev.key == cd::platform::KeyCode::kS || ev.key == cd::platform::KeyCode::kDown)
+                    {
+                        key_2d_down = false;
+                    }
+                    if (ev.key == cd::platform::KeyCode::kSpace)
+                    {
+                        key_2d_jump      = false;
+                        key_2d_fire_held = false;
                     }
                 }
             }
@@ -817,9 +964,17 @@ int PlayerApp::run()
             }
             else
             {
-                p2d.move_x       = (key_2d_right ? 1.0F : 0.0F) - (key_2d_left ? 1.0F : 0.0F);
-                p2d.jump_held    = key_2d_jump;
-                p2d.jump_pressed = key_2d_jump_pressed;
+                p2d.move_x           = (key_2d_right ? 1.0F : 0.0F) - (key_2d_left ? 1.0F : 0.0F);
+                p2d.move_y           = (key_2d_up ? 1.0F : 0.0F) - (key_2d_down ? 1.0F : 0.0F);
+                p2d.jump_held        = key_2d_jump;
+                p2d.jump_pressed     = key_2d_jump_pressed;
+                p2d.fire_pressed     = key_2d_fire_pressed;
+                p2d.fire_held        = key_2d_fire_held;
+                p2d.interact_pressed = key_2d_interact_pressed;
+
+                const float aim_dx   = ui.mouse_x - (static_cast<float>(fb_w) * 0.5F);
+                const float aim_dy   = (static_cast<float>(fb_h) * 0.5F) - ui.mouse_y;
+                p2d.aim_angle_rad    = std::atan2(aim_dy, aim_dx);
             }
             stage2d.step_play(1.0F / 60.0F, p2d);
 
@@ -834,30 +989,127 @@ int PlayerApp::run()
             if (ui.show_hud)
             {
                 hud_canvas.clear(vp2d);
-                const float hud_w = std::min(static_cast<float>(fb_w) - 32.0F, 680.0F);
-                hud_canvas.add_solid_rect(16.0F, 14.0F, hud_w, 34.0F, r2d::ColorRgba8 { 12U, 17U, 26U, 224U }, kHudSortKey);
-                hud_canvas.add_solid_rect(16.0F, 14.0F, 4.0F, 34.0F, r2d::ColorRgba8 { 65U, 235U, 165U, 255U }, kHudSortKey);
                 const auto& h2d = stage2d.hud();
-                const std::string st_name(stage2d.name());
-                char hud_line[256] {};
-                std::snprintf(
-                    hud_line,
-                    sizeof(hud_line),
-                    "CHROMODYNAMIC 2D PLAYER  |  %s  |  HP %d  |  SCORE %d  |  GEMS %d/%d%s",
-                    st_name.c_str(),
-                    h2d.player_hp,
-                    h2d.score,
-                    h2d.gems_collected,
-                    h2d.total_gems,
-                    h2d.victory ? "  |  VICTORY!" : "");
-                add_clipped_pixel_text(
-                    hud_canvas,
-                    28.0F,
-                    25.0F,
-                    hud_line,
-                    1.0F,
-                    r2d::ColorRgba8 { 230U, 242U, 255U, 255U },
-                    16.0F + hud_w - 10.0F);
+                const auto ruleset = stage2d.arcade_ruleset();
+                if (ruleset == cd::world2d::ArcadeRuleset2D::kPongCourt)
+                {
+                    const float hud_w = std::min(static_cast<float>(fb_w) - 32.0F, 520.0F);
+                    hud_canvas.add_solid_rect(16.0F, 14.0F, hud_w, 32.0F, r2d::ColorRgba8 { 10U, 15U, 26U, 224U }, kHudSortKey);
+                    hud_canvas.add_solid_rect(16.0F, 14.0F, 4.0F, 32.0F, r2d::ColorRgba8 { 32U, 232U, 255U, 255U }, kHudSortKey);
+                    char hud_line[256] {};
+                    std::snprintf(
+                        hud_line,
+                        sizeof(hud_line),
+                        "NEON CYBER PONG  |  RALLY %d  |  SCORE %d  |  W/S MOVE  |  R REMATCH",
+                        h2d.rally_count,
+                        h2d.score);
+                    add_clipped_pixel_text(
+                        hud_canvas,
+                        28.0F,
+                        24.0F,
+                        hud_line,
+                        1.0F,
+                        r2d::ColorRgba8 { 225U, 244U, 255U, 255U },
+                        16.0F + hud_w - 10.0F);
+
+                    // Center-court digital arcade scoreboard
+                    const float sb_w = 186.0F;
+                    const float sb_x = static_cast<float>(fb_w) * 0.5F - sb_w * 0.5F;
+                    hud_canvas.add_solid_rect(sb_x, 12.0F, sb_w, 42.0F, r2d::ColorRgba8 { 10U, 14U, 25U, 232U }, kHudSortKey);
+                    hud_canvas.add_rect_outline(sb_x, 12.0F, sb_w, 42.0F, 2.0F, r2d::ColorRgba8 { 65U, 215U, 255U, 220U }, kHudSortKey);
+                    char score_str[64] {};
+                    std::snprintf(score_str, sizeof(score_str), "P1 %d : %d CPU", h2d.gems_collected, h2d.opponent_score);
+                    add_clipped_pixel_text(
+                        hud_canvas,
+                        sb_x + 18.0F,
+                        24.0F,
+                        score_str,
+                        1.5F,
+                        r2d::ColorRgba8 { 255U, 240U, 160U, 255U },
+                        sb_x + sb_w - 8.0F);
+
+                    if (h2d.victory || (h2d.total_gems > 0 && h2d.opponent_score >= h2d.total_gems))
+                    {
+                        const float bw = 420.0F;
+                        const float bx = static_cast<float>(fb_w) * 0.5F - bw * 0.5F;
+                        const float by = static_cast<float>(fb_h) * 0.5F - 24.0F;
+                        hud_canvas.add_solid_rect(bx, by, bw, 46.0F, r2d::ColorRgba8 { 12U, 20U, 36U, 240U }, kHudSortKey);
+                        hud_canvas.add_rect_outline(bx, by, bw, 46.0F, 2.0F, r2d::ColorRgba8 { 75U, 245U, 180U, 255U }, kHudSortKey);
+                        add_clipped_pixel_text(
+                            hud_canvas,
+                            bx + 22.0F,
+                            by + 16.0F,
+                            h2d.victory ? "PLAYER 1 WINS THE MATCH!  (PRESS R FOR REMATCH)"
+                                        : "CPU WINS THE MATCH!  (PRESS R FOR REMATCH)",
+                            1.2F,
+                            r2d::ColorRgba8 { 110U, 255U, 195U, 255U },
+                            bx + bw - 12.0F);
+                    }
+                }
+                else if (ruleset == cd::world2d::ArcadeRuleset2D::kBridgeDemolition)
+                {
+                    const float hud_w = std::min(static_cast<float>(fb_w) - 32.0F, 790.0F);
+                    hud_canvas.add_solid_rect(16.0F, 14.0F, hud_w, 34.0F, r2d::ColorRgba8 { 14U, 16U, 26U, 228U }, kHudSortKey);
+                    hud_canvas.add_solid_rect(16.0F, 14.0F, 4.0F, 34.0F, r2d::ColorRgba8 { 255U, 168U, 48U, 255U }, kHudSortKey);
+                    char hud_line[256] {};
+                    std::snprintf(
+                        hud_line,
+                        sizeof(hud_line),
+                        "BREAK THE BRIDGES  |  SPANS SHATTERED %d/%d  |  SCORE %d  |  COMBO %d  |  A/D MOVE STRIKER  |  R RESET%s",
+                        h2d.gems_collected,
+                        h2d.total_gems,
+                        h2d.score,
+                        h2d.rally_count,
+                        h2d.victory ? "  |  CANYON CLEARED!" : "");
+                    add_clipped_pixel_text(
+                        hud_canvas,
+                        28.0F,
+                        25.0F,
+                        hud_line,
+                        1.0F,
+                        r2d::ColorRgba8 { 255U, 238U, 210U, 255U },
+                        16.0F + hud_w - 10.0F);
+                }
+                else if (stage2d.entities().empty())
+                {
+                    const float hud_w = std::min(static_cast<float>(fb_w) - 32.0F, 680.0F);
+                    hud_canvas.add_solid_rect(16.0F, 14.0F, hud_w, 34.0F, r2d::ColorRgba8 { 12U, 17U, 26U, 224U }, kHudSortKey);
+                    hud_canvas.add_solid_rect(16.0F, 14.0F, 4.0F, 34.0F, r2d::ColorRgba8 { 110U, 205U, 255U, 255U }, kHudSortKey);
+                    add_clipped_pixel_text(
+                        hud_canvas,
+                        28.0F,
+                        25.0F,
+                        "CHROMODYNAMIC EMPTY 2D PROJECT  |  0 ENTITIES  |  READY FOR AUTHORING IN STUDIO",
+                        1.0F,
+                        r2d::ColorRgba8 { 225U, 240U, 255U, 255U },
+                        16.0F + hud_w - 10.0F);
+                }
+                else
+                {
+                    const float hud_w = std::min(static_cast<float>(fb_w) - 32.0F, 680.0F);
+                    hud_canvas.add_solid_rect(16.0F, 14.0F, hud_w, 34.0F, r2d::ColorRgba8 { 12U, 17U, 26U, 224U }, kHudSortKey);
+                    hud_canvas.add_solid_rect(16.0F, 14.0F, 4.0F, 34.0F, r2d::ColorRgba8 { 65U, 235U, 165U, 255U }, kHudSortKey);
+                    const std::string st_name(stage2d.name());
+                    char hud_line[256] {};
+                    std::snprintf(
+                        hud_line,
+                        sizeof(hud_line),
+                        "CHROMODYNAMIC 2D PLAYER  |  %s  |  HP %d  |  SCORE %d  |  GEMS %d/%d%s",
+                        st_name.c_str(),
+                        h2d.player_hp,
+                        h2d.score,
+                        h2d.gems_collected,
+                        h2d.total_gems,
+                        h2d.victory ? "  |  VICTORY!" : "");
+                    add_clipped_pixel_text(
+                        hud_canvas,
+                        28.0F,
+                        25.0F,
+                        hud_line,
+                        1.0F,
+                        r2d::ColorRgba8 { 230U, 242U, 255U, 255U },
+                        16.0F + hud_w - 10.0F);
+                }
                 hud_canvas.replay_into<ur::DrawBatcher, ur::Color, ur::ScissorRect, ur::AtlasUv>(batcher);
             }
         }
@@ -878,7 +1130,16 @@ int PlayerApp::run()
             const auto telemetry = loop.step_frame(1.0F / 60.0F, &sim_null_dev, back_handle);
 
             bool stage_changed = false;
-            render_showcase_hud_canvas(hud_canvas, fb_w, fb_h, ui, loop.stage(), telemetry, stage_changed);
+            render_showcase_hud_canvas(
+                hud_canvas,
+                fb_w,
+                fb_h,
+                ui,
+                loop.stage(),
+                telemetry,
+                showcase_3d.is_valid(),
+                is_hd2d_mode,
+                stage_changed);
             hud_canvas.replay_into<ur::DrawBatcher, ur::Color, ur::ScissorRect, ur::AtlasUv>(batcher);
             if (stage_changed)
             {
@@ -894,13 +1155,35 @@ int PlayerApp::run()
         if (!using_null && renderer)
         {
             auto frame_r = renderer->begin_frame();
-            if (frame_r.has_value())
+            if (!frame_r.has_value() &&
+                frame_r.error().code == static_cast<std::uint32_t>(cd::render::render_errors::Code::kSwapchainOutOfDate))
+            {
+                if (window && window->width() > 0 && window->height() > 0)
+                {
+                    (void)renderer->recreate_swapchain({ window->width(), window->height() });
+                }
+            }
+            else if (frame_r.has_value())
             {
                 auto& frame = *frame_r;
                 auto& cmd   = *frame.command_buffer;
+
+                bool rendered_3d_pass = false;
+                if (!use_stage2d && showcase_3d.is_valid())
+                {
+                    const ShowcaseCamera3D cam3d {
+                        .yaw_rad   = ui.cam_yaw,
+                        .pitch_rad = ui.cam_pitch,
+                        .distance  = 11.2F,
+                        .sim_time  = ui.sim_time,
+                    };
+                    rendered_3d_pass = showcase_3d.record(
+                        cmd, frame.swapchain_image_view, frame.extent, loop.stage(), cam3d, is_hd2d_mode);
+                }
+
                 std::array<cd::rhi::ColorAttachmentInfo, 1> color_attach { cd::rhi::ColorAttachmentInfo {
                     .view        = frame.swapchain_image_view,
-                    .load_op     = cd::rhi::LoadOp::kClear,
+                    .load_op     = rendered_3d_pass ? cd::rhi::LoadOp::kLoad : cd::rhi::LoadOp::kClear,
                     .store_op    = cd::rhi::StoreOp::kStore,
                     .clear_color = { .f32 = { 0.05F, 0.06F, 0.09F, 1.0F } } } };
                 cd::rhi::RenderPassBeginInfo rp {};
@@ -923,7 +1206,15 @@ int PlayerApp::run()
                         *device, cmd, frame.swapchain_image, frame.extent, readback);
                 }
 
-                (void)renderer->end_frame();
+                auto end_r = renderer->end_frame();
+                if (!end_r.has_value() &&
+                    end_r.error().code == static_cast<std::uint32_t>(cd::render::render_errors::Code::kSwapchainOutOfDate))
+                {
+                    if (window && window->width() > 0 && window->height() > 0)
+                    {
+                        (void)renderer->recreate_swapchain({ window->width(), window->height() });
+                    }
+                }
 
                 if (readback.armed)
                 {
@@ -963,13 +1254,33 @@ int PlayerApp::run()
     if (device)
     {
         device->wait_idle();
+        showcase_3d.destroy();
+        submitter.destroy();
+        if (atlas_sampler.is_valid())
+        {
+            device->destroy_sampler(atlas_sampler);
+        }
+        if (atlas_gpu.view.is_valid())
+        {
+            device->destroy_texture_view(atlas_gpu.view);
+        }
+        if (atlas_gpu.image.is_valid())
+        {
+            device->destroy_texture(atlas_gpu.image);
+        }
     }
+    if (use_stage2d)
+    {
+        stage2d.audio_cues().set_backend(nullptr);
+    }
+    const std::string_view reported_stage_name = use_stage2d ? stage2d.name() : loop.stage().name();
+    const std::size_t reported_elements = use_stage2d ? stage2d.entities().size() : loop.stage().root().children().size();
     std::printf(
         "[cd_player] Completed %u frames of stage '%.*s' (elements=%zu, vertices=%zu)\n",
         frame_idx,
-        static_cast<int>(loop.stage().name().size()),
-        loop.stage().name().data(),
-        loop.stage().root().children().size(),
+        static_cast<int>(reported_stage_name.size()),
+        reported_stage_name.data(),
+        reported_elements,
         batcher.vertex_count());
     return 0;
 }

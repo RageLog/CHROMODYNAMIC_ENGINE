@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_set>
 
 namespace cd::render2d
 {
@@ -235,6 +236,120 @@ void Tilemap2D::paint_rect(int x0, int y0, int x1, int y1, std::uint16_t palette
             }
         }
     }
+}
+
+std::size_t Tilemap2D::flood_fill(
+    int           start_x,
+    int           start_y,
+    std::uint16_t replacement_id,
+    std::size_t   max_cells)
+{
+    const std::uint16_t target_id = get_tile(start_x, start_y).palette_id;
+    if (target_id == replacement_id || max_cells == 0U)
+    {
+        return 0U;
+    }
+
+    std::vector<std::pair<int, int>> queue;
+    queue.reserve(std::min(max_cells, static_cast<std::size_t>(1024U)));
+    queue.push_back({ start_x, start_y });
+
+    auto hash_coord = [](int x, int y) constexpr noexcept -> std::uint64_t {
+        return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(x)) << 32U) |
+               static_cast<std::uint64_t>(static_cast<std::uint32_t>(y));
+    };
+
+    std::unordered_set<std::uint64_t> visited;
+    visited.reserve(std::min(max_cells * 2U, static_cast<std::size_t>(4096U)));
+    visited.insert(hash_coord(start_x, start_y));
+
+    std::vector<std::pair<int, int>> modified_cells;
+    modified_cells.reserve(std::min(max_cells, static_cast<std::size_t>(1024U)));
+
+    std::size_t head = 0;
+    while (head < queue.size() && modified_cells.size() < max_cells)
+    {
+        const auto [cx, cy] = queue[head++];
+        if (get_tile(cx, cy).palette_id != target_id)
+        {
+            continue;
+        }
+
+        set_tile(cx, cy, replacement_id, false);
+        modified_cells.push_back({ cx, cy });
+
+        constexpr std::array<std::pair<int, int>, 4> kNeighbors = {{
+            { 0, 1 }, { 1, 0 }, { 0, -1 }, { -1, 0 }
+        }};
+
+        for (const auto& [dx, dy] : kNeighbors)
+        {
+            const int nx = cx + dx;
+            const int ny = cy + dy;
+            const std::uint64_t key = hash_coord(nx, ny);
+            if (visited.insert(key).second)
+            {
+                if (get_tile(nx, ny).palette_id == target_id)
+                {
+                    queue.push_back({ nx, ny });
+                }
+            }
+        }
+    }
+
+    for (const auto& [mx, my] : modified_cells)
+    {
+        refresh_autotile_at(mx, my);
+        refresh_autotile_at(mx, my + 1);
+        refresh_autotile_at(mx + 1, my);
+        refresh_autotile_at(mx, my - 1);
+        refresh_autotile_at(mx - 1, my);
+    }
+
+    return modified_cells.size();
+}
+
+std::size_t Tilemap2D::stamp(
+    int                            start_x,
+    int                            start_y,
+    int                            pattern_width,
+    int                            pattern_height,
+    std::span<const std::uint16_t> pattern,
+    bool                           update_autotile)
+{
+    if (pattern_width <= 0 || pattern_height <= 0 || pattern.empty())
+    {
+        return 0U;
+    }
+
+    std::size_t stamped = 0U;
+    for (int y = 0; y < pattern_height; ++y)
+    {
+        for (int x = 0; x < pattern_width; ++x)
+        {
+            const std::size_t idx = static_cast<std::size_t>(y * pattern_width + x);
+            if (idx >= pattern.size())
+            {
+                continue;
+            }
+            const std::uint16_t pal_id = pattern[idx];
+            set_tile(start_x + x, start_y + y, pal_id, false);
+            ++stamped;
+        }
+    }
+
+    if (update_autotile)
+    {
+        for (int y = -1; y <= pattern_height; ++y)
+        {
+            for (int x = -1; x <= pattern_width; ++x)
+            {
+                refresh_autotile_at(start_x + x, start_y + y);
+            }
+        }
+    }
+
+    return stamped;
 }
 
 void Tilemap2D::rebuild_all_autotile_masks() noexcept
@@ -522,6 +637,25 @@ void Tilemap2D::emit_to_canvas(
 
                 const cd::math::Vec2f center { 0.5F * (wx0 + wx1), 0.5F * (wy0 + wy1) };
                 const std::uint64_t   key = make_sort_key_2d(layer, 0, wy0, false, cell.palette_id);
+
+                if (pal->texture_slot != 0xFFFFFFFFU)
+                {
+                    const UvRect2D uv = pal->has_autotile_uvs
+                        ? pal->autotile_uvs.at(cell.autotile_mask & 0x0FU)
+                        : pal->uv_rect;
+                    const ColorRgba8 emissive_col { 255U, 255U, 255U, 255U };
+                    const ColorRgba8 lit_color = pal->emissive
+                        ? pal->fill_color
+                        : evaluate_lighting_2d_with_emissive(
+                              lighting,
+                              center,
+                              { 0.0F, 0.0F, 1.0F },
+                              pal->fill_color,
+                              emissive_col,
+                              pal->emissive_intensity);
+                    canvas.add_textured_rect(sx, sy, sw, sh, pal->texture_slot, uv, lit_color, key);
+                    continue;
+                }
 
                 // Emissive tiles stay bright; regular tiles respond to 2D lights & soft shadows
                 const ColorRgba8 base_fill = pal->emissive

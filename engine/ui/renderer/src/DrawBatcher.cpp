@@ -12,6 +12,7 @@
 #include <cd/ui/renderer/DrawBatcher.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 
 namespace cd::ui::renderer
@@ -71,12 +72,12 @@ void DrawBatcher::emit_quad_ex(float x, float y, float w, float h,
                                 std::uint8_t pad2)
 {
     // Reject empty quads up-front so the batch + index buffers stay tight.
-    if (w <= 0.0F || h <= 0.0F) return;
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || !std::isfinite(h) || w <= 0.0F || h <= 0.0F) return;
 
     // Guard: u16 indices cannot address more than kMaxVertices vertices.
     // No auto-split is performed (see README / kMaxVertices rationale);
     // the caller must begin_frame() and re-emit when this limit is reached.
-    if (vertices_.size() >= static_cast<std::size_t>(kMaxVertices)) return;
+    if (vertices_.size() + 4U > static_cast<std::size_t>(kMaxVertices)) return;
 
     const auto base = static_cast<std::uint16_t>(vertices_.size());
     // top-left, top-right, bottom-right, bottom-left
@@ -137,6 +138,9 @@ void DrawBatcher::triangle_grad(float x0, float y0, Color c0,
                                 float x1, float y1, Color c1,
                                 float x2, float y2, Color c2)
 {
+    if (!std::isfinite(x0) || !std::isfinite(y0) ||
+        !std::isfinite(x1) || !std::isfinite(y1) ||
+        !std::isfinite(x2) || !std::isfinite(y2)) return;
     if (vertices_.size() + 3U > static_cast<std::size_t>(kMaxVertices)) return;
 
     const auto base = static_cast<std::uint16_t>(vertices_.size());
@@ -179,6 +183,10 @@ void DrawBatcher::quad_poly(float x0, float y0,
                             float x3, float y3,
                             Color c)
 {
+    if (!std::isfinite(x0) || !std::isfinite(y0) ||
+        !std::isfinite(x1) || !std::isfinite(y1) ||
+        !std::isfinite(x2) || !std::isfinite(y2) ||
+        !std::isfinite(x3) || !std::isfinite(y3)) return;
     if (vertices_.size() + 4U > static_cast<std::size_t>(kMaxVertices)) return;
 
     const auto base = static_cast<std::uint16_t>(vertices_.size());

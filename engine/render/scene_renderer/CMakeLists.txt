@@ -7,6 +7,7 @@ cd_add_library(scene_renderer
     src/SceneRenderer.cpp
   PUBLIC_DEPS
     cd::core
+    cd::math
     cd::rhi
     cd::framegraph
 )

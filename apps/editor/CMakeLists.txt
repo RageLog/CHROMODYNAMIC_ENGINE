@@ -23,6 +23,7 @@ cd_add_library(editor_lib
     core/StudioConfig.cpp
     core/StudioState.cpp
     core/StudioApp.cpp
+    core/StudioMcpServer.cpp
     render/WorldRenderPasses.cpp
     scene/SceneOperations.cpp
     physics/PhysicsPieSolver.cpp
@@ -102,6 +103,7 @@ cd_add_library(editor_lib
     cd::post_taa
     cd::velocity
     cd::render
+    cd::scene_renderer
     cd::render_scene_ingest
     cd::volumetric_clouds
     cd::volumetric_fog

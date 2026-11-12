@@ -14,6 +14,7 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 
 namespace
 {
@@ -1690,8 +1691,11 @@ TEST(FileSink, WriteWavProducesNonEmptyFile)
     ASSERT_TRUE(c.has_value());
     (void)b->play(*c, 0.8F, false);
     b->render(2);
-    const auto result = b->write_wav("cd_audio_test_out.wav");  // cwd (build dir) — writable cross-platform
+    const auto wav_path = (std::filesystem::temp_directory_path() / "cd_audio_test_out.wav").string();
+    const auto result = b->write_wav(wav_path);
     EXPECT_TRUE(result.has_value()) << (result ? "" : result.error().message);
+    std::error_code ec {};
+    (void)std::filesystem::remove(wav_path, ec);
 }
 
 TEST(FileSink, WriteWavToInvalidPathReturnsError)

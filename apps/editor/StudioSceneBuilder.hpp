@@ -4008,6 +4008,16 @@ bool load_project_or_scene_from_disk_path(StateT& s, std::string_view disk_path,
         return ok;
     }
 
+    if (load_2d_project_or_stage_from_disk(path_str))
+    {
+        auto& s2d = studio_2d();
+        cd::ui::chroma::state().workspace_mode = 3;
+        w.active_project_name                  = std::string(s2d.stage.name());
+        w.active_level_name                    = "stages/main.cd2d.json";
+        log_push("[project] Loaded 2D project '" + w.active_project_name + "' from " + path_str);
+        return true;
+    }
+
     if (path_str.find(".cdproj") != std::string::npos || path_str.find(".cdproject") != std::string::npos)
     {
         int mapped_template = 1;

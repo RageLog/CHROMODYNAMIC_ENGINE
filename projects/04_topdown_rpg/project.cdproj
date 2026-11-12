@@ -1,0 +1,8 @@
+{
+  "engine": "CHROMODYNAMIC",
+  "version": "1.0.0",
+  "name": "TopDown_Rpg_Dungeon_2D",
+  "mode": "Pure2D",
+  "entry_stage2d": "stages/main.cd2d.json",
+  "arcade_ruleset": 0
+}

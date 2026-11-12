@@ -1,0 +1,1862 @@
+{
+  "ambient_color": [
+    0.2199999988079071,
+    0.23999999463558197,
+    0.36000001430511475
+  ],
+  "ambient_intensity": 0.94999998807907104,
+  "arcade_ruleset": 2,
+  "camera_pos": [
+    -0.5,
+    1.3500000238418579
+  ],
+  "camera_zoom": 1,
+  "entities": [
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.25,
+        0.93999999761581421,
+        1,
+        1
+      ],
+      "flip_x": false,
+      "id": 1,
+      "jump_speed": 13.800000190734863,
+      "layer": 125,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 14.800000190734863,
+      "name": "Demolition_Striker_Rail",
+      "patrol_span": 6.9000000953674316,
+      "pos": [
+        -0.5,
+        -3.9500000476837158
+      ],
+      "role": 10,
+      "rotation_deg": 0,
+      "size": [
+        3.1500000953674316,
+        0.68000000715255737
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.40000000596046448,
+        0.95999997854232788,
+        1,
+        1
+      ],
+      "flip_x": false,
+      "id": 2,
+      "jump_speed": 13.800000190734863,
+      "layer": 130,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 13.800000190734863,
+      "name": "Demolition_Sphere_2D",
+      "patrol_span": 3,
+      "pos": [
+        -1.6000000238418579,
+        -2.9000000953674316
+      ],
+      "role": 12,
+      "rotation_deg": 64,
+      "size": [
+        0.63999998569488525,
+        0.63999998569488525
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.87999999523162842,
+        0.62000000476837158,
+        0.34000000357627869,
+        1
+      ],
+      "flip_x": false,
+      "id": 3,
+      "jump_speed": 13.800000190734863,
+      "layer": 105,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Lower_Bridge_Span_1",
+      "patrol_span": 3,
+      "pos": [
+        -7.5,
+        1
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        2.6800000667572021,
+        0.57999998331069946
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.87999999523162842,
+        0.62000000476837158,
+        0.34000000357627869,
+        1
+      ],
+      "flip_x": false,
+      "id": 4,
+      "jump_speed": 13.800000190734863,
+      "layer": 105,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Lower_Bridge_Span_2",
+      "patrol_span": 3,
+      "pos": [
+        -4.6999998092651367,
+        1
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        2.6800000667572021,
+        0.57999998331069946
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.87999999523162842,
+        0.62000000476837158,
+        0.34000000357627869,
+        1
+      ],
+      "flip_x": false,
+      "id": 5,
+      "jump_speed": 13.800000190734863,
+      "layer": 105,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Lower_Bridge_Span_3",
+      "patrol_span": 3,
+      "pos": [
+        -1.8999999761581421,
+        1
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        2.6800000667572021,
+        0.57999998331069946
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.87999999523162842,
+        0.62000000476837158,
+        0.34000000357627869,
+        1
+      ],
+      "flip_x": false,
+      "id": 6,
+      "jump_speed": 13.800000190734863,
+      "layer": 105,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Lower_Bridge_Span_4",
+      "patrol_span": 3,
+      "pos": [
+        0.89999997615814209,
+        1
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        2.6800000667572021,
+        0.57999998331069946
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.87999999523162842,
+        0.62000000476837158,
+        0.34000000357627869,
+        1
+      ],
+      "flip_x": false,
+      "id": 7,
+      "jump_speed": 13.800000190734863,
+      "layer": 105,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Lower_Bridge_Span_5",
+      "patrol_span": 3,
+      "pos": [
+        3.7000000476837158,
+        1
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        2.6800000667572021,
+        0.57999998331069946
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.87999999523162842,
+        0.62000000476837158,
+        0.34000000357627869,
+        1
+      ],
+      "flip_x": false,
+      "id": 8,
+      "jump_speed": 13.800000190734863,
+      "layer": 105,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Lower_Bridge_Span_6",
+      "patrol_span": 3,
+      "pos": [
+        6.5,
+        1
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        2.6800000667572021,
+        0.57999998331069946
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.68000000715255737,
+        0.80000001192092896,
+        0.95999997854232788,
+        1
+      ],
+      "flip_x": false,
+      "id": 9,
+      "jump_speed": 13.800000190734863,
+      "layer": 105,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Middle_Bridge_Span_1",
+      "patrol_span": 3,
+      "pos": [
+        -7.5,
+        3.4500000476837158
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        2.6800000667572021,
+        0.57999998331069946
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.68000000715255737,
+        0.80000001192092896,
+        0.95999997854232788,
+        1
+      ],
+      "flip_x": false,
+      "id": 10,
+      "jump_speed": 13.800000190734863,
+      "layer": 105,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Middle_Bridge_Span_2",
+      "patrol_span": 3,
+      "pos": [
+        -4.6999998092651367,
+        3.4500000476837158
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        2.6800000667572021,
+        0.57999998331069946
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.68000000715255737,
+        0.80000001192092896,
+        0.95999997854232788,
+        1
+      ],
+      "flip_x": false,
+      "id": 11,
+      "jump_speed": 13.800000190734863,
+      "layer": 105,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Middle_Bridge_Span_3",
+      "patrol_span": 3,
+      "pos": [
+        -1.8999999761581421,
+        3.4500000476837158
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        2.6800000667572021,
+        0.57999998331069946
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.68000000715255737,
+        0.80000001192092896,
+        0.95999997854232788,
+        1
+      ],
+      "flip_x": false,
+      "id": 12,
+      "jump_speed": 13.800000190734863,
+      "layer": 105,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Middle_Bridge_Span_4",
+      "patrol_span": 3,
+      "pos": [
+        0.89999997615814209,
+        3.4500000476837158
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        2.6800000667572021,
+        0.57999998331069946
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.68000000715255737,
+        0.80000001192092896,
+        0.95999997854232788,
+        1
+      ],
+      "flip_x": false,
+      "id": 13,
+      "jump_speed": 13.800000190734863,
+      "layer": 105,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Middle_Bridge_Span_5",
+      "patrol_span": 3,
+      "pos": [
+        3.7000000476837158,
+        3.4500000476837158
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        2.6800000667572021,
+        0.57999998331069946
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.68000000715255737,
+        0.80000001192092896,
+        0.95999997854232788,
+        1
+      ],
+      "flip_x": false,
+      "id": 14,
+      "jump_speed": 13.800000190734863,
+      "layer": 105,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Middle_Bridge_Span_6",
+      "patrol_span": 3,
+      "pos": [
+        6.5,
+        3.4500000476837158
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        2.6800000667572021,
+        0.57999998331069946
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.95999997854232788,
+        0.77999997138977051,
+        0.36000001430511475,
+        1
+      ],
+      "flip_x": false,
+      "id": 15,
+      "jump_speed": 13.800000190734863,
+      "layer": 105,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Upper_Bridge_Span_1",
+      "patrol_span": 3,
+      "pos": [
+        -7.5,
+        5.9000000953674316
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        2.6800000667572021,
+        0.57999998331069946
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.95999997854232788,
+        0.77999997138977051,
+        0.36000001430511475,
+        1
+      ],
+      "flip_x": false,
+      "id": 16,
+      "jump_speed": 13.800000190734863,
+      "layer": 105,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Upper_Bridge_Span_2",
+      "patrol_span": 3,
+      "pos": [
+        -4.6999998092651367,
+        5.9000000953674316
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        2.6800000667572021,
+        0.57999998331069946
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.95999997854232788,
+        0.77999997138977051,
+        0.36000001430511475,
+        1
+      ],
+      "flip_x": false,
+      "id": 17,
+      "jump_speed": 13.800000190734863,
+      "layer": 105,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Upper_Bridge_Span_3",
+      "patrol_span": 3,
+      "pos": [
+        -1.8999999761581421,
+        5.9000000953674316
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        2.6800000667572021,
+        0.57999998331069946
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.95999997854232788,
+        0.77999997138977051,
+        0.36000001430511475,
+        1
+      ],
+      "flip_x": false,
+      "id": 18,
+      "jump_speed": 13.800000190734863,
+      "layer": 105,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Upper_Bridge_Span_4",
+      "patrol_span": 3,
+      "pos": [
+        0.89999997615814209,
+        5.9000000953674316
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        2.6800000667572021,
+        0.57999998331069946
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.95999997854232788,
+        0.77999997138977051,
+        0.36000001430511475,
+        1
+      ],
+      "flip_x": false,
+      "id": 19,
+      "jump_speed": 13.800000190734863,
+      "layer": 105,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Upper_Bridge_Span_5",
+      "patrol_span": 3,
+      "pos": [
+        3.7000000476837158,
+        5.9000000953674316
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        2.6800000667572021,
+        0.57999998331069946
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.95999997854232788,
+        0.77999997138977051,
+        0.36000001430511475,
+        1
+      ],
+      "flip_x": false,
+      "id": 20,
+      "jump_speed": 13.800000190734863,
+      "layer": 105,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Upper_Bridge_Span_6",
+      "patrol_span": 3,
+      "pos": [
+        6.5,
+        5.9000000953674316
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        2.6800000667572021,
+        0.57999998331069946
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.94999998807907104,
+        0.81999999284744263,
+        0.43999999761581421,
+        1
+      ],
+      "flip_x": false,
+      "id": 21,
+      "jump_speed": 13.800000190734863,
+      "layer": 102,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Keystone_Bridge_Pier_1",
+      "patrol_span": 3,
+      "pos": [
+        -4.6999998092651367,
+        -0.2199999988079071
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        0.87999999523162842,
+        1.7200000286102295
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.94999998807907104,
+        0.81999999284744263,
+        0.43999999761581421,
+        1
+      ],
+      "flip_x": false,
+      "id": 22,
+      "jump_speed": 13.800000190734863,
+      "layer": 102,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Keystone_Bridge_Pier_2",
+      "patrol_span": 3,
+      "pos": [
+        3.7000000476837158,
+        -0.2199999988079071
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        0.87999999523162842,
+        1.7200000286102295
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.94999998807907104,
+        0.81999999284744263,
+        0.43999999761581421,
+        1
+      ],
+      "flip_x": false,
+      "id": 23,
+      "jump_speed": 13.800000190734863,
+      "layer": 102,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Keystone_Bridge_Pier_3",
+      "patrol_span": 3,
+      "pos": [
+        -1.8999999761581421,
+        2.2200000286102295
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        0.87999999523162842,
+        1.7200000286102295
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        0.94999998807907104,
+        0.81999999284744263,
+        0.43999999761581421,
+        1
+      ],
+      "flip_x": false,
+      "id": 24,
+      "jump_speed": 13.800000190734863,
+      "layer": 102,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Keystone_Bridge_Pier_4",
+      "patrol_span": 3,
+      "pos": [
+        0.89999997615814209,
+        2.2200000286102295
+      ],
+      "role": 13,
+      "rotation_deg": 0,
+      "size": [
+        0.87999999523162842,
+        1.7200000286102295
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        1,
+        0.36000001430511475,
+        0.41999998688697815,
+        1
+      ],
+      "flip_x": false,
+      "id": 25,
+      "jump_speed": 13.800000190734863,
+      "layer": 115,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 2.2999999523162842,
+      "name": "Skeleton_Guard_West",
+      "patrol_span": 2.5999999046325684,
+      "pos": [
+        -4.6999998092651367,
+        1.8200000524520874
+      ],
+      "role": 5,
+      "rotation_deg": 0,
+      "size": [
+        0.94999998807907104,
+        1.0499999523162842
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        1,
+        0.36000001430511475,
+        0.41999998688697815,
+        1
+      ],
+      "flip_x": false,
+      "id": 26,
+      "jump_speed": 13.800000190734863,
+      "layer": 115,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 2.4000000953674316,
+      "name": "Skeleton_Guard_East",
+      "patrol_span": 2.5999999046325684,
+      "pos": [
+        3.7000000476837158,
+        1.8200000524520874
+      ],
+      "role": 5,
+      "rotation_deg": 0,
+      "size": [
+        0.94999998807907104,
+        1.0499999523162842
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        1,
+        0.36000001430511475,
+        0.41999998688697815,
+        1
+      ],
+      "flip_x": false,
+      "id": 27,
+      "jump_speed": 13.800000190734863,
+      "layer": 115,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 3.0999999046325684,
+      "name": "Synth_Raider_MidSpan",
+      "patrol_span": 5.1999998092651367,
+      "pos": [
+        -0.5,
+        4.2600002288818359
+      ],
+      "role": 5,
+      "rotation_deg": 0,
+      "size": [
+        0.94999998807907104,
+        1.0499999523162842
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": true,
+      "color": [
+        1,
+        0.36000001430511475,
+        0.41999998688697815,
+        1
+      ],
+      "flip_x": false,
+      "id": 28,
+      "jump_speed": 13.800000190734863,
+      "layer": 115,
+      "light_intensity": 1.6499999761581421,
+      "light_radius": 8.5,
+      "lua_script": "",
+      "move_speed": 2.7000000476837158,
+      "name": "Skeleton_Guard_Upper",
+      "patrol_span": 5.4000000953674316,
+      "pos": [
+        -0.5,
+        6.7199997901916504
+      ],
+      "role": 5,
+      "rotation_deg": 0,
+      "size": [
+        0.94999998807907104,
+        1.0499999523162842
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": false,
+      "color": [
+        1,
+        0.72000002861022949,
+        0.31999999284744263,
+        1
+      ],
+      "flip_x": false,
+      "id": 29,
+      "jump_speed": 13.800000190734863,
+      "layer": 100,
+      "light_intensity": 1.8500000238418579,
+      "light_radius": 11,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Cliff_Torch_Light_1",
+      "patrol_span": 3,
+      "pos": [
+        -9.1499996185302734,
+        4.1999998092651367
+      ],
+      "role": 8,
+      "rotation_deg": 0,
+      "size": [
+        0.5,
+        0.5
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": false,
+      "color": [
+        1,
+        0.72000002861022949,
+        0.31999999284744263,
+        1
+      ],
+      "flip_x": false,
+      "id": 30,
+      "jump_speed": 13.800000190734863,
+      "layer": 100,
+      "light_intensity": 1.8500000238418579,
+      "light_radius": 11,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Cliff_Torch_Light_2",
+      "patrol_span": 3,
+      "pos": [
+        8.1499996185302734,
+        4.1999998092651367
+      ],
+      "role": 8,
+      "rotation_deg": 0,
+      "size": [
+        0.5,
+        0.5
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    },
+    {
+      "bounce_impulse": 17.5,
+      "cast_shadows": false,
+      "color": [
+        1,
+        0.34000000357627869,
+        0.23999999463558197,
+        1
+      ],
+      "flip_x": false,
+      "id": 31,
+      "jump_speed": 13.800000190734863,
+      "layer": 100,
+      "light_intensity": 1.6000000238418579,
+      "light_radius": 12.5,
+      "lua_script": "",
+      "move_speed": 7.1999998092651367,
+      "name": "Canyon_Lava_Glow",
+      "patrol_span": 3,
+      "pos": [
+        -0.5,
+        -4.8000001907348633
+      ],
+      "role": 8,
+      "rotation_deg": 0,
+      "size": [
+        0.5,
+        0.5
+      ],
+      "visible": true,
+      "y_sort": true,
+      "z_index": 0
+    }
+  ],
+  "format": "chromodynamic.stage2d.v1",
+  "gravity_y": -24,
+  "parallax_layers": [
+    {
+      "auto_scroll_velocity": [
+        0,
+        0
+      ],
+      "layer": 10,
+      "name": "Canyon_Peaks",
+      "procedural_style": 2,
+      "repeat_x": true,
+      "repeat_y": false,
+      "scroll_factor": [
+        0.15000000596046448,
+        0.05000000074505806
+      ],
+      "texture_slot": -1,
+      "tile_size": [
+        16,
+        9
+      ],
+      "tint": [
+        52,
+        64,
+        96,
+        210
+      ],
+      "visible": true,
+      "z_order": 0
+    }
+  ],
+  "stage_name": "Break_The_Bridges_2D",
+  "swarm_spawner": {
+    "active": false,
+    "enemy_speed": 3.2000000476837158,
+    "max_swarm_count": 40,
+    "spawn_interval_sec": 1.7999999523162842,
+    "spawn_radius": 16
+  },
+  "tiles": [
+    [
+      -13,
+      -6,
+      1
+    ],
+    [
+      -12,
+      -6,
+      1
+    ],
+    [
+      -11,
+      -6,
+      1
+    ],
+    [
+      -10,
+      -6,
+      1
+    ],
+    [
+      -9,
+      -6,
+      3
+    ],
+    [
+      -8,
+      -6,
+      3
+    ],
+    [
+      -7,
+      -6,
+      3
+    ],
+    [
+      -6,
+      -6,
+      3
+    ],
+    [
+      -5,
+      -6,
+      3
+    ],
+    [
+      -4,
+      -6,
+      3
+    ],
+    [
+      -3,
+      -6,
+      3
+    ],
+    [
+      -2,
+      -6,
+      3
+    ],
+    [
+      -1,
+      -6,
+      3
+    ],
+    [
+      -13,
+      -5,
+      1
+    ],
+    [
+      -12,
+      -5,
+      1
+    ],
+    [
+      -11,
+      -5,
+      1
+    ],
+    [
+      -10,
+      -5,
+      1
+    ],
+    [
+      -13,
+      -4,
+      1
+    ],
+    [
+      -12,
+      -4,
+      1
+    ],
+    [
+      -11,
+      -4,
+      1
+    ],
+    [
+      -10,
+      -4,
+      1
+    ],
+    [
+      -13,
+      -3,
+      1
+    ],
+    [
+      -12,
+      -3,
+      1
+    ],
+    [
+      -11,
+      -3,
+      1
+    ],
+    [
+      -10,
+      -3,
+      1
+    ],
+    [
+      -13,
+      -2,
+      1
+    ],
+    [
+      -12,
+      -2,
+      1
+    ],
+    [
+      -11,
+      -2,
+      1
+    ],
+    [
+      -10,
+      -2,
+      1
+    ],
+    [
+      -13,
+      -1,
+      1
+    ],
+    [
+      -12,
+      -1,
+      1
+    ],
+    [
+      -11,
+      -1,
+      1
+    ],
+    [
+      -10,
+      -1,
+      1
+    ],
+    [
+      -13,
+      0,
+      1
+    ],
+    [
+      -12,
+      0,
+      1
+    ],
+    [
+      -11,
+      0,
+      1
+    ],
+    [
+      -10,
+      0,
+      1
+    ],
+    [
+      -13,
+      1,
+      1
+    ],
+    [
+      -12,
+      1,
+      1
+    ],
+    [
+      -11,
+      1,
+      1
+    ],
+    [
+      -10,
+      1,
+      1
+    ],
+    [
+      -13,
+      2,
+      1
+    ],
+    [
+      -12,
+      2,
+      1
+    ],
+    [
+      -11,
+      2,
+      1
+    ],
+    [
+      -10,
+      2,
+      1
+    ],
+    [
+      -13,
+      3,
+      1
+    ],
+    [
+      -12,
+      3,
+      1
+    ],
+    [
+      -11,
+      3,
+      1
+    ],
+    [
+      -10,
+      3,
+      1
+    ],
+    [
+      -13,
+      4,
+      1
+    ],
+    [
+      -12,
+      4,
+      1
+    ],
+    [
+      -11,
+      4,
+      1
+    ],
+    [
+      -10,
+      4,
+      1
+    ],
+    [
+      -13,
+      5,
+      1
+    ],
+    [
+      -12,
+      5,
+      1
+    ],
+    [
+      -11,
+      5,
+      1
+    ],
+    [
+      -10,
+      5,
+      1
+    ],
+    [
+      -13,
+      6,
+      1
+    ],
+    [
+      -12,
+      6,
+      1
+    ],
+    [
+      -11,
+      6,
+      1
+    ],
+    [
+      -10,
+      6,
+      1
+    ],
+    [
+      -13,
+      7,
+      1
+    ],
+    [
+      -12,
+      7,
+      1
+    ],
+    [
+      -11,
+      7,
+      1
+    ],
+    [
+      -10,
+      7,
+      1
+    ],
+    [
+      -13,
+      8,
+      2
+    ],
+    [
+      -12,
+      8,
+      2
+    ],
+    [
+      -11,
+      8,
+      2
+    ],
+    [
+      -10,
+      8,
+      2
+    ],
+    [
+      -9,
+      8,
+      2
+    ],
+    [
+      -8,
+      8,
+      2
+    ],
+    [
+      -7,
+      8,
+      2
+    ],
+    [
+      -6,
+      8,
+      2
+    ],
+    [
+      -5,
+      8,
+      2
+    ],
+    [
+      -4,
+      8,
+      2
+    ],
+    [
+      -3,
+      8,
+      2
+    ],
+    [
+      -2,
+      8,
+      2
+    ],
+    [
+      -1,
+      8,
+      2
+    ],
+    [
+      0,
+      -6,
+      3
+    ],
+    [
+      1,
+      -6,
+      3
+    ],
+    [
+      2,
+      -6,
+      3
+    ],
+    [
+      3,
+      -6,
+      3
+    ],
+    [
+      4,
+      -6,
+      3
+    ],
+    [
+      5,
+      -6,
+      3
+    ],
+    [
+      6,
+      -6,
+      3
+    ],
+    [
+      7,
+      -6,
+      3
+    ],
+    [
+      8,
+      -6,
+      3
+    ],
+    [
+      9,
+      -6,
+      1
+    ],
+    [
+      10,
+      -6,
+      1
+    ],
+    [
+      11,
+      -6,
+      1
+    ],
+    [
+      12,
+      -6,
+      1
+    ],
+    [
+      9,
+      -5,
+      1
+    ],
+    [
+      10,
+      -5,
+      1
+    ],
+    [
+      11,
+      -5,
+      1
+    ],
+    [
+      12,
+      -5,
+      1
+    ],
+    [
+      9,
+      -4,
+      1
+    ],
+    [
+      10,
+      -4,
+      1
+    ],
+    [
+      11,
+      -4,
+      1
+    ],
+    [
+      12,
+      -4,
+      1
+    ],
+    [
+      9,
+      -3,
+      1
+    ],
+    [
+      10,
+      -3,
+      1
+    ],
+    [
+      11,
+      -3,
+      1
+    ],
+    [
+      12,
+      -3,
+      1
+    ],
+    [
+      9,
+      -2,
+      1
+    ],
+    [
+      10,
+      -2,
+      1
+    ],
+    [
+      11,
+      -2,
+      1
+    ],
+    [
+      12,
+      -2,
+      1
+    ],
+    [
+      9,
+      -1,
+      1
+    ],
+    [
+      10,
+      -1,
+      1
+    ],
+    [
+      11,
+      -1,
+      1
+    ],
+    [
+      12,
+      -1,
+      1
+    ],
+    [
+      9,
+      0,
+      1
+    ],
+    [
+      10,
+      0,
+      1
+    ],
+    [
+      11,
+      0,
+      1
+    ],
+    [
+      12,
+      0,
+      1
+    ],
+    [
+      9,
+      1,
+      1
+    ],
+    [
+      10,
+      1,
+      1
+    ],
+    [
+      11,
+      1,
+      1
+    ],
+    [
+      12,
+      1,
+      1
+    ],
+    [
+      9,
+      2,
+      1
+    ],
+    [
+      10,
+      2,
+      1
+    ],
+    [
+      11,
+      2,
+      1
+    ],
+    [
+      12,
+      2,
+      1
+    ],
+    [
+      9,
+      3,
+      1
+    ],
+    [
+      10,
+      3,
+      1
+    ],
+    [
+      11,
+      3,
+      1
+    ],
+    [
+      12,
+      3,
+      1
+    ],
+    [
+      9,
+      4,
+      1
+    ],
+    [
+      10,
+      4,
+      1
+    ],
+    [
+      11,
+      4,
+      1
+    ],
+    [
+      12,
+      4,
+      1
+    ],
+    [
+      9,
+      5,
+      1
+    ],
+    [
+      10,
+      5,
+      1
+    ],
+    [
+      11,
+      5,
+      1
+    ],
+    [
+      12,
+      5,
+      1
+    ],
+    [
+      9,
+      6,
+      1
+    ],
+    [
+      10,
+      6,
+      1
+    ],
+    [
+      11,
+      6,
+      1
+    ],
+    [
+      12,
+      6,
+      1
+    ],
+    [
+      9,
+      7,
+      1
+    ],
+    [
+      10,
+      7,
+      1
+    ],
+    [
+      11,
+      7,
+      1
+    ],
+    [
+      12,
+      7,
+      1
+    ],
+    [
+      0,
+      8,
+      2
+    ],
+    [
+      1,
+      8,
+      2
+    ],
+    [
+      2,
+      8,
+      2
+    ],
+    [
+      3,
+      8,
+      2
+    ],
+    [
+      4,
+      8,
+      2
+    ],
+    [
+      5,
+      8,
+      2
+    ],
+    [
+      6,
+      8,
+      2
+    ],
+    [
+      7,
+      8,
+      2
+    ],
+    [
+      8,
+      8,
+      2
+    ],
+    [
+      9,
+      8,
+      2
+    ],
+    [
+      10,
+      8,
+      2
+    ],
+    [
+      11,
+      8,
+      2
+    ],
+    [
+      12,
+      8,
+      2
+    ]
+  ],
+  "y_sort_enabled": false
+}

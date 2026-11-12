@@ -1210,6 +1210,346 @@ TEST(VulkanDevice, CommandBufferBindUnknownPipelineIsSilent)
     dev->wait_idle();
 }
 
+TEST(VulkanDevice, CommandBufferDrawOutsideRenderPassIsSafelyRejected)
+{
+    SKIP_IF_NO_VULKAN(dev);
+    auto cb = dev->create_command_buffer(cd::rhi::QueueType::kGraphics);
+    ASSERT_NE(cb, nullptr);
+
+    cb->begin();
+    EXPECT_FALSE(cb->recording_error());
+
+    cd::rhi::set_recording_error_assert_enabled(false);
+
+    cb->draw(3, 1, 0, 0);
+    EXPECT_TRUE(cb->recording_error());
+
+    cb->draw_indexed(6, 1, 0, 0, 0);
+    EXPECT_TRUE(cb->recording_error());
+
+    cb->draw_indirect(cd::rhi::BufferHandle {}, 0, 1, 0);
+    EXPECT_TRUE(cb->recording_error());
+
+    cb->draw_indexed_indirect(cd::rhi::BufferHandle {}, 0, 1, 0);
+    EXPECT_TRUE(cb->recording_error());
+
+    cd::rhi::set_recording_error_assert_enabled(true);
+
+    cb->end();
+    dev->submit(*cb);
+    dev->wait_idle();
+}
+
+TEST(VulkanDevice, CommandBufferDrawInsideRenderPassWithNullLayoutIsSafelyRejected)
+{
+    SKIP_IF_NO_VULKAN(dev);
+
+    cd::rhi::TextureDesc desc {};
+    desc.extent = { 64, 64, 1 };
+    desc.format = cd::rhi::Format::kRGBA8Unorm;
+    desc.usage = cd::rhi::TextureUsage::kColorAttachment;
+    desc.memory = cd::rhi::MemoryUsage::kGpuOnly;
+    auto tex = dev->create_texture(desc);
+    ASSERT_TRUE(tex.has_value());
+
+    cd::rhi::TextureViewDesc vd {};
+    vd.texture = *tex;
+    vd.type = cd::rhi::TextureType::k2D;
+    vd.format = cd::rhi::Format::kRGBA8Unorm;
+    vd.base_mip = 0;
+    vd.mip_count = 1;
+    auto view = dev->create_texture_view(vd);
+    ASSERT_TRUE(view.has_value());
+
+    auto cb = dev->create_command_buffer(cd::rhi::QueueType::kGraphics);
+    ASSERT_NE(cb, nullptr);
+
+    cb->begin();
+    std::array<cd::rhi::TextureBarrier, 1> tbarriers {
+        cd::rhi::TextureBarrier {
+            .texture = *tex,
+            .from = cd::rhi::ResourceState::kUndefined,
+            .to = cd::rhi::ResourceState::kColorAttachment,
+            .range = { .base_mip = 0, .mip_count = 1, .base_layer = 0, .layer_count = 1 },
+        }
+    };
+    cb->barrier({}, tbarriers);
+
+    std::array<cd::rhi::ColorAttachmentInfo, 1> color_attachments {
+        cd::rhi::ColorAttachmentInfo {
+            .view = *view,
+            .load_op = cd::rhi::LoadOp::kClear,
+            .store_op = cd::rhi::StoreOp::kStore,
+            .clear_color = { .f32 = { 0.1F, 0.2F, 0.3F, 1.0F } },
+        },
+    };
+    cd::rhi::RenderPassBeginInfo rp {};
+    rp.render_area = cd::rhi::Rect2D { { 0, 0 }, { 64, 64 } };
+    rp.color_attachments = color_attachments;
+
+    cb->begin_render_pass(rp);
+    cb->set_viewport(cd::rhi::Viewport { 0.0F, 0.0F, 64.0F, 64.0F, 0.0F, 1.0F });
+    cb->set_scissor(cd::rhi::Rect2D { { 0, 0 }, { 64, 64 } });
+
+    // Intentionally omit binding a pipeline layout
+    cd::rhi::set_recording_error_assert_enabled(false);
+
+    cb->draw(3, 1, 0, 0);
+    EXPECT_TRUE(cb->recording_error());
+
+    cb->draw_indexed(6, 1, 0, 0, 0);
+    EXPECT_TRUE(cb->recording_error());
+
+    cb->draw_indirect(cd::rhi::BufferHandle {}, 0, 1, 0);
+    EXPECT_TRUE(cb->recording_error());
+
+    cb->draw_indexed_indirect(cd::rhi::BufferHandle {}, 0, 1, 0);
+    EXPECT_TRUE(cb->recording_error());
+
+    cd::rhi::set_recording_error_assert_enabled(true);
+
+    cb->end_render_pass();
+    cb->end();
+    dev->submit(*cb);
+    dev->wait_idle();
+
+    dev->destroy_texture_view(*view);
+    dev->destroy_texture(*tex);
+}
+
+TEST(VulkanDevice, CommandBufferDispatchWithNullLayoutIsSafelyRejected)
+{
+    SKIP_IF_NO_VULKAN(dev);
+    auto cb = dev->create_command_buffer(cd::rhi::QueueType::kCompute);
+    ASSERT_NE(cb, nullptr);
+
+    cb->begin();
+    EXPECT_FALSE(cb->recording_error());
+
+    cd::rhi::set_recording_error_assert_enabled(false);
+
+    cb->dispatch(1, 1, 1);
+    EXPECT_TRUE(cb->recording_error());
+
+    cb->dispatch_indirect(cd::rhi::BufferHandle {}, 0);
+    EXPECT_TRUE(cb->recording_error());
+
+    cd::rhi::set_recording_error_assert_enabled(true);
+
+    cb->end();
+    dev->submit(*cb);
+    dev->wait_idle();
+}
+
+TEST(VulkanDevice, CommandBufferRecycledComputeDispatchWithoutRebind)
+{
+    SKIP_IF_NO_VULKAN(dev);
+    auto compiler = cd::shader::make_glslang_compiler();
+    if (compiler == nullptr)
+    {
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+    }
+
+    constexpr const char* kCS = R"glsl(
+#version 450
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(std430, binding = 0) buffer Out { uint v[]; } b;
+void main() { b.v[0] = 42u; }
+)glsl";
+
+    cd::shader::CompileDesc cd_desc {};
+    cd_desc.source = kCS;
+    cd_desc.stage = cd::shader::ShaderStage::kCompute;
+    cd_desc.source_name = "test.comp";
+    auto cs_res = compiler->compile(cd_desc);
+    ASSERT_TRUE(cs_res.has_value()) << cs_res.error().message;
+
+    cd::rhi::ShaderModuleDesc sm_desc {};
+    sm_desc.stage = cd::rhi::ShaderStage::kCompute;
+    sm_desc.code = cs_res->spirv.data();
+    sm_desc.code_size = cs_res->spirv.size() * sizeof(std::uint32_t);
+    auto sm = dev->create_shader_module(sm_desc);
+    ASSERT_TRUE(sm.has_value());
+
+    const std::array<cd::rhi::DescriptorSetLayoutBinding, 1> kCompB {
+        cd::rhi::DescriptorSetLayoutBinding {
+            .binding = 0, .type = cd::rhi::DescriptorType::kStorageBuffer,
+            .count = 1, .stages = cd::rhi::ShaderStage::kCompute },
+    };
+    cd::rhi::DescriptorSetLayoutDesc sld {};
+    sld.bindings = kCompB;
+    auto sl = dev->create_descriptor_set_layout(sld);
+    ASSERT_TRUE(sl.has_value());
+
+    const std::array<cd::rhi::DescriptorSetLayoutHandle, 1> sets { *sl };
+    cd::rhi::PipelineLayoutDesc pld {};
+    pld.set_layouts = sets;
+    auto pl = dev->create_pipeline_layout(pld);
+    ASSERT_TRUE(pl.has_value());
+
+    cd::rhi::ComputePipelineDesc cpd {};
+    cpd.layout = *pl;
+    cpd.shader = *sm;
+    auto cp = dev->create_compute_pipeline(cpd);
+    ASSERT_TRUE(cp.has_value());
+
+    auto cb = dev->create_command_buffer(cd::rhi::QueueType::kCompute);
+    ASSERT_NE(cb, nullptr);
+
+    // Recording 1: binds compute pipeline
+    cb->begin();
+    cb->bind_compute_pipeline(*cp);
+    cb->end();
+
+    // Recording 2: Recycled command buffer! Intentionally DO NOT bind compute pipeline!
+    cb->begin();
+    EXPECT_FALSE(cb->recording_error());
+
+    cd::rhi::set_recording_error_assert_enabled(false);
+    cb->dispatch(1, 1, 1);
+    const bool err = cb->recording_error();
+    cd::rhi::set_recording_error_assert_enabled(true);
+
+    cb->end();
+
+    dev->destroy_compute_pipeline(*cp);
+    dev->destroy_pipeline_layout(*pl);
+    dev->destroy_descriptor_set_layout(*sl);
+    dev->destroy_shader_module(*sm);
+
+    EXPECT_TRUE(err) << "Recycled command buffer must NOT remember compute pipeline layout from previous recording!";
+}
+
+TEST(VulkanDevice, CommandBufferRecycledGraphicsDrawWithoutRebind)
+{
+    SKIP_IF_NO_VULKAN(dev);
+    auto compiler = cd::shader::make_glslang_compiler();
+    if (compiler == nullptr)
+    {
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+    }
+
+    constexpr const char* kTriVS = R"glsl(
+#version 450
+void main()
+{
+    vec2 p = vec2((gl_VertexIndex == 2) ? 3.0 : -1.0,
+                  (gl_VertexIndex == 1) ? 3.0 : -1.0);
+    gl_Position = vec4(p, 0.0, 1.0);
+}
+)glsl";
+    constexpr const char* kTriFS = R"glsl(
+#version 450
+layout(location = 0) out vec4 out_color;
+void main()
+{
+    out_color = vec4(1.0, 0.0, 0.0, 1.0);
+}
+)glsl";
+
+    cd::shader::CompileDesc vd {};
+    vd.source = kTriVS;
+    vd.stage = cd::shader::ShaderStage::kVertex;
+    vd.source_name = "triangle.vert";
+    auto vs = compiler->compile(vd);
+    ASSERT_TRUE(vs.has_value()) << vs.error().message;
+
+    cd::shader::CompileDesc fd {};
+    fd.source = kTriFS;
+    fd.stage = cd::shader::ShaderStage::kFragment;
+    fd.source_name = "triangle.frag";
+    auto fs = compiler->compile(fd);
+    ASSERT_TRUE(fs.has_value()) << fs.error().message;
+
+    cd::rhi::ShaderModuleDesc vs_desc {};
+    vs_desc.stage = cd::rhi::ShaderStage::kVertex;
+    vs_desc.code = vs->spirv.data();
+    vs_desc.code_size = vs->spirv.size() * sizeof(std::uint32_t);
+    auto vs_mod = dev->create_shader_module(vs_desc);
+    ASSERT_TRUE(vs_mod.has_value());
+
+    cd::rhi::ShaderModuleDesc fs_desc {};
+    fs_desc.stage = cd::rhi::ShaderStage::kFragment;
+    fs_desc.code = fs->spirv.data();
+    fs_desc.code_size = fs->spirv.size() * sizeof(std::uint32_t);
+    auto fs_mod = dev->create_shader_module(fs_desc);
+    ASSERT_TRUE(fs_mod.has_value());
+
+    cd::rhi::PipelineLayoutDesc pld {};
+    auto pl = dev->create_pipeline_layout(pld);
+    ASSERT_TRUE(pl.has_value());
+
+    const std::array<cd::rhi::Format, 1> color_fmts { cd::rhi::Format::kRGBA8Unorm };
+    cd::rhi::GraphicsPipelineDesc gpd {};
+    gpd.layout = *pl;
+    gpd.vertex_shader = *vs_mod;
+    gpd.fragment_shader = *fs_mod;
+    gpd.color_attachment_formats = color_fmts;
+    gpd.depth_stencil.depth_test = false;
+    gpd.depth_stencil.depth_write = false;
+    gpd.raster.cull = cd::rhi::CullMode::kNone;
+    auto gp = dev->create_graphics_pipeline(gpd);
+    ASSERT_TRUE(gp.has_value());
+
+    cd::rhi::TextureDesc desc {};
+    desc.extent = { 64, 64, 1 };
+    desc.format = cd::rhi::Format::kRGBA8Unorm;
+    desc.usage = cd::rhi::TextureUsage::kColorAttachment;
+    desc.memory = cd::rhi::MemoryUsage::kGpuOnly;
+    auto tex = dev->create_texture(desc);
+    ASSERT_TRUE(tex.has_value());
+
+    cd::rhi::TextureViewDesc vd_desc {};
+    vd_desc.texture = *tex;
+    vd_desc.type = cd::rhi::TextureType::k2D;
+    vd_desc.format = cd::rhi::Format::kRGBA8Unorm;
+    vd_desc.base_mip = 0;
+    vd_desc.mip_count = 1;
+    auto view = dev->create_texture_view(vd_desc);
+    ASSERT_TRUE(view.has_value());
+
+    auto cb = dev->create_command_buffer(cd::rhi::QueueType::kGraphics);
+    ASSERT_NE(cb, nullptr);
+
+    // Recording 1: binds graphics pipeline, but ends without end_render_pass (unbalanced/aborted pass)
+    cb->begin();
+    cb->bind_graphics_pipeline(*gp);
+    cb->end();
+
+    // Recording 2: Recycled command buffer! Begins new render pass, but does NOT bind graphics pipeline!
+    cb->begin();
+    std::array<cd::rhi::ColorAttachmentInfo, 1> color_attachments {
+        cd::rhi::ColorAttachmentInfo {
+            .view = *view,
+            .load_op = cd::rhi::LoadOp::kClear,
+            .store_op = cd::rhi::StoreOp::kStore,
+            .clear_color = { .f32 = { 0.1F, 0.2F, 0.3F, 1.0F } },
+        },
+    };
+    cd::rhi::RenderPassBeginInfo rp {};
+    rp.render_area = cd::rhi::Rect2D { { 0, 0 }, { 64, 64 } };
+    rp.color_attachments = color_attachments;
+
+    cb->begin_render_pass(rp);
+
+    cd::rhi::set_recording_error_assert_enabled(false);
+    cb->draw(3, 1, 0, 0);
+    const bool err = cb->recording_error();
+    cd::rhi::set_recording_error_assert_enabled(true);
+
+    cb->end_render_pass();
+    cb->end();
+
+    dev->destroy_graphics_pipeline(*gp);
+    dev->destroy_pipeline_layout(*pl);
+    dev->destroy_texture_view(*view);
+    dev->destroy_texture(*tex);
+    dev->destroy_shader_module(*fs_mod);
+    dev->destroy_shader_module(*vs_mod);
+
+    EXPECT_TRUE(err) << "Recycled command buffer must NOT remember graphics pipeline layout from previous recording!";
+}
+
 #if defined(_WIN32)
 namespace
 {

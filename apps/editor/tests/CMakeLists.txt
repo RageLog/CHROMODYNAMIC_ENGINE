@@ -48,3 +48,22 @@ if(TARGET cd_test_input_recorder_editor_binding)
     FOLDER "tests/input_recorder_editor_binding"
   )
 endif()
+
+cd_add_test(studio_mcp_server
+  SOURCES test_studio_mcp_server.cpp
+  DEPS
+    cd::editor_lib
+    cd::world2d
+    cd::schema
+    cd::asset_json
+    cd::core
+)
+
+if(TARGET cd_test_studio_mcp_server)
+  target_include_directories(cd_test_studio_mcp_server
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..
+  )
+  set_target_properties(cd_test_studio_mcp_server PROPERTIES
+    FOLDER "tests/studio_mcp_server"
+  )
+endif()

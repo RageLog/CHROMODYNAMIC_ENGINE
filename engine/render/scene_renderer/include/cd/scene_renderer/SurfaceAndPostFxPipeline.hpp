@@ -98,6 +98,8 @@ struct SceneFrameGraphHandles
     GiPipelineHandles gi_handles {};
 };
 
+struct SceneViewData;
+
 /// Build the complete CHROMODYNAMIC photorealistic GPU-driven `FrameGraph` for
 /// one frame:
 ///   1. `gpu_cull_and_gbuffer` (+ SSS/Hair/Clearcoat/POM)
@@ -108,7 +110,8 @@ struct SceneFrameGraphHandles
 [[nodiscard]] SceneFrameGraphHandles build_scene_renderer_framegraph(
     cd::framegraph::FrameGraph& fg,
     cd::rhi::TextureHandle backbuffer_texture,
-    const SceneRendererConfig& config
+    const SceneRendererConfig& config,
+    const SceneViewData* scene_data = nullptr
 );
 
 }  // namespace cd::scene_renderer

@@ -4,10 +4,12 @@ build-*/
 out/
 output/
 install/
+exports/
 /Tests/tests_output
 
 # --- Runtime artifacts ---
 imgui.ini
+.agents/teamwork/
 hello_audio_synth_out.wav
 hello_audio_play_out.wav
 hello_engine_out.wav

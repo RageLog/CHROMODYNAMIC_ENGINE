@@ -19,6 +19,7 @@ namespace
 {
 
 constexpr std::uint64_t kTimelineForever = std::numeric_limits<std::uint64_t>::max();
+constexpr std::uint32_t kAbortedMidFrame = 0xFFFFFFFFU;
 
 }  // namespace
 
@@ -251,6 +252,11 @@ cd::core::Result<void> Renderer::end_frame()
 {
     if (!in_progress_)
     {
+        if (current_image_index_ == kAbortedMidFrame)
+        {
+            current_image_index_ = 0;
+            return {};
+        }
         return std::unexpected(
             render_errors::make(render_errors::Code::kFrameInFlight, "end_frame called without matching begin_frame")
         );
@@ -346,6 +352,23 @@ cd::core::Result<void> Renderer::recreate_swapchain(cd::rhi::Extent2D new_extent
     // Drain in-flight frames so the driver isn't using the old swapchain
     // or its image views while we tear them down.
     device_->wait_idle();
+
+    // BUG-A1: If a frame was in-flight when recreate_swapchain is requested, cleanly
+    // conclude command buffer recording and reset frame synchronization state.
+    if (in_progress_)
+    {
+        const auto slot = static_cast<std::uint32_t>(frame_counter_ % desc_.frames_in_flight);
+        auto& f = frames_[slot];
+        f.cmd->end();
+        device_->destroy_fence(f.fence);
+        auto new_fence = device_->create_fence(/*signaled=*/true);
+        if (new_fence.has_value())
+        {
+            f.fence = *new_fence;
+        }
+        in_progress_ = false;
+        current_image_index_ = kAbortedMidFrame;
+    }
 
     // Best-effort: destroy old swapchain, then create the new one. If the
     // new create fails we leave the Renderer in a broken state (no

@@ -58,6 +58,11 @@ struct Sprite2D
     bool              lit { true };
     SpriteVisualStyle style { SpriteVisualStyle::kFlatQuad };
     std::uint32_t     anim_frame_index { 0U };
+    std::uint32_t     normal_texture_slot { 0xFFFFFFFFU };
+    std::uint32_t     emissive_texture_slot { 0xFFFFFFFFU };
+    ColorRgba8        emissive_tint { 0U, 0U, 0U, 255U };
+    float             emissive_intensity { 0.0F };
+    cd::math::Vec3f   surface_normal { 0.0F, 0.0F, 1.0F };
 };
 
 struct FlipbookFrame2D
@@ -223,7 +228,8 @@ public:
 
     void add_solid_rect(float x, float y, float w, float h, ColorRgba8 c, std::uint64_t key)
     {
-        if (w <= 0.0F || h <= 0.0F || c.a == 0U)
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || !std::isfinite(h) ||
+            w <= 0.0F || h <= 0.0F || c.a == 0U)
         {
             return;
         }
@@ -243,7 +249,8 @@ public:
         ColorRgba8 c_start, ColorRgba8 c_end,
         bool horizontal, std::uint64_t key)
     {
-        if (w <= 0.0F || h <= 0.0F)
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || !std::isfinite(h) ||
+            w <= 0.0F || h <= 0.0F)
         {
             return;
         }
@@ -264,7 +271,8 @@ public:
         float x, float y, float w, float h,
         std::uint32_t tex_slot, const UvRect2D& uv, ColorRgba8 tint, std::uint64_t key)
     {
-        if (w <= 0.0F || h <= 0.0F || tint.a == 0U)
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || !std::isfinite(h) ||
+            w <= 0.0F || h <= 0.0F || tint.a == 0U)
         {
             return;
         }
@@ -285,10 +293,15 @@ public:
         float x0, float y0, float x1, float y1,
         float thickness, ColorRgba8 c, std::uint64_t key)
     {
+        if (!std::isfinite(x0) || !std::isfinite(y0) || !std::isfinite(x1) || !std::isfinite(y1) ||
+            !std::isfinite(thickness) || thickness <= 0.0F || c.a == 0U)
+        {
+            return;
+        }
         const float dx  = x1 - x0;
         const float dy  = y1 - y0;
         const float len = std::sqrt(dx * dx + dy * dy);
-        if (len <= 0.05F || c.a == 0U)
+        if (!std::isfinite(len) || len <= 0.05F)
         {
             return;
         }
@@ -314,6 +327,11 @@ public:
         float x, float y, float w, float h,
         float thickness, ColorRgba8 c, std::uint64_t key)
     {
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || !std::isfinite(h) ||
+            !std::isfinite(thickness) || w <= 0.0F || h <= 0.0F || thickness <= 0.0F || c.a == 0U)
+        {
+            return;
+        }
         add_solid_rect(x, y, w, thickness, c, key);
         add_solid_rect(x, y + h - thickness, w, thickness, c, key);
         add_solid_rect(x, y, thickness, h, c, key);
@@ -324,7 +342,8 @@ public:
         float cx, float cy, float radius_px,
         ColorRgba8 center_col, int segments, std::uint64_t key)
     {
-        if (radius_px <= 1.0F || center_col.a == 0U)
+        if (!std::isfinite(cx) || !std::isfinite(cy) || !std::isfinite(radius_px) ||
+            radius_px <= 1.0F || center_col.a == 0U)
         {
             return;
         }

@@ -19,6 +19,8 @@ struct PackageExportRequest
 {
     std::string output_dir { "build/export/ChromodynamicGame" };
     std::string mode { "Pure2D" };  ///< "Pure2D", "Pure3D", or "Hybrid2D3D"
+    std::string game_title {};      ///< Optional game display title in manifest.json
+    std::string executable_name {}; ///< Custom standalone .exe filename (e.g. "Pong.exe"); defaults to "cd_player.exe"
     std::string stage2d_json {};    ///< Serialized `.cd2d.json` payload (optional if Pure3D)
     std::string scene3d_json {};    ///< Serialized `.cdscene.json` payload (optional if Pure2D)
     std::string project_json {};    ///< Optional `.cdproject` metadata JSON
@@ -28,6 +30,7 @@ struct PackageExportRequest
 struct PackageExportReport
 {
     std::string pak_path {};
+    std::string exe_path {};
     std::size_t pak_size_bytes { 0U };
     bool        bundled_player_exe { false };
     std::size_t bundled_dll_count { 0U };

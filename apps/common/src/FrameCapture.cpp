@@ -277,4 +277,53 @@ cd::core::Result<void> rasterize_draw_batcher_to_png(
     return cd::asset::image::write_png_rgba(out_png_path, rgba.data(), width, height);
 }
 
+std::string base64_encode(std::span<const std::uint8_t> data)
+{
+    static constexpr char kTable[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        "abcdefghijklmnopqrstuvwxyz"
+        "0123456789+/";
+
+    if (data.empty())
+    {
+        return {};
+    }
+
+    std::string out;
+    out.reserve(((data.size() + 2U) / 3U) * 4U);
+
+    std::size_t i = 0U;
+    while (i + 2U < data.size())
+    {
+        const std::uint32_t n = (static_cast<std::uint32_t>(data[i]) << 16U) |
+                                (static_cast<std::uint32_t>(data[i + 1U]) << 8U) |
+                                static_cast<std::uint32_t>(data[i + 2U]);
+        out.push_back(kTable[(n >> 18U) & 0x3FU]);
+        out.push_back(kTable[(n >> 12U) & 0x3FU]);
+        out.push_back(kTable[(n >> 6U) & 0x3FU]);
+        out.push_back(kTable[n & 0x3FU]);
+        i += 3U;
+    }
+
+    if (i + 1U == data.size())
+    {
+        const std::uint32_t n = static_cast<std::uint32_t>(data[i]) << 16U;
+        out.push_back(kTable[(n >> 18U) & 0x3FU]);
+        out.push_back(kTable[(n >> 12U) & 0x3FU]);
+        out.push_back('=');
+        out.push_back('=');
+    }
+    else if (i + 2U == data.size())
+    {
+        const std::uint32_t n = (static_cast<std::uint32_t>(data[i]) << 16U) |
+                                (static_cast<std::uint32_t>(data[i + 1U]) << 8U);
+        out.push_back(kTable[(n >> 18U) & 0x3FU]);
+        out.push_back(kTable[(n >> 12U) & 0x3FU]);
+        out.push_back(kTable[(n >> 6U) & 0x3FU]);
+        out.push_back('=');
+    }
+
+    return out;
+}
+
 }  // namespace cd::app_common

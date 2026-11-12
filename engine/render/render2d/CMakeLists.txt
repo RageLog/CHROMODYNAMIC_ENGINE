@@ -6,6 +6,7 @@
 cd_add_library(render2d
   TYPE STATIC
   SOURCES
+    src/TextureAtlas2D.cpp
     src/SpriteBatch2D.cpp
     src/Tilemap2D.cpp
     src/FormatLoaders2D.cpp
@@ -14,6 +15,7 @@ cd_add_library(render2d
     cd::core
     cd::math
     cd::schema
+    cd::asset_image
     cd::asset_json
 )
 

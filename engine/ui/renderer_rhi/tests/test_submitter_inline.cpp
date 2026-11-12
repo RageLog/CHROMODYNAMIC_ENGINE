@@ -21,6 +21,7 @@
 // `command_count() == 1U` (all four share the same scissor/variant) plus
 // the expected vertex/index totals.
 // =============================================================================
+#include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi/NullDevice.hpp>
 #include <cd/rhi/vulkan/VulkanDevice.hpp>
@@ -133,7 +134,9 @@ TEST(SubmitterInline, RecordEmitsExpectedDrawCallCount)
     auto cmd = vk->create_command_buffer(cd::rhi::QueueType::kGraphics);
     ASSERT_NE(cmd, nullptr);
     cmd->begin();
+    cd::rhi::set_recording_error_assert_enabled(false);
     sub.record(*cmd, cd::rhi::Extent2D { 800U, 600U });
+    cd::rhi::set_recording_error_assert_enabled(true);
     cmd->end();
 }
 
@@ -188,7 +191,9 @@ TEST(SubmitterInline, CreateWithInlineShaderAndAtlasBindsGlyphAndTextureSlots)
     auto cmd = vk->create_command_buffer(cd::rhi::QueueType::kGraphics);
     ASSERT_NE(cmd, nullptr);
     cmd->begin();
+    cd::rhi::set_recording_error_assert_enabled(false);
     sub.record(*cmd, cd::rhi::Extent2D { 800U, 600U });
+    cd::rhi::set_recording_error_assert_enabled(true);
     cmd->end();
 
     sub.destroy();

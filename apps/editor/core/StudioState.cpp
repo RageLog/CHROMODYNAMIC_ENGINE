@@ -3,6 +3,8 @@
 // =============================================================================
 #include "core/StudioState.hpp"
 
+#include "core/StudioMcpServer.hpp"
+
 #include <utility>
 
 namespace cd::studio

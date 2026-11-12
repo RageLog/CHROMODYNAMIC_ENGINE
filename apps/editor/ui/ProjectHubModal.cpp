@@ -8,6 +8,7 @@
 #include "StudioModifierClasses.hpp"
 
 #include <cd/ui/ChromaUi.hpp>
+#include <cd/world2d/GenreTemplates2D.hpp>
 
 #include <algorithm>
 #include <array>
@@ -83,32 +84,40 @@ void draw_project_hub_modal(StudioEngineState& s, std::uint32_t frame_w, std::ui
         const char*              title;
         const char*              badge;
         const char*              summary;
-        int                      action_id; // -2 = 2D Studio, -1 = Empty 3D, >=0 = template_id
+        int                      action_id; // -10..-2 = 2D genre, -1 = Empty 3D, >=0 = 3D template_id
         cd::ui::chroma::IconKind icon;
         ImU32                    accent;
     };
 
-    constexpr std::array<StarterCard, 6> kCards {{
-        { "2D Neon Platformer",
-          "2D ENGINE",
-          "TileBrush + 16-Tile Wang Auto-Tiling + Greedy Colliders + Lua + .cdpak Export",
-          -2, cd::ui::chroma::IconKind::kUiWidget, IM_COL32(75, 205, 255, 255) },
+    constexpr std::array<StarterCard, 8> kCards {{
+        { "2D Empty Project",
+          "EMPTY 2D",
+          "Clean blank 2D canvas: 0 clutter entities, centered Camera2D, ready to author from scratch",
+          -10, cd::ui::chroma::IconKind::kUiWidget, IM_COL32(130, 220, 255, 255) },
         { "3D Empty Stage",
-          "CLEAN 3D",
-          "Minimal Ground Floor, Hero Cube, Directional Sun (5800K) & Perspective Camera",
-          -1, cd::ui::chroma::IconKind::kCube, IM_COL32(130, 215, 255, 255) },
+          "EMPTY 3D",
+          "Clean blank 3D world: Minimal Ground Floor, Directional Sun (5800K) & Perspective Camera",
+          -1, cd::ui::chroma::IconKind::kCube, IM_COL32(140, 205, 255, 255) },
+        { "2D Neon Cyber Pong",
+          "ARCADE",
+          "1P vs CPU arcade court: Spin paddles, accelerating plasma ball, spark FX & .exe export",
+          -11, cd::ui::chroma::IconKind::kSphere, IM_COL32(55, 235, 255, 255) },
+        { "2D Break the Bridges",
+          "DEMOLITION",
+          "Multi-span canyon bridges + marching raiders: shatter piers & collapse raiders into the abyss!",
+          -12, cd::ui::chroma::IconKind::kPhysics, IM_COL32(255, 185, 65, 255) },
+        { "2D Neon Platformer",
+          "PLATFORMER",
+          "16-Tile Wang Auto-Tiling, Coyote/Wall Jump, Greedy Colliders, Lua 5.4 & Soft Shadows",
+          -2, cd::ui::chroma::IconKind::kUiWidget, IM_COL32(75, 240, 175, 255) },
+        { "2D Top-Down RPG",
+          "2D RPG",
+          "Y-Sorted dungeon walls, flickering 2D shadow-casting torches, keys, chests & patrols",
+          -13, cd::ui::chroma::IconKind::kWorld, IM_COL32(235, 160, 255, 255) },
         { "3D Physics Sandbox",
           "VPHYSICS",
           "25-deg OBB Ramp, 5x RigidBody Crate Stack, Metallic Sphere & Skinned Avatar",
           1, cd::ui::chroma::IconKind::kPhysics, IM_COL32(95, 235, 165, 255) },
-        { "3D Cyber-Core Action",
-          "PLAYABLE",
-          "Playable 3rd-Person Game: WASD Character, JumpPads, Moving Platforms & AI Bot",
-          13, cd::ui::chroma::IconKind::kAvatar, IM_COL32(255, 190, 90, 255) },
-        { "3D PBR Material Matrix",
-          "RENDER",
-          "5x5 Cook-Torrance Metallic/Roughness Sweep, Multi-Scatter & Iridescence",
-          4, cd::ui::chroma::IconKind::kSphere, IM_COL32(195, 155, 255, 255) },
         { "3D Sponza Atrium & GI",
           "WORLD GI",
           "Classical Atrium glTF, Clustered Multi-Light UBO, CSM Shadows & Ray-Traced DDGI",
@@ -122,7 +131,7 @@ void draw_project_hub_modal(StudioEngineState& s, std::uint32_t frame_w, std::ui
             const auto& c = kCards[i];
             ImGui::TableNextColumn();
             ImGui::PushID(static_cast<int>(i));
-            ImGui::BeginChild("card_box", ImVec2(0.0F, 118.0F), true);
+            ImGui::BeginChild("card_box", ImVec2(0.0F, 114.0F), true);
 
             const ImVec4 accent_v4 {
                 static_cast<float>(c.accent & 0xFFU) / 255.0F,
@@ -134,14 +143,26 @@ void draw_project_hub_modal(StudioEngineState& s, std::uint32_t frame_w, std::ui
             ImGui::TextDisabled("%s", c.summary);
             ImGui::Separator();
 
-            const std::string btn_lbl = std::string("Create ") + c.title + "##create_btn";
-            if (ImGui::IconButton(btn_lbl.c_str(), c.icon, c.accent, false, ImVec2(-1.0F, 26.0F)))
+            const std::string btn_lbl = std::string("Open ") + c.title + "##create_btn";
+            if (ImGui::IconButton(btn_lbl.c_str(), c.icon, c.accent, false, ImVec2(-1.0F, 25.0F)))
             {
                 w.show_project_manager = false;
-                if (c.action_id == -2)
+                if (c.action_id <= -2)
                 {
                     cst.workspace_mode = 3;
-                    studio_2d().reset_to_starter_stage();
+                    auto& s2d          = studio_2d();
+                    auto gkind         = cd::world2d::GenreTemplateKind2D::kActionPlatformer;
+                    if (c.action_id == -10)      gkind = cd::world2d::GenreTemplateKind2D::kEmpty2D;
+                    else if (c.action_id == -11) gkind = cd::world2d::GenreTemplateKind2D::kPongArcade;
+                    else if (c.action_id == -12) gkind = cd::world2d::GenreTemplateKind2D::kBreakTheBridges;
+                    else if (c.action_id == -13) gkind = cd::world2d::GenreTemplateKind2D::kTopDownRpgDungeon;
+                    s2d.command_bus.load_genre_template(s2d.stage, gkind);
+                    s2d.stage.bind_starter_atlas(0U, 32U);
+                    s2d.active_genre_template_idx = static_cast<int>(gkind);
+                    s2d.selected_entity_id        = s2d.stage.entities().empty() ? 0U : s2d.stage.entities().front().id;
+                    s2d.sync_lua_buffer_from_selected();
+                    w.active_project_name = std::string(s2d.stage.name());
+                    w.active_level_name   = "stages/main.cd2d.json";
                 }
                 else if (c.action_id == -1)
                 {
@@ -164,10 +185,10 @@ void draw_project_hub_modal(StudioEngineState& s, std::uint32_t frame_w, std::ui
 
     ImGui::SameLine(0.0F, 10.0F);
 
-    // ---- Right Column: Showcase & Saved Projects on Disk ----
+    // ---- Right Column: Sample Projects & Showcases on Disk ----
     ImGui::BeginChild("hub_disk_projects_col", ImVec2(right_w, avail_h), true);
-    ImGui::TextColored(ImVec4(0.88F, 0.92F, 0.98F, 1.0F), "Projects & Showcases on Disk");
-    ImGui::TextDisabled("Click any project or saved scene to open.");
+    ImGui::TextColored(ImVec4(0.88F, 0.92F, 0.98F, 1.0F), "Sample Projects & Showcases on Disk");
+    ImGui::TextDisabled("Click any Empty Project, 2D Sample Game, or 3D Showcase on disk.");
     ImGui::Separator();
 
     if (std::filesystem::exists("studio_scene.cdscene.json"))
@@ -188,18 +209,44 @@ void draw_project_hub_modal(StudioEngineState& s, std::uint32_t frame_w, std::ui
         const char* label;
         const char* path;
         const char* tag;
+        ImU32       tint;
     };
-    constexpr std::array<DiskShowcaseItem, 10> kShowcases {{
-        { "01  PBR Materials & Hair",        "showcases/01_pbr_materials_sss_hair/project.cdproj",         "PBR" },
-        { "02  Realtime GI & Sponza",        "showcases/02_realtime_gi_raytracing/project.cdproj",         "DDGI" },
-        { "03  Atmosphere, Clouds & Ocean",  "showcases/03_atmosphere_clouds_ocean_world/project.cdproj",  "SKY" },
-        { "04  GPU-Driven Geometry",         "showcases/04_gpu_driven_geometry_textures/project.cdproj",   "GPU" },
-        { "05  Physics, Ragdoll & Fracture", "showcases/05_physics_destruction_fluids/project.cdproj",     "PHYS" },
-        { "06  Post-FX, Optics & Camera",    "showcases/06_postfx_upscaling_camera/project.cdproj",        "POST" },
-        { "07  Particles, Decals & Foliage", "showcases/07_particles_decals_foliage/project.cdproj",       "VFX" },
-        { "08  Procedural Asset Synthesis",  "showcases/08_procedural_asset_synthesis/project.cdproj",     "PROC" },
-        { "09  Studio Tools & 250 Nodes",    "showcases/09_editor_tools_observability/project.cdproj",     "TOOL" },
-        { "10  Gameplay & Skinned Avatars",  "showcases/10_gameplay_animation_networking/project.cdproj",  "GAME" },
+    constexpr std::array<DiskShowcaseItem, 6> kSampleProjects2D {{
+        { "00  Empty 2D Project (Blank)",    "projects/00_empty_project/project.cdproj",     "EMPTY",  IM_COL32(130, 220, 255, 255) },
+        { "01  Neon Cyber Pong (Arcade)",    "projects/01_pong/project.cdproj",              "PONG",   IM_COL32(60, 240, 255, 255) },
+        { "02  Break the Bridges (Action)",  "projects/02_break_the_bridges/project.cdproj", "BRIDGE", IM_COL32(255, 185, 70, 255) },
+        { "03  Neon Cavern Platformer",      "projects/03_neon_platformer/project.cdproj",   "2D",     IM_COL32(80, 235, 170, 255) },
+        { "04  Top-Down RPG Dungeon",        "projects/04_topdown_rpg/project.cdproj",       "RPG",    IM_COL32(225, 160, 255, 255) },
+        { "05  Twin-Stick Survival Arena",   "projects/05_twinstick_arena/project.cdproj",   "ARENA",  IM_COL32(255, 130, 145, 255) },
+    }};
+
+    ImGui::TextColored(ImVec4(0.45F, 0.90F, 1.0F, 1.0F), "2D Empty & Sample Game Projects (projects/)");
+    for (const auto& sp : kSampleProjects2D)
+    {
+        const std::string row_id = std::string(sp.label) + "##hub_sp_" + sp.path;
+        if (ImGui::IconSelectable(row_id.c_str(),
+                                  cd::ui::chroma::IconKind::kFileProject,
+                                  sp.tint,
+                                  false,
+                                  sp.tag))
+        {
+            w.show_project_manager = false;
+            (void)scene_ops::load_project_or_scene_from_disk(s, sp.path);
+            studio_2d().stage.bind_starter_atlas(0U, 32U);
+        }
+    }
+
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.96F, 0.80F, 0.42F, 1.0F), "3D Rendering & Physics Showcases (showcases/)");
+    constexpr std::array<DiskShowcaseItem, 8> kShowcases {{
+        { "01  PBR Materials & Hair",        "showcases/01_pbr_materials_sss_hair/project.cdproj",         "PBR",  IM_COL32(245, 198, 92, 255) },
+        { "02  Realtime GI & Sponza",        "showcases/02_realtime_gi_raytracing/project.cdproj",         "DDGI", IM_COL32(245, 198, 92, 255) },
+        { "03  Atmosphere, Clouds & Ocean",  "showcases/03_atmosphere_clouds_ocean_world/project.cdproj",  "SKY",  IM_COL32(245, 198, 92, 255) },
+        { "04  GPU-Driven Geometry",         "showcases/04_gpu_driven_geometry_textures/project.cdproj",   "GPU",  IM_COL32(245, 198, 92, 255) },
+        { "05  Physics, Ragdoll & Fracture", "showcases/05_physics_destruction_fluids/project.cdproj",     "PHYS", IM_COL32(245, 198, 92, 255) },
+        { "06  Post-FX, Optics & Camera",    "showcases/06_postfx_upscaling_camera/project.cdproj",        "POST", IM_COL32(245, 198, 92, 255) },
+        { "07  Particles, Decals & Foliage", "showcases/07_particles_decals_foliage/project.cdproj",       "VFX",  IM_COL32(245, 198, 92, 255) },
+        { "08  Gameplay & Skinned Avatars",  "showcases/10_gameplay_animation_networking/project.cdproj",  "GAME", IM_COL32(245, 198, 92, 255) },
     }};
 
     for (const auto& sc : kShowcases)
@@ -207,7 +254,7 @@ void draw_project_hub_modal(StudioEngineState& s, std::uint32_t frame_w, std::ui
         const std::string row_id = std::string(sc.label) + "##hub_sc_" + sc.path;
         if (ImGui::IconSelectable(row_id.c_str(),
                                   cd::ui::chroma::IconKind::kFileProject,
-                                  IM_COL32(245, 198, 92, 255),
+                                  sc.tint,
                                   false,
                                   sc.tag))
         {

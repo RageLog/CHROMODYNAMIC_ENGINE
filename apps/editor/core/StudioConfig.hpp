@@ -15,29 +15,43 @@
 namespace cd::studio
 {
 
+enum class McpTransportKind : std::uint8_t
+{
+    kDisabled,
+    kStdio,
+    kTcp
+};
+
 struct StudioConfig
 {
-    std::string     capture_png          {};
-    std::uint32_t   capture_frame        { 8U };
-    std::uint32_t   max_frames           { 0U };
-    bool            start_pie            { false };
-    bool            autopilot_e2e        { false };
-    bool            force_project_manager{ false };
-    bool            self_test_all        { false };
-    std::string     capture_gameplay_dir {};
-    bool            demo_all_phases      { false };
-    bool            load_context_demo    { false };
-    int             initial_template     { -1 };
-    std::string     initial_scene        {};
-    bool            start_2d_studio      { false };
-    std::string     exec_2d_cmds         {};
-    std::uint32_t   playtest_2d_frames   { 0U };
-    std::string     telemetry_out_path   {};
-    bool            has_cli_cam_eye      { false };
-    cd::math::Vec3f cli_cam_eye          {};
-    bool            has_cli_cam_target   { false };
-    cd::math::Vec3f cli_cam_target       {};
-    bool            headless_smoke       { false };
+    std::string      capture_png          {};
+    std::uint32_t    capture_frame        { 8U };
+    std::uint32_t    max_frames           { 0U };
+    bool             start_pie            { false };
+    bool             autopilot_e2e        { false };
+    bool             force_project_manager{ false };
+    bool             self_test_all        { false };
+    std::string      capture_gameplay_dir {};
+    bool             demo_all_phases      { false };
+    bool             load_context_demo    { false };
+    int              initial_template     { -1 };
+    std::string      initial_scene        {};
+    std::string      project_path         {};
+    std::string      save_project_2d_dir  {};
+    std::string      export_standalone_dir{};
+    std::string      export_exe_name      {};
+    bool             start_2d_studio      { false };
+    std::string      initial_genre_2d     {};
+    std::string      exec_2d_cmds         {};
+    std::uint32_t    playtest_2d_frames   { 0U };
+    std::string      telemetry_out_path   {};
+    bool             has_cli_cam_eye      { false };
+    cd::math::Vec3f  cli_cam_eye          {};
+    bool             has_cli_cam_target   { false };
+    cd::math::Vec3f  cli_cam_target       {};
+    bool             headless_smoke       { false };
+    McpTransportKind mcp_transport        { McpTransportKind::kDisabled };
+    std::uint16_t    mcp_port             { 8080U };
 };
 
 struct CliParseResult

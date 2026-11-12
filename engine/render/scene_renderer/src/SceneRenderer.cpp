@@ -3,9 +3,11 @@
 // FAZ 4 (Waves 4.1, 4.2, 4.3, 4.4) — Unified GPU-Driven & Photorealistic
 // SceneRenderer FrameGraph Pipeline Implementation.
 // =============================================================================
+#include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/scene_renderer/GlobalIlluminationPass.hpp>
 #include <cd/scene_renderer/GpuDrivenPass.hpp>
 #include <cd/scene_renderer/PhotometricAndAtmospherePass.hpp>
+#include <cd/scene_renderer/SceneRenderer.hpp>
 #include <cd/scene_renderer/SurfaceAndPostFxPipeline.hpp>
 
 #include <algorithm>
@@ -20,7 +22,184 @@ namespace cd::scene_renderer
 namespace
 {
 constexpr float kPi = 3.14159265358979323846F;
+
+struct SkyPassPush
+{
+    float cam_right[4] { 1.0F, 0.0F, 0.0F, 1.0F };
+    float cam_up[4]    { 0.0F, 1.0F, 0.0F, 1.0F };
+    float cam_fwd[4]   { 0.0F, 0.0F, -1.0F, 0.0F };
+    float sun_dir[4]   { 0.0F, -1.0F, 0.0F, 1.0F };
+    float sun_color[4] { 1.0F, 1.0F, 1.0F, 1.0F };
+};
+
+struct GBufferPrimPush
+{
+    cd::math::Mat4f mvp { cd::math::Mat4f::identity() };
+    cd::math::Mat4f model { cd::math::Mat4f::identity() };
+    cd::math::Vec4f tint { 1.0F, 1.0F, 1.0F, 1.0F };
+    cd::math::Vec4f fx_params { 0.0F, 0.5F, 0.0F, 0.0F }; // metallic, roughness, alpha_mode, alpha_cutoff
+};
+
+struct VelocityPush
+{
+    cd::math::Mat4f curr_mvp { cd::math::Mat4f::identity() };
+    cd::math::Mat4f prev_mvp { cd::math::Mat4f::identity() };
+};
+
+struct PostAaPush
+{
+    float feedback_factor { 0.95F };
+    float motion_scale { 1.0F };
+    float pad[2] {};
+};
+
+struct BloomPush
+{
+    float threshold { 1.0F };
+    float knee { 0.5F };
+    float intensity { 0.04F };
+    float pad {};
+};
+
+struct DofPush
+{
+    float focus_distance { 10.0F };
+    float focal_range { 3.0F };
+    float max_coc { 16.0F };
+    float blur_strength { 1.0F };
+};
+
+struct CompositePush
+{
+    std::uint32_t tonemap_operator { 1U };
+    float exposure { 1.0F };
+    float bloom_strength { 0.04F };
+    float vignette { 0.25F };
+};
 }  // namespace
+
+AnalyticalSkyPush build_analytical_sky_push(const SkyPassParams& params) noexcept
+{
+    cd::math::Vec3f fwd = params.camera_target - params.camera_eye;
+    const float fwd_len = std::sqrt(fwd.x * fwd.x + fwd.y * fwd.y + fwd.z * fwd.z);
+    if (fwd_len > 1e-6F)
+    {
+        fwd.x /= fwd_len;
+        fwd.y /= fwd_len;
+        fwd.z /= fwd_len;
+    }
+    else
+    {
+        fwd = { 0.0F, 0.0F, -1.0F };
+    }
+
+    const cd::math::Vec3f world_up { 0.0F, 1.0F, 0.0F };
+    cd::math::Vec3f right = cd::math::cross(fwd, world_up);
+    const float right_len = std::sqrt(right.x * right.x + right.y * right.y + right.z * right.z);
+    if (right_len > 1e-6F)
+    {
+        right.x /= right_len;
+        right.y /= right_len;
+        right.z /= right_len;
+    }
+    else
+    {
+        right = { 1.0F, 0.0F, 0.0F };
+    }
+
+    const cd::math::Vec3f up = cd::math::cross(right, fwd);
+    const float half_h = std::tan(params.fov_y * 0.5F);
+    const float half_w = half_h * params.aspect;
+
+    AnalyticalSkyPush push {};
+    push.cam_right[0] = right.x;
+    push.cam_right[1] = right.y;
+    push.cam_right[2] = right.z;
+    push.cam_right[3] = half_w;
+
+    push.cam_up[0] = up.x;
+    push.cam_up[1] = up.y;
+    push.cam_up[2] = up.z;
+    push.cam_up[3] = half_h;
+
+    push.cam_fwd[0] = fwd.x;
+    push.cam_fwd[1] = fwd.y;
+    push.cam_fwd[2] = fwd.z;
+    push.cam_fwd[3] = 0.0F;
+
+    push.sun_dir[0] = params.sun_dir.x;
+    push.sun_dir[1] = params.sun_dir.y;
+    push.sun_dir[2] = params.sun_dir.z;
+    push.sun_dir[3] = params.sun_intensity;
+
+    push.sun_color[0] = params.sun_color.x;
+    push.sun_color[1] = params.sun_color.y;
+    push.sun_color[2] = params.sun_color.z;
+    push.sun_color[3] = params.has_sun ? 1.0F : 0.0F;
+
+    return push;
+}
+
+void record_analytical_sky(
+    cd::rhi::IDrawRecorder& cmd,
+    cd::rhi::PipelineLayoutHandle layout,
+    const SkyPassParams& params
+)
+{
+    if (!layout.is_valid())
+    {
+        return;
+    }
+    const auto spush = build_analytical_sky_push(params);
+    cmd.push_constants(
+        layout,
+        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+        0,
+        sizeof(spush),
+        &spush
+    );
+    cmd.draw(3, 1, 0, 0);
+}
+
+void record_scene_mesh_instance(
+    cd::rhi::IDrawRecorder& cmd,
+    cd::rhi::PipelineLayoutHandle layout,
+    const SceneMeshInstance& mesh,
+    const cd::math::Mat4f& view_proj
+)
+{
+    if (!layout.is_valid() || !mesh.vertex_buffer.is_valid())
+    {
+        return;
+    }
+    GBufferPrimPush push {};
+    push.model = mesh.model_matrix;
+    push.mvp = view_proj * mesh.model_matrix;
+    push.tint = mesh.tint;
+    push.fx_params = {
+        mesh.metallic,
+        mesh.roughness,
+        (mesh.alpha_cutoff > 0.0F ? 1.0F : 0.0F),
+        mesh.alpha_cutoff
+    };
+    cmd.push_constants(
+        layout,
+        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+        0,
+        sizeof(push),
+        &push
+    );
+    cmd.bind_vertex_buffer(0, mesh.vertex_buffer, 0);
+    if (mesh.index_buffer.is_valid() && mesh.index_count > 0U)
+    {
+        cmd.bind_index_buffer(mesh.index_buffer, 0, mesh.index_type);
+        cmd.draw_indexed(mesh.index_count, 1, mesh.first_index, mesh.vertex_offset, 0);
+    }
+    else if (mesh.index_count > 0U)
+    {
+        cmd.draw(mesh.index_count, 1, 0, 0);
+    }
+}
 
 // =============================================================================
 // Wave 4.1: GPU-Driven Culling, DrawIndexedIndirectCount & Meshlet LOD Cut
@@ -232,7 +411,8 @@ AtmosphereVolumetricHandles register_atmosphere_and_volumetric_passes(
     cd::framegraph::ResourceHandle depth,
     cd::framegraph::ResourceHandle& hdr_scene,
     cd::rhi::Extent2D viewport,
-    const AtmosphereVolumetricConfig& config
+    const AtmosphereVolumetricConfig& config,
+    const SceneViewData* /*scene_data*/
 )
 {
     AtmosphereVolumetricHandles h {};
@@ -273,7 +453,17 @@ AtmosphereVolumetricHandles register_atmosphere_and_volumetric_passes(
         pass.name = "atmosphere_luts_and_sky";
         pass.reads = reads;
         pass.writes = writes;
-        pass.execute = [](cd::rhi::ICommandBuffer&) {};
+        pass.execute = [viewport](cd::rhi::ICommandBuffer& cmd) {
+            cmd.push_debug_group("atmosphere_luts_and_sky");
+            cmd.set_viewport(cd::rhi::Viewport {
+                0.0F, 0.0F,
+                static_cast<float>(viewport.width),
+                static_cast<float>(viewport.height),
+                0.0F, 1.0F
+            });
+            cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, viewport });
+            cmd.pop_debug_group();
+        };
         fg.add_pass(pass);
     }
 
@@ -297,7 +487,10 @@ AtmosphereVolumetricHandles register_atmosphere_and_volumetric_passes(
         pass.name = "volumetric_froxel_fog";
         pass.reads = reads;
         pass.writes = writes;
-        pass.execute = [](cd::rhi::ICommandBuffer&) {};
+        pass.execute = [](cd::rhi::ICommandBuffer& cmd) {
+            cmd.push_debug_group("volumetric_froxel_fog");
+            cmd.pop_debug_group();
+        };
         fg.add_pass(pass);
     }
 
@@ -320,7 +513,18 @@ AtmosphereVolumetricHandles register_atmosphere_and_volumetric_passes(
         pass.name = "volumetric_clouds";
         pass.reads = reads;
         pass.writes = writes;
-        pass.execute = [](cd::rhi::ICommandBuffer&) {};
+        pass.execute = [w, ht](cd::rhi::ICommandBuffer& cmd) {
+            cmd.push_debug_group("volumetric_clouds");
+            const cd::rhi::Extent2D cext { std::max(w / 2U, 1U), std::max(ht / 2U, 1U) };
+            cmd.set_viewport(cd::rhi::Viewport {
+                0.0F, 0.0F,
+                static_cast<float>(cext.width),
+                static_cast<float>(cext.height),
+                0.0F, 1.0F
+            });
+            cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, cext });
+            cmd.pop_debug_group();
+        };
         fg.add_pass(pass);
     }
 
@@ -343,7 +547,18 @@ AtmosphereVolumetricHandles register_atmosphere_and_volumetric_passes(
         pass.name = "light_shafts_radial";
         pass.reads = reads;
         pass.writes = writes;
-        pass.execute = [](cd::rhi::ICommandBuffer&) {};
+        pass.execute = [w, ht](cd::rhi::ICommandBuffer& cmd) {
+            cmd.push_debug_group("light_shafts_radial");
+            const cd::rhi::Extent2D sext { std::max(w / 2U, 1U), std::max(ht / 2U, 1U) };
+            cmd.set_viewport(cd::rhi::Viewport {
+                0.0F, 0.0F,
+                static_cast<float>(sext.width),
+                static_cast<float>(sext.height),
+                0.0F, 1.0F
+            });
+            cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, sext });
+            cmd.pop_debug_group();
+        };
         fg.add_pass(pass);
     }
 
@@ -360,7 +575,8 @@ GiPipelineHandles register_gi_passes(
     cd::framegraph::ResourceHandle gbuffer_normal_roughness,
     cd::framegraph::ResourceHandle& hdr_scene,
     cd::rhi::Extent2D viewport,
-    const GiPipelineConfig& config
+    const GiPipelineConfig& config,
+    const SceneViewData* /*scene_data*/
 )
 {
     GiPipelineHandles h {};
@@ -389,7 +605,17 @@ GiPipelineHandles register_gi_passes(
         pass.name = "gi_gtao";
         pass.reads = reads;
         pass.writes = writes;
-        pass.execute = [](cd::rhi::ICommandBuffer&) {};
+        pass.execute = [viewport](cd::rhi::ICommandBuffer& cmd) {
+            cmd.push_debug_group("gi_gtao");
+            cmd.set_viewport(cd::rhi::Viewport {
+                0.0F, 0.0F,
+                static_cast<float>(viewport.width),
+                static_cast<float>(viewport.height),
+                0.0F, 1.0F
+            });
+            cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, viewport });
+            cmd.pop_debug_group();
+        };
         fg.add_pass(pass);
     }
 
@@ -408,7 +634,21 @@ GiPipelineHandles register_gi_passes(
         pass.name = "gi_ssr";
         pass.reads = reads;
         pass.writes = writes;
-        pass.execute = [](cd::rhi::ICommandBuffer&) {};
+        pass.execute = [viewport](cd::rhi::ICommandBuffer& cmd) {
+            cmd.push_debug_group("gi_ssr");
+            const cd::rhi::Extent2D ssr_ext {
+                std::max(viewport.width / 2U, 1U),
+                std::max(viewport.height / 2U, 1U)
+            };
+            cmd.set_viewport(cd::rhi::Viewport {
+                0.0F, 0.0F,
+                static_cast<float>(ssr_ext.width),
+                static_cast<float>(ssr_ext.height),
+                0.0F, 1.0F
+            });
+            cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, ssr_ext });
+            cmd.pop_debug_group();
+        };
         fg.add_pass(pass);
     }
 
@@ -427,7 +667,10 @@ GiPipelineHandles register_gi_passes(
         pass.name = "gi_ddgi_probes";
         pass.reads = reads;
         pass.writes = writes;
-        pass.execute = [](cd::rhi::ICommandBuffer&) {};
+        pass.execute = [](cd::rhi::ICommandBuffer& cmd) {
+            cmd.push_debug_group("gi_ddgi_probes");
+            cmd.pop_debug_group();
+        };
         fg.add_pass(pass);
     }
 
@@ -446,7 +689,10 @@ GiPipelineHandles register_gi_passes(
         pass.name = "gi_restir_di";
         pass.reads = reads;
         pass.writes = writes;
-        pass.execute = [](cd::rhi::ICommandBuffer&) {};
+        pass.execute = [](cd::rhi::ICommandBuffer& cmd) {
+            cmd.push_debug_group("gi_restir_di");
+            cmd.pop_debug_group();
+        };
         fg.add_pass(pass);
     }
 
@@ -465,7 +711,10 @@ GiPipelineHandles register_gi_passes(
         pass.name = "gi_restir_gi";
         pass.reads = reads;
         pass.writes = writes;
-        pass.execute = [](cd::rhi::ICommandBuffer&) {};
+        pass.execute = [](cd::rhi::ICommandBuffer& cmd) {
+            cmd.push_debug_group("gi_restir_gi");
+            cmd.pop_debug_group();
+        };
         fg.add_pass(pass);
     }
 
@@ -484,7 +733,10 @@ GiPipelineHandles register_gi_passes(
         pass.name = "gi_nrc_inference";
         pass.reads = reads;
         pass.writes = writes;
-        pass.execute = [](cd::rhi::ICommandBuffer&) {};
+        pass.execute = [](cd::rhi::ICommandBuffer& cmd) {
+            cmd.push_debug_group("gi_nrc_inference");
+            cmd.pop_debug_group();
+        };
         fg.add_pass(pass);
     }
 
@@ -503,7 +755,10 @@ GiPipelineHandles register_gi_passes(
         pass.name = "gi_atrous_svgf_denoise";
         pass.reads = reads;
         pass.writes = writes;
-        pass.execute = [](cd::rhi::ICommandBuffer&) {};
+        pass.execute = [](cd::rhi::ICommandBuffer& cmd) {
+            cmd.push_debug_group("gi_atrous_svgf_denoise");
+            cmd.pop_debug_group();
+        };
         fg.add_pass(pass);
     }
 
@@ -521,7 +776,17 @@ GiPipelineHandles register_gi_passes(
         pass.name = "gi_ibl_gpu_lookup";
         pass.reads = reads;
         pass.writes = writes;
-        pass.execute = [](cd::rhi::ICommandBuffer&) {};
+        pass.execute = [viewport](cd::rhi::ICommandBuffer& cmd) {
+            cmd.push_debug_group("gi_ibl_gpu_lookup");
+            cmd.set_viewport(cd::rhi::Viewport {
+                0.0F, 0.0F,
+                static_cast<float>(viewport.width),
+                static_cast<float>(viewport.height),
+                0.0F, 1.0F
+            });
+            cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, viewport });
+            cmd.pop_debug_group();
+        };
         fg.add_pass(pass);
     }
 
@@ -612,7 +877,8 @@ std::array<float, 2> eval_pom_uv_offset(
 SceneFrameGraphHandles build_scene_renderer_framegraph(
     cd::framegraph::FrameGraph& fg,
     cd::rhi::TextureHandle backbuffer_texture,
-    const SceneRendererConfig& config
+    const SceneRendererConfig& config,
+    const SceneViewData* scene_data
 )
 {
     SceneFrameGraphHandles h {};
@@ -653,7 +919,27 @@ SceneFrameGraphHandles build_scene_renderer_framegraph(
         cd::framegraph::PassDesc pass {};
         pass.name = "gpu_cull_and_gbuffer";
         pass.writes = writes;
-        pass.execute = [](cd::rhi::ICommandBuffer&) {};
+        pass.execute = [viewport = config.viewport, scene_data](cd::rhi::ICommandBuffer& cmd) {
+            cmd.push_debug_group("gpu_cull_and_gbuffer");
+            cmd.set_viewport(cd::rhi::Viewport {
+                0.0F, 0.0F,
+                static_cast<float>(viewport.width),
+                static_cast<float>(viewport.height),
+                0.0F, 1.0F
+            });
+            cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, viewport });
+
+            if (scene_data != nullptr && !scene_data->meshes.empty())
+            {
+                const cd::math::Mat4f vp = scene_data->proj_matrix * scene_data->view_matrix;
+                for (const auto& mesh : scene_data->meshes)
+                {
+                    record_scene_mesh_instance(cmd, cd::rhi::PipelineLayoutHandle {}, mesh, vp);
+                }
+            }
+
+            cmd.pop_debug_group();
+        };
         fg.add_pass(pass);
     }
 
@@ -674,17 +960,27 @@ SceneFrameGraphHandles build_scene_renderer_framegraph(
         pass.name = "decals_terrain_water_particles";
         pass.reads = reads;
         pass.writes = writes;
-        pass.execute = [](cd::rhi::ICommandBuffer&) {};
+        pass.execute = [viewport = config.viewport](cd::rhi::ICommandBuffer& cmd) {
+            cmd.push_debug_group("decals_terrain_water_particles");
+            cmd.set_viewport(cd::rhi::Viewport {
+                0.0F, 0.0F,
+                static_cast<float>(viewport.width),
+                static_cast<float>(viewport.height),
+                0.0F, 1.0F
+            });
+            cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, viewport });
+            cmd.pop_debug_group();
+        };
         fg.add_pass(pass);
     }
 
     // 3) Atmosphere LUTs, Volumetric Froxel Fog, Clouds & Light Shafts
     h.atmosphere_handles = register_atmosphere_and_volumetric_passes(
-        fg, h.depth, h.hdr_scene, config.viewport, config.atmosphere);
+        fg, h.depth, h.hdr_scene, config.viewport, config.atmosphere, scene_data);
 
     // 4) Global Illumination (GTAO, SSR, DDGI, ReSTIR DI/GI, NRC, SVGF, IBL GPU)
     h.gi_handles = register_gi_passes(
-        fg, h.depth, h.gbuffer_normal_roughness, h.hdr_scene, config.viewport, config.gi);
+        fg, h.depth, h.gbuffer_normal_roughness, h.hdr_scene, config.viewport, config.gi, scene_data);
 
     // 5) Velocity + TAA / SMAA + Auto Exposure + Bloom + DoF + Motion Blur + Composite
     if (config.postfx.enable_velocity)
@@ -700,7 +996,17 @@ SceneFrameGraphHandles build_scene_renderer_framegraph(
         pass.name = "velocity_motion_vectors";
         pass.reads = reads;
         pass.writes = writes;
-        pass.execute = [](cd::rhi::ICommandBuffer&) {};
+        pass.execute = [viewport = config.viewport](cd::rhi::ICommandBuffer& cmd) {
+            cmd.push_debug_group("velocity_motion_vectors");
+            cmd.set_viewport(cd::rhi::Viewport {
+                0.0F, 0.0F,
+                static_cast<float>(viewport.width),
+                static_cast<float>(viewport.height),
+                0.0F, 1.0F
+            });
+            cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, viewport });
+            cmd.pop_debug_group();
+        };
         fg.add_pass(pass);
     }
 
@@ -722,7 +1028,17 @@ SceneFrameGraphHandles build_scene_renderer_framegraph(
         pass.name = config.postfx.enable_taa ? "post_taa" : "post_smaa";
         pass.reads = reads;
         pass.writes = writes;
-        pass.execute = [](cd::rhi::ICommandBuffer&) {};
+        pass.execute = [viewport = config.viewport](cd::rhi::ICommandBuffer& cmd) {
+            cmd.push_debug_group("post_aa");
+            cmd.set_viewport(cd::rhi::Viewport {
+                0.0F, 0.0F,
+                static_cast<float>(viewport.width),
+                static_cast<float>(viewport.height),
+                0.0F, 1.0F
+            });
+            cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, viewport });
+            cmd.pop_debug_group();
+        };
         fg.add_pass(pass);
         current_color = h.post_aa;
     }
@@ -740,7 +1056,21 @@ SceneFrameGraphHandles build_scene_renderer_framegraph(
         pass.name = "post_bloom";
         pass.reads = reads;
         pass.writes = writes;
-        pass.execute = [](cd::rhi::ICommandBuffer&) {};
+        pass.execute = [viewport = config.viewport](cd::rhi::ICommandBuffer& cmd) {
+            cmd.push_debug_group("post_bloom");
+            const cd::rhi::Extent2D bext {
+                std::max(viewport.width / 2U, 1U),
+                std::max(viewport.height / 2U, 1U)
+            };
+            cmd.set_viewport(cd::rhi::Viewport {
+                0.0F, 0.0F,
+                static_cast<float>(bext.width),
+                static_cast<float>(bext.height),
+                0.0F, 1.0F
+            });
+            cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, bext });
+            cmd.pop_debug_group();
+        };
         fg.add_pass(pass);
     }
 
@@ -758,7 +1088,17 @@ SceneFrameGraphHandles build_scene_renderer_framegraph(
         pass.name = "post_dof";
         pass.reads = reads;
         pass.writes = writes;
-        pass.execute = [](cd::rhi::ICommandBuffer&) {};
+        pass.execute = [viewport = config.viewport](cd::rhi::ICommandBuffer& cmd) {
+            cmd.push_debug_group("post_dof");
+            cmd.set_viewport(cd::rhi::Viewport {
+                0.0F, 0.0F,
+                static_cast<float>(viewport.width),
+                static_cast<float>(viewport.height),
+                0.0F, 1.0F
+            });
+            cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, viewport });
+            cmd.pop_debug_group();
+        };
         fg.add_pass(pass);
         current_color = h.dof_coc;
     }
@@ -780,7 +1120,17 @@ SceneFrameGraphHandles build_scene_renderer_framegraph(
         pass.name = "post_composite_tonemap";
         pass.reads = reads;
         pass.writes = writes;
-        pass.execute = [](cd::rhi::ICommandBuffer&) {};
+        pass.execute = [viewport = config.viewport](cd::rhi::ICommandBuffer& cmd) {
+            cmd.push_debug_group("post_composite_tonemap");
+            cmd.set_viewport(cd::rhi::Viewport {
+                0.0F, 0.0F,
+                static_cast<float>(viewport.width),
+                static_cast<float>(viewport.height),
+                0.0F, 1.0F
+            });
+            cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, viewport });
+            cmd.pop_debug_group();
+        };
         fg.add_pass(pass);
     }
 

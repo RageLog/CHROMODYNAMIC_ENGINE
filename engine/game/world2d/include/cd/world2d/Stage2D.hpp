@@ -1,6 +1,6 @@
 // =============================================================================
-// CHROMODYNAMIC — cd/world2d/Stage2D.hpp
-// FAZ 35 (ADR-20261111) — Unified Commercial 2D Stage Container Bridging
+// CHROMODYNAMIC: cd/world2d/Stage2D.hpp
+// FAZ 35 (ADR-20261111): Unified Commercial 2D Stage Container Bridging
 // `cd::render2d`, `cd::physics::v2d` (Box2D v3 Soft-Step + CharacterController2D),
 // Sandboxed Lua 5.4 Entity Behaviors (`cd::script::Engine`), `.cd2d.json` & `.cdpak`.
 // =============================================================================
@@ -10,9 +10,15 @@
 #include <cd/math/Vector.hpp>
 #include <cd/physics/v2d/CharacterController2D.hpp>
 #include <cd/physics/v2d/PhysicsWorld2D.hpp>
+#include <cd/render2d/ParallaxLayer2D.hpp>
 #include <cd/render2d/Renderer2D.hpp>
+#include <cd/render2d/TextureAtlas2D.hpp>
 #include <cd/schema/Schema.hpp>
 #include <cd/script/Engine.hpp>
+#include <cd/world2d/AudioCue2D.hpp>
+#include <cd/world2d/ObjectPool2D.hpp>
+#include <cd/world2d/ParticleSystem2D.hpp>
+#include <cd/world2d/SpatialHash2D.hpp>
 
 #include <cstdint>
 #include <memory>
@@ -27,32 +33,47 @@ namespace cd::world2d
 
 enum class EntityRole2D : std::uint8_t
 {
-    kPropSprite     = 0,
-    kPlayerHero     = 1,
-    kDynamicCrate   = 2,
-    kCollectibleGem = 3,
-    kJumpPad        = 4,
-    kPatrolEnemy    = 5,
-    kMovingPlatform = 6,
-    kGoalPortal     = 7,
-    kPointLight     = 8,
-    kShadowOccluder = 9,
+    kPropSprite        = 0,
+    kPlayerHero        = 1,
+    kDynamicCrate      = 2,
+    kCollectibleGem    = 3,
+    kJumpPad           = 4,
+    kPatrolEnemy       = 5,
+    kMovingPlatform    = 6,
+    kGoalPortal        = 7,
+    kPointLight        = 8,
+    kShadowOccluder    = 9,
+    kKinematicPaddle   = 10,
+    kAiOpponentPaddle  = 11,
+    kBouncingBall      = 12,
+    kDestructibleBlock = 13,
+};
+
+enum class ArcadeRuleset2D : std::uint8_t
+{
+    kStandard         = 0,
+    kPongCourt        = 1,
+    kBridgeDemolition = 2,
 };
 
 [[nodiscard]] constexpr std::string_view entity_role_name_2d(EntityRole2D role) noexcept
 {
     switch (role)
     {
-        case EntityRole2D::kPropSprite:     return "PropSprite";
-        case EntityRole2D::kPlayerHero:     return "PlayerHero";
-        case EntityRole2D::kDynamicCrate:   return "DynamicCrate";
-        case EntityRole2D::kCollectibleGem: return "CollectibleGem";
-        case EntityRole2D::kJumpPad:        return "JumpPad";
-        case EntityRole2D::kPatrolEnemy:    return "PatrolEnemy";
-        case EntityRole2D::kMovingPlatform: return "MovingPlatform";
-        case EntityRole2D::kGoalPortal:     return "GoalPortal";
-        case EntityRole2D::kPointLight:     return "PointLight2D";
-        case EntityRole2D::kShadowOccluder: return "ShadowOccluder2D";
+        case EntityRole2D::kPropSprite:        return "PropSprite";
+        case EntityRole2D::kPlayerHero:        return "PlayerHero";
+        case EntityRole2D::kDynamicCrate:      return "DynamicCrate";
+        case EntityRole2D::kCollectibleGem:    return "CollectibleGem";
+        case EntityRole2D::kJumpPad:           return "JumpPad";
+        case EntityRole2D::kPatrolEnemy:       return "PatrolEnemy";
+        case EntityRole2D::kMovingPlatform:    return "MovingPlatform";
+        case EntityRole2D::kGoalPortal:        return "GoalPortal";
+        case EntityRole2D::kPointLight:        return "PointLight2D";
+        case EntityRole2D::kShadowOccluder:    return "ShadowOccluder2D";
+        case EntityRole2D::kKinematicPaddle:   return "KinematicPaddle";
+        case EntityRole2D::kAiOpponentPaddle:  return "AiOpponentPaddle";
+        case EntityRole2D::kBouncingBall:      return "BouncingBall";
+        case EntityRole2D::kDestructibleBlock: return "DestructibleBlock";
     }
     return "PropSprite";
 }
@@ -100,8 +121,34 @@ struct Entity2D
 struct PlayerInput2D
 {
     float move_x { 0.0F };
+    float move_y { 0.0F };
     bool  jump_pressed { false };
     bool  jump_held { false };
+    bool  interact_pressed { false };
+    bool  fire_pressed { false };
+    bool  fire_held { false };
+    float aim_angle_rad { 0.0F };
+};
+
+struct Projectile2D
+{
+    cd::math::Vec2f position { 0.0F, 0.0F };
+    cd::math::Vec2f velocity { 0.0F, 0.0F };
+    float           radius { 0.18F };
+    float           lifetime_sec { 1.5F };
+    float           age_sec { 0.0F };
+    int             damage { 35 };
+    bool            from_player { true };
+    cd::math::Vec4f color_rgba { 0.25F, 0.95F, 1.0F, 1.0F };
+};
+
+struct SwarmSpawnerConfig2D
+{
+    float spawn_interval_sec { 1.8F };
+    float spawn_radius { 16.0F };
+    float enemy_speed { 3.2F };
+    int   max_swarm_count { 40 };
+    bool  active { false };
 };
 
 struct GameplayHudState2D
@@ -109,6 +156,8 @@ struct GameplayHudState2D
     int   player_hp { 100 };
     int   max_hp { 100 };
     int   score { 0 };
+    int   opponent_score { 0 };
+    int   rally_count { 0 };
     int   gems_collected { 0 };
     int   total_gems { 0 };
     int   enemies_defeated { 0 };
@@ -146,6 +195,30 @@ public:
     [[nodiscard]] float gravity_y() const noexcept { return gravity_y_; }
     void set_gravity_y(float g) noexcept { gravity_y_ = g; }
 
+    [[nodiscard]] ArcadeRuleset2D arcade_ruleset() const noexcept { return arcade_ruleset_; }
+    void set_arcade_ruleset(ArcadeRuleset2D r) noexcept { arcade_ruleset_ = r; }
+
+    [[nodiscard]] ParticleSystem2D& particle_system() noexcept { return particle_system_; }
+    [[nodiscard]] const ParticleSystem2D& particle_system() const noexcept { return particle_system_; }
+    [[nodiscard]] SpatialHash2D& spatial_hash() noexcept { return spatial_hash_; }
+    [[nodiscard]] const SpatialHash2D& spatial_hash() const noexcept { return spatial_hash_; }
+    [[nodiscard]] AudioCueSystem2D& audio_cues() noexcept { return audio_cues_; }
+    [[nodiscard]] const AudioCueSystem2D& audio_cues() const noexcept { return audio_cues_; }
+
+    [[nodiscard]] bool is_y_sort_enabled() const noexcept { return y_sort_enabled_; }
+    void set_y_sort_enabled(bool enabled) noexcept { y_sort_enabled_ = enabled; }
+    void sort_entities_by_foot_y();
+    [[nodiscard]] static bool compare_entities_by_foot_y(const Entity2D& a, const Entity2D& b) noexcept;
+
+    [[nodiscard]] std::vector<cd::render2d::ParallaxLayer2D>& parallax_layers() noexcept { return parallax_layers_; }
+    [[nodiscard]] std::span<const cd::render2d::ParallaxLayer2D> parallax_layers() const noexcept { return parallax_layers_; }
+
+    [[nodiscard]] ObjectPool2D<Projectile2D>& projectile_pool() noexcept { return projectile_pool_; }
+    [[nodiscard]] const ObjectPool2D<Projectile2D>& projectile_pool() const noexcept { return projectile_pool_; }
+
+    [[nodiscard]] SwarmSpawnerConfig2D& swarm_spawner() noexcept { return swarm_spawner_; }
+    [[nodiscard]] const SwarmSpawnerConfig2D& swarm_spawner() const noexcept { return swarm_spawner_; }
+
     // ---- Entity Authoring ---------------------------------------------------
     std::uint32_t add_entity(Entity2D entity);
     bool remove_entity(std::uint32_t entity_id);
@@ -177,7 +250,15 @@ public:
     void step_play(float dt, const PlayerInput2D& input);
     void exit_play();
 
-    // ---- Rendering Bridge ---------------------------------------------------
+    // ---- Rendering Bridge & GPU Pixel-Art Atlas Binding ---------------------
+    void bind_starter_atlas(std::uint32_t texture_slot, std::uint32_t tile_px = 32U);
+    void unbind_starter_atlas() noexcept;
+    [[nodiscard]] bool has_bound_atlas() const noexcept
+    {
+        return bound_atlas_slot_ != 0xFFFFFFFFU && bound_atlas_.is_valid();
+    }
+    void sync_bound_atlas_palette();
+
     void render(
         cd::render2d::Canvas2D&                  out_canvas,
         const cd::render2d::ViewportRect2D&      viewport,
@@ -216,6 +297,19 @@ private:
     cd::physics::v2d::CharacterController2D        char_controller_ {};
     std::unordered_map<std::uint32_t, std::unique_ptr<cd::script::Engine>> lua_vms_ {};
     GameplayHudState2D                             hud_ {};
+    mutable ParticleSystem2D                       particle_system_ { 1024U };
+    mutable SpatialHash2D                          spatial_hash_ { 2.0F };
+    mutable AudioCueSystem2D                       audio_cues_ { nullptr };
+    bool                                           y_sort_enabled_ { false };
+    std::vector<cd::render2d::ParallaxLayer2D>     parallax_layers_ {};
+    mutable ObjectPool2D<Projectile2D>             projectile_pool_ { 512U, false };
+    SwarmSpawnerConfig2D                           swarm_spawner_ {};
+    float                                          swarm_spawn_timer_ { 0.0F };
+    float                                          fire_cooldown_ { 0.0F };
+    float                                          ambient_fx_timer_ { 0.0F };
+    ArcadeRuleset2D                                arcade_ruleset_ { ArcadeRuleset2D::kStandard };
+    std::uint32_t                                  bound_atlas_slot_ { 0xFFFFFFFFU };
+    cd::render2d::TextureAtlas2D                   bound_atlas_ {};
 };
 
 }  // namespace cd::world2d

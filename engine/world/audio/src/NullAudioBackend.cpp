@@ -55,7 +55,7 @@ public:
         rec.channels = desc.channels;
         rec.sample_rate = desc.sample_rate;
         rec.samples.assign(desc.samples.begin(), desc.samples.end());
-        const auto id = next_id_++;
+        const auto id = next_clip_id_++;
         clips_.emplace(id, std::move(rec));
         return ClipHandle { id, 1u };
     }
@@ -86,12 +86,28 @@ public:
         {
             return std::unexpected(audio_errors::make(audio_errors::Code::kUnknownClip, "play: unknown clip"));
         }
+        constexpr std::size_t kMaxVoices = 1024U;
+        if (voices_.size() >= kMaxVoices)
+        {
+            auto oldest_it = voices_.begin();
+            for (auto it = voices_.begin(); it != voices_.end(); ++it)
+            {
+                if (it->first < oldest_it->first)
+                {
+                    oldest_it = it;
+                }
+            }
+            if (oldest_it != voices_.end())
+            {
+                voices_.erase(oldest_it);
+            }
+        }
         VoiceRec rec {};
         rec.clip = clip;
         rec.volume = std::clamp(volume, 0.0F, 1.0F);
         rec.looping = looping;
         rec.playing = true;
-        const auto id = next_id_++;
+        const auto id = next_voice_id_++;
         voices_.emplace(id, rec);
         return VoiceHandle { id, 1u };
     }
@@ -133,7 +149,8 @@ public:
     }
 
 private:
-    std::uint32_t next_id_ { 1 };
+    std::uint32_t next_clip_id_ { 1 };
+    std::uint32_t next_voice_id_ { 1 };
     std::unordered_map<std::uint32_t, ClipRec> clips_ {};
     std::unordered_map<std::uint32_t, VoiceRec> voices_ {};
     float master_ { 1.0F };

@@ -7,11 +7,13 @@
 #include <cd/scene_renderer/GlobalIlluminationPass.hpp>
 #include <cd/scene_renderer/GpuDrivenPass.hpp>
 #include <cd/scene_renderer/PhotometricAndAtmospherePass.hpp>
+#include <cd/scene_renderer/SceneRenderer.hpp>
 #include <cd/scene_renderer/SurfaceAndPostFxPipeline.hpp>
 
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cmath>
 #include <vector>
 
 namespace
@@ -142,6 +144,359 @@ TEST(SceneRendererWave43And44, FullFrameGraphCompilesAndExecutesAllFeaturePasses
     const auto pom_uv = cd::scene_renderer::eval_pom_uv_offset(
         { 0.5F, 0.5F }, { 0.2F, 0.1F, 1.0F }, 0.05F, heights);
     EXPECT_LT(pom_uv[0], 0.5F);
+}
+
+// ---------------------------------------------------------------------------
+// FAZ 36 Waves 36.1 & 36.2: StageMode & HD2D Hybrid Pipeline
+// ---------------------------------------------------------------------------
+TEST(SceneRendererWave36, StageModeParsingAndStringConversion)
+{
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("Pure2D"), cd::scene_renderer::StageMode::Pure2D);
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("2D"), cd::scene_renderer::StageMode::Pure2D);
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("HD2D"), cd::scene_renderer::StageMode::HD2D);
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("hd-2d"), cd::scene_renderer::StageMode::HD2D);
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("Pure3D"), cd::scene_renderer::StageMode::Pure3D);
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("anything_else"), cd::scene_renderer::StageMode::Pure3D);
+
+    EXPECT_EQ(cd::scene_renderer::stage_mode_to_string(cd::scene_renderer::StageMode::Pure2D), "Pure2D");
+    EXPECT_EQ(cd::scene_renderer::stage_mode_to_string(cd::scene_renderer::StageMode::HD2D), "HD2D");
+    EXPECT_EQ(cd::scene_renderer::stage_mode_to_string(cd::scene_renderer::StageMode::Pure3D), "Pure3D");
+}
+
+TEST(SceneRendererWave36, HD2DSceneDataCompilesAndExecutesAll19Passes)
+{
+    cd::rhi::NullDevice dev;
+    cd::rhi::TextureDesc back_desc {};
+    back_desc.extent = { 1280U, 720U, 1U };
+    back_desc.format = cd::rhi::Format::kRGBA8Unorm;
+    back_desc.usage = cd::rhi::TextureUsage::kColorAttachment;
+    auto back_tex = dev.create_texture(back_desc);
+    ASSERT_TRUE(back_tex.has_value());
+
+    cd::framegraph::FrameGraph fg(dev);
+    cd::scene_renderer::SceneRendererConfig cfg {};
+    cfg.viewport = { 1280U, 720U };
+    cfg.gi.enable_nrc = true;
+
+    cd::scene_renderer::SceneViewData scene_data {};
+    scene_data.stage_mode = cd::scene_renderer::StageMode::HD2D;
+    scene_data.camera_pos = { 0.0F, 5.0F, -10.0F };
+    scene_data.camera_target = { 0.0F, 0.0F, 0.0F };
+    scene_data.focus_distance_dof = 11.18F;
+
+    // Add a 3D mesh instance
+    cd::scene_renderer::SceneMeshInstance mesh {};
+    mesh.tint = { 0.8F, 0.2F, 0.2F, 1.0F };
+    mesh.metallic = 0.5F;
+    mesh.roughness = 0.2F;
+    mesh.index_count = 36U;
+    scene_data.meshes.push_back(mesh);
+
+    // Add an HD2D sprite card (billboard with alpha cutoff)
+    cd::scene_renderer::SceneSpriteCardHD2D hero_card {};
+    hero_card.position = { 0.0F, 0.5F, 0.0F };
+    hero_card.size = { 1.5F, 1.5F };
+    hero_card.tint = { 1.0F, 1.0F, 1.0F, 1.0F };
+    hero_card.alpha_cutoff = 0.5F;
+    hero_card.y_locked = true;
+    hero_card.cast_shadows = true;
+    scene_data.sprite_cards.push_back(hero_card);
+
+    const auto handles = cd::scene_renderer::build_scene_renderer_framegraph(fg, *back_tex, cfg, &scene_data);
+    EXPECT_TRUE(handles.depth.is_valid());
+    EXPECT_TRUE(handles.hdr_scene.is_valid());
+    EXPECT_TRUE(handles.final_backbuffer.is_valid());
+    EXPECT_EQ(fg.pass_count(), 19U);
+
+    ASSERT_TRUE(fg.compile().has_value());
+    auto cmd = dev.create_command_buffer();
+    cmd->begin();
+    ASSERT_TRUE(fg.execute(*cmd).has_value());
+    cmd->end();
+}
+
+// ---------------------------------------------------------------------------
+// FAZ 36 Waves 36.1 & 36.2: Empirical Challenger Stress & Boundary Tests
+// ---------------------------------------------------------------------------
+TEST(SceneRendererChallenger, StageModeAdversarialBoundaryCases)
+{
+    // Empty & whitespace strings
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode(""), cd::scene_renderer::StageMode::Pure3D);
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode(" "), cd::scene_renderer::StageMode::Pure3D);
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("   "), cd::scene_renderer::StageMode::Pure3D);
+
+    // Case variations & aliases
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("Pure2D"), cd::scene_renderer::StageMode::Pure2D);
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("pure2d"), cd::scene_renderer::StageMode::Pure2D);
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("2d"), cd::scene_renderer::StageMode::Pure2D);
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("2D"), cd::scene_renderer::StageMode::Pure2D);
+
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("HD2D"), cd::scene_renderer::StageMode::HD2D);
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("hd2d"), cd::scene_renderer::StageMode::HD2D);
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("hd-2d"), cd::scene_renderer::StageMode::HD2D);
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("HD-2D"), cd::scene_renderer::StageMode::HD2D);
+
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("Pure3D"), cd::scene_renderer::StageMode::Pure3D);
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("pure3d"), cd::scene_renderer::StageMode::Pure3D);
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("3d"), cd::scene_renderer::StageMode::Pure3D);
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("3D"), cd::scene_renderer::StageMode::Pure3D);
+
+    // Arbitrary invalid strings fallback safely to Pure3D
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("unknown_stage"), cd::scene_renderer::StageMode::Pure3D);
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("null"), cd::scene_renderer::StageMode::Pure3D);
+    EXPECT_EQ(cd::scene_renderer::parse_stage_mode("9999"), cd::scene_renderer::StageMode::Pure3D);
+
+    // String conversion round-trips
+    EXPECT_EQ(cd::scene_renderer::stage_mode_to_string(cd::scene_renderer::StageMode::Pure2D), "Pure2D");
+    EXPECT_EQ(cd::scene_renderer::stage_mode_to_string(cd::scene_renderer::StageMode::HD2D), "HD2D");
+    EXPECT_EQ(cd::scene_renderer::stage_mode_to_string(cd::scene_renderer::StageMode::Pure3D), "Pure3D");
+
+    // Invalid enum integer cast returns safe default "Pure3D"
+    EXPECT_EQ(cd::scene_renderer::stage_mode_to_string(static_cast<cd::scene_renderer::StageMode>(99)), "Pure3D");
+    EXPECT_EQ(cd::scene_renderer::stage_mode_to_string(static_cast<cd::scene_renderer::StageMode>(255)), "Pure3D");
+}
+
+TEST(SceneRendererChallenger, FocusDistanceDoFAutofocusBoundaries)
+{
+    cd::rhi::NullDevice dev;
+    cd::rhi::TextureDesc back_desc {};
+    back_desc.extent = { 640U, 360U, 1U };
+    back_desc.format = cd::rhi::Format::kRGBA8Unorm;
+    back_desc.usage = cd::rhi::TextureUsage::kColorAttachment;
+    auto back_tex = dev.create_texture(back_desc);
+    ASSERT_TRUE(back_tex.has_value());
+
+    // Case 1: HD2D mode with camera directly on top of 2D plane (eye == target -> distance = 0)
+    {
+        cd::framegraph::FrameGraph fg(dev);
+        cd::scene_renderer::SceneRendererConfig cfg {};
+        cfg.viewport = { 640U, 360U };
+        cfg.postfx.enable_dof = true;
+
+        cd::scene_renderer::SceneViewData scene_data {};
+        scene_data.stage_mode = cd::scene_renderer::StageMode::HD2D;
+        scene_data.camera_pos = { 0.0F, 0.0F, 0.0F };
+        scene_data.camera_target = { 0.0F, 0.0F, 0.0F };
+
+        const auto handles = cd::scene_renderer::build_scene_renderer_framegraph(fg, *back_tex, cfg, &scene_data);
+        EXPECT_TRUE(handles.dof_coc.is_valid());
+        ASSERT_TRUE(fg.compile().has_value());
+        auto cmd = dev.create_command_buffer();
+        cmd->begin();
+        ASSERT_TRUE(fg.execute(*cmd).has_value());
+        cmd->end();
+    }
+
+    // Case 2: Non-HD2D mode with negative focus distance (focus_distance_dof = -50.0F)
+    {
+        cd::framegraph::FrameGraph fg(dev);
+        cd::scene_renderer::SceneRendererConfig cfg {};
+        cfg.viewport = { 640U, 360U };
+        cfg.postfx.enable_dof = true;
+
+        cd::scene_renderer::SceneViewData scene_data {};
+        scene_data.stage_mode = cd::scene_renderer::StageMode::Pure3D;
+        scene_data.focus_distance_dof = -50.0F;
+
+        const auto handles = cd::scene_renderer::build_scene_renderer_framegraph(fg, *back_tex, cfg, &scene_data);
+        EXPECT_TRUE(handles.dof_coc.is_valid());
+        ASSERT_TRUE(fg.compile().has_value());
+        auto cmd = dev.create_command_buffer();
+        cmd->begin();
+        ASSERT_TRUE(fg.execute(*cmd).has_value());
+        cmd->end();
+    }
+
+    // Case 3: Extreme distance (eye to target distance = 50,000)
+    {
+        cd::framegraph::FrameGraph fg(dev);
+        cd::scene_renderer::SceneRendererConfig cfg {};
+        cfg.viewport = { 640U, 360U };
+        cfg.postfx.enable_dof = true;
+
+        cd::scene_renderer::SceneViewData scene_data {};
+        scene_data.stage_mode = cd::scene_renderer::StageMode::HD2D;
+        scene_data.camera_pos = { 0.0F, 0.0F, 0.0F };
+        scene_data.camera_target = { 30000.0F, 40000.0F, 0.0F }; // distance = 50000.0F
+
+        const auto handles = cd::scene_renderer::build_scene_renderer_framegraph(fg, *back_tex, cfg, &scene_data);
+        EXPECT_TRUE(handles.dof_coc.is_valid());
+        ASSERT_TRUE(fg.compile().has_value());
+        auto cmd = dev.create_command_buffer();
+        cmd->begin();
+        ASSERT_TRUE(fg.execute(*cmd).has_value());
+        cmd->end();
+    }
+}
+
+TEST(SceneRendererChallenger, AlphaCutoutAndHD2DSpriteCardBoundaries)
+{
+    cd::rhi::NullDevice dev;
+    cd::rhi::TextureDesc back_desc {};
+    back_desc.extent = { 640U, 360U, 1U };
+    back_desc.format = cd::rhi::Format::kRGBA8Unorm;
+    back_desc.usage = cd::rhi::TextureUsage::kColorAttachment;
+    auto back_tex = dev.create_texture(back_desc);
+    ASSERT_TRUE(back_tex.has_value());
+
+    cd::framegraph::FrameGraph fg(dev);
+    cd::scene_renderer::SceneRendererConfig cfg {};
+    cfg.viewport = { 640U, 360U };
+
+    cd::scene_renderer::SceneViewData scene_data {};
+    scene_data.stage_mode = cd::scene_renderer::StageMode::HD2D;
+    scene_data.camera_pos = { 0.0F, 1.0F, 5.0F };
+    scene_data.camera_target = { 0.0F, 1.0F, 0.0F };
+
+    // Card 1: Standard cutout threshold at 0.5f
+    cd::scene_renderer::SceneSpriteCardHD2D c1 {};
+    c1.position = { 0.0F, 1.0F, 0.0F };
+    c1.size = { 1.0F, 1.0F };
+    c1.alpha_cutoff = 0.5F;
+    c1.y_locked = true;
+    scene_data.sprite_cards.push_back(c1);
+
+    // Card 2: Boundary cutout at 0.0f (opaque/all pass)
+    cd::scene_renderer::SceneSpriteCardHD2D c2 {};
+    c2.position = { 2.0F, 1.0F, 0.0F };
+    c2.size = { 1.0F, 1.0F };
+    c2.alpha_cutoff = 0.0F;
+    c2.y_locked = false; // non-y-locked
+    scene_data.sprite_cards.push_back(c2);
+
+    // Card 3: Boundary cutout at 1.0f (strict mask)
+    cd::scene_renderer::SceneSpriteCardHD2D c3 {};
+    c3.position = { -2.0F, 1.0F, 0.0F };
+    c3.size = { 1.0F, 1.0F };
+    c3.alpha_cutoff = 1.0F;
+    c3.y_locked = true;
+    scene_data.sprite_cards.push_back(c3);
+
+    // Card 4: Exactly on camera X/Z coords (dx=0, dz=0) triggering atan2(0,0)
+    cd::scene_renderer::SceneSpriteCardHD2D c4 {};
+    c4.position = { 0.0F, -5.0F, 5.0F }; // same x=0, z=5 as camera
+    c4.size = { 1.0F, 1.0F };
+    c4.alpha_cutoff = 0.5F;
+    c4.y_locked = true;
+    scene_data.sprite_cards.push_back(c4);
+
+    // Card 5: Extreme negative coordinates & inverted size
+    cd::scene_renderer::SceneSpriteCardHD2D c5 {};
+    c5.position = { -10000.0F, -5000.0F, -20000.0F };
+    c5.size = { -2.0F, -2.0F };
+    c5.alpha_cutoff = 0.5F;
+    c5.y_locked = false;
+    scene_data.sprite_cards.push_back(c5);
+
+    const auto handles = cd::scene_renderer::build_scene_renderer_framegraph(fg, *back_tex, cfg, &scene_data);
+    EXPECT_TRUE(handles.gbuffer_albedo.is_valid());
+    ASSERT_TRUE(fg.compile().has_value());
+    auto cmd = dev.create_command_buffer();
+    cmd->begin();
+    ASSERT_TRUE(fg.execute(*cmd).has_value());
+    cmd->end();
+}
+
+TEST(SceneRendererChallenger, NullSceneDataAndZeroViewportStress)
+{
+    cd::rhi::NullDevice dev;
+    cd::rhi::TextureDesc back_desc {};
+    back_desc.extent = { 1U, 1U, 1U };
+    back_desc.format = cd::rhi::Format::kRGBA8Unorm;
+    back_desc.usage = cd::rhi::TextureUsage::kColorAttachment;
+    auto back_tex = dev.create_texture(back_desc);
+    ASSERT_TRUE(back_tex.has_value());
+
+    // Subtest 1: scene_data == nullptr with all 19 passes enabled
+    {
+        cd::framegraph::FrameGraph fg(dev);
+        cd::scene_renderer::SceneRendererConfig cfg {};
+        cfg.viewport = { 1280U, 720U };
+        cfg.gi.enable_nrc = true;
+
+        const auto handles = cd::scene_renderer::build_scene_renderer_framegraph(fg, *back_tex, cfg, nullptr);
+        EXPECT_TRUE(handles.hdr_scene.is_valid());
+        EXPECT_EQ(fg.pass_count(), 19U);
+        ASSERT_TRUE(fg.compile().has_value());
+        auto cmd = dev.create_command_buffer();
+        cmd->begin();
+        ASSERT_TRUE(fg.execute(*cmd).has_value());
+        cmd->end();
+    }
+
+    // Subtest 2: Zero-sized viewport (0 x 0)
+    {
+        cd::framegraph::FrameGraph fg(dev);
+        cd::scene_renderer::SceneRendererConfig cfg {};
+        cfg.viewport = { 0U, 0U };
+        cfg.gi.enable_nrc = true;
+
+        cd::scene_renderer::SceneViewData scene_data {};
+        scene_data.stage_mode = cd::scene_renderer::StageMode::HD2D;
+
+        const auto handles = cd::scene_renderer::build_scene_renderer_framegraph(fg, *back_tex, cfg, &scene_data);
+        EXPECT_TRUE(handles.hdr_scene.is_valid());
+        ASSERT_TRUE(fg.compile().has_value());
+        auto cmd = dev.create_command_buffer();
+        cmd->begin();
+        ASSERT_TRUE(fg.execute(*cmd).has_value());
+        cmd->end();
+    }
+
+    // Subtest 3: Extreme 8K Viewport (7680 x 4320)
+    {
+        cd::framegraph::FrameGraph fg(dev);
+        cd::scene_renderer::SceneRendererConfig cfg {};
+        cfg.viewport = { 7680U, 4320U };
+
+        cd::scene_renderer::SceneViewData scene_data {};
+        scene_data.stage_mode = cd::scene_renderer::StageMode::HD2D;
+
+        const auto handles = cd::scene_renderer::build_scene_renderer_framegraph(fg, *back_tex, cfg, &scene_data);
+        EXPECT_TRUE(handles.hdr_scene.is_valid());
+        ASSERT_TRUE(fg.compile().has_value());
+        auto cmd = dev.create_command_buffer();
+        cmd->begin();
+        ASSERT_TRUE(fg.execute(*cmd).has_value());
+        cmd->end();
+    }
+
+    // Subtest 4: High entity density stress test (128 meshes + 128 HD2D sprite cards)
+    {
+        cd::framegraph::FrameGraph fg(dev);
+        cd::scene_renderer::SceneRendererConfig cfg {};
+        cfg.viewport = { 1920U, 1080U };
+        cfg.gi.enable_nrc = true;
+
+        cd::scene_renderer::SceneViewData scene_data {};
+        scene_data.stage_mode = cd::scene_renderer::StageMode::HD2D;
+        scene_data.meshes.reserve(128);
+        scene_data.sprite_cards.reserve(128);
+
+        for (std::uint32_t i = 0; i < 128; ++i)
+        {
+            cd::scene_renderer::SceneMeshInstance m {};
+            m.index_count = 36U;
+            m.metallic = static_cast<float>(i % 10) * 0.1F;
+            m.roughness = static_cast<float>((i + 1) % 10) * 0.1F;
+            scene_data.meshes.push_back(m);
+
+            cd::scene_renderer::SceneSpriteCardHD2D c {};
+            c.position = { static_cast<float>(i) - 64.0F, 0.0F, static_cast<float>(i % 8) };
+            c.size = { 1.0F, 1.0F };
+            c.alpha_cutoff = 0.5F;
+            c.y_locked = (i % 2 == 0);
+            scene_data.sprite_cards.push_back(c);
+        }
+
+        const auto handles = cd::scene_renderer::build_scene_renderer_framegraph(fg, *back_tex, cfg, &scene_data);
+        EXPECT_TRUE(handles.hdr_scene.is_valid());
+        ASSERT_TRUE(fg.compile().has_value());
+        auto cmd = dev.create_command_buffer();
+        cmd->begin();
+        ASSERT_TRUE(fg.execute(*cmd).has_value());
+        cmd->end();
+    }
 }
 
 }  // namespace

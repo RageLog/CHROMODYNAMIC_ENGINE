@@ -248,4 +248,53 @@ struct LightingEnvironment2D
         base_a);
 }
 
+/// Decodes tangent normal from standard RGB normal map (R=X, G=Y, B=Z).
+[[nodiscard]] inline cd::math::Vec3f decode_normal_rgb(ColorRgba8 norm_pixel) noexcept
+{
+    return {
+        (static_cast<float>(norm_pixel.r) / 255.0F) * 2.0F - 1.0F,
+        (static_cast<float>(norm_pixel.g) / 255.0F) * 2.0F - 1.0F,
+        (static_cast<float>(norm_pixel.b) / 255.0F) * 2.0F - 1.0F,
+    };
+}
+
+/// Evaluates standalone unattenuated emissive radiance in dark environments.
+[[nodiscard]] inline ColorRgba8 evaluate_emissive_lighting_2d(
+    const LightingEnvironment2D& /*env*/,
+    ColorRgba8                   emissive_color,
+    float                        emissive_intensity = 1.0F) noexcept
+{
+    if (emissive_intensity <= 0.0F || (emissive_color.r == 0U && emissive_color.g == 0U && emissive_color.b == 0U))
+    {
+        return { 0U, 0U, 0U, emissive_color.a };
+    }
+    const float r = std::clamp((static_cast<float>(emissive_color.r) / 255.0F) * emissive_intensity, 0.0F, 1.0F);
+    const float g = std::clamp((static_cast<float>(emissive_color.g) / 255.0F) * emissive_intensity, 0.0F, 1.0F);
+    const float b = std::clamp((static_cast<float>(emissive_color.b) / 255.0F) * emissive_intensity, 0.0F, 1.0F);
+    return ColorRgba8::from_floats(r, g, b, static_cast<float>(emissive_color.a) / 255.0F);
+}
+
+/// Evaluates combined 2D ambient + directional + point lights + soft shadows + unattenuated emissive boost.
+[[nodiscard]] inline ColorRgba8 evaluate_lighting_2d_with_emissive(
+    const LightingEnvironment2D& env,
+    cd::math::Vec2f              world_pos,
+    cd::math::Vec3f              surface_normal,
+    ColorRgba8                   albedo,
+    ColorRgba8                   emissive_color,
+    float                        emissive_intensity = 1.0F) noexcept
+{
+    ColorRgba8 lit = evaluate_lighting_2d(env, world_pos, surface_normal, albedo);
+    if (emissive_intensity <= 0.0F || (emissive_color.r == 0U && emissive_color.g == 0U && emissive_color.b == 0U))
+    {
+        return lit;
+    }
+    const float er = (static_cast<float>(emissive_color.r) / 255.0F) * emissive_intensity;
+    const float eg = (static_cast<float>(emissive_color.g) / 255.0F) * emissive_intensity;
+    const float eb = (static_cast<float>(emissive_color.b) / 255.0F) * emissive_intensity;
+    const float lr = std::clamp(static_cast<float>(lit.r) / 255.0F + er, 0.0F, 1.0F);
+    const float lg = std::clamp(static_cast<float>(lit.g) / 255.0F + eg, 0.0F, 1.0F);
+    const float lb = std::clamp(static_cast<float>(lit.b) / 255.0F + eb, 0.0F, 1.0F);
+    return ColorRgba8::from_floats(lr, lg, lb, static_cast<float>(albedo.a) / 255.0F);
+}
+
 }  // namespace cd::render2d

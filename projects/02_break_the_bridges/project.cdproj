@@ -1,0 +1,8 @@
+{
+  "engine": "CHROMODYNAMIC",
+  "version": "1.0.0",
+  "name": "Break_The_Bridges_2D",
+  "mode": "Pure2D",
+  "entry_stage2d": "stages/main.cd2d.json",
+  "arcade_ruleset": 2
+}

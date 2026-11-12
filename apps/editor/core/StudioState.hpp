@@ -55,6 +55,7 @@
 #include <cd/post/taa/Taa.hpp>
 #include <cd/render/MeshUpload.hpp>
 #include <cd/render/Renderer.hpp>
+#include <cd/render/TextureUpload.hpp>
 #include <cd/restir_di/Reservoir.hpp>
 #include <cd/restir_gi/GiReservoir.hpp>
 #include <cd/rhi/IDevice.hpp>
@@ -83,6 +84,8 @@
 namespace cd::studio
 {
 
+class StudioMcpServer;
+
 struct StudioEngineState
 {
     explicit StudioEngineState(StudioConfig cfg = {});
@@ -102,6 +105,7 @@ struct StudioEngineState
     // CLI / launch configuration + swapchain readback state
     StudioConfig                            config {};
     cd::app_common::SwapchainReadbackState  capture_readback {};
+    std::unique_ptr<StudioMcpServer>        mcp_server {};
 
     // Window / device / renderer / UI context
     std::unique_ptr<cd::platform::IWindow>  window;
@@ -209,6 +213,8 @@ struct StudioEngineState
 
     // cd::ui overlay stack (2D canvas + BehaviorDesigner + Flex widgets)
     std::unique_ptr<cd::ui::renderer_rhi::Submitter> ui_submitter;
+    cd::render::GpuTexture2D                atlas2d_tex {};
+    cd::rhi::SamplerHandle                  atlas2d_sampler {};
     cd::ui::renderer::DrawBatcher           ui_batcher;
     cd::ui::widgets::Theme                  ui_widget_theme;
     cd::ui::font::Font                      ui_font;

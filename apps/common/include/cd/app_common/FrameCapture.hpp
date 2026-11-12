@@ -15,6 +15,8 @@
 
 #include <array>
 #include <cstdint>
+#include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -63,5 +65,11 @@ struct DecodedSwapchainRgba
     std::uint32_t                        height,
     std::array<std::uint8_t, 4>          clear_rgba,
     std::string_view                     out_png_path);
+
+/// Encode an arbitrary byte buffer into standard RFC 4648 Base64 string.
+///
+/// Used by MCP capture_frame to embed in-memory PNG frames directly into
+/// JSON-RPC responses.
+[[nodiscard]] std::string base64_encode(std::span<const std::uint8_t> data);
 
 }  // namespace cd::app_common

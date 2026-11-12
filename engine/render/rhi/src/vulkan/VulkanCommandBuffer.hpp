@@ -314,6 +314,10 @@ private:
     // queried via recording_error(). Mirrors the debug_group_depth_ pattern.
     bool recording_error_ { false };
 
+    // Milestone 1 (Iteration 2): Tracks dynamic rendering pass state (begin_render_pass /
+    // end_render_pass) to defensively guard against naked draws outside a render pass.
+    bool in_render_pass_ { false };
+
     // Per-command-buffer storage for debug-group label strings. Per the
     // Vulkan spec (Fundamentals, "Application Memory Lifetime"),
     // VkDebugUtilsLabelEXT::pLabelName is CONSUMED AT RECORD TIME —

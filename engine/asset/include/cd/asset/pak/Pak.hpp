@@ -125,6 +125,19 @@ inline void put_u64(std::vector<std::byte>& out, std::uint64_t v)
     return lo | (hi << 32);
 }
 
+[[nodiscard]] inline bool is_safe_asset_path(std::string_view name) noexcept
+{
+    if (name.empty())
+        return true;
+    if (name.front() == '/' || name.front() == '\\')
+        return false;
+    if (name.find(':') != std::string_view::npos)
+        return false;
+    if (name.find("..") != std::string_view::npos)
+        return false;
+    return true;
+}
+
 }  // namespace pak_detail
 
 class PakBuilder
@@ -135,6 +148,8 @@ public:
     /// (well, return false from build()). Maximum name length 65535 bytes.
     void add(std::string name, std::vector<std::byte> bytes)
     {
+        if (!pak_detail::is_safe_asset_path(name))
+            return;
         entries_.push_back({ std::move(name), std::move(bytes) });
     }
 
@@ -256,12 +271,15 @@ public:
             if (cursor + name_len + 16 > size)
                 return std::unexpected(pak_errors::make(pak_errors::Code::kCorrupt, "truncated entry"));
             std::string name(reinterpret_cast<const char*>(bytes + cursor), name_len);
+            if (!pak_detail::is_safe_asset_path(name))
+                return std::unexpected(pak_errors::make(pak_errors::Code::kCorrupt, "unsafe entry name in TOC"));
             cursor += name_len;
             const auto off = pak_detail::read_u64(bytes + cursor);
             cursor += 8;
             const auto sz = pak_detail::read_u64(bytes + cursor);
             cursor += 8;
-            if (off + sz > size)
+            const auto size_u64 = static_cast<std::uint64_t>(size);
+            if (sz > size_u64 || off > size_u64 - sz)
                 return std::unexpected(pak_errors::make(pak_errors::Code::kCorrupt, "blob extends past buffer"));
             entries_[std::move(name)] = { static_cast<std::size_t>(off), static_cast<std::size_t>(sz) };
         }

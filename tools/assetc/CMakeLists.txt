@@ -5,8 +5,16 @@ target_link_libraries(cd_assetc PRIVATE
   cd::asset_pak
   cd::asset_cdmesh
   cd::asset_cdtex
+  cd::asset_ktx2
+  cd::asset_image
+  cd::asset_obj
+  cd::asset_gltf
+  cd::shader
+  cd::gluon
+  cd::app_common
   cd::asset_json
   cd::core
+  cd::math
 )
 target_compile_features(cd_assetc PUBLIC cxx_std_23)
 cd_apply_warnings(cd_assetc)

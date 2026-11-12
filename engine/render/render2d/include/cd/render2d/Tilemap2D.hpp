@@ -33,15 +33,22 @@ inline constexpr std::uint8_t kWest  = 1U << 3U;  // -X neighbor
 
 struct TilePaletteEntry2D
 {
-    std::uint16_t palette_id { 1U };
-    std::string   name { "Solid Stone" };
-    ColorRgba8    fill_color { 56U, 68U, 92U, 255U };
-    ColorRgba8    top_cap_color { 76U, 214U, 138U, 255U };
-    ColorRgba8    edge_border_color { 34U, 42U, 60U, 255U };
-    bool          solid { true };
-    bool          one_way { false };
-    bool          hazard { false };
-    bool          emissive { false };
+    std::uint16_t            palette_id { 1U };
+    std::string              name { "Solid Stone" };
+    ColorRgba8               fill_color { 56U, 68U, 92U, 255U };
+    ColorRgba8               top_cap_color { 76U, 214U, 138U, 255U };
+    ColorRgba8               edge_border_color { 34U, 42U, 60U, 255U };
+    bool                     solid { true };
+    bool                     one_way { false };
+    bool                     hazard { false };
+    bool                     emissive { false };
+    std::uint32_t            texture_slot { 0xFFFFFFFFU };
+    UvRect2D                 uv_rect {};
+    std::array<UvRect2D, 16> autotile_uvs {};
+    bool                     has_autotile_uvs { false };
+    std::uint32_t            normal_texture_slot { 0xFFFFFFFFU };
+    std::uint32_t            emissive_texture_slot { 0xFFFFFFFFU };
+    float                    emissive_intensity { 0.0F };
 };
 
 struct TileCell2D
@@ -78,6 +85,35 @@ public:
 
     /// Paint an inclusive grid rectangle `[x0..x1] x [y0..y1]` and refresh auto-tile borders.
     void paint_rect(int x0, int y0, int x1, int y1, std::uint16_t palette_id, bool update_autotile = true);
+
+    /// 4-way breadth-first search flood fill replacing contiguous matching tiles.
+    /// Returns total number of cells modified.
+    std::size_t flood_fill(
+        int           start_x,
+        int           start_y,
+        std::uint16_t replacement_id,
+        std::size_t   max_cells = 4096);
+
+    /// Paints a 2D rectangular pattern array into the tilemap at (start_x, start_y).
+    /// Returns total number of cells stamped.
+    std::size_t stamp(
+        int                            start_x,
+        int                            start_y,
+        int                            pattern_width,
+        int                            pattern_height,
+        std::span<const std::uint16_t> pattern,
+        bool                           update_autotile = true);
+
+    std::size_t stamp(
+        int                            start_x,
+        int                            start_y,
+        std::span<const std::uint16_t> pattern,
+        int                            pattern_width,
+        int                            pattern_height,
+        bool                           update_autotile = true)
+    {
+        return stamp(start_x, start_y, pattern_width, pattern_height, pattern, update_autotile);
+    }
 
     void clear() noexcept { chunks_.clear(); }
 

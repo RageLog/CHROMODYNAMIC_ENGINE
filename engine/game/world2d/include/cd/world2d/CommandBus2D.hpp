@@ -1,6 +1,6 @@
 // =============================================================================
-// CHROMODYNAMIC — cd/world2d/CommandBus2D.hpp
-// FAZ 35 (ADR-20261111) — Symmetric Human Undo/Redo + AI JSON Command Protocol.
+// CHROMODYNAMIC: cd/world2d/CommandBus2D.hpp
+// FAZ 35 (ADR-20261111): Symmetric Human Undo/Redo + AI JSON Command Protocol.
 //
 // Every mutation in 2D Studio (Human mouse/brush/inspector OR AI JSON command)
 // passes through `CommandBus2D`, guaranteeing 100% deterministic Undo/Redo and
@@ -10,10 +10,12 @@
 
 #include <cd/core/Result.hpp>
 #include <cd/schema/Schema.hpp>
+#include <cd/world2d/GenreTemplates2D.hpp>
 #include <cd/world2d/Stage2D.hpp>
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -50,8 +52,18 @@ public:
 
     void paint_tile(Stage2D& stage, int gx, int gy, std::uint16_t palette_id);
     void paint_rect(Stage2D& stage, int x0, int y0, int x1, int y1, std::uint16_t palette_id);
+    std::size_t flood_fill(Stage2D& stage, int start_x, int start_y, std::uint16_t replacement_id);
+    std::size_t stamp(
+        Stage2D&                       stage,
+        int                            start_x,
+        int                            start_y,
+        int                            pattern_width,
+        int                            pattern_height,
+        std::span<const std::uint16_t> pattern,
+        bool                           update_autotile = true);
     bool attach_lua_script(Stage2D& stage, std::uint32_t entity_id, std::string lua_code);
     void load_starter_platformer(Stage2D& stage);
+    void load_genre_template(Stage2D& stage, GenreTemplateKind2D kind);
 
     /// Generic snapshot transaction helper for multi-tile brush strokes in the viewport:
     /// call `begin_stroke(stage, description)` on mouse-down and `end_stroke(stage)` on mouse-up.

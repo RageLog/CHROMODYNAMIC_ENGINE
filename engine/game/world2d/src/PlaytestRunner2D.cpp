@@ -47,17 +47,144 @@ std::string PlaytestReport2D::to_json_string() const
 PlayerInput2D compute_autopilot_input_2d(const Stage2D& stage) noexcept
 {
     PlayerInput2D in {};
-    const Entity2D* hero = nullptr;
-    const Entity2D* goal = nullptr;
+    const Entity2D* hero   = nullptr;
+    const Entity2D* goal   = nullptr;
+    const Entity2D* paddle = nullptr;
+    const Entity2D* ball   = nullptr;
 
     for (const auto& e : stage.entities())
     {
         if (!e.visible || e.collected_or_defeated) continue;
         if (e.role == EntityRole2D::kPlayerHero && hero == nullptr) hero = &e;
         if (e.role == EntityRole2D::kGoalPortal && goal == nullptr) goal = &e;
+        if (e.role == EntityRole2D::kKinematicPaddle && paddle == nullptr) paddle = &e;
+        if (e.role == EntityRole2D::kBouncingBall && ball == nullptr) ball = &e;
     }
+
+    // Arcade Paddle Autopilot (Pong & Break the Bridges)
+    if (hero == nullptr && paddle != nullptr)
+    {
+        const float t = stage.hud().sim_time_sec;
+        if (paddle->size.y >= paddle->size.x)
+        {
+            // Vertical Pong Paddle: track incoming ball with spin angle offset
+            if (ball != nullptr)
+            {
+                const float spin_bias = std::sin(t * 2.4F) * 0.65F;
+                const float dy        = (ball->position.y + spin_bias) - paddle->position.y;
+                in.move_y             = std::clamp(dy * 1.8F, -1.0F, 1.0F);
+            }
+        }
+        else
+        {
+            // Horizontal Break the Bridges Striker: intercept falling sphere & fire artillery at intact bridges
+            float target_x = paddle->position.x;
+            if (ball != nullptr && ball->runtime_velocity.y <= 2.5F)
+            {
+                const float spin_bias = std::sin(t * 3.1F) * 0.55F;
+                target_x              = ball->position.x + spin_bias;
+            }
+            else
+            {
+                float best_d = 1.0e9F;
+                for (const auto& blk : stage.entities())
+                {
+                    if (blk.visible && !blk.collected_or_defeated && blk.role == EntityRole2D::kDestructibleBlock)
+                    {
+                        const float d = std::fabs(blk.position.x - paddle->position.x) -
+                                        ((blk.size.y > blk.size.x * 1.1F) ? 3.0F : 0.0F); // prioritize keystone piers!
+                        if (d < best_d)
+                        {
+                            best_d   = d;
+                            target_x = blk.position.x;
+                        }
+                    }
+                }
+            }
+            in.move_x       = std::clamp((target_x - paddle->position.x) * 1.6F, -1.0F, 1.0F);
+            in.fire_held    = true;
+            in.fire_pressed = true;
+        }
+        return in;
+    }
+
     if (hero == nullptr)
     {
+        return in;
+    }
+
+    // Top-Down RPG & Twin-Stick Arena (zero-gravity 2D navigation + omni-aim combat)
+    if (std::fabs(stage.gravity_y()) < 0.01F)
+    {
+        const Entity2D* nearest_enemy = nullptr;
+        float           best_enemy_d2 = 1.0e9F;
+        const Entity2D* nearest_gem   = nullptr;
+        float           best_gem_d2   = 1.0e9F;
+
+        for (const auto& e : stage.entities())
+        {
+            if (!e.visible || e.collected_or_defeated)
+            {
+                continue;
+            }
+            const float dx = e.position.x - hero->position.x;
+            const float dy = e.position.y - hero->position.y;
+            const float d2 = dx * dx + dy * dy;
+            if (e.role == EntityRole2D::kPatrolEnemy && d2 < best_enemy_d2)
+            {
+                best_enemy_d2 = d2;
+                nearest_enemy = &e;
+            }
+            else if (e.role == EntityRole2D::kCollectibleGem && d2 < best_gem_d2)
+            {
+                best_gem_d2 = d2;
+                nearest_gem = &e;
+            }
+        }
+
+        if (nearest_enemy != nullptr)
+        {
+            const float ex   = nearest_enemy->position.x - hero->position.x;
+            const float ey   = nearest_enemy->position.y - hero->position.y;
+            in.aim_angle_rad = std::atan2(ey, ex);
+            in.fire_held     = true;
+            in.fire_pressed  = true;
+        }
+
+        cd::math::Vec2f desired_dir { 0.0F, 0.0F };
+        if (nearest_enemy != nullptr && best_enemy_d2 < (3.4F * 3.4F))
+        {
+            // Kite / strafe orbit around close enemy
+            const float d  = std::max(0.1F, std::sqrt(best_enemy_d2));
+            const float nx = (hero->position.x - nearest_enemy->position.x) / d;
+            const float ny = (hero->position.y - nearest_enemy->position.y) / d;
+            desired_dir.x  = nx * 0.65F - ny * 0.75F;
+            desired_dir.y  = ny * 0.65F + nx * 0.75F;
+        }
+        else if (nearest_gem != nullptr)
+        {
+            desired_dir = nearest_gem->position - hero->position;
+        }
+        else if (goal != nullptr)
+        {
+            desired_dir = goal->position - hero->position;
+        }
+        else
+        {
+            const float t = stage.hud().sim_time_sec;
+            desired_dir   = { std::cos(t * 1.1F), std::sin(t * 1.1F) };
+        }
+
+        const float len = std::sqrt(desired_dir.x * desired_dir.x + desired_dir.y * desired_dir.y);
+        if (len > 0.05F)
+        {
+            in.move_x = desired_dir.x / len;
+            in.move_y = desired_dir.y / len;
+            if (nearest_enemy == nullptr)
+            {
+                in.aim_angle_rad = std::atan2(in.move_y, in.move_x);
+            }
+        }
         return in;
     }
 
@@ -123,6 +250,13 @@ PlaytestReport2D run_playtest_2d(
         for (const auto& e : stage.entities())
         {
             if (e.visible && e.role == EntityRole2D::kPlayerHero)
+            {
+                return e.position;
+            }
+        }
+        for (const auto& e : stage.entities())
+        {
+            if (e.visible && e.role == EntityRole2D::kKinematicPaddle)
             {
                 return e.position;
             }

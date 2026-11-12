@@ -201,8 +201,19 @@ void emit_sprite_2d(
         sprite.y_sort,
         static_cast<std::uint16_t>(sprite.texture_slot & 0xFFFFU));
 
+    cd::math::Vec3f eff_normal = sprite.surface_normal;
+    if (sprite.flip_x)
+    {
+        eff_normal.x = -eff_normal.x;
+    }
     const ColorRgba8 lit_color = sprite.lit
-        ? evaluate_lighting_2d(lighting, sprite.position, { 0.0F, 0.22F, 0.97F }, sprite.tint)
+        ? evaluate_lighting_2d_with_emissive(
+              lighting,
+              sprite.position,
+              eff_normal,
+              sprite.tint,
+              sprite.emissive_tint,
+              sprite.emissive_intensity)
         : sprite.tint;
 
     if (sprite.texture_slot != 0xFFFFFFFFU)

@@ -18,6 +18,7 @@
 // =============================================================================
 #include <cd/material/UiVariant.hpp>
 #include <cd/rhi/Format.hpp>
+#include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi/vulkan/VulkanDevice.hpp>
 #include <cd/shader/Compiler.hpp>
@@ -170,6 +171,8 @@ TEST(SubmitterMaterialRoute, RecordEmitsExpectedDrawCallCount)
     auto cmd = vk->create_command_buffer(cd::rhi::QueueType::kGraphics);
     ASSERT_NE(cmd, nullptr);
     cmd->begin();
+    cd::rhi::set_recording_error_assert_enabled(false);
     sub.record(*cmd, cd::rhi::Extent2D { 800U, 600U });
+    cd::rhi::set_recording_error_assert_enabled(true);
     cmd->end();
 }

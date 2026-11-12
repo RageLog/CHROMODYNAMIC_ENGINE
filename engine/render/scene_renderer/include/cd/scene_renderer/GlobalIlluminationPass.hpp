@@ -38,6 +38,8 @@ struct GiPipelineHandles
     cd::framegraph::ResourceHandle ibl_specular {};
 };
 
+struct SceneViewData;
+
 /// Register the full GI + Reflection + Denoiser pass subgraph (`GTAO`, `SSR`,
 /// `DDGI`, `ReSTIR DI`, `ReSTIR GI`, `NRC`, `À-Trous SVGF`, `IBL GPU`) into `fg`.
 [[nodiscard]] GiPipelineHandles register_gi_passes(
@@ -46,7 +48,8 @@ struct GiPipelineHandles
     cd::framegraph::ResourceHandle gbuffer_normal_roughness,
     cd::framegraph::ResourceHandle& hdr_scene,
     cd::rhi::Extent2D viewport,
-    const GiPipelineConfig& config
+    const GiPipelineConfig& config,
+    const SceneViewData* scene_data = nullptr
 );
 
 }  // namespace cd::scene_renderer

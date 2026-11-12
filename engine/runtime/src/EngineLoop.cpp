@@ -28,7 +28,8 @@ void EngineLoop::set_stage(cd::element_core::Stage stage)
 FrameStepReport EngineLoop::step_frame(
     float frame_dt,
     cd::rhi::IDevice* device,
-    cd::rhi::TextureHandle backbuffer
+    cd::rhi::TextureHandle backbuffer,
+    cd::rhi::ICommandBuffer* cmd
 )
 {
     FrameStepReport report {};
@@ -68,16 +69,24 @@ FrameStepReport EngineLoop::step_frame(
     if (device != nullptr && backbuffer.is_valid())
     {
         cd::framegraph::FrameGraph fg(*device);
-        (void)cd::scene_renderer::build_scene_renderer_framegraph(fg, backbuffer, renderer_cfg_);
+        (void)cd::scene_renderer::build_scene_renderer_framegraph(
+            fg, backbuffer, renderer_cfg_, &scene_view_data_);
         report.framegraph_passes_compiled = fg.pass_count();
         if (fg.compile().has_value())
         {
-            auto cmd = device->create_command_buffer();
-            if (cmd)
+            if (cmd != nullptr)
             {
-                cmd->begin();
                 (void)fg.execute(*cmd);
-                cmd->end();
+            }
+            else
+            {
+                auto transient_cmd = device->create_command_buffer();
+                if (transient_cmd)
+                {
+                    transient_cmd->begin();
+                    (void)fg.execute(*transient_cmd);
+                    transient_cmd->end();
+                }
             }
         }
     }

@@ -1,4 +1,4 @@
-# CHROMODYNAMIC Engine — Implementation Plan
+# CHROMODYNAMIC Engine - Implementation Plan
 
 - **Version**: 0.1 (Phase 1 Plan Draft)
 - **Date**: 2026-05-17
@@ -6,25 +6,25 @@
 
 Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint = 2 hafta (kabul); takvim "kalite önce" disiplinli (E7=a), realistic estimate.
 
----
+***
 
 ## 0. Phase Genel Bakış
 
 | Phase | Süre (estimate) | Çıktı |
-|---|---|---|
-| **Phase 1 — Design** (mevcut) | ~6 ay tasarım | 17 ADR + DESIGN.md + PLAN.md + research/papers + 33 subagent |
-| **Phase 2 — Foundation** | ~6-9 ay | DtForHil salvage + RHI Vulkan MVP + ECS + Shader + Asset MVP |
-| **Phase 3 — Low-Level Replace + 3-API** | ~6-12 ay | Custom allocator/audio + D3D12 + OpenGL + Animation + Physics + Audio MVP |
-| **Phase 4 — UI + Editor + Net + Ops** | ~12-18 ay | UI dual system + Editor mechanics + Networking + i18n/Tele/Crash + CI/CD |
-| **Phase 5+ — Advanced** | uzun vadeli | VR/XR, AI/ML, Scripting, Visual Scripting, Modding |
+|--|--|--|
+| **Phase 1 - Design** (mevcut) | ~6 ay tasarım | 17 ADR + DESIGN.md + PLAN.md + research/papers + 33 subagent |
+| **Phase 2 - Foundation** | ~6-9 ay | DtForHil salvage + RHI Vulkan MVP + ECS + Shader + Asset MVP |
+| **Phase 3 - Low-Level Replace + 3-API** | ~6-12 ay | Custom allocator/audio + D3D12 + OpenGL + Animation + Physics + Audio MVP |
+| **Phase 4 - UI + Editor + Net + Ops** | ~12-18 ay | UI dual system + Editor mechanics + Networking + i18n/Tele/Crash + CI/CD |
+| **Phase 5+ - Advanced** | uzun vadeli | VR/XR, AI/ML, Scripting, Visual Scripting, Modding |
 
 **Toplam Phase 2-4** (engine v1.0-ready): ~24-39 ay = 2-3.5 yıl. "Kalite önce", realistic.
 
----
+***
 
-## 1. Phase 2 — Foundation Implementation
+## 1. Phase 2 - Foundation Implementation
 
-### Sprint S2.0 — Build System Bootstrap (2 hafta)
+### Sprint S2.0 - Build System Bootstrap (2 hafta)
 
 **Hedef**: CMake + Ninja + 4-compiler matrix + sccache + R2 + GHA CI yeşil.
 
@@ -38,14 +38,14 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Done criteria**: empty `cd::core` library + hello-world test, CI matrix all green, sccache hit rate > 50% on warm build.
 
-### Sprint S2.1 — Salvage P0 (Foundation) — 2 hafta
+### Sprint S2.1 - Salvage P0 (Foundation) - 2 hafta
 
 **Hedef**: DtForHil P0 salvage derlenebilir (ADR-017 P0).
 
 **Deliverables**:
 - `cd::core::Result<T>` (`std::expected` polyfill check, libstdc++14+/libc++17+ standart)
 - `cd::core::Handle` 32-bit packed `{type, generation, index}`
-- `cd::core::HandleStore` (DtForHil store refactor — RHI/ECS uyarla)
+- `cd::core::HandleStore` (DtForHil store refactor - RHI/ECS uyarla)
 - `cd::core::defines.hpp` (genişletilmiş X_DEFINATION.h: platform/compiler/arch/C++26-opt-in)
 - `cd::mem::IAllocator` + `LinearAllocator`, `PoolAllocator<T>`, `PageAllocator`
 - `cd::mem::TrackingAllocator<Inner>` decorator
@@ -56,7 +56,7 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Test**: her component için gtest binary; 100% line coverage hot path.
 
-### Sprint S2.2 — Salvage P1 Part A (Core Services) — 2 hafta
+### Sprint S2.2 - Salvage P1 Part A (Core Services) - 2 hafta
 
 **Hedef**: Cross-system messaging foundation.
 
@@ -70,7 +70,7 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Test**: EventBus stress test (10k subscribers, 100k events/sec); TimerQueue determinism test.
 
-### Sprint S2.3 — Salvage P1 Part B (Coroutine + Concurrency) — 2 hafta
+### Sprint S2.3 - Salvage P1 Part B (Coroutine + Concurrency) - 2 hafta
 
 **Hedef**: Job system foundation + coroutine task.
 
@@ -79,16 +79,16 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 - `cd::concurrency::ThreadPool` (interim, Chase-Lev upgrade S2.5)
 - `cd::concurrency::JobGraph` DAG primitive
 - `cd::time::FramePacer` multi-tier accumulator
-- `cd::time::SimClock` (DtForHil port — pause/step/speed-multiplier 0.1×-10×)
+- `cd::time::SimClock` (DtForHil port - pause/step/speed-multiplier 0.1×-10×)
 
 **Test**: Coroutine determinism; SimClock fixed-timestep stability test.
 
-### Sprint S2.4 — Salvage P2 (Engine Patterns) — 2 hafta
+### Sprint S2.4 - Salvage P2 (Engine Patterns) - 2 hafta
 
 **Hedef**: CVar, watchdog, plugin loader.
 
 **Deliverables**:
-- `cd::core::CVarRegistry` (DtForHil `ParameterRegistry` port — Singleton sök)
+- `cd::core::CVarRegistry` (DtForHil `ParameterRegistry` port - Singleton sök)
 - `cd::diag::DeadlineMonitor` (DtForHil `watchdog` port)
 - `cd::asset::SchemaRegistry` (DtForHil schema port)
 - `cd::plugin::Loader` (DtForHil `PluginLoader` 315-line port + IPlugin coupling sök)
@@ -96,7 +96,7 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Test**: CVar hot-set integration test; plugin hot-load + ABI mismatch test.
 
-### Sprint S2.5 — Concurrency Upgrade — 2 hafta
+### Sprint S2.5 - Concurrency Upgrade - 2 hafta
 
 **Hedef**: Chase-Lev work-stealing + hazard pointers.
 
@@ -110,7 +110,7 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Test**: TSan-clean; stress test 1M jobs/sec; deterministic replay binary-equal.
 
-### Sprint S2.6 — Salvage P3 (Serialization + Net Foundation) — 2 hafta
+### Sprint S2.6 - Salvage P3 (Serialization + Net Foundation) - 2 hafta
 
 **Hedef**: BitStream + framing + Socket interface.
 
@@ -119,12 +119,12 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 - `cd::serialization::BitReader` + `BitWriter`
 - `cd::serialization::HexCodec`, `BinaryCodec`
 - `cd::net::ITransport` interface
-- `cd::net::Framing` (LengthHeader, Delimiter — DtForHil port)
+- `cd::net::Framing` (LengthHeader, Delimiter - DtForHil port)
 - `cd::net::PacketAssembler` (lock-free SPSC, DtForHil StreamAssembler upgrade)
 
 **Test**: bit-pack round-trip; framing fuzz test.
 
-### Sprint S2.7 — Salvage P4 (Optional) — 2 hafta
+### Sprint S2.7 - Salvage P4 (Optional) - 2 hafta
 
 **Hedef**: Config + Platform utilities.
 
@@ -137,7 +137,7 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Test**: VFS mod overlay scenario; path traversal sandbox.
 
-### Sprint S2.8 — RHI Vulkan Bootstrap (Triangle) — 2 hafta
+### Sprint S2.8 - RHI Vulkan Bootstrap (Triangle) - 2 hafta
 
 **Hedef**: Vulkan instance + device + swapchain + first triangle.
 
@@ -150,7 +150,7 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Test**: golden image diff (triangle screenshot pixel-equal).
 
-### Sprint S2.9 — RHI Resource Model + Bindless — 2 hafta
+### Sprint S2.9 - RHI Resource Model + Bindless - 2 hafta
 
 **Hedef**: Strongly-typed handles + intrusive Rc + bindless descriptor heap.
 
@@ -163,9 +163,9 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Test**: bindless 10K texture stress; queue async compute verify.
 
-### Sprint S2.10 — RHI Vulkan MVP Completion — 2 hafta
+### Sprint S2.10 - RHI Vulkan MVP Completion - 2 hafta
 
-**Hedef**: E4=b MVP — mesh + texture + camera + 1 directional light.
+**Hedef**: E4=b MVP - mesh + texture + camera + 1 directional light.
 
 **Deliverables**:
 - Vertex buffer upload + index buffer
@@ -176,7 +176,7 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Test**: golden image diff; perf budget < 5ms CPU @ 1080p.
 
-### Sprint S2.11 — Shader Pipeline Slang Bootstrap — 2 hafta
+### Sprint S2.11 - Shader Pipeline Slang Bootstrap - 2 hafta
 
 **Hedef**: Slang vendor integration + first cross-target compile.
 
@@ -188,7 +188,7 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Test**: Slang module compile success; SPIR-V validation.
 
-### Sprint S2.12 — Material System MVP — 2 hafta
+### Sprint S2.12 - Material System MVP - 2 hafta
 
 **Hedef**: `MaterialDesc` + macro reflection + parameter block.
 
@@ -200,7 +200,7 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Test**: 5 material variants, parameter set/get round-trip.
 
-### Sprint S2.13 — Shader Hot-Reload + PSO Cache — 2 hafta
+### Sprint S2.13 - Shader Hot-Reload + PSO Cache - 2 hafta
 
 **Hedef**: ADR-003 D + E hot-reload + 3-tier cache.
 
@@ -212,7 +212,7 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Test**: hot-reload material in running render; PSO cache speedup measurement.
 
-### Sprint S2.14 — ECS Storage Foundation — 2 hafta
+### Sprint S2.14 - ECS Storage Foundation - 2 hafta
 
 **Hedef**: chunk-archetype + sparse-set hybrid.
 
@@ -225,7 +225,7 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Test**: 1M entities iteration benchmark; storage class auto-promote test.
 
-### Sprint S2.15 — ECS Query + Scheduling — 2 hafta
+### Sprint S2.15 - ECS Query + Scheduling - 2 hafta
 
 **Hedef**: Function-signature query + phase scheduler + reactive observers.
 
@@ -237,7 +237,7 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Test**: 100k entities tag flip observer 10× speedup target verify.
 
-### Sprint S2.16 — ECS Hierarchy + Prefab — 2 hafta
+### Sprint S2.16 - ECS Hierarchy + Prefab - 2 hafta
 
 **Hedef**: ECS-internal hierarchy + prefab archetype-delta.
 
@@ -250,7 +250,7 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Test**: 10k hierarchy transform; prefab spawn benchmark.
 
-### Sprint S2.17 — Renderer Foundation (cluster forward+) — 2 hafta
+### Sprint S2.17 - Renderer Foundation (cluster forward+) - 2 hafta
 
 **Hedef**: ADR-002 baseline (cluster forward+, NOT visibility buffer yet).
 
@@ -263,7 +263,7 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Test**: 64 light cluster scene golden image.
 
-### Sprint S2.18 — Renderer Post-FX Pipeline DSL — 2 hafta
+### Sprint S2.18 - Renderer Post-FX Pipeline DSL - 2 hafta
 
 **Hedef**: User-editable post-FX chain.
 
@@ -274,7 +274,7 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Test**: preset switch hot-reload; custom chain composability.
 
-### Sprint S2.19 — Renderer Cross-Cutting (Asset Streaming Hook) — 2 hafta
+### Sprint S2.19 - Renderer Cross-Cutting (Asset Streaming Hook) - 2 hafta
 
 **Hedef**: Renderer asset stream + culling integration.
 
@@ -286,20 +286,20 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Test**: 100k mesh scene culling perf.
 
-### Sprint S2.20 — Asset Pipeline Bootstrap — 2 hafta
+### Sprint S2.20 - Asset Pipeline Bootstrap - 2 hafta
 
 **Hedef**: `cd_asset_compiler` CLI + glTF native importer.
 
 **Deliverables**:
 - `cd_asset_compiler` CLI (main binary)
 - glTF 2.0 native parser (KHR extensions)
-- `.cdmesh` custom binary format (no meshlet yet — Sprint 2.22)
+- `.cdmesh` custom binary format (no meshlet yet - Sprint 2.22)
 - DDC Blake3 + Merkle dep graph
 - SQLite registry MVP
 
 **Test**: glTF import → `.cdmesh` round-trip; DDC cache hit verify.
 
-### Sprint S2.21 — Asset Pipeline (KTX2 + Audio + Anim) — 2 hafta
+### Sprint S2.21 - Asset Pipeline (KTX2 + Audio + Anim) - 2 hafta
 
 **Hedef**: Texture + audio + animation asset support.
 
@@ -311,7 +311,7 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Test**: per-asset round-trip; hot-reload texture swap visual.
 
-### Sprint S2.22 — Asset Pipeline (Meshlet + LOD + Streaming) — 2 hafta
+### Sprint S2.22 - Asset Pipeline (Meshlet + LOD + Streaming) - 2 hafta
 
 **Hedef**: Meshlet cluster + LOD DAG + virtual texture base.
 
@@ -323,19 +323,19 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Test**: 1M tri scene meshlet culling; VT page load benchmark.
 
-### Sprint S2.23 — RHI Conformance Test Suite — 2 hafta
+### Sprint S2.23 - RHI Conformance Test Suite - 2 hafta
 
 **Hedef**: Vulkan backend stress + golden image regression.
 
 **Deliverables**:
-- Golden image diff harness (FLIP / SSIM)
+- Golden image diff framework (FLIP / SSIM)
 - 50 conformance scenes
 - Performance regression dashboard
 - Asset DDC remote upload CI
 
 **Test**: All scenes pixel-equal; CI dashboard live.
 
-### Sprint S2.24 — Phase 2 Integration & Hardening — 2 hafta
+### Sprint S2.24 - Phase 2 Integration & Hardening - 2 hafta
 
 **Hedef**: End-to-end "hello scene" demo + freeze.
 
@@ -350,9 +350,9 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Phase 2 Toplam: 25 sprint × 2 hafta = 50 hafta ≈ 11.5 ay** (realistik, "kalite önce").
 
----
+***
 
-## 2. Phase 3 — Low-Level Replace + 3-API + Subsystems
+## 2. Phase 3 - Low-Level Replace + 3-API + Subsystems
 
 ### Block A: D3D12 + OpenGL Backend Port (Sprint S3.1-S3.6)
 
@@ -388,9 +388,9 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Phase 3 Toplam: ~24 sprint × 2 hafta = ~12 ay**
 
----
+***
 
-## 3. Phase 4 — UI + Editor + Networking + Ops
+## 3. Phase 4 - UI + Editor + Networking + Ops
 
 ### Block E: UI System (paralel akış Sprint S4.1-S4.18)
 
@@ -422,9 +422,9 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 
 **Phase 4 Toplam: ~30 sprint × 2 hafta = ~15 ay**
 
----
+***
 
-## 4. Phase 5+ — Advanced Features (uzun vadeli, no fixed plan)
+## 4. Phase 5+ - Advanced Features (uzun vadeli, no fixed plan)
 
 - VR/XR (OpenXR)
 - AI/ML inference (ONNX runtime)
@@ -433,11 +433,11 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 - Modding pipeline (VFS overlay + signed scripts)
 - Scripting host (Lua → Python → C#)
 - Visual scripting (Blueprint-vari)
-- Custom physics (opsiyonel — adapter pattern sayesinde değerlendirme)
+- Custom physics (opsiyonel - adapter pattern sayesinde değerlendirme)
 - Custom profiler (Tracy reverse)
 - Custom crash handler (Crashpad reverse)
 
----
+***
 
 ## 5. Sprint Velocity & Risk Buffer
 
@@ -452,7 +452,7 @@ Bu doküman 17 ADR'a dayanan adım-adım implementation WBS'sini sunar. Sprint =
 - Phase 4 Block E `cd::editor_ui` paralel akış zorunlu.
 - Phase 4 Block G voice chat Phase 5'e ertelenir.
 
----
+***
 
 ## 6. Critical Path Analysis
 
@@ -474,7 +474,7 @@ S2.14 (ECS Storage) → S2.15 (ECS Query) → S2.16 (Hierarchy)
                                                               S2.24 (Integration)
 ```
 
-**Critical path length**: ~22 sprint sequential (~10 ay) — paralel akışla ~25 sprint toplam (~11.5 ay).
+**Critical path length**: ~22 sprint sequential (~10 ay) - paralel akışla ~25 sprint toplam (~11.5 ay).
 
 ### Phase 3 Critical Path
 
@@ -484,12 +484,12 @@ D3D12 backend port + Custom allocator + Subsystem MVPs paralel akıyor.
 
 `cd::editor_ui` (12-18 ay) → en uzun chain. Diğer block'lar paralel akışa girer.
 
----
+***
 
 ## 7. Success Metrics & Gates
 
 | Phase | Gate | Metric |
-|---|---|---|
+|--|--|--|
 | **Phase 1** | Design Freeze | 17 ADR signed off + peer-review passed |
 | **Phase 2** | Foundation Demo | `samples/hello_scene` runs on Vulkan, 60 FPS @ 1080p, sanitizers clean |
 | **Phase 3** | 3-API Parity | Same demo runs on D3D12 + OpenGL within 10% perf parity |
@@ -498,7 +498,7 @@ D3D12 backend port + Custom allocator + Subsystem MVPs paralel akıyor.
 | **Phase 4** | Network MVP | 2-player networking demo (authoritative server + rollback test) |
 | **Phase 4** | v1.0 Release | Apache 2.0 GitHub release; vcpkg/Conan ports; full CI matrix green |
 
----
+***
 
 ## 8. Subagent Dispatch Per Sprint
 
@@ -517,11 +517,11 @@ Sprint sonu:
 10. **peer-review-simulator** ajan: sprint sonu critical review
 11. **release-manager** ajan: SemVer bump, changelog
 
----
+***
 
 ## 9. Dependency Graph (Library DAG)
 
-Bkz. [docs/DESIGN.md §2](DESIGN.md#2-library-dag-bağımlılık-grafiği) — Library bağımlılık DAG'ı.
+Bkz. [docs/DESIGN.md §2](DESIGN.md#2-library-dag-bağımlılık-grafiği) - Library bağımlılık DAG'ı.
 
 Phase 2 implement sırası bu DAG'ı bottom-up takip eder:
 1. **Foundation layer** (S2.1-S2.7): `core, mem, math, concurrency, time, io, serialization, log, events, diag, profile, platform, plugin, config`
@@ -531,20 +531,20 @@ Phase 2 implement sırası bu DAG'ı bottom-up takip eder:
 5. **UI & Editor** (Phase 4): `ui, editor_ui, editor`
 6. **i18n & Telemetry** (Phase 4): `i18n, analytics` (telemetry already in `profile`)
 
----
+***
 
 ## 10. Bağlantılar
 
-- [docs/DESIGN.md](DESIGN.md) — Master Design Document
-- [docs/ADR/](ADR/) — 17 Architecture Decision Records
-- [docs/ADR/README.md](ADR/README.md) — ADR index
-- [CLAUDE.md](../CLAUDE.md) — Project rules
-- [.claude/agents/README.md](../.claude/agents/README.md) — Subagent suite
+- [docs/DESIGN.md](DESIGN.md) - Master Design Document
+- [docs/ADR/](ADR/) - 17 Architecture Decision Records
+- [docs/ADR/README.md](ADR/README.md) - ADR index
+- [CLAUDE.md](../CLAUDE.md) - Project rules
+- [.claude/agents/README.md](../.claude/agents/README.md) - Subagent suite
 
----
+***
 
 ## 11. Notlar
 
 - **Phase 1 tamamlandı** (Mayıs 2026). Tasarım dondurma süreci: `peer-review-simulator` ajan + akademik PDF indirimi (STUB'lardan finalize) + kullanıcı signoff.
 - **Phase 2 kickoff prework**: Phase 1 STUB akademik referans finalize, ek vendor onayı (S6 meshoptimizer), CMakePresets.json review.
-- Bu PLAN.md **canlı** doküman — her sprint sonu güncellenir; gerçek velocity vs planlanan delta tracked.
+- Bu PLAN.md **canlı** doküman - her sprint sonu güncellenir; gerçek velocity vs planlanan delta tracked.
