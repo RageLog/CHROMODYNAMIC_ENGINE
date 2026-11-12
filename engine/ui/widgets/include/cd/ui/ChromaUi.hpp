@@ -2348,7 +2348,8 @@ public:
         if (st.mouse_clicked[0] && !st.popup_opened_this_frame)
         {
             const ImVec2 mp = st.io.MousePos;
-            if (!st.active_menu_name.empty() && mp.y > 28.0F)
+            const float menu_bar_h = std::max(28.0F, st.menu_bar_height);
+            if (!st.active_menu_name.empty() && (mp.y > menu_bar_h || mp.x > st.menu_bar_cursor_x))
             {
                 const bool in_pop = (mp.x >= st.last_popup_min.x && mp.x <= st.last_popup_max.x &&
                                      mp.y >= st.last_popup_min.y && mp.y <= st.last_popup_max.y);
@@ -2377,14 +2378,15 @@ public:
             const ImVec2 mp = st.io.MousePos;
             if ((mp.x > 0.5F || mp.y > 0.5F) && mp.x >= 0.0F && mp.x <= W && mp.y >= 0.0F && mp.y <= H)
             {
-                constexpr float kEdge   = 8.0F;
-                constexpr float kCorner = 16.0F;
-                const bool over_win_btns = (mp.x >= W - 90.0F && mp.x < W - 4.0F && mp.y >= 4.0F && mp.y < 25.0F);
+                constexpr float kEdge    = 8.0F;
+                constexpr float kTopEdge = 3.0F;
+                constexpr float kCorner  = 16.0F;
+                const bool over_win_btns = (mp.x >= W - 90.0F && mp.x < W - 4.0F && mp.y >= kTopEdge && mp.y < 32.0F);
                 if (!over_win_btns)
                 {
                     const bool on_l = (mp.x <= kEdge);
                     const bool on_r = (mp.x >= W - kEdge);
-                    const bool on_t = (mp.y <= kEdge);
+                    const bool on_t = (mp.y <= kTopEdge);
                     const bool on_b = (mp.y >= H - kEdge);
                     const bool cl   = (mp.x <= kCorner);
                     const bool cr   = (mp.x >= W - kCorner);
@@ -3522,7 +3524,12 @@ inline bool BeginChild(const char* str_id, const ImVec2& size = ImVec2(0, 0), bo
 
     // Compute available height from parent's visible bottom edge without feedback from parent.scroll_y
     const float parent_bottom = parent.pos.y + parent.size.y - 4.0F;
-    const float avail_w = std::max(48.0F, (parent.pos.x + parent.size.x - 4.0F) - parent.cursor.x);
+    float avail_w = std::max(48.0F, (parent.pos.x + parent.size.x - 4.0F) - parent.cursor.x);
+    if (!st.table_stack.empty())
+    {
+        const auto& ts = st.table_stack.back();
+        avail_w = std::max(48.0F, (ts.width / static_cast<float>(ts.cols)) - 6.0F);
+    }
     const float avail_h = std::max(24.0F, parent_bottom - child.pos.y);
     child.size.x = (size.x > 0.0F) ? size.x : avail_w;
     child.size.y = (size.y > 0.0F) ? size.y : ((size.y < 0.0F) ? std::max(24.0F, avail_h + size.y) : avail_h);
@@ -5254,7 +5261,11 @@ inline void EndMainMenuBar() noexcept
     }
 
     st.in_menu_bar = false;
-    if (!st.window_stack.empty()) st.window_stack.pop_back();
+    if (!st.window_stack.empty())
+    {
+        st.menu_bar_cursor_x = st.window_stack.back().cursor.x;
+        st.window_stack.pop_back();
+    }
 }
 
 inline bool BeginMenu(const char* label, bool enabled = true) noexcept
@@ -5358,6 +5369,7 @@ inline bool BeginMenu(const char* label, bool enabled = true) noexcept
     w.prev_item_min = p0;
     w.prev_item_max = p1;
     w.cursor.x      = p1.x + 5.0F;
+    st.menu_bar_cursor_x = w.cursor.x;
 
     if (open)
     {

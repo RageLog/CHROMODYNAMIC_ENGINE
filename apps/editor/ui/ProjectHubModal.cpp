@@ -167,7 +167,7 @@ void draw_project_hub_modal(StudioEngineState& s, std::uint32_t frame_w, std::ui
                 else if (c.action_id == -1)
                 {
                     cst.workspace_mode = 0;
-                    scene_ops::reset_to_clean_empty_project(s, false);
+                    scene_ops::reset_to_clean_empty_project(s, true);
                 }
                 else
                 {

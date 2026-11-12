@@ -96,6 +96,15 @@ TEST(SignalHandler, ScopedUninstallOnDestruction)
 // hosts skip via the kNotImplemented branch.
 // ============================================================================
 #include <cd/platform/Window.hpp>
+#if defined(_WIN32)
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
+    #include <windows.h>
+#endif
 
 namespace
 {
@@ -168,6 +177,58 @@ TEST(Window, SetTitleDoesNotCrash)
     auto w = cd::platform::create_window(d);
     ASSERT_TRUE(w.has_value());
     (*w)->set_title("renamed");
+}
+
+TEST(Window, FramelessTopBarButtonsReceiveClientHitTest)
+{
+    for (const std::uint32_t test_w : { 1600U, 2560U, 5120U })
+    {
+        cd::platform::WindowDesc d {};
+        d.title     = "cd_test_frameless_hittest";
+        d.width     = test_w;
+        d.height    = 900U;
+        d.frameless = true;
+        d.visible   = false;
+        auto w      = cd::platform::create_window(d);
+        ASSERT_TRUE(w.has_value());
+
+        auto* hwnd = static_cast<HWND>((*w)->native_window_handle());
+        ASSERT_NE(hwnd, nullptr);
+        RECT cr {};
+        ASSERT_TRUE(GetClientRect(hwnd, &cr));
+        const int cw = static_cast<int>(cr.right - cr.left);
+        ASSERT_GT(cw, 1000);
+
+        auto hit_at_client = [&](int cx, int cy) -> LRESULT
+        {
+            POINT pt { cx, cy };
+            ClientToScreen(hwnd, &pt);
+            return SendMessageW(hwnd, WM_NCHITTEST, 0, MAKELPARAM(pt.x, pt.y));
+        };
+
+        // Left menu bar (File | Edit | Create | View | Project | Help) must be HTCLIENT
+        EXPECT_EQ(hit_at_client(48, 14), HTCLIENT);
+        EXPECT_EQ(hit_at_client(220, 6), HTCLIENT);
+
+        // Center Workspace + Play + Export buttons (Hub | 2D | 3D | Graph | > Play | Export) must ALL be HTCLIENT
+        const int target_cx = std::max(366, (cw - 410) / 2 - 24);
+        EXPECT_EQ(hit_at_client(target_cx + 20, 6),   HTCLIENT); // Hub (top half y=6)
+        EXPECT_EQ(hit_at_client(target_cx + 75, 16),  HTCLIENT); // 2D
+        EXPECT_EQ(hit_at_client(target_cx + 130, 16), HTCLIENT); // 3D
+        EXPECT_EQ(hit_at_client(target_cx + 190, 16), HTCLIENT); // Graph
+        EXPECT_EQ(hit_at_client(target_cx + 270, 16), HTCLIENT); // > Play (F5)
+        EXPECT_EQ(hit_at_client(target_cx + 365, 16), HTCLIENT); // Export .cdpak
+
+        // Empty titlebar gaps between menus and center pills (and right of center pills) remain HTCAPTION for dragging
+        if (target_cx > 420)
+        {
+            EXPECT_EQ(hit_at_client(390, 16), HTCAPTION);
+        }
+        EXPECT_EQ(hit_at_client(cw - 320, 16), HTCAPTION);
+
+        // Top-right Minimize / Maximize / Close buttons must be HTCLIENT
+        EXPECT_EQ(hit_at_client(cw - 14, 14), HTCLIENT);
+    }
 }
 
 #endif  // _WIN32

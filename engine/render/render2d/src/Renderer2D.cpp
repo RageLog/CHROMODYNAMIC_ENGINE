@@ -42,21 +42,6 @@ void Renderer2D::render_scene(
         }
         mgr.emit_to_canvas(out_canvas, camera, viewport);
     }
-    else
-    {
-        // Subtle parallax skyline towers so camera movement feels deep & kinetic
-        const cd::math::Vec2f eye         = camera.render_eye_world();
-        const std::uint64_t   parallax_k1 = make_sort_key_2d(5U, 0, 0.0F, false, 0U);
-        const float           par_shift   = std::fmod(eye.x * 12.0F, 140.0F);
-        for (int i = -2; i < 16; ++i)
-        {
-            const float bx = viewport.x + static_cast<float>(i) * 140.0F - par_shift;
-            const float bh = 55.0F + static_cast<float>(((i * 37) & 7) * 16);
-            out_canvas.add_solid_rect(
-                bx, viewport.y + viewport.height - bh, 96.0F, bh,
-                ColorRgba8 { 20U, 30U, 52U, 155U }, parallax_k1);
-        }
-    }
 
     // 2. World Coordinate Grid (Layer 15 — Editor Mode)
     if (options.show_grid)

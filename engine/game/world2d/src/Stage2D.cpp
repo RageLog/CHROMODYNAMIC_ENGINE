@@ -1301,12 +1301,12 @@ void Stage2D::step_play(float dt, const PlayerInput2D& input)
         {
             if (striker.visible && striker.role == EntityRole2D::kKinematicPaddle && striker.size.x > striker.size.y)
             {
-                fire_cooldown_ = 0.34F;
+                fire_cooldown_ = 0.38F;
                 (void)projectile_pool_.emplace(Projectile2D {
                     .position     = striker.position + cd::math::Vec2f { 0.0F, striker.size.y * 0.72F },
-                    .velocity     = { striker.runtime_velocity.x * 0.18F, 19.5F },
+                    .velocity     = { striker.runtime_velocity.x * 0.18F, 14.5F },
                     .radius       = 0.20F,
-                    .lifetime_sec = 1.35F,
+                    .lifetime_sec = 1.65F,
                     .damage       = 50,
                     .from_player  = true,
                     .color_rgba   = { 1.0F, 0.76F, 0.24F, 1.0F },
@@ -1387,9 +1387,9 @@ void Stage2D::step_play(float dt, const PlayerInput2D& input)
                     }
                     const float cur_spd = std::clamp(
                         std::sqrt(ball.runtime_velocity.x * ball.runtime_velocity.x +
-                                  ball.runtime_velocity.y * ball.runtime_velocity.y) * 1.035F,
+                                  ball.runtime_velocity.y * ball.runtime_velocity.y) * 1.022F,
                         base_spd,
-                        base_spd * 1.65F);
+                        base_spd * 1.45F);
 
                     if (pad.size.y >= pad.size.x)
                     {

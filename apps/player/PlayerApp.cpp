@@ -33,6 +33,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -653,6 +654,7 @@ int PlayerApp::run()
                 rd.swapchain.display_handle = window->native_display_handle();
                 rd.swapchain.extent         = { window->width(), window->height() };
                 rd.swapchain.format         = cd::rhi::Format::kBGRA8Unorm;
+                rd.swapchain.vsync          = (frames_to_run == 0U);
                 rd.frames_in_flight         = 2U;
                 auto rr = cd::render::Renderer::create(rd);
                 if (!rr.has_value())
@@ -777,6 +779,14 @@ int PlayerApp::run()
 
     std::uint32_t frame_idx = 0U;
     const std::uint32_t capture_target_frame = (frames_to_run > 0U ? frames_to_run : 3U);
+    const bool deterministic_fixed_frames    = (frames_to_run > 0U);
+    constexpr float kFixedStep2D             = 1.0F / 60.0F;
+    float sim_accum_2d                       = 0.0F;
+    bool  latched_jump_pressed               = false;
+    bool  latched_fire_pressed               = false;
+    bool  latched_interact_pressed           = false;
+    using steady_clock_t                     = std::chrono::steady_clock;
+    steady_clock_t::time_point last_frame_tp = steady_clock_t::now();
 
     while (true)
     {
@@ -784,6 +794,13 @@ int PlayerApp::run()
         {
             break;
         }
+
+        const auto  now_tp       = steady_clock_t::now();
+        const float raw_frame_dt = (frame_idx == 0U)
+            ? kFixedStep2D
+            : std::clamp(std::chrono::duration<float>(now_tp - last_frame_tp).count(), 0.0F, 0.10F);
+        last_frame_tp            = now_tp;
+        const float effective_dt = deterministic_fixed_frames ? kFixedStep2D : raw_frame_dt;
 
         ui.lmb_pressed          = false;
         ui.prev_mouse_x         = ui.mouse_x;
@@ -917,6 +934,10 @@ int PlayerApp::run()
                     {
                         stage2d.exit_play();
                         stage2d.enter_play();
+                        sim_accum_2d             = 0.0F;
+                        latched_jump_pressed     = false;
+                        latched_fire_pressed     = false;
+                        latched_interact_pressed = false;
                     }
                 }
                 else if (ev.kind == cd::platform::OSEventKind::kKeyUp)
@@ -958,25 +979,63 @@ int PlayerApp::run()
         if (use_stage2d)
         {
             cd::world2d::PlayerInput2D p2d {};
-            if (config_.autopilot_2d)
+            if (!config_.autopilot_2d)
             {
-                p2d = cd::world2d::compute_autopilot_input_2d(stage2d);
+                p2d.move_x    = (key_2d_right ? 1.0F : 0.0F) - (key_2d_left ? 1.0F : 0.0F);
+                p2d.move_y    = (key_2d_up ? 1.0F : 0.0F) - (key_2d_down ? 1.0F : 0.0F);
+                p2d.jump_held = key_2d_jump;
+                p2d.fire_held = key_2d_fire_held;
+                latched_jump_pressed     = latched_jump_pressed || key_2d_jump_pressed;
+                latched_fire_pressed     = latched_fire_pressed || key_2d_fire_pressed;
+                latched_interact_pressed = latched_interact_pressed || key_2d_interact_pressed;
+
+                const float aim_dx = ui.mouse_x - (static_cast<float>(fb_w) * 0.5F);
+                const float aim_dy = (static_cast<float>(fb_h) * 0.5F) - ui.mouse_y;
+                p2d.aim_angle_rad  = std::atan2(aim_dy, aim_dx);
+            }
+
+            if (deterministic_fixed_frames)
+            {
+                if (config_.autopilot_2d)
+                {
+                    p2d = cd::world2d::compute_autopilot_input_2d(stage2d);
+                }
+                else
+                {
+                    p2d.jump_pressed         = latched_jump_pressed;
+                    p2d.fire_pressed         = latched_fire_pressed;
+                    p2d.interact_pressed     = latched_interact_pressed;
+                    latched_jump_pressed     = false;
+                    latched_fire_pressed     = false;
+                    latched_interact_pressed = false;
+                }
+                stage2d.step_play(kFixedStep2D, p2d);
             }
             else
             {
-                p2d.move_x           = (key_2d_right ? 1.0F : 0.0F) - (key_2d_left ? 1.0F : 0.0F);
-                p2d.move_y           = (key_2d_up ? 1.0F : 0.0F) - (key_2d_down ? 1.0F : 0.0F);
-                p2d.jump_held        = key_2d_jump;
-                p2d.jump_pressed     = key_2d_jump_pressed;
-                p2d.fire_pressed     = key_2d_fire_pressed;
-                p2d.fire_held        = key_2d_fire_held;
-                p2d.interact_pressed = key_2d_interact_pressed;
-
-                const float aim_dx   = ui.mouse_x - (static_cast<float>(fb_w) * 0.5F);
-                const float aim_dy   = (static_cast<float>(fb_h) * 0.5F) - ui.mouse_y;
-                p2d.aim_angle_rad    = std::atan2(aim_dy, aim_dx);
+                sim_accum_2d = std::min(sim_accum_2d + effective_dt, 0.10F);
+                int substeps = 0;
+                while (sim_accum_2d >= kFixedStep2D && substeps < 6)
+                {
+                    cd::world2d::PlayerInput2D step_in = p2d;
+                    if (config_.autopilot_2d)
+                    {
+                        step_in = cd::world2d::compute_autopilot_input_2d(stage2d);
+                    }
+                    else
+                    {
+                        step_in.jump_pressed     = latched_jump_pressed;
+                        step_in.fire_pressed     = latched_fire_pressed;
+                        step_in.interact_pressed = latched_interact_pressed;
+                        latched_jump_pressed     = false;
+                        latched_fire_pressed     = false;
+                        latched_interact_pressed = false;
+                    }
+                    stage2d.step_play(kFixedStep2D, step_in);
+                    sim_accum_2d -= kFixedStep2D;
+                    ++substeps;
+                }
             }
-            stage2d.step_play(1.0F / 60.0F, p2d);
 
             r2d::Render2DDebugOptions dbg2d {};
             dbg2d.show_grid         = false;
@@ -1125,9 +1184,9 @@ int PlayerApp::run()
 
             if (ui.playing)
             {
-                ui.sim_time += (1.0F / 60.0F);
+                ui.sim_time += effective_dt;
             }
-            const auto telemetry = loop.step_frame(1.0F / 60.0F, &sim_null_dev, back_handle);
+            const auto telemetry = loop.step_frame(effective_dt, &sim_null_dev, back_handle);
 
             bool stage_changed = false;
             render_showcase_hud_canvas(

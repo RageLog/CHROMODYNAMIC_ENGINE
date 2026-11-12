@@ -419,7 +419,7 @@ void GenreTemplates2D::build_pong_arcade(Stage2D& stage)
     p1.position    = { -11.0F, 0.0F };
     p1.size        = { 0.75F, 2.85F };
     p1.color_rgba  = { 0.22F, 0.94F, 1.0F, 1.0F };
-    p1.move_speed  = 13.5F;
+    p1.move_speed  = 10.5F;
     p1.patrol_span = 4.45F;
     p1.layer       = 120;
     (void)stage.add_entity(std::move(p1));
@@ -431,19 +431,19 @@ void GenreTemplates2D::build_pong_arcade(Stage2D& stage)
     cpu.position    = { 11.0F, 0.0F };
     cpu.size        = { 0.75F, 2.85F };
     cpu.color_rgba  = { 1.0F, 0.28F, 0.62F, 1.0F };
-    cpu.move_speed  = 9.6F;
+    cpu.move_speed  = 7.2F;
     cpu.patrol_span = 4.45F;
     cpu.layer       = 120;
     (void)stage.add_entity(std::move(cpu));
 
-    // 5. High-Speed Energy Plasma Ball
+    // 5. Balanced Arcade Energy Plasma Ball
     Entity2D ball {};
     ball.name         = "Pong_Plasma_Ball";
     ball.role         = EntityRole2D::kBouncingBall;
     ball.position     = { 0.0F, 0.0F };
     ball.size         = { 0.65F, 0.65F };
     ball.rotation_deg = 24.0F;
-    ball.move_speed   = 14.5F;
+    ball.move_speed   = 9.2F;
     ball.color_rgba   = { 0.35F, 0.96F, 1.0F, 1.0F };
     ball.layer        = 130;
     (void)stage.add_entity(std::move(ball));
@@ -505,19 +505,19 @@ void GenreTemplates2D::build_break_the_bridges(Stage2D& stage)
     striker.position    = { -0.5F, -3.95F };
     striker.size        = { 3.15F, 0.68F };
     striker.color_rgba  = { 0.25F, 0.94F, 1.0F, 1.0F };
-    striker.move_speed  = 14.8F;
+    striker.move_speed  = 10.5F;
     striker.patrol_span = 6.9F;
     striker.layer       = 125;
     (void)stage.add_entity(std::move(striker));
 
-    // 4. High-Velocity Demolition Sphere
+    // 4. Balanced Demolition Sphere
     Entity2D sphere {};
     sphere.name         = "Demolition_Sphere_2D";
     sphere.role         = EntityRole2D::kBouncingBall;
     sphere.position     = { -1.6F, -2.9F };
     sphere.size         = { 0.64F, 0.64F };
     sphere.rotation_deg = 64.0F;
-    sphere.move_speed   = 13.8F;
+    sphere.move_speed   = 8.4F;
     sphere.color_rgba   = { 0.40F, 0.96F, 1.0F, 1.0F };
     sphere.layer        = 130;
     (void)stage.add_entity(std::move(sphere));
@@ -572,10 +572,10 @@ void GenreTemplates2D::build_break_the_bridges(Stage2D& stage)
         float           speed;
     };
     const std::array<BridgeRaiderSpec, 4> raiders { {
-        { "Skeleton_Guard_West",   { -4.7F, 1.82F }, 2.6F, 2.3F },
-        { "Skeleton_Guard_East",   {  3.7F, 1.82F }, 2.6F, 2.4F },
-        { "Synth_Raider_MidSpan",  { -0.5F, 4.26F }, 5.2F, 3.1F },
-        { "Skeleton_Guard_Upper",  { -0.5F, 6.72F }, 5.4F, 2.7F },
+        { "Skeleton_Guard_West",   { -4.7F, 1.82F }, 2.6F, 1.55F },
+        { "Skeleton_Guard_East",   {  3.7F, 1.82F }, 2.6F, 1.65F },
+        { "Synth_Raider_MidSpan",  { -0.5F, 4.26F }, 5.2F, 2.05F },
+        { "Skeleton_Guard_Upper",  { -0.5F, 6.72F }, 5.4F, 1.80F },
     } };
     for (const auto& r : raiders)
     {

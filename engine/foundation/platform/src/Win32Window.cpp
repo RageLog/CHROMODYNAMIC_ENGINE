@@ -207,20 +207,40 @@ public:
             AdjustWindowRect(&r, style, FALSE);
         }
 
-        const int win_w = r.right - r.left;
-        const int win_h = r.bottom - r.top;
+        int win_w = r.right - r.left;
+        int win_h = r.bottom - r.top;
         int win_x = CW_USEDEFAULT;
         int win_y = CW_USEDEFAULT;
         if (desc.frameless)
         {
-            const int scr_w = GetSystemMetrics(SM_CXSCREEN);
-            const int scr_h = GetSystemMetrics(SM_CYSCREEN);
-            win_x = std::max(0, (scr_w - win_w) / 2);
-            win_y = std::max(0, (scr_h - win_h) / 2);
+            RECT work_rc {};
+            if (desc.visible && SystemParametersInfoW(SPI_GETWORKAREA, 0, &work_rc, 0))
+            {
+                const int work_w = work_rc.right - work_rc.left;
+                const int work_h = work_rc.bottom - work_rc.top;
+                win_w = std::min(win_w, std::max(640, work_w));
+                win_h = std::min(win_h, std::max(400, work_h));
+                win_x = work_rc.left + std::max(0, (work_w - win_w) / 2);
+                win_y = work_rc.top  + std::max(0, (work_h - win_h) / 2);
+            }
+            else
+            {
+                const int scr_w = GetSystemMetrics(SM_CXSCREEN);
+                const int scr_h = GetSystemMetrics(SM_CYSCREEN);
+                if (desc.visible)
+                {
+                    win_w = std::min(win_w, std::max(640, scr_w));
+                    win_h = std::min(win_h, std::max(400, scr_h));
+                }
+                win_x = std::max(0, (scr_w - win_w) / 2);
+                win_y = std::max(0, (scr_h - win_h) / 2);
+            }
         }
 
-        width_ = desc.width;
-        height_ = desc.height;
+        min_track_w_ = static_cast<LONG>(std::min<std::uint32_t>(desc.width, 640U));
+        min_track_h_ = static_cast<LONG>(std::min<std::uint32_t>(desc.height, 400U));
+        width_       = desc.width;
+        height_      = desc.height;
         const std::wstring title = widen(desc.title);
         hwnd_ = CreateWindowExW(
             0,
@@ -245,12 +265,21 @@ public:
             SetWindowPos(hwnd_, nullptr, win_x, win_y, win_w, win_h,
                          SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         }
-        width_ = desc.width;
-        height_ = desc.height;
         if (desc.visible)
         {
             ShowWindow(hwnd_, SW_SHOWNORMAL);
             UpdateWindow(hwnd_);
+            RECT cr {};
+            if (GetClientRect(hwnd_, &cr) && (cr.right - cr.left) > 0 && (cr.bottom - cr.top) > 0)
+            {
+                width_  = static_cast<std::uint32_t>(cr.right - cr.left);
+                height_ = static_cast<std::uint32_t>(cr.bottom - cr.top);
+            }
+        }
+        else
+        {
+            width_  = desc.width;
+            height_ = desc.height;
         }
         return true;
     }
@@ -410,8 +439,8 @@ private:
             case WM_GETMINMAXINFO:
             {
                 auto* mmi = reinterpret_cast<MINMAXINFO*>(l);
-                mmi->ptMinTrackSize.x = 640;
-                mmi->ptMinTrackSize.y = 400;
+                mmi->ptMinTrackSize.x = min_track_w_;
+                mmi->ptMinTrackSize.y = min_track_h_;
                 return 0;
             }
             case WM_CLOSE:
@@ -576,11 +605,12 @@ private:
                     GetWindowRect(h, &wr);
                     if (!IsZoomed(h))
                     {
-                        constexpr int kEdge   = 8;
-                        constexpr int kCorner = 16;
+                        constexpr int kEdge    = 8;
+                        constexpr int kTopEdge = 3;
+                        constexpr int kCorner  = 16;
                         const bool on_left   = (pt.x >= wr.left && pt.x < wr.left + kEdge);
                         const bool on_right  = (pt.x <= wr.right && pt.x >= wr.right - kEdge);
-                        const bool on_top    = (pt.y >= wr.top && pt.y < wr.top + kEdge);
+                        const bool on_top    = (pt.y >= wr.top && pt.y < wr.top + kTopEdge);
                         const bool on_bottom = (pt.y <= wr.bottom && pt.y >= wr.bottom - kEdge);
 
                         const bool c_left   = (pt.x >= wr.left && pt.x < wr.left + kCorner);
@@ -588,10 +618,10 @@ private:
                         const bool c_top    = (pt.y >= wr.top && pt.y < wr.top + kCorner);
                         const bool c_bottom = (pt.y <= wr.bottom && pt.y >= wr.bottom - kCorner);
 
-                        // Keep top-right window control buttons (— □ ✕ at x = wr.right - 90..wr.right - 4, y = 4..25) clickable
+                        // Keep top-right window control buttons (- [] X at x = wr.right - 90..wr.right - 4, y = 3..32) clickable
                         const bool over_win_btns =
                             (pt.x >= wr.right - 90 && pt.x < wr.right - 4 &&
-                             pt.y >= wr.top + 4 && pt.y < wr.top + 25);
+                             pt.y >= wr.top + kTopEdge && pt.y < wr.top + 32);
                         if (!over_win_btns)
                         {
                             if ((on_top && c_left) || (on_left && c_top))         return HTTOPLEFT;
@@ -605,9 +635,18 @@ private:
                         }
                     }
                     ScreenToClient(h, &pt);
-                    const int cw = static_cast<int>(width_);
-                    // Empty center stretch of top bar (between menus and right telemetry/buttons) drags/maximizes the window
-                    if (pt.y >= 0 && pt.y < 25 && pt.x >= 680 && pt.x < cw - 280)
+                    RECT cr {};
+                    const int cw = (GetClientRect(h, &cr) && cr.right > cr.left)
+                        ? static_cast<int>(cr.right - cr.left)
+                        : static_cast<int>(width_);
+                    // Keep Left Menu Bar (0..360), Center Workspace/Play/Export Pills (center_x0..center_x1),
+                    // and Right Telemetry + Window Buttons (cw - 280..cw) 100% HTCLIENT so all buttons click reliably
+                    // at every resolution (1280x720..5120x1440). Only empty stretches of the top bar return HTCAPTION.
+                    const int center_x0 = std::max(360, (cw - 410) / 2 - 36);
+                    const int center_x1 = center_x0 + 448;
+                    if (pt.y >= 3 && pt.y < 28 &&
+                        ((pt.x >= 360 && pt.x < center_x0) ||
+                         (pt.x > center_x1 && pt.x < cw - 280)))
                     {
                         return HTCAPTION;
                     }
@@ -639,6 +678,8 @@ private:
     bool should_close_ { false };
     bool frameless_ { false };
     int cursor_shape_ { 0 };
+    LONG min_track_w_ { 640 };
+    LONG min_track_h_ { 400 };
     std::uint32_t width_ { 0 };
     std::uint32_t height_ { 0 };
     std::vector<OSEvent> pending_ {};

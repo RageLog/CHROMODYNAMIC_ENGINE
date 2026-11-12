@@ -72,10 +72,10 @@ struct Studio2DState
     cd::render2d::Canvas2D            canvas {};
     cd::render2d::Render2DDebugOptions debug_opts {};
 
-    Tool2DKind       active_tool { Tool2DKind::kTileBrush };
+    Tool2DKind       active_tool { Tool2DKind::kSelectMove };
     std::uint16_t    selected_tile_id { 1U };
     bool             auto_wang_tiling { true };
-    std::uint32_t    selected_entity_id { 1U };
+    std::uint32_t    selected_entity_id { 0U };
     StampBrushConfig stamp_cfg {};
     std::uint32_t    locked_layers_mask { 0U };
     float            anim_preview_fps { 10.0F };
@@ -84,7 +84,7 @@ struct Studio2DState
     int              anim_preview_clip_idx { 0 };
     float            anim_preview_timer { 0.0F };
     int              anim_preview_frame { 0 };
-    int              active_genre_template_idx { 0 };
+    int              active_genre_template_idx { 3 };
 
     // Viewport mouse interaction state
     bool   pan_dragging { false };
@@ -104,6 +104,10 @@ struct Studio2DState
     // Live Play-In-Editor (2D PIE) & Verification state
     bool  autopilot_in_pie { false };
     bool  has_playtest_report { false };
+    float play_sim_accum { 0.0F };
+    bool  was_playing_2d { false };
+    bool  latched_jump_pressed { false };
+    bool  latched_fire_pressed { false };
     cd::world2d::PlaytestReport2D last_playtest {};
 
     // Editable text buffers for ChromaUi InputText
@@ -137,16 +141,15 @@ struct Studio2DState
         initialized = true;
         cd::world2d::register_world2d_schemas(schema_registry);
         entity_schema = cd::world2d::make_entity2d_type_schema();
-        stage.build_starter_illuminated_platformer();
+        cd::world2d::GenreTemplates2D::build_empty_stage(stage);
+        active_genre_template_idx        = static_cast<int>(cd::world2d::GenreTemplateKind2D::kEmpty2D);
+        active_tool                      = Tool2DKind::kSelectMove;
         debug_opts.show_grid             = true;
         debug_opts.show_camera_frame     = true;
         debug_opts.show_greedy_colliders = false;
         debug_opts.show_light_gizmos     = true;
 
-        if (!stage.entities().empty())
-        {
-            selected_entity_id = stage.entities().front().id;
-        }
+        selected_entity_id = stage.entities().empty() ? 0U : stage.entities().front().id;
         sync_lua_buffer_from_selected();
 
         std::snprintf(
@@ -158,11 +161,25 @@ struct Studio2DState
         std::snprintf(import_file_buf.data(), import_file_buf.size(), "%s", "level_01.ldtk");
     }
 
-    void reset_to_starter_stage()
+    void reset_to_empty_stage()
     {
         initialized = false;
         command_bus = cd::world2d::CommandBus2D {};
         ensure_initialized();
+        stage.bind_starter_atlas(0U, 32U);
+        last_status_msg = "Ready - Clean Empty 2D Project.";
+    }
+
+    void reset_to_starter_stage()
+    {
+        reset_to_empty_stage();
+        cd::world2d::GenreTemplates2D::build_action_platformer(stage);
+        stage.bind_starter_atlas(0U, 32U);
+        active_genre_template_idx = static_cast<int>(cd::world2d::GenreTemplateKind2D::kActionPlatformer);
+        active_tool               = Tool2DKind::kTileBrush;
+        selected_entity_id        = stage.entities().empty() ? 0U : stage.entities().front().id;
+        sync_lua_buffer_from_selected();
+        last_status_msg = "Loaded New 2D Platformer Stage.";
     }
 };
 
@@ -244,6 +261,39 @@ template <typename LogFn>
     return true;
 }
 
+[[nodiscard]] inline std::filesystem::path resolve_studio_disk_path(std::string_view raw_path)
+{
+    if (raw_path.empty())
+    {
+        return {};
+    }
+    std::error_code ec {};
+    const std::filesystem::path rel(raw_path);
+    if (std::filesystem::exists(rel, ec))
+    {
+        return rel;
+    }
+    if (rel.is_relative())
+    {
+        std::filesystem::path cur = std::filesystem::current_path(ec);
+        for (int depth = 0; depth < 6 && !cur.empty(); ++depth)
+        {
+            const std::filesystem::path candidate = cur / rel;
+            if (std::filesystem::exists(candidate, ec))
+            {
+                return candidate;
+            }
+            const auto parent = cur.parent_path();
+            if (parent == cur)
+            {
+                break;
+            }
+            cur = parent;
+        }
+    }
+    return rel;
+}
+
 [[nodiscard]] inline bool load_2d_project_or_stage_from_disk(
     const std::string& path_str,
     std::string*       out_project_json = nullptr)
@@ -254,11 +304,12 @@ template <typename LogFn>
     }
 
     std::error_code ec {};
-    const std::filesystem::path in_path(path_str);
+    const std::filesystem::path in_path   = resolve_studio_disk_path(path_str);
+    const std::string           resolved  = in_path.string();
     std::filesystem::path stage_path {};
     std::filesystem::path proj_file {};
 
-    if (path_str.ends_with(".cd2d.json"))
+    if (resolved.ends_with(".cd2d.json"))
     {
         stage_path = in_path;
         const auto cand_proj = in_path.parent_path().parent_path() / "project.cdproj";
@@ -273,7 +324,7 @@ template <typename LogFn>
             ? in_path
             : in_path.parent_path();
         if (std::filesystem::is_regular_file(in_path, ec) &&
-            (path_str.ends_with(".cdproj") || path_str.ends_with(".cdproject")))
+            (resolved.ends_with(".cdproj") || resolved.ends_with(".cdproject")))
         {
             proj_file = in_path;
         }
@@ -718,14 +769,18 @@ inline void draw_2d_studio_workspace_panels(
         }
     }
 
+    if (playing_2d != s2d.was_playing_2d)
+    {
+        s2d.was_playing_2d       = playing_2d;
+        s2d.play_sim_accum       = 0.0F;
+        s2d.latched_jump_pressed = false;
+        s2d.latched_fire_pressed = false;
+    }
+
     if (s2d.stage.is_playing())
     {
         cd::world2d::PlayerInput2D p_in {};
-        if (s2d.autopilot_in_pie)
-        {
-            p_in = cd::world2d::compute_autopilot_input_2d(s2d.stage);
-        }
-        else
+        if (!s2d.autopilot_in_pie)
         {
             float mx = 0.0F;
             float my = 0.0F;
@@ -749,9 +804,12 @@ inline void draw_2d_studio_workspace_panels(
             p_in.move_y       = my;
             p_in.jump_held    = ImGui::IsKeyDown(ImGuiKey_Space) || ImGui::IsKeyDown(ImGuiKey_W) ||
                                 ImGui::IsKeyDown(ImGuiKey_UpArrow);
-            p_in.jump_pressed = ImGui::IsKeyPressed(ImGuiKey_Space, false) ||
-                                ImGui::IsKeyPressed(ImGuiKey_W, false) ||
-                                ImGui::IsKeyPressed(ImGuiKey_UpArrow, false);
+            if (ImGui::IsKeyPressed(ImGuiKey_Space, false) ||
+                ImGui::IsKeyPressed(ImGuiKey_W, false) ||
+                ImGui::IsKeyPressed(ImGuiKey_UpArrow, false))
+            {
+                s2d.latched_jump_pressed = true;
+            }
             if (!io.WantCaptureMouse && ImGui::IsMouseDown(ImGuiMouseButton_Left))
             {
                 const ImVec2 mpos = ImGui::GetMousePos();
@@ -767,11 +825,35 @@ inline void draw_2d_studio_workspace_panels(
                         break;
                     }
                 }
-                p_in.fire_held    = true;
-                p_in.fire_pressed = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+                p_in.fire_held = true;
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                {
+                    s2d.latched_fire_pressed = true;
+                }
             }
         }
-        s2d.stage.step_play(std::clamp(dt, 1.0F / 240.0F, 1.0F / 20.0F), p_in);
+
+        constexpr float kFixedStep2D = 1.0F / 60.0F;
+        s2d.play_sim_accum = std::min(s2d.play_sim_accum + std::clamp(dt, 0.0F, 0.10F), 0.10F);
+        int substeps = 0;
+        while (s2d.play_sim_accum >= kFixedStep2D && substeps < 6)
+        {
+            cd::world2d::PlayerInput2D step_in = p_in;
+            if (s2d.autopilot_in_pie)
+            {
+                step_in = cd::world2d::compute_autopilot_input_2d(s2d.stage);
+            }
+            else
+            {
+                step_in.jump_pressed     = s2d.latched_jump_pressed;
+                step_in.fire_pressed     = s2d.latched_fire_pressed;
+                s2d.latched_jump_pressed = false;
+                s2d.latched_fire_pressed = false;
+            }
+            s2d.stage.step_play(kFixedStep2D, step_in);
+            s2d.play_sim_accum -= kFixedStep2D;
+            ++substeps;
+        }
     }
 
     // =========================================================================
@@ -880,8 +962,16 @@ inline void draw_2d_studio_workspace_panels(
             ImGui::SameLine();
             if (ImGui::SmallButton("Center"))
             {
-                s2d.stage.camera().set_position({ 11.0F, 4.8F });
-                s2d.stage.camera().set_zoom(0.92F);
+                if (s2d.stage.entities().empty() && s2d.stage.tilemap().non_empty_tile_count() == 0U)
+                {
+                    s2d.stage.camera().set_position({ 0.0F, 2.0F });
+                    s2d.stage.camera().set_zoom(1.0F);
+                }
+                else
+                {
+                    s2d.stage.camera().set_position({ 11.0F, 4.8F });
+                    s2d.stage.camera().set_zoom(0.92F);
+                }
             }
             ImGui::SameLine();
             ImGui::TextDisabled("Zoom %.2fx", static_cast<double>(s2d.stage.camera().zoom()));
@@ -896,7 +986,8 @@ inline void draw_2d_studio_workspace_panels(
     // =========================================================================
     const ImVec2 mp = ImGui::GetMousePos();
     const bool inside_vp =
-        (mp.x >= vp_x0 && mp.x <= vp_x1 && mp.y >= vp_y0 && mp.y <= vp_y1) && !pill_hovered;
+        (mp.x >= vp_x0 && mp.x <= vp_x1 && mp.y >= vp_y0 && mp.y <= vp_y1) && !pill_hovered &&
+        cst.open_popup_id == 0U && cst.active_menu_name.empty();
 
     if (!s2d.stage.is_playing() && inside_vp && !io.WantCaptureMouse)
     {

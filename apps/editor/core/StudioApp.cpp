@@ -311,7 +311,7 @@ cd::core::Result<void> StudioApp::on_boot()
                 if (s.config.exec_2d_cmds.empty() && s.config.project_path.empty())
                 {
                     const auto gkind = cd::world2d::parse_genre_template_kind_2d(s.config.initial_genre_2d)
-                                           .value_or(cd::world2d::GenreTemplateKind2D::kActionPlatformer);
+                                           .value_or(cd::world2d::GenreTemplateKind2D::kEmpty2D);
                     s2d.active_genre_template_idx = static_cast<int>(gkind);
                     cd::world2d::GenreTemplates2D::apply_genre_template(s2d.stage, gkind);
                     s2d.selected_entity_id =
@@ -1348,7 +1348,24 @@ void StudioApp::on_frame(const cd::app::FrameContext& /*fc*/)
         auto& frame = *frame_r;
         auto& cmd   = *frame.command_buffer;
 
+        if (!s.needs_rebuild && window.width() > 0U && window.height() > 0U &&
+            (frame.extent.width != window.width() || frame.extent.height != window.height()))
+        {
+            s.needs_rebuild = true;
+        }
+
         ctx.new_frame();
+        if (frame.extent.width > 0U && frame.extent.height > 0U)
+        {
+            auto& cst_sync                  = cd::ui::chroma::state();
+            cst_sync.io.DisplaySize         = ImVec2 { static_cast<float>(frame.extent.width),
+                                                       static_cast<float>(frame.extent.height) };
+            cst_sync.main_viewport.Size     = cst_sync.io.DisplaySize;
+            cst_sync.main_viewport.WorkSize = ImVec2 {
+                cst_sync.io.DisplaySize.x,
+                std::max(100.0F, cst_sync.io.DisplaySize.y - cst_sync.top_bar_height)
+            };
+        }
         const bool kHideEditorUiForGolden = cd::studio_rt::golden::enabled();
 
         if (!kHideEditorUiForGolden &&

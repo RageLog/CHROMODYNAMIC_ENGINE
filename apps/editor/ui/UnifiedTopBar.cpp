@@ -130,17 +130,27 @@ void draw_unified_top_bar(StudioEngineState& s, float dt)
             w.show_project_manager = true;
         }
         ImGui::Separator();
+        if (ImGui::MenuItem("New 2D Empty Project"))
+        {
+            w.show_project_manager = false;
+            cst.workspace_mode     = 3;
+            studio_2d().reset_to_empty_stage();
+            w.active_project_name = "Empty_2D_Project";
+            w.active_level_name   = "stages/main.cd2d.json";
+        }
         if (ImGui::MenuItem("New 2D Platformer Stage"))
         {
             w.show_project_manager = false;
             cst.workspace_mode     = 3;
             studio_2d().reset_to_starter_stage();
+            w.active_project_name = std::string(studio_2d().stage.name());
+            w.active_level_name   = "stages/main.cd2d.json";
         }
         if (ImGui::MenuItem("New 3D Empty Stage"))
         {
             w.show_project_manager = false;
             cst.workspace_mode     = 0;
-            scene_ops::reset_to_clean_empty_project(s, false);
+            scene_ops::reset_to_clean_empty_project(s, true);
         }
         if (ImGui::MenuItem("New 3D Blank Stage (Floor + Sun)"))
         {
@@ -462,8 +472,7 @@ void draw_unified_top_bar(StudioEngineState& s, float dt)
         {
             const ImVec2 b0(cur_x, 4.0F);
             const ImVec2 b1(cur_x + w_btn, 28.0F);
-            const bool   hov = (cst.open_popup_id == 0U && cst.active_menu_name.empty() &&
-                              mp.x >= b0.x && mp.x <= b1.x && mp.y >= b0.y && mp.y <= b1.y);
+            const bool   hov = (mp.x >= b0.x && mp.x <= b1.x && mp.y >= b0.y && mp.y <= b1.y);
             const ImU32 bg = active
                 ? active_bg
                 : (hov ? IM_COL32(58, 66, 78, 255) : idle_bg);
@@ -480,7 +489,19 @@ void draw_unified_top_bar(StudioEngineState& s, float dt)
             dl->AddText(ImVec2(b0.x + (w_btn - ts.x) * 0.5F, b0.y + (24.0F - ts.y) * 0.5F),
                         txt_col, label);
             cur_x += w_btn + 4.0F;
-            return hov && lmb_click;
+            if (hov)
+            {
+                cst.any_item_hovered    = true;
+                cst.mouse_in_any_window = true;
+            }
+            if (hov && lmb_click)
+            {
+                cst.open_popup_id = 0U;
+                cst.active_menu_name.clear();
+                cst.active_submenu_name.clear();
+                return true;
+            }
+            return false;
         };
 
         float cx = target_cx;

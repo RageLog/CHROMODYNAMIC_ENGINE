@@ -100,8 +100,8 @@ inline void tick_studio_modifiers_and_physics(StateT& s, float dt, LogFn&& log_p
     }
 
     // ---- B. Evaluate Per-Entity Modifiers & Godot+ Gameplay Logic ----
-    const float raw_clamped_dt = std::clamp(dt, 0.001F, 0.033F);
-    const float clamped_dt     = (s.pie_playing && w.autopilot_play_active)
+    const float raw_clamped_dt = std::clamp(dt, 1.0e-5F, 0.033F);
+    const float clamped_dt     = (s.pie_playing && w.autopilot_play_active && s.config.autopilot_e2e)
                                      ? std::max(raw_clamped_dt, 1.0F / 50.0F)
                                      : raw_clamped_dt;
     const bool sim_active = (s.pie_playing || w.simulate_physics_in_edit || w.step_single_frame);

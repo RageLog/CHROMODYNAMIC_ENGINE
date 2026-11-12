@@ -12,6 +12,8 @@
 #include "pipeline/AssetIngest.hpp"
 #include "render/WorldRenderPasses.hpp"
 #include "scene/SceneOperations.hpp"
+#include "Studio2DWorkspace.hpp"
+#include "ui/UnifiedTopBar.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -200,7 +202,93 @@ namespace cd::studio
         {
             fail_test("Texture Assign", "Failed to assign UV_Checkerboard_2K.tex to entity");
         }
-        std::puts("[SELF-TEST 8/8] PASS -- ALL 8 AUTONOMOUS E2E SELF-TESTS PASSED 100%!");
+        std::puts("[SELF-TEST 8/9] PASS");
+    }
+    else if (frame_idx == 9U)
+    {
+        std::puts("[SELF-TEST 9/9] Verifying Empty 2D Project default & Unified Top Bar clicks at 1600x900 and 5120x1392...");
+        auto& s2d = studio_2d();
+        if (!s2d.stage.entities().empty() || s2d.stage.tilemap().non_empty_tile_count() != 0U ||
+            s2d.active_genre_template_idx != 3)
+        {
+            fail_test("Empty 2D Boot Default",
+                      "studio_2d() must boot blank (Empty_2D_Project, 0 entities, 0 tiles, idx=3)");
+        }
+        if (!load_2d_project_or_stage_from_disk("projects/00_empty_project/project.cdproj") ||
+            !s2d.stage.entities().empty() || s2d.stage.tilemap().non_empty_tile_count() != 0U)
+        {
+            fail_test("Disk Empty 2D Project",
+                      "Failed to load blank projects/00_empty_project/project.cdproj");
+        }
+
+        // Simulate clicking '2D', 'Graph', '3D', and 'Hub' in UnifiedTopBar at 5120x1392 even with an open menu
+        const ImVec2 saved_disp = cst.io.DisplaySize;
+        cst.io.DisplaySize      = ImVec2 { 5120.0F, 1392.0F };
+        const float target_cx   = (5120.0F - 410.0F) * 0.5F - 24.0F; // 2331.0F
+
+        // Click '2D' pill (x = target_cx + 48 .. target_cx + 102, y = 4..28) while menu 'File' is open
+        cst.active_menu_name  = "File";
+        w.show_project_manager = true;
+        cst.workspace_mode     = 0;
+        cst.io.MousePos        = ImVec2 { target_cx + 70.0F, 16.0F };
+        cst.mouse_down[0]      = true;
+        cst.mouse_clicked[0]   = true;
+        ui::draw_unified_top_bar(s, 1.0F / 60.0F);
+        cst.mouse_down[0]      = false;
+        cst.mouse_clicked[0]   = false;
+        if (w.show_project_manager || cst.workspace_mode != 3 || !cst.active_menu_name.empty())
+        {
+            fail_test("TopBar 2D Click @ 5120w",
+                      "Clicking '2D' pill at 5120x1392 did not enter 2D workspace or close open menu");
+        }
+
+        // Click 'Graph' pill (x = target_cx + 164 .. target_cx + 222, y = 4..28)
+        cst.io.MousePos      = ImVec2 { target_cx + 190.0F, 16.0F };
+        cst.mouse_down[0]    = true;
+        cst.mouse_clicked[0] = true;
+        ui::draw_unified_top_bar(s, 1.0F / 60.0F);
+        cst.mouse_down[0]    = false;
+        cst.mouse_clicked[0] = false;
+        if (cst.workspace_mode != 2)
+        {
+            fail_test("TopBar Graph Click @ 5120w",
+                      "Clicking 'Graph' pill at 5120x1392 did not switch workspace_mode to 2");
+        }
+
+        // Click '3D' pill (x = target_cx + 106 .. target_cx + 160, y = 4..28)
+        cst.io.MousePos      = ImVec2 { target_cx + 130.0F, 16.0F };
+        cst.mouse_down[0]    = true;
+        cst.mouse_clicked[0] = true;
+        ui::draw_unified_top_bar(s, 1.0F / 60.0F);
+        cst.mouse_down[0]    = false;
+        cst.mouse_clicked[0] = false;
+        if (cst.workspace_mode != 0)
+        {
+            fail_test("TopBar 3D Click @ 5120w",
+                      "Clicking '3D' pill at 5120x1392 did not switch workspace_mode to 0");
+        }
+
+        cst.io.DisplaySize = saved_disp;
+
+        // Verify 1080 FPS (dt = 1/1080s for 1080 frames = 1.000 real second) advances 2D gameplay by ~1.00s, NOT 4.5x!
+        s2d.stage.enter_play();
+        for (int hf = 0; hf < 1080; ++hf)
+        {
+            draw_2d_studio_workspace_panels(s, 1.0F / 1080.0F, 1600U, 900U, [](std::string) {});
+        }
+        const float sim_sec_after_1s = s2d.stage.hud().sim_time_sec;
+        s2d.stage.exit_play();
+        s2d.was_playing_2d = false;
+        s2d.play_sim_accum = 0.0F;
+        if (sim_sec_after_1s < 0.96F || sim_sec_after_1s > 1.04F)
+        {
+            const std::string err_msg =
+                "At 1080 FPS for 1.00s, sim_time_sec must equal ~1.00s (got " +
+                std::to_string(sim_sec_after_1s) + ")";
+            fail_test("High-FPS 2D Timestep", err_msg.c_str());
+        }
+
+        std::puts("[SELF-TEST 9/9] PASS -- ALL 9 AUTONOMOUS E2E SELF-TESTS PASSED 100%!");
         std::fflush(stdout);
         return true;
     }

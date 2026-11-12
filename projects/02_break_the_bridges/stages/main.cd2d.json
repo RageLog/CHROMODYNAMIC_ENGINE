@@ -28,7 +28,7 @@
       "light_intensity": 1.6499999761581421,
       "light_radius": 8.5,
       "lua_script": "",
-      "move_speed": 14.800000190734863,
+      "move_speed": 10.5,
       "name": "Demolition_Striker_Rail",
       "patrol_span": 6.9000000953674316,
       "pos": [
@@ -61,7 +61,7 @@
       "light_intensity": 1.6499999761581421,
       "light_radius": 8.5,
       "lua_script": "",
-      "move_speed": 13.800000190734863,
+      "move_speed": 8.3999996185302734,
       "name": "Demolition_Sphere_2D",
       "patrol_span": 3,
       "pos": [
@@ -820,7 +820,7 @@
       "light_intensity": 1.6499999761581421,
       "light_radius": 8.5,
       "lua_script": "",
-      "move_speed": 2.2999999523162842,
+      "move_speed": 1.5499999523162842,
       "name": "Skeleton_Guard_West",
       "patrol_span": 2.5999999046325684,
       "pos": [
@@ -853,7 +853,7 @@
       "light_intensity": 1.6499999761581421,
       "light_radius": 8.5,
       "lua_script": "",
-      "move_speed": 2.4000000953674316,
+      "move_speed": 1.6499999761581421,
       "name": "Skeleton_Guard_East",
       "patrol_span": 2.5999999046325684,
       "pos": [
@@ -886,7 +886,7 @@
       "light_intensity": 1.6499999761581421,
       "light_radius": 8.5,
       "lua_script": "",
-      "move_speed": 3.0999999046325684,
+      "move_speed": 2.0499999523162842,
       "name": "Synth_Raider_MidSpan",
       "patrol_span": 5.1999998092651367,
       "pos": [
@@ -919,7 +919,7 @@
       "light_intensity": 1.6499999761581421,
       "light_radius": 8.5,
       "lua_script": "",
-      "move_speed": 2.7000000476837158,
+      "move_speed": 1.7999999523162842,
       "name": "Skeleton_Guard_Upper",
       "patrol_span": 5.4000000953674316,
       "pos": [

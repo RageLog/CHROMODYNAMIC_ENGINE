@@ -3980,7 +3980,7 @@ template <class StateT, class LogFn>
 bool load_project_or_scene_from_disk_path(StateT& s, std::string_view disk_path, LogFn&& log_push)
 {
     auto& w = studio_world();
-    const std::string path_str { disk_path };
+    const std::string path_str = resolve_studio_disk_path(disk_path).string();
     if (path_str.find(".cdscene.json") != std::string::npos)
     {
         const bool ok = load_full_studio_scene(s, path_str.c_str(), log_push);

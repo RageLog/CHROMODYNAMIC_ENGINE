@@ -932,6 +932,17 @@ TEST(Render2DAdversarialTest, Renderer2D_DegenerateViewportsAndMassiveSpriteBatc
     {
         EXPECT_LE(cmds[i - 1U].sort_key, cmds[i].sort_key);
     }
+
+    // 3. Clean empty 2D scene (0 tiles, 0 sprites, 0 parallax layers, overlays off)
+    // must emit ONLY the clean sky backdrop gradient (1 command) without unsolicited clutter.
+    cd::render2d::Tilemap2D empty_tilemap {};
+    cd::render2d::Render2DDebugOptions clean_opts {};
+    clean_opts.show_grid             = false;
+    clean_opts.show_greedy_colliders = false;
+    clean_opts.show_light_gizmos     = false;
+    clean_opts.show_camera_frame     = false;
+    renderer.render_scene(canvas, vp, camera, empty_tilemap, lighting, {}, {}, clean_opts, {});
+    EXPECT_EQ(canvas.commands().size(), 1U);
 }
 
 }  // namespace

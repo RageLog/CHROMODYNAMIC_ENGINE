@@ -28,7 +28,7 @@
       "light_intensity": 1.6499999761581421,
       "light_radius": 8.5,
       "lua_script": "",
-      "move_speed": 13.5,
+      "move_speed": 10.5,
       "name": "Player_Paddle_Left",
       "patrol_span": 4.4499998092651367,
       "pos": [
@@ -61,7 +61,7 @@
       "light_intensity": 1.6499999761581421,
       "light_radius": 8.5,
       "lua_script": "",
-      "move_speed": 9.6000003814697266,
+      "move_speed": 7.1999998092651367,
       "name": "CPU_Paddle_Right",
       "patrol_span": 4.4499998092651367,
       "pos": [
@@ -94,7 +94,7 @@
       "light_intensity": 1.6499999761581421,
       "light_radius": 8.5,
       "lua_script": "",
-      "move_speed": 14.5,
+      "move_speed": 9.1999998092651367,
       "name": "Pong_Plasma_Ball",
       "patrol_span": 3,
       "pos": [
